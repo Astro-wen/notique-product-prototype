@@ -330,6 +330,7 @@ export default function Home() {
   const claims = claimsByKind[projectKind];
   const selectedClaim = claims.find((claim) => claim.id === selectedClaimId) || claims[0];
   const pendingCount = claims.filter((claim) => claim.state === "pending").length;
+  const globalPendingCount = claimsByKind.general.filter((claim) => claim.state === "pending").length + claimsByKind.contractor.filter((claim) => claim.state === "pending").length;
   const checklist = projectKind === "contractor" ? contractorChecklist : generalChecklist;
   const folderCounts = useMemo(
     () => Object.fromEntries(folders.map((folder) => [folder.id, assets.filter((asset) => asset.folderId === folder.id).length])),
@@ -372,7 +373,9 @@ export default function Home() {
   }
 
   function openFolder(id: string) {
-    setSelectedFolderId(id);
+    const folder = folders.find((item) => item.id === id) || selectedFolder;
+    setSelectedFolderId(folder.id);
+    setProjectKind(folder.kind);
     setMenuId(null);
     setView("folder");
   }
@@ -429,6 +432,7 @@ export default function Home() {
     setInbox((items) => items.filter((item) => item.id !== filed.id));
     setLastFiledId(filed.id);
     setSelectedFolderId(selectedSuggestion);
+    setProjectKind(folders.find((folder) => folder.id === selectedSuggestion)?.kind || "general");
     setSelectedAssetId(filed.id);
     setStagedAsset(null);
     setView("folder");
@@ -525,7 +529,7 @@ export default function Home() {
   }
 
   function Sidebar() {
-    const projectArea = ["folder", "item", "workspace", "event", "review", "claim", "compare", "deliverables"].includes(view);
+    const projectArea = ["folder", "item", "workspace", "event", "claim", "compare"].includes(view);
     return (
       <aside className="sidebar">
         <button className="logo" onClick={() => setView("projects")}><span>⌁</span>Notique AI</button>
@@ -537,15 +541,17 @@ export default function Home() {
         <p className="nav-label">WORKSPACE</p>
         <nav>
           <button className={view === "projects" || projectArea ? "nav-item active" : "nav-item"} onClick={() => setView("projects")}><span>▣</span>Projects<b>{folders.length}</b></button>
-          <button className={view === "recordings" ? "nav-item active" : "nav-item"} onClick={() => setView("recordings")}><span>♪</span>Recordings<b>{allRecordings.length}</b></button>
           <button className={["inbox", "agent"].includes(view) ? "nav-item active" : "nav-item"} onClick={() => setView("inbox")}><span>▤</span>Inbox<b className={inbox.length ? "blue-count" : ""}>{inbox.length}</b></button>
+          <button className={view === "recordings" ? "nav-item active" : "nav-item"} onClick={() => setView("recordings")}><span>♪</span>Recordings<b>{allRecordings.length}</b></button>
+          <button className={view === "review" ? "nav-item active" : "nav-item"} onClick={() => { setProjectKind(selectedFolder.kind); setReviewFilter("pending"); setView("review") }}><span>✦</span>Review Queue<b className={globalPendingCount ? "blue-count" : ""}>{globalPendingCount}</b></button>
+          <button className={view === "deliverables" ? "nav-item active" : "nav-item"} onClick={() => { setProjectKind(selectedFolder.kind); setView("deliverables") }}><span>▦</span>Deliverables<b>3</b></button>
           <button className={view === "trash" ? "nav-item active" : "nav-item"} onClick={() => setView("trash")}><span>♲</span>Trash<b>{trash.length}</b></button>
         </nav>
         <p className="nav-label resources">RESOURCES</p>
         <nav>
-          <button className={view === "templates" && templateMode === "Explore" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("Explore")}><span>◎</span><span>Explore Notique AI</span></button>
-          <button className={view === "templates" && templateMode === "AI templates" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("AI templates")}><span>▦</span><span>AI templates</span></button>
+          <button className={view === "templates" && templateMode === "AI templates" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("AI templates")}><span>▤</span><span>Templates</span></button>
           <button className={view === "templates" && templateMode === "My templates" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("My templates")}><span>▧</span><span>My templates</span></button>
+          <button className="nav-item" onClick={() => flash("Help center opened")}><span>?</span><span>Help & support</span></button>
         </nav>
         <div className="spacer" />
         <button className="upgrade" onClick={() => setModal("upgrade")}>Upgrade plan</button>
@@ -573,7 +579,7 @@ export default function Home() {
         <Toolbar title="Projects" count={folders.length} action="project" />
         <div className="folder-grid">
           {ordered.map((folder) => (
-            <article className="folder-card" key={folder.id} role="button" tabIndex={0} onClick={() => openFolder(folder.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openFolder(folder.id) }}>
+            <article className="folder-card" key={folder.id} role="button" tabIndex={0} onClick={() => openWorkspace(folder.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openWorkspace(folder.id) }}>
               <span className={`folder-tab ${folder.color}`} />
               <button className="more" aria-label={`More options for ${folder.name}`} onClick={(event) => { event.stopPropagation(); setSelectedFolderId(folder.id); setMenuId(menuId === folder.id ? null : folder.id) }}>•••</button>
               <strong>{folder.name}</strong>
@@ -629,10 +635,9 @@ export default function Home() {
   function FolderView() {
     const ordered = sortNewest ? folderAssets : [...folderAssets].reverse();
     return (
-      <div className="page folder-page">
-        <button className="back" onClick={() => setView("projects")}>‹ Projects</button>
-        <header className="folder-header"><div><h1>{selectedFolder.name}</h1><p>{selectedFolder.description}</p></div><div><button className="secondary" onClick={() => openRename("folder", selectedFolder.name, selectedFolder.id)}>Rename</button><button className="primary" onClick={() => setModal("import")}>Add</button></div></header>
-        <button className="workspace-entry" onClick={() => openWorkspace()}><span className="workspace-entry-icon">✦</span><span><strong>Open AI workspace</strong><small>Review {selectedFolder.kind === "contractor" ? 3 : 3} updates, compare events and create deliverables</small></span><b>Open ›</b></button>
+      <div className="product-page">
+        <ProjectHeader active="files" />
+        <div className="folder-section-heading"><div><h2>Files and recordings</h2><p>Everything saved to this Project, including items filed by AI.</p></div><button className="sort" onClick={() => setSortNewest((value) => !value)}>{sortNewest ? "Newest first⌄" : "Oldest first⌃"}</button></div>
         <div className="folder-summary"><span><strong>{folderAssets.length}</strong><small>Items</small></span><span><strong>{folderAssets.filter((item) => item.type === "audio").length}</strong><small>Recordings</small></span><span><strong>{folderAssets.filter((item) => item.type !== "audio").length}</strong><small>Files and notes</small></span></div>
         <div className="content-table folder-table"><div className="table-head"><span>Name</span><span>Type</span><span>Added</span><span /></div>{ordered.map((asset) => <div className={asset.id === lastFiledId ? "table-row newly-filed" : "table-row"} key={asset.id}><button className="name-cell" onClick={() => openItem(asset.id)}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{asset.summary}</small></span></button><span className="type-label">{asset.type}</span><span>{asset.added}</span><div className="row-actions">{asset.id === lastFiledId && <span className="filed-badge">Filed by AI</span>}<button className="more inline" onClick={() => setMenuId(menuId === asset.id ? null : asset.id)}>•••</button>{menuId === asset.id && <div className="menu card-menu"><button onClick={() => openRename("asset", asset.name, asset.id)}>Rename</button><button className="danger" onClick={() => moveToTrash(asset)}>Move to Trash</button></div>}</div></div>)}</div>
       </div>
@@ -662,12 +667,12 @@ export default function Home() {
     );
   }
 
-  function ProjectHeader({ active = "overview" }: { active?: "overview" | "events" | "compare" | "deliverables" }) {
+  function ProjectHeader({ active = "overview" }: { active?: "overview" | "files" | "events" | "review" | "compare" | "deliverables" }) {
     return (
       <>
-        <button className="back-button" onClick={() => openFolder(selectedFolder.id)}>‹ {selectedFolder.name}</button>
+        <button className="back-button" onClick={() => setView("projects")}>‹ Projects</button>
         <div className="project-header"><div><h1>{profile.title}</h1><p>{profile.meta}</p></div><div><button className="secondary" onClick={() => setModal("share")}>Share</button><button className="primary" onClick={() => setModal("import")}>Add</button><button className="icon-button" onClick={() => setMenuId(menuId === "project-more" ? null : "project-more")}>•••</button>{menuId === "project-more" && <div className="menu project-menu"><button onClick={() => openRename("folder", selectedFolder.name, selectedFolder.id)}>Rename project</button><button onClick={() => { setMenuId(null); setModal("deleteFolder") }} className="danger">Delete project</button></div>}</div></div>
-        <div className="tabs"><button className={active === "overview" ? "active" : ""} onClick={() => setView("workspace")}>Overview</button><button className={active === "events" ? "active" : ""} onClick={() => setView("event")}>Events <span>4</span></button><button className={active === "compare" ? "active" : ""} onClick={() => setView("compare")}>Compare events</button><button className={active === "deliverables" ? "active" : ""} onClick={() => setView("deliverables")}>Deliverables <span>3</span></button></div>
+        <div className="tabs"><button className={active === "overview" ? "active" : ""} onClick={() => setView("workspace")}>Overview</button><button className={active === "files" ? "active" : ""} onClick={() => setView("folder")}>Files <span>{folderAssets.length}</span></button><button className={active === "events" ? "active" : ""} onClick={() => setView("event")}>Events <span>4</span></button><button className={active === "review" ? "active" : ""} onClick={() => setView("review")}>Review <span>{pendingCount}</span></button><button className={active === "compare" ? "active" : ""} onClick={() => setView("compare")}>Changes</button><button className={active === "deliverables" ? "active" : ""} onClick={() => setView("deliverables")}>Deliverables <span>3</span></button></div>
       </>
     );
   }
@@ -696,9 +701,9 @@ export default function Home() {
   function ReviewView() {
     const visible = claims.filter((claim) => reviewFilter === "all" || (reviewFilter === "pending" ? claim.state === "pending" : claim.state !== "pending"));
     return (
-      <div className="product-page narrow-page">
-        <button className="back-button" onClick={() => setView("workspace")}>‹ {profile.title}</button>
-        <div className="review-header"><div><h1>Review Queue</h1><p>Only information that needs professional judgment appears here.</p></div><span>{pendingCount} remaining</span></div>
+      <div className="product-page">
+        <ProjectHeader active="review" />
+        <div className="review-header"><div><h1>Review Queue</h1><p>Changes and conflicts from {profile.title} that need your judgment.</p></div><span>{pendingCount} remaining</span></div>
         <div className="review-tools"><div className="review-filters"><button className={reviewFilter === "pending" ? "active" : ""} onClick={() => setReviewFilter("pending")}>Needs review</button><button className={reviewFilter === "reviewed" ? "active" : ""} onClick={() => setReviewFilter("reviewed")}>Reviewed</button><button className={reviewFilter === "all" ? "active" : ""} onClick={() => setReviewFilter("all")}>All updates</button></div><button className="secondary" onClick={batchConfirmLowRisk}>Confirm low-risk updates</button></div>
         {visible.length ? <div className="review-list">{visible.map((claim) => <button key={claim.id} onClick={() => openClaim(claim.id)}><div><span className={`risk risk-${claim.risk}`}>{claim.risk} risk</span><small>{claim.category} · {claim.field}</small><h2>{claim.proposed}</h2><p>{claim.reason}</p></div><div className="review-change"><span><small>Previous</small>{claim.previous}</span><b>›</b><span><small>Latest</small>{claim.proposed}</span></div><span className="review-link">Review evidence ›</span></button>)}</div> : <div className="empty-review"><span>✓</span><h2>Nothing in this view</h2><p>Choose another filter or return to the project.</p><button className="primary" onClick={() => setView("workspace")}>Return to project</button></div>}
       </div>
@@ -778,7 +783,7 @@ export default function Home() {
       <Sidebar />
       <header className="mobile-header"><button onClick={() => setView("projects")}>⌁ Notique AI</button><button onClick={() => setModal("import")}>＋</button></header>
       <main><Content /></main>
-      <nav className="mobile-nav"><button onClick={() => setView("projects")}>▣<small>Projects</small></button><button onClick={() => setView("recordings")}>♪<small>Recordings</small></button><button onClick={() => setView("inbox")}>▤<small>Inbox</small></button><button onClick={() => setModal("import")}>＋<small>Import</small></button></nav>
+      <nav className="mobile-nav"><button onClick={() => setView("projects")}>▣<small>Projects</small></button><button onClick={() => setView("inbox")}>▤<small>Inbox</small></button><button onClick={() => { setProjectKind(selectedFolder.kind); setView("review") }}>✦<small>Review</small></button><button onClick={() => setModal("import")}>＋<small>Import</small></button></nav>
 
       {modal === "import" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal import-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Add to Notique</h2><p>Drop in a recording, photo or document.</p></div><button onClick={() => setModal(null)}>×</button></header><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files?.[0]; if (file) handleFile(file) }}><input type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) handleFile(file) }} /><span className="upload-icon">↥</span><strong>Drop a file here</strong><small>or click to choose from your computer</small></label><p className="sample-label">TRY THE COMPLETE FLOW</p><div className="sample-list">{samples.map((sample) => <button key={sample.id} onClick={() => startAgent(sample)}><b className={`type-icon ${sample.type}`}>{typeIcon(sample.type)}</b><span><strong>{sample.name}</strong><small>{sample.meta}</small></span><em>Use sample</em></button>)}</div></section></div>}
 

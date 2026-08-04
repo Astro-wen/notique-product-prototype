@@ -208,6 +208,9 @@ main { min-height: 100vh; margin-left: 214px; padding: 0 28px 60px; }
 .workspace-entry strong { font-size: 10px; }
 .workspace-entry small { color: #647289; font-size: 8px; }
 .workspace-entry b { color: #2257ae; font-size: 9px; }
+.folder-section-heading { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.folder-section-heading h2 { margin: 0 0 6px; font-size: 14px; }
+.folder-section-heading p { margin: 0; color: var(--muted); font-size: 8px; }
 .evidence-image-button { width: 100%; margin-top: 12px; border: 1px solid var(--line); border-radius: 7px; background: #f8f9fa; padding: 10px; display: flex; align-items: center; gap: 11px; text-align: left; }
 .photo-placeholder { width: 90px; height: 62px; border-radius: 6px; background: linear-gradient(145deg, #d8d3cd, #b4a69c); color: rgba(255,255,255,.8); display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 800; letter-spacing: .08em; }
 .evidence-image-button > span:last-child { display: grid; gap: 4px; }
@@ -547,6 +550,7 @@ main { min-height: 100vh; margin-left: 214px; padding: 0 28px 60px; }
   .inbox-intro { grid-template-columns: 32px 1fr; }
   .inbox-intro button { grid-column: 1 / -1; width: 100%; }
   .folder-header { display: grid; padding: 13px 0; }
+  .folder-section-heading { align-items: flex-start; padding: 12px 0; }
   .folder-summary { display: grid; grid-template-columns: repeat(3, 1fr); }
   .folder-summary span { min-width: 0; border-left: 1px solid var(--line); }
   .agent-title { align-items: flex-start; padding: 16px 0; }
