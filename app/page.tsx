@@ -246,6 +246,8 @@ const generalChecklist = [
 
 const contractorChecklist = [
   "Obtain the signed client Change Order",
+  "Confirm the revised amount and electrical exclusion",
+  "Record Maria as owner and Jul 28 as the target date",
   "Protect the adjacent kitchen and dining area",
   "Remove the short wall and repair drywall",
   "Confirm whether hidden-line rewiring is included",
