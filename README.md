@@ -2,6 +2,8 @@
 
 A complete, clickable product mock for testing the full Notique workflow with realistic local data. AI processing, transcription, evidence linking and sending are simulated so the product can be tested without production services.
 
+Live prototype: https://astro-wen.github.io/notique-product-prototype/
+
 ## Core flow
 
 1. Open **Inbox** or click **Import**.
@@ -53,6 +55,12 @@ Then open the local address printed in the terminal.
 
 ```bash
 npm test
+```
+
+GitHub Pages is published automatically from `main`. To verify the static version locally:
+
+```bash
+npm run build:pages
 ```
 
 ## Main files
