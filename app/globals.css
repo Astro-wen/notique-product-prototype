@@ -28,6 +28,9 @@ button:focus-visible, input:focus-visible, label:focus-within { outline: 3px sol
 .sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: 214px; padding: 22px 14px 14px; background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
 .logo { height: 30px; border: 0; background: transparent; padding: 0 3px; display: flex; align-items: center; gap: 5px; font-size: 15px; font-weight: 800; letter-spacing: -.03em; }
 .logo span { font-size: 21px; transform: rotate(-8deg); }
+.sidebar-top-actions { display: flex; justify-content: flex-end; margin: -2px 2px 4px 0; }
+.language-toggle { min-height: 24px; border: 1px solid #d7dce3; border-radius: 12px; background: #fff; color: #526172; padding: 0 8px; font-size: 8px; font-weight: 800; }
+.language-toggle:hover { background: #f3f5f7; }
 .account { margin: 20px 0 13px; min-height: 42px; display: grid; grid-template-columns: 32px 1fr 14px; align-items: center; gap: 8px; padding: 0 5px; }
 .avatar { width: 30px; height: 30px; border-radius: 50%; background: #717b8d; color: white; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; }
 .account > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
@@ -48,6 +51,8 @@ button:focus-visible, input:focus-visible, label:focus-within { outline: 3px sol
 .spacer { flex: 1; }
 .upgrade { height: 34px; border: 1px solid #d9dde4; border-radius: 6px; background: #f1f3f6; font-size: 9px; font-weight: 700; }
 .mobile-header, .mobile-nav { display: none; }
+.mobile-header-actions { display: flex; align-items: center; gap: 7px; }
+.mobile-header-actions .language-toggle { min-height: 26px; }
 
 main { min-height: 100vh; margin-left: 214px; padding: 0 28px 60px; }
 .page, .agent-page { width: min(1240px, 100%); margin: 0 auto; }
