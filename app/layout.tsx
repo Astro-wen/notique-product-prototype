@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Notique AI · Classification Agent Mock",
-  description: "A complete clickable product mock for AI-assisted project filing.",
+  title: "Notique · Product Prototype",
+  description: "A clickable prototype for project records, evidence review and deliverables.",
 };
 
 export default function RootLayout({

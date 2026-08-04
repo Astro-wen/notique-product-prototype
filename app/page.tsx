@@ -538,7 +538,7 @@ export default function Home() {
     return (
       <aside className="sidebar">
         <button className="logo" onClick={() => setView("projects")}><span>⌁</span>Notique</button>
-        <div className="sidebar-top-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={t("Switch to Traditional Chinese", "切換到繁體中文")}>{language === "en" ? "繁中" : "EN"}</button></div>
+        <div className="sidebar-top-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={language === "en" ? "Switch to Traditional Chinese" : "切換到英文"}>{language === "en" ? "繁中" : "EN"}</button></div>
         <button className="account account-button" onClick={() => setAccountOpen((open) => !open)}>
           <span className="avatar">A</span><span><strong>Aaron</strong><small>aaron@notiqueai.com</small></span><b>⌄</b>
         </button>
@@ -787,7 +787,7 @@ export default function Home() {
   return (
     <div className="app-shell">
       <Sidebar />
-      <header className="mobile-header"><button onClick={() => setView("projects")}>⌁ Notique</button><span className="mobile-header-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={t("Switch to Traditional Chinese", "切換到繁體中文")}>{language === "en" ? "繁中" : "EN"}</button><button onClick={() => setModal("import")}>＋</button></span></header>
+      <header className="mobile-header"><button onClick={() => setView("projects")}>⌁ Notique</button><span className="mobile-header-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={language === "en" ? "Switch to Traditional Chinese" : "切換到英文"}>{language === "en" ? "繁中" : "EN"}</button><button onClick={() => setModal("import")}>＋</button></span></header>
       <main><Content /></main>
       <nav className="mobile-nav"><button onClick={() => setView("projects")}>▣<small>{t("Projects", "專案")}</small></button><button onClick={() => setView("inbox")}>▤<small>{t("Inbox", "收件匣")}</small></button><button onClick={() => { setProjectKind(selectedFolder.kind); setView("review") }}>✦<small>{t("Review", "審閱")}</small></button><button onClick={() => setModal("import")}>＋<small>{t("Import", "匯入")}</small></button></nav>
 
