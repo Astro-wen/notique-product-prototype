@@ -15,11 +15,20 @@ Nothing is filed without explicit user approval.
 ## Other interactions
 
 - Create and rename Projects.
-- Open a Project and browse a simple content list.
+- Open a Project as a simple folder and browse its content list.
+- Enter the AI workspace without making the folder itself complicated.
+- Review the latest Event Result and its Context Page.
+- Work through a risk-based Review Queue.
+- Open a Claim, inspect supporting and conflicting evidence, ask AI, confirm, edit, reject or keep it pending.
+- Compare the same project facts across several events.
+- See the reviewed Current Understanding of a Project.
+- Generate Project Briefs, Change Orders, Decision Logs and Smart Checklists.
+- Complete checklist items and attach evidence to individual fields.
 - Open recordings and individual items.
 - Rename an item.
 - Move an item to Trash and restore it.
 - Keep an AI-classified item in Inbox instead of filing it.
+- Search Projects and browse reusable deliverable templates.
 - Use desktop or responsive mobile navigation.
 
 ## Run locally
