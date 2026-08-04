@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type View =
   | "projects"
@@ -29,12 +29,26 @@ type Modal =
   | "upgrade"
   | "deleteFolder"
   | "evidence"
+  | "newEvent"
+  | "deliverableShare"
+  | "notifications"
+  | "profile"
+  | "workspaceSettings"
+  | "moveAsset"
   | null;
 
 type AssetType = "audio" | "image" | "document" | "note";
 type ProjectKind = "general" | "contractor";
 type ClaimState = "pending" | "confirmed" | "edited" | "rejected";
 type ReviewFilter = "pending" | "reviewed" | "all";
+
+type Activity = {
+  id: string;
+  title: string;
+  detail: string;
+  time: string;
+  projectId?: string;
+};
 
 type Folder = {
   id: string;
@@ -254,6 +268,12 @@ const contractorChecklist = [
   "Attach before and after photos",
 ];
 
+const initialActivity: Activity[] = [
+  { id: "a1", title: "Site Walkthrough 02 processed", detail: "3 changes need review · transcript and photos linked", time: "Today, 10:42 AM", projectId: "oak" },
+  { id: "a2", title: "Product interview added", detail: "Filed in New Product Discovery", time: "Today, 9:18 AM", projectId: "product" },
+  { id: "a3", title: "Scope Checklist saved", detail: "7 checklist items generated from reviewed project information", time: "Yesterday", projectId: "oak" },
+];
+
 function typeIcon(type: AssetType) {
   return { audio: "♪", image: "▧", document: "▤", note: "✎" }[type];
 }
@@ -324,8 +344,44 @@ export default function Home() {
   const [evidenceTask, setEvidenceTask] = useState(0);
   const [templateMode, setTemplateMode] = useState("Templates");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [processingStep, setProcessingStep] = useState(0);
+  const [activity, setActivity] = useState<Activity[]>(initialActivity);
+  const [newEventTitle, setNewEventTitle] = useState("");
+  const [newEventType, setNewEventType] = useState("Meeting");
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareAccess, setShareAccess] = useState("Can view");
+  const [moveTarget, setMoveTarget] = useState("product");
+  const [dataReady, setDataReady] = useState(false);
+  const [currentEventName, setCurrentEventName] = useState("");
 
   const t = (english: string, traditional: string) => language === "zh" ? traditional : english;
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("notique-demo-state-v2");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.folders) setFolders(parsed.folders);
+        if (parsed.assets) setAssets(parsed.assets);
+        if (parsed.inbox) setInbox(parsed.inbox);
+        if (parsed.trash) setTrash(parsed.trash);
+        if (parsed.claimsByKind) setClaimsByKind(parsed.claimsByKind);
+        if (parsed.savedDeliverables) setSavedDeliverables(parsed.savedDeliverables);
+        if (parsed.checklistDone) setChecklistDone(parsed.checklistDone);
+        if (parsed.checklistEvidence) setChecklistEvidence(parsed.checklistEvidence);
+        if (parsed.activity) setActivity(parsed.activity);
+        if (parsed.language) setLanguage(parsed.language);
+      }
+    } catch {
+      window.localStorage.removeItem("notique-demo-state-v2");
+    }
+    setDataReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!dataReady) return;
+    window.localStorage.setItem("notique-demo-state-v2", JSON.stringify({ folders, assets, inbox, trash, claimsByKind, savedDeliverables, checklistDone, checklistEvidence, activity, language }));
+  }, [dataReady, folders, assets, inbox, trash, claimsByKind, savedDeliverables, checklistDone, checklistEvidence, activity, language]);
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || folders[0];
   const selectedAsset = [...assets, ...inbox, ...trash].find((asset) => asset.id === selectedAssetId) || assets[0];
@@ -377,6 +433,10 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 2200);
   }
 
+  function addActivity(title: string, detail: string, projectId = selectedFolderId) {
+    setActivity((items) => [{ id: `activity-${Date.now()}`, title, detail, time: t("Just now", "剛剛"), projectId }, ...items].slice(0, 20));
+  }
+
   function openFolder(id: string) {
     const folder = folders.find((item) => item.id === id) || selectedFolder;
     setSelectedFolderId(folder.id);
@@ -391,6 +451,7 @@ export default function Home() {
     setProjectKind(folder.kind);
     setSelectedClaimId(claimSeeds[folder.kind][0].id);
     setReviewFilter("pending");
+    setCurrentEventName("");
     setView("workspace");
   }
 
@@ -413,9 +474,13 @@ export default function Home() {
     setStagedAsset(copy);
     setSelectedSuggestion(next[0].folderId);
     setAgentReady(false);
+    setProcessingStep(0);
     setModal(null);
     setView("agent");
-    window.setTimeout(() => setAgentReady(true), 900);
+    window.setTimeout(() => setProcessingStep(1), 450);
+    window.setTimeout(() => setProcessingStep(2), 900);
+    window.setTimeout(() => setProcessingStep(3), 1350);
+    window.setTimeout(() => setAgentReady(true), 1750);
   }
 
   function handleFile(file: File) {
@@ -441,6 +506,7 @@ export default function Home() {
     setSelectedAssetId(filed.id);
     setStagedAsset(null);
     setView("folder");
+    addActivity(t("Item filed", "內容已歸檔"), `${filed.name} · ${folders.find((folder) => folder.id === selectedSuggestion)?.name}`, selectedSuggestion);
     flash(`Filed in ${folders.find((folder) => folder.id === selectedSuggestion)?.name}`);
   }
 
@@ -450,6 +516,7 @@ export default function Home() {
     }
     setStagedAsset(null);
     setView("inbox");
+    if (stagedAsset) addActivity(t("Item kept in Inbox", "內容保留在收件匣"), stagedAsset.name, undefined);
     flash("Kept in Inbox");
   }
 
@@ -458,6 +525,7 @@ export default function Home() {
     setInbox((items) => items.filter((item) => item.id !== asset.id));
     setTrash((items) => [{ ...asset }, ...items]);
     setMenuId(null);
+    addActivity(t("Item moved to Trash", "內容移到垃圾桶"), asset.name, asset.folderId);
     flash("Moved to Trash");
   }
 
@@ -465,6 +533,7 @@ export default function Home() {
     setTrash((items) => items.filter((item) => item.id !== asset.id));
     if (asset.folderId && folders.some((folder) => folder.id === asset.folderId)) setAssets((items) => [...items, asset]);
     else setInbox((items) => [...items, { ...asset, folderId: undefined }]);
+    addActivity(t("Item restored", "內容已還原"), asset.name, asset.folderId);
     flash("Item restored");
   }
 
@@ -511,6 +580,10 @@ export default function Home() {
     }));
     setEditMode(false);
     setEditReason("");
+    addActivity(
+      state === "confirmed" ? t("Update confirmed", "更新已確認") : state === "edited" ? t("Update edited", "更新已修改") : state === "rejected" ? t("Update declined", "更新未採用") : t("Update left for later", "更新留待稍後處理"),
+      `${selectedClaim.field} · ${value?.trim() || selectedClaim.proposed}`,
+    );
     flash(state === "confirmed" ? "Added to project record" : state === "edited" ? "Edited value and source history saved" : state === "rejected" ? "Not added; original suggestion kept in history" : "Kept for later review");
   }
 
@@ -519,6 +592,7 @@ export default function Home() {
       ...current,
       [projectKind]: current[projectKind].map((claim) => claim.state === "pending" && claim.risk === "low" ? { ...claim, state: "confirmed" } : claim),
     }));
+    addActivity(t("Low-risk updates confirmed", "低風險更新已確認"), t("The project record and connected drafts were refreshed.", "專案記錄與相關草稿已更新。"));
     flash("Low-risk updates confirmed");
   }
 
@@ -533,6 +607,59 @@ export default function Home() {
     setView("templates");
   }
 
+  function moveSelectedAsset() {
+    const folder = folders.find((item) => item.id === moveTarget);
+    if (!folder) return;
+    setAssets((items) => items.some((item) => item.id === selectedAsset.id)
+      ? items.map((item) => item.id === selectedAsset.id ? { ...item, folderId: folder.id } : item)
+      : [{ ...selectedAsset, folderId: folder.id }, ...items]);
+    setInbox((items) => items.filter((item) => item.id !== selectedAsset.id));
+    setSelectedFolderId(folder.id);
+    setProjectKind(folder.kind);
+    setModal(null);
+    addActivity(t("Item moved", "內容已移動"), `${selectedAsset.name} · ${folder.name}`, folder.id);
+    flash(t(`Moved to ${folder.name}`, `已移動到 ${folder.name}`));
+  }
+
+  function createMockEvent() {
+    const name = newEventTitle.trim() || `${newEventType} · ${t("Today", "今天")}`;
+    const asset: Asset = {
+      id: `event-${Date.now()}`,
+      name: `${name}.m4a`,
+      type: "audio",
+      meta: `18 min · ${t("Transcript ready", "逐字稿已完成")}`,
+      added: t("Just now", "剛剛"),
+      summary: t("A newly captured event with transcript, timeline and linked project context.", "新的活動已整理成逐字稿、時間線與專案背景。"),
+      folderId: selectedFolder.id,
+    };
+    setAssets((items) => [asset, ...items]);
+    setSelectedAssetId(asset.id);
+    setCurrentEventName(name);
+    setNewEventTitle("");
+    setModal(null);
+    addActivity(t("New event processed", "新活動已處理"), `${name} · ${t("2 suggestions ready for review", "2 項建議等待審閱")}`);
+    setView("event");
+    flash(t("Transcript, timeline and evidence are ready", "逐字稿、時間線與證據已準備"));
+  }
+
+  function resetDemo() {
+    window.localStorage.removeItem("notique-demo-state-v2");
+    setFolders(initialFolders);
+    setAssets(initialAssets);
+    setInbox(initialInbox);
+    setTrash([]);
+    setClaimsByKind({ general: claimSeeds.general.map((claim) => ({ ...claim })), contractor: claimSeeds.contractor.map((claim) => ({ ...claim })) });
+    setSavedDeliverables([]);
+    setChecklistDone({ 0: true });
+    setChecklistEvidence({});
+    setActivity(initialActivity);
+    setSelectedFolderId("product");
+    setProjectKind("general");
+    setModal(null);
+    setView("projects");
+    flash(t("Demo data reset", "Demo 資料已重設"));
+  }
+
   function Sidebar() {
     const projectArea = ["folder", "item", "workspace", "event", "claim", "compare"].includes(view);
     return (
@@ -542,7 +669,7 @@ export default function Home() {
         <button className="account account-button" onClick={() => setAccountOpen((open) => !open)}>
           <span className="avatar">A</span><span><strong>Aaron</strong><small>aaron@notiqueai.com</small></span><b>⌄</b>
         </button>
-        {accountOpen && <div className="account-menu"><button onClick={() => { setAccountOpen(false); flash("Profile opened") }}>Profile</button><button onClick={() => { setAccountOpen(false); flash("Workspace settings opened") }}>Workspace settings</button></div>}
+        {accountOpen && <div className="account-menu"><button onClick={() => { setAccountOpen(false); setModal("profile") }}>{t("Profile", "個人資料")}</button><button onClick={() => { setAccountOpen(false); setModal("workspaceSettings") }}>{t("Workspace settings", "工作區設定")}</button></div>}
         <button className="search-button" onClick={() => setModal("search")}>⌕ <span>{t("Search", "搜尋")}</span></button>
         <p className="nav-label">{t("WORKSPACE", "工作區")}</p>
         <nav>
@@ -570,6 +697,7 @@ export default function Home() {
       <header className="toolbar">
         <h1>{t(title, title === "Projects" ? "專案" : title === "Recordings" ? "錄音" : title === "Inbox" ? "收件匣" : title === "Trash" ? "垃圾桶" : title)}{typeof count === "number" && <span> ({count})</span>}</h1>
         <div>
+          <button className="notification-button" onClick={() => setModal("notifications")} aria-label={t("Open notifications", "開啟通知")}>♢<span>{globalPendingCount + inbox.length}</span></button>
           <button className="sort" onClick={() => { setSortNewest((value) => !value); flash(sortNewest ? t("Showing oldest first", "顯示最早項目") : t("Showing newest first", "顯示最新項目")) }}>{sortNewest ? t("Newest first⌄", "最新項目⌄") : t("Oldest first⌃", "最早項目⌃")}</button>
           {action === "project" && <button className="primary" onClick={() => setModal("newProject")}>{t("New project", "新增專案")}</button>}
           {action === "import" && <button className="primary" onClick={() => setModal("import")}>{t("Import", "匯入")}</button>}
@@ -583,6 +711,7 @@ export default function Home() {
     return (
       <div className="page">
         <Toolbar title="Projects" count={folders.length} action="project" />
+        <section className="home-summary"><div><span className="home-summary-icon">✓</span><span><strong>{t("Pick up where you left off", "繼續上次的工作")}</strong><small>{t("Review important changes before creating a final document.", "先審閱重要變更，再建立最終文件。")}</small></span></div><div className="home-summary-stats"><button onClick={() => { setSelectedFolderId("oak"); setProjectKind("contractor"); setView("review") }}><strong>{globalPendingCount}</strong><small>{t("changes to review", "項變更待審閱")}</small></button><button onClick={() => setView("inbox")}><strong>{inbox.length}</strong><small>{t("items in Inbox", "項內容在收件匣")}</small></button><button onClick={() => setModal("notifications")}><strong>{activity.length}</strong><small>{t("recent actions", "筆最近操作")}</small></button></div><button className="primary" onClick={() => { setSelectedFolderId("oak"); setProjectKind("contractor"); setView("workspace") }}>{t("Open Oak Street", "開啟 Oak Street")}</button></section>
         <div className="folder-grid">
           {ordered.map((folder) => (
             <article className="folder-card" key={folder.id} role="button" tabIndex={0} onClick={() => openWorkspace(folder.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openWorkspace(folder.id) }}>
@@ -657,7 +786,12 @@ export default function Home() {
         <button className="back" onClick={keepInInbox}>‹ {t("Back to Inbox", "返回收件匣")}</button>
         <div className="agent-title"><span className="agent-mark">＋</span><div><h1>{t("Choose a project", "選擇專案")}</h1><p>{t("Pick the project that best fits this item. You can move it later.", "選擇最適合這項內容的專案，之後仍可移動。")}</p></div></div>
         {stagedAsset && <article className="asset-preview"><b className={`type-icon large ${stagedAsset.type}`}>{typeIcon(stagedAsset.type)}</b><span><strong>{stagedAsset.name}</strong><small>{stagedAsset.meta}</small></span><button onClick={() => { setSelectedAssetId(stagedAsset.id); setModal("transcript") }}>{t("Preview", "預覽")}</button></article>}
-        {!agentReady ? <section className="analyzing"><span className="spinner" /><h2>{t("Checking the item", "正在檢查內容")}</h2><p>{t("Looking at the title, content and recent project activity.", "正在查看標題、內容與最近的專案活動。")}</p></section> : <><section className="suggestion-section"><header><div><h2>{t("Suggested projects", "建議專案")}</h2><p>{t("Choose one. Nothing moves until you confirm.", "選擇一個專案，確認後內容才會移動。")}</p></div><span>{t("Based on recent activity", "根據最近活動")}</span></header><div className="suggestions">{suggestions.map((suggestion, index) => { const folder = folders.find((item) => item.id === suggestion.folderId)!; const active = selectedSuggestion === suggestion.folderId; return <button className={active ? "suggestion active" : "suggestion"} key={suggestion.folderId} onClick={() => setSelectedSuggestion(suggestion.folderId)}><span className="radio">{active ? "●" : ""}</span><span className={`mini-folder ${folder.color}`}>▰</span><span className="suggestion-copy"><span><b>{index === 0 ? t("LIKELY", "較符合") : t("ANOTHER OPTION", "另一個選項")}</b><em>{suggestion.confidence}% {t("match", "符合")}</em></span><strong>{folder.name}</strong><small>{folder.description}</small><ul>{suggestion.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></span></button> })}</div></section><section className="agent-confirm"><span><strong>{t("File in", "歸檔到")} {folders.find((folder) => folder.id === selected?.folderId)?.name}</strong><small>{t("You can move or rename it later.", "之後仍可移動或重新命名。")}</small></span><button className="text-button" onClick={keepInInbox}>{t("Keep in Inbox", "保留在收件匣")}</button><button className="primary allow" onClick={allowFiling}>{t("File here", "歸檔到這裡")}</button></section></>}
+        {!agentReady ? <section className="analyzing"><span className="spinner" /><h2>{t("Preparing this item", "正在準備內容")}</h2><p>{t("Notique is reading the file and checking it against recent project activity.", "Notique 正在讀取檔案，並與最近的專案活動核對。")}</p><div className="processing-steps">{[
+          t("Upload received", "已收到檔案"),
+          stagedAsset?.type === "audio" ? t("Transcript created", "逐字稿已完成") : t("Text and metadata read", "文字與資料已讀取"),
+          t("Project context checked", "專案背景已核對"),
+          t("Suggestions prepared", "歸檔建議已準備"),
+        ].map((label, index) => <span className={index <= processingStep ? "done" : ""} key={label}><i>{index < processingStep ? "✓" : index === processingStep ? "•" : ""}</i>{label}</span>)}</div></section> : <><section className="suggestion-section"><header><div><h2>{t("Suggested projects", "建議專案")}</h2><p>{t("Choose one. Nothing moves until you confirm.", "選擇一個專案，確認後內容才會移動。")}</p></div><span>{t("Based on recent activity", "根據最近活動")}</span></header><div className="suggestions">{suggestions.map((suggestion, index) => { const folder = folders.find((item) => item.id === suggestion.folderId)!; const active = selectedSuggestion === suggestion.folderId; return <button className={active ? "suggestion active" : "suggestion"} key={suggestion.folderId} onClick={() => setSelectedSuggestion(suggestion.folderId)}><span className="radio">{active ? "●" : ""}</span><span className={`mini-folder ${folder.color}`}>▰</span><span className="suggestion-copy"><span><b>{index === 0 ? t("LIKELY", "較符合") : t("ANOTHER OPTION", "另一個選項")}</b><em>{suggestion.confidence}% {t("match", "符合")}</em></span><strong>{folder.name}</strong><small>{folder.description}</small><ul>{suggestion.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></span></button> })}</div></section><section className="agent-confirm"><span><strong>{t("File in", "歸檔到")} {folders.find((folder) => folder.id === selected?.folderId)?.name}</strong><small>{t("You can move or rename it later.", "之後仍可移動或重新命名。")}</small></span><button className="text-button" onClick={keepInInbox}>{t("Keep in Inbox", "保留在收件匣")}</button><button className="primary allow" onClick={allowFiling}>{t("File here", "歸檔到這裡")}</button></section></>}
       </div>
     );
   }
@@ -667,7 +801,7 @@ export default function Home() {
     return (
       <div className="page item-page">
         <button className="back" onClick={() => parent ? openFolder(parent.id) : setView(selectedAsset.folderId ? "folder" : "inbox")}>‹ {parent?.name || t("Inbox", "收件匣")}</button>
-        <header className="item-header"><span className={`type-icon hero ${selectedAsset.type}`}>{typeIcon(selectedAsset.type)}</span><div><h1>{selectedAsset.name}</h1><p>{selectedAsset.meta} · {selectedAsset.added}</p></div><button className="secondary" onClick={() => openRename("asset", selectedAsset.name, selectedAsset.id)}>Rename</button></header>
+        <header className="item-header"><span className={`type-icon hero ${selectedAsset.type}`}>{typeIcon(selectedAsset.type)}</span><div><h1>{selectedAsset.name}</h1><p>{selectedAsset.meta} · {selectedAsset.added}</p></div><span className="item-header-actions"><button className="secondary" onClick={() => { setMoveTarget(parent?.id || "product"); setModal("moveAsset") }}>{t("Move", "移動")}</button><button className="secondary" onClick={() => openRename("asset", selectedAsset.name, selectedAsset.id)}>{t("Rename", "重新命名")}</button></span></header>
         <div className="item-layout"><article className="item-main"><h2>{t("Summary", "摘要")}</h2><p>{selectedAsset.summary}</p>{selectedAsset.type === "audio" && <><h2>{t("Transcript preview", "逐字稿預覽")}</h2><blockquote>“The project view matters because the details build up over more than one conversation. I still want to approve where things go.”</blockquote><button className="secondary" onClick={() => setModal("transcript")}>{t("Open full transcript", "開啟完整逐字稿")}</button></>}{selectedAsset.type === "image" && <button className="evidence-image-button" onClick={() => setModal("evidence")}><span className="photo-placeholder">PHOTO</span><span><strong>{t("Open image evidence", "開啟圖片證據")}</strong><small>{t("Captured with time and project metadata", "包含時間與專案資料")}</small></span></button>}</article><aside><h3>{t("Project", "專案")}</h3><button onClick={() => parent ? openFolder(parent.id) : startAgent(selectedAsset)}><span className={`mini-folder ${parent?.color || "slate"}`}>▰</span><span><strong>{parent?.name || t("Not filed", "尚未歸檔")}</strong><small>{parent ? t("Filed in this project", "已歸檔到此專案") : t("Choose a project", "選擇專案")}</small></span></button><h3>{t("Details", "詳細資料")}</h3><p>{t("Type", "類型")} <b>{selectedAsset.type}</b></p><p>{t("Added", "新增時間")} <b>{selectedAsset.added}</b></p><button className="detail-action" onClick={() => moveToTrash(selectedAsset)}>{t("Move to Trash", "移到垃圾桶")}</button></aside></div>
       </div>
     );
@@ -677,7 +811,7 @@ export default function Home() {
     return (
       <>
         <button className="back-button" onClick={() => setView("projects")}>‹ {t("Projects", "專案")}</button>
-        <div className="project-header"><div><h1>{profile.title}</h1><p>{profile.meta}</p></div><div><button className="secondary" onClick={() => setModal("share")}>{t("Share", "分享")}</button><button className="primary" onClick={() => setModal("import")}>{t("Add", "加入")}</button><button className="icon-button" onClick={() => setMenuId(menuId === "project-more" ? null : "project-more")}>•••</button>{menuId === "project-more" && <div className="menu project-menu"><button onClick={() => openRename("folder", selectedFolder.name, selectedFolder.id)}>{t("Rename project", "重新命名專案")}</button><button onClick={() => { setMenuId(null); setModal("deleteFolder") }} className="danger">{t("Delete project", "刪除專案")}</button></div>}</div></div>
+        <div className="project-header"><div><h1>{profile.title}</h1><p>{profile.meta}</p></div><div><button className="secondary" onClick={() => setModal("share")}>{t("Share", "分享")}</button><button className="secondary" onClick={() => { setNewEventType(projectKind === "contractor" ? "Site visit" : "Meeting"); setModal("newEvent") }}>{t("Record event", "記錄活動")}</button><button className="primary" onClick={() => setModal("import")}>{t("Add file", "加入檔案")}</button><button className="icon-button" onClick={() => setMenuId(menuId === "project-more" ? null : "project-more")}>•••</button>{menuId === "project-more" && <div className="menu project-menu"><button onClick={() => openRename("folder", selectedFolder.name, selectedFolder.id)}>{t("Rename project", "重新命名專案")}</button><button onClick={() => { setMenuId(null); setModal("deleteFolder") }} className="danger">{t("Delete project", "刪除專案")}</button></div>}</div></div>
         <div className="tabs"><button className={active === "overview" ? "active" : ""} onClick={() => setView("workspace")}>{t("Overview", "概覽")}</button><button className={active === "files" ? "active" : ""} onClick={() => setView("folder")}>{t("Files", "檔案")} <span>{folderAssets.length}</span></button><button className={active === "events" ? "active" : ""} onClick={() => setView("event")}>{t("Events", "事件")} <span>4</span></button><button className={active === "review" ? "active" : ""} onClick={() => setView("review")}>{t("Review", "審閱")} <span>{pendingCount}</span></button><button className={active === "compare" ? "active" : ""} onClick={() => setView("compare")}>{t("Changes", "變更")}</button><button className={active === "deliverables" ? "active" : ""} onClick={() => setView("deliverables")}>{t("Deliverables", "交付文件")} <span>3</span></button></div>
       </>
     );
@@ -688,16 +822,17 @@ export default function Home() {
       <div className="product-page">
         <ProjectHeader />
         {pendingCount > 0 ? <section className="review-notice"><span className="notice-icon">!</span><span><strong>{pendingCount} {t("changes need your review", "項變更需要審閱")}</strong><small>{t("Conflicts, approvals and other details are waiting here.", "衝突、審批和其他細節都在這裡等待處理。")}</small></span><button className="primary" onClick={() => setView("review")}>{t("Review changes", "審閱變更")}</button></section> : <section className="review-notice complete"><span className="notice-icon">✓</span><span><strong>{t("Project record is up to date", "專案記錄已更新")}</strong><small>{t("All recent changes have been reviewed.", "最近的變更都已審閱。")}</small></span><button className="secondary" onClick={() => setView("deliverables")}>{t("Open deliverables", "開啟交付文件")}</button></section>}
-        <div className="project-columns"><section className="project-main"><div className="section-title"><h2>{t("Project record", "專案記錄")}</h2><span>{t("Updated from four events", "來自四個事件的更新")}</span></div><div className="summary-grid">{overview.map((item, index) => <article className={index === 0 ? "summary-card wide" : "summary-card"} key={item.label}><small>{item.label}</small><strong>{item.value}</strong>{item.claimId && <button onClick={() => openClaim(item.claimId!)}>{claims.find((claim) => claim.id === item.claimId)?.state === "pending" ? t("Review evidence", "審閱證據") : t("View source", "查看來源")}</button>}</article>)}</div><div className="section-title"><h2>{t("Recent events", "最近事件")}</h2><button onClick={() => setView("event")}>{t("View latest", "查看最新")}</button></div><div className="activity-list"><button onClick={() => setView("event")}><span className="activity-icon">♪</span><span><strong>{profile.event}</strong><small>{profile.eventMeta}</small></span><Status state={pendingCount ? "pending" : "confirmed"} /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">▤</span><span><strong>{projectKind === "contractor" ? "Scope Follow-up Call" : "Research Debrief"}</strong><small>{t("Previous event · compared with latest", "上一個事件 · 與最新事件比較")}</small></span><Status state="confirmed" /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">♪</span><span><strong>{projectKind === "contractor" ? "Site Walkthrough 01" : "Customer Interview · Round 2"}</strong><small>{t("Original project context", "原始專案背景")}</small></span><Status state="confirmed" /><b>›</b></button></div></section><aside className="project-aside"><section className="side-card"><h3>{t("Project files", "專案檔案")}</h3>{folderAssets.slice(0, 2).map((asset) => <button key={asset.id} onClick={() => openItem(asset.id)}><span>{typeIcon(asset.type)}</span><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button>)}<button className="plain-link" onClick={() => openFolder(selectedFolder.id)}>{t("View all files", "查看所有檔案")}</button></section><section className="side-card"><h3>{t("People", "人員")}</h3><button className="person-button" onClick={() => flash("Aaron Wen · Project owner")}><span className="avatar">A</span><span><strong>Aaron Wen</strong><small>{t("Owner", "負責人")}</small></span></button><button className="person-button" onClick={() => flash(projectKind === "contractor" ? "Maria · Change Order owner" : "Kevin · Design collaborator")}><span className="avatar purple">{projectKind === "contractor" ? "M" : "K"}</span><span><strong>{projectKind === "contractor" ? "Maria" : "Kevin"}</strong><small>{t("Collaborator", "協作者")}</small></span></button></section><section className="side-card"><h3>{t("Deliverables", "交付文件")}</h3><p>{projectKind === "contractor" ? "Change Order, Scope Checklist and Site Report" : "Project Brief, Action Checklist and Decision Log"}</p><button className="secondary wide-button" onClick={() => setView("deliverables")}>{t("Open deliverables", "開啟交付文件")}</button></section></aside></div>
+        <div className="project-columns"><section className="project-main"><div className="section-title"><h2>{t("Project record", "專案記錄")}</h2><span>{t("Updated from four events", "來自四個事件的更新")}</span></div><div className="summary-grid">{overview.map((item, index) => <article className={index === 0 ? "summary-card wide" : "summary-card"} key={item.label}><small>{item.label}</small><strong>{item.value}</strong>{item.claimId && <button onClick={() => openClaim(item.claimId!)}>{claims.find((claim) => claim.id === item.claimId)?.state === "pending" ? t("Review evidence", "審閱證據") : t("View source", "查看來源")}</button>}</article>)}</div><div className="section-title"><h2>{t("Recent events", "最近事件")}</h2><button onClick={() => setView("event")}>{t("View latest", "查看最新")}</button></div><div className="activity-list"><button onClick={() => setView("event")}><span className="activity-icon">♪</span><span><strong>{profile.event}</strong><small>{profile.eventMeta}</small></span><Status state={pendingCount ? "pending" : "confirmed"} /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">▤</span><span><strong>{projectKind === "contractor" ? "Scope Follow-up Call" : "Research Debrief"}</strong><small>{t("Previous event · compared with latest", "上一個事件 · 與最新事件比較")}</small></span><Status state="confirmed" /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">♪</span><span><strong>{projectKind === "contractor" ? "Site Walkthrough 01" : "Customer Interview · Round 2"}</strong><small>{t("Original project context", "原始專案背景")}</small></span><Status state="confirmed" /><b>›</b></button></div><div className="section-title"><h2>{t("Recent activity", "最近操作")}</h2><span>{t("Saved on this device", "已保存在此裝置")}</span></div><div className="audit-list">{activity.filter((item) => !item.projectId || item.projectId === selectedFolder.id).slice(0, 5).map((item) => <article key={item.id}><span>✓</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></article>)}</div></section><aside className="project-aside"><section className="side-card"><h3>{t("Project files", "專案檔案")}</h3>{folderAssets.slice(0, 2).map((asset) => <button key={asset.id} onClick={() => openItem(asset.id)}><span>{typeIcon(asset.type)}</span><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button>)}<button className="plain-link" onClick={() => openFolder(selectedFolder.id)}>{t("View all files", "查看所有檔案")}</button></section><section className="side-card"><h3>{t("People", "人員")}</h3><button className="person-button" onClick={() => flash("Aaron Wen · Project owner")}><span className="avatar">A</span><span><strong>Aaron Wen</strong><small>{t("Owner", "負責人")}</small></span></button><button className="person-button" onClick={() => flash(projectKind === "contractor" ? "Maria · Change Order owner" : "Kevin · Design collaborator")}><span className="avatar purple">{projectKind === "contractor" ? "M" : "K"}</span><span><strong>{projectKind === "contractor" ? "Maria" : "Kevin"}</strong><small>{t("Collaborator", "協作者")}</small></span></button></section><section className="side-card"><h3>{t("Deliverables", "交付文件")}</h3><p>{projectKind === "contractor" ? "Change Order, Scope Checklist and Site Report" : "Project Brief, Action Checklist and Decision Log"}</p><button className="secondary wide-button" onClick={() => setView("deliverables")}>{t("Open deliverables", "開啟交付文件")}</button></section></aside></div>
       </div>
     );
   }
 
   function EventView() {
+    const eventName = currentEventName || profile.event;
     return (
       <div className="product-page">
         <ProjectHeader active="events" />
-        <div className="event-header"><div><button className="back-button" onClick={() => setView("workspace")}>‹ {t("Overview", "概覽")}</button><h2>{profile.event}</h2><p>{profile.eventMeta}</p></div><div><button className="secondary" onClick={() => setModal("transcript")}>{t("Open transcript", "開啟逐字稿")}</button><button className="primary" onClick={() => setView("review")}>{t("Review", "審閱")} {pendingCount} {t("updates", "項更新")}</button></div></div>
+        <div className="event-header"><div><button className="back-button" onClick={() => setView("workspace")}>‹ {t("Overview", "概覽")}</button><h2>{eventName}</h2><p>{currentEventName ? t("Today · 18 min · transcript and timeline ready", "今天 · 18 分鐘 · 逐字稿與時間線已完成") : profile.eventMeta}</p></div><div><button className="secondary" onClick={() => setModal("transcript")}>{t("Open transcript", "開啟逐字稿")}</button><button className="primary" onClick={() => setView("review")}>{t("Review", "審閱")} {pendingCount} {t("updates", "項更新")}</button></div></div>
         <div className="event-stats"><span><strong>{projectKind === "contractor" ? "24:18" : "31:08"}</strong><small>{t("Duration", "時長")}</small></span><span><strong>{projectKind === "contractor" ? 3 : 2}</strong><small>{t("People", "人員")}</small></span><span><strong>{projectKind === "contractor" ? 3 : 2}</strong><small>{t("Files", "檔案")}</small></span><span><strong>{pendingCount}</strong><small>{t("Updates", "更新")}</small></span></div>
         <div className="event-layout"><section className="event-content"><h2>{t("Context Page", "背景頁")}</h2><article className="note-card"><h3>{projectKind === "contractor" ? t("Walkthrough result", "現場查看結果") : t("Interview result", "訪談結果")}</h3><p>{projectKind === "contractor" ? "The latest walkthrough changed the working price, introduced a conflict around electrical scope and made the signed Change Order a start condition. Photos are attached directly to the related scope and evidence requirements." : "The customer described work that spans several meetings and asked for a source-linked Project Brief. The conversation also produced a test plan, a broader user definition and clear ownership for the next prototype."}</p></article><h2>{t("Claims from this event", "此事件的內容")}</h2><div className="update-list">{claims.map((claim) => <button key={claim.id} onClick={() => openClaim(claim.id)}><span><small>{claim.category} · {claim.field}</small><strong>{claim.proposed}</strong></span><Status state={claim.state} /><b>›</b></button>)}</div></section><aside className="event-sources"><h2>{t("Sources", "來源")}</h2><button onClick={() => setModal("transcript")}><span className="source-icon">♪</span><span><strong>{t("Recording and transcript", "錄音與逐字稿")}</strong><small>{t("Timestamped · full context available", "含時間點 · 可查看完整背景")}</small></span></button>{folderAssets.filter((asset) => asset.type !== "audio").slice(0, 2).map((asset) => <button key={asset.id} onClick={() => openItem(asset.id)}><span className="source-icon">{typeIcon(asset.type)}</span><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button>)}{projectKind === "contractor" && <button className="context-photo" onClick={() => setModal("evidence")}><img src="/evidence-room-capture.jpg" alt="Site wall evidence" /><span>{t("Open site photo evidence", "開啟現場照片證據")}</span></button>}</aside></div>
       </div>
@@ -746,7 +881,7 @@ export default function Home() {
         <ProjectHeader active="deliverables" />
         <div className="deliverable-header"><div><h2>{t("Deliverables", "交付文件")}</h2><p>{t("Create client-ready or team-ready work from reviewed project information.", "把審閱過的專案資訊整理成可交付給客戶或團隊的文件。")}</p></div><button className="primary" onClick={() => setModal("newDeliverable")}>{t("New deliverable", "新增交付文件")}</button></div>
         {pendingCount > 0 && <div className="deliverable-warning"><span>!</span><p><strong>{pendingCount} {t("updates are not included yet.", "項更新尚未加入。")}</strong> {t("Review them before sending a final document.", "請在發送最終文件前先審閱。")}</p><button onClick={() => setView("review")}>{t("Review now", "立即審閱")}</button></div>}
-        <div className="deliverable-layout"><aside>{titles.map((title, index) => <button className={activeDeliverable === index ? "active" : ""} key={title} onClick={() => setActiveDeliverable(index)}><span className="file-icon">{index === 1 ? "✓" : "▤"}</span><span><strong>{title}</strong><small>{savedDeliverables.includes(index) ? t("Saved to project", "已儲存到專案") : index === 1 ? t("Working checklist", "工作清單") : t("Draft ready", "草稿已準備")}</small></span><b>›</b></button>)}</aside><section className="document-preview"><div className="document-bar"><span><small>{savedDeliverables.includes(activeDeliverable) ? "SAVED" : "DRAFT"}</small><strong>{titles[activeDeliverable]}</strong></span><span><button className="secondary" onClick={() => { window.print(); flash(t("Print dialog opened for PDF export", "已開啟列印視窗以匯出 PDF")) }}>{t("Export PDF", "匯出 PDF")}</button><button className="primary" onClick={() => { setSavedDeliverables((items) => items.includes(activeDeliverable) ? items : [...items, activeDeliverable]); flash(t("Deliverable saved to the project", "交付文件已儲存到專案")) }}>{savedDeliverables.includes(activeDeliverable) ? t("Saved ✓", "已儲存 ✓") : t("Save to project", "儲存到專案")}</button></span></div>{isChecklist ? <article className="document-sheet checklist-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from confirmed project information. Each item can require a person, evidence or approval.", "根據已確認的專案資訊整理，每一項都可以指定人員、證據或審批。")}</p><div className="check-progress"><strong>{Object.values(checklistDone).filter(Boolean).length}/{checklist.length} {t("complete", "已完成")}</strong><span><i style={{ width: `${Object.values(checklistDone).filter(Boolean).length / checklist.length * 100}%` }} /></span></div><h2>{t("Checklist", "清單")}</h2>{checklist.map((item, index) => <div className="smart-check-row" key={item}><button className={checklistDone[index] ? "check-toggle checked" : "check-toggle"} onClick={() => setChecklistDone((current) => ({ ...current, [index]: !current[index] }))}>{checklistDone[index] ? "✓" : ""}</button><span><strong>{item}</strong><small>{index === 0 ? t("Owner: Aaron · approval required", "負責人：Aaron · 需要審批") : index === checklist.length - 1 ? t("Evidence required", "需要證據") : t("Owner: Unassigned", "負責人：未指派")}</small></span>{checklistEvidence[index] && <em>{t("Photo attached", "已附照片")}</em>}<button className="row-source" onClick={() => openClaim(claims[Math.min(index, claims.length - 1)].id)}>{t("Source", "來源")}</button><button className="row-photo" onClick={() => { setEvidenceTask(index); setModal("evidence") }}>＋ {t("Evidence", "證據")}</button></div>)}</article> : <article className="document-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from reviewed project information. Key statements stay linked to their sources.", "根據審閱過的專案資訊準備，重要內容都保留來源連結。")}</p><div className="doc-meta"><span><small>{t("Owner", "負責人")}</small>Aaron Wen</span><span><small>{t("Updated", "更新時間")}</small>{t("Today", "今天")}</span><span><small>{t("Status", "狀態")}</small>{pendingCount ? `${pendingCount} ${t("updates pending", "項更新待處理")}` : t("Ready", "已準備")}</span></div><h2>{projectKind === "contractor" ? t("Scope and changes", "範圍與變更") : t("Current decisions", "目前決策")}</h2>{claims.filter((claim) => claim.state !== "rejected").slice(0, 4).map((claim) => <div className="deliverable-claim" key={claim.id}><span><strong>{claim.field}</strong><small>{claim.state === "pending" ? t("Pending review · excluded from final export", "待審閱 · 不會納入最終匯出") : claim.proposed}</small></span><button onClick={() => openClaim(claim.id)}>{t("View source", "查看來源")}</button></div>)}</article>}</section></div>
+        <div className="deliverable-layout"><aside>{titles.map((title, index) => <button className={activeDeliverable === index ? "active" : ""} key={title} onClick={() => setActiveDeliverable(index)}><span className="file-icon">{index === 1 ? "✓" : "▤"}</span><span><strong>{title}</strong><small>{savedDeliverables.includes(index) ? t("Saved to project", "已儲存到專案") : index === 1 ? t("Working checklist", "工作清單") : t("Draft ready", "草稿已準備")}</small></span><b>›</b></button>)}</aside><section className="document-preview"><div className="document-bar"><span><small>{savedDeliverables.includes(activeDeliverable) ? "SAVED" : "DRAFT"}</small><strong>{titles[activeDeliverable]}</strong></span><span><button className="secondary" onClick={() => setModal("deliverableShare")}>{t("Send", "傳送")}</button><button className="secondary" onClick={() => { window.print(); addActivity(t("PDF export opened", "已開啟 PDF 匯出"), titles[activeDeliverable]); flash(t("Print dialog opened for PDF export", "已開啟列印視窗以匯出 PDF")) }}>{t("Export PDF", "匯出 PDF")}</button><button className="primary" onClick={() => { setSavedDeliverables((items) => items.includes(activeDeliverable) ? items : [...items, activeDeliverable]); addActivity(t("Deliverable saved", "交付文件已儲存"), titles[activeDeliverable]); flash(t("Deliverable saved to the project", "交付文件已儲存到專案")) }}>{savedDeliverables.includes(activeDeliverable) ? t("Saved ✓", "已儲存 ✓") : t("Save to project", "儲存到專案")}</button></span></div>{isChecklist ? <article className="document-sheet checklist-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from confirmed project information. Each item can require a person, evidence or approval.", "根據已確認的專案資訊整理，每一項都可以指定人員、證據或審批。")}</p><div className="check-progress"><strong>{Object.values(checklistDone).filter(Boolean).length}/{checklist.length} {t("complete", "已完成")}</strong><span><i style={{ width: `${Object.values(checklistDone).filter(Boolean).length / checklist.length * 100}%` }} /></span></div><h2>{t("Checklist", "清單")}</h2>{checklist.map((item, index) => <div className="smart-check-row" key={item}><button className={checklistDone[index] ? "check-toggle checked" : "check-toggle"} onClick={() => { setChecklistDone((current) => ({ ...current, [index]: !current[index] })); addActivity(checklistDone[index] ? t("Checklist item reopened", "清單項目重新開啟") : t("Checklist item completed", "清單項目已完成"), item) }}>{checklistDone[index] ? "✓" : ""}</button><span><strong>{item}</strong><small>{index === 0 ? t("Owner: Aaron · approval required", "負責人：Aaron · 需要審批") : index === checklist.length - 1 ? t("Evidence required", "需要證據") : t("Owner: Unassigned", "負責人：未指派")}</small></span>{checklistEvidence[index] && <em>{t("Photo attached", "已附照片")}</em>}<button className="row-source" onClick={() => openClaim(claims[Math.min(index, claims.length - 1)].id)}>{t("Source", "來源")}</button><button className="row-photo" onClick={() => { setEvidenceTask(index); setModal("evidence") }}>＋ {t("Evidence", "證據")}</button></div>)}</article> : <article className="document-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from reviewed project information. Key statements stay linked to their sources.", "根據審閱過的專案資訊準備，重要內容都保留來源連結。")}</p><div className="doc-meta"><span><small>{t("Owner", "負責人")}</small>Aaron Wen</span><span><small>{t("Updated", "更新時間")}</small>{t("Today", "今天")}</span><span><small>{t("Status", "狀態")}</small>{pendingCount ? `${pendingCount} ${t("updates pending", "項更新待處理")}` : t("Ready", "已準備")}</span></div><h2>{projectKind === "contractor" ? t("Scope and changes", "範圍與變更") : t("Current decisions", "目前決策")}</h2>{claims.filter((claim) => claim.state !== "rejected").slice(0, 4).map((claim) => <div className="deliverable-claim" key={claim.id}><span><strong>{claim.field}</strong><small>{claim.state === "pending" ? t("Pending review · excluded from final export", "待審閱 · 不會納入最終匯出") : claim.proposed}</small></span><button onClick={() => openClaim(claim.id)}>{t("View source", "查看來源")}</button></div>)}</article>}</section></div>
       </div>
     );
   }
@@ -783,6 +918,7 @@ export default function Home() {
   }
 
   const searchResults = folders.filter((folder) => folder.name.toLowerCase().includes(renameValue.toLowerCase()));
+  const assetSearchResults = [...assets, ...inbox].filter((asset) => `${asset.name} ${asset.summary}`.toLowerCase().includes(renameValue.toLowerCase())).slice(0, 6);
 
   return (
     <div className="app-shell">
@@ -791,17 +927,17 @@ export default function Home() {
       <main><Content /></main>
       <nav className="mobile-nav"><button onClick={() => setView("projects")}>▣<small>{t("Projects", "專案")}</small></button><button onClick={() => setView("inbox")}>▤<small>{t("Inbox", "收件匣")}</small></button><button onClick={() => { setProjectKind(selectedFolder.kind); setView("review") }}>✦<small>{t("Review", "審閱")}</small></button><button onClick={() => setModal("import")}>＋<small>{t("Import", "匯入")}</small></button></nav>
 
-      {modal === "import" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal import-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Add to Notique</h2><p>Drop in a recording, photo or document.</p></div><button onClick={() => setModal(null)}>×</button></header><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files?.[0]; if (file) handleFile(file) }}><input type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) handleFile(file) }} /><span className="upload-icon">↥</span><strong>Drop a file here</strong><small>or click to choose from your computer</small></label><p className="sample-label">TRY THE COMPLETE FLOW</p><div className="sample-list">{samples.map((sample) => <button key={sample.id} onClick={() => startAgent(sample)}><b className={`type-icon ${sample.type}`}>{typeIcon(sample.type)}</b><span><strong>{sample.name}</strong><small>{sample.meta}</small></span><em>Use sample</em></button>)}</div></section></div>}
+      {modal === "import" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal import-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Add to Notique", "加入 Notique")}</h2><p>{t("Drop in a recording, photo or document.", "放入錄音、照片或文件。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files?.[0]; if (file) handleFile(file) }}><input type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) handleFile(file) }} /><span className="upload-icon">↥</span><strong>{t("Drop a file here", "將檔案放在這裡")}</strong><small>{t("or click to choose from your computer", "或點擊從電腦選擇")}</small></label><p className="sample-label">{t("TRY THE COMPLETE FLOW", "體驗完整流程")}</p><div className="sample-list">{samples.map((sample) => <button key={sample.id} onClick={() => startAgent(sample)}><b className={`type-icon ${sample.type}`}>{typeIcon(sample.type)}</b><span><strong>{sample.name}</strong><small>{sample.meta}</small></span><em>{t("Use sample", "使用範例")}</em></button>)}</div></section></div>}
 
-      {modal === "newProject" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>New project</h2><p>Keep related recordings, files and notes together.</p></div><button onClick={() => setModal(null)}>×</button></header><label>Project name</label><input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="Untitled project" /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary" onClick={() => { const name = newProjectName.trim(); if (!name) return; const id = `folder-${Date.now()}`; setFolders((items) => [...items, { id, name, description: "Recordings, files and notes", color: "slate", updated: "Just now", kind: "general" }]); setSelectedFolderId(id); setNewProjectName(""); setModal(null); setView("folder"); flash("Project created") }}>Create project</button></div></section></div>}
+      {modal === "newProject" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("New project", "新增專案")}</h2><p>{t("Keep related recordings, files and notes together.", "將相關錄音、檔案與筆記放在一起。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Project name", "專案名稱")}</label><input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder={t("Untitled project", "未命名專案")} /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" onClick={() => { const name = newProjectName.trim(); if (!name) return; const id = `folder-${Date.now()}`; setFolders((items) => [...items, { id, name, description: t("Recordings, files and notes", "錄音、檔案與筆記"), color: "slate", updated: t("Just now", "剛剛"), kind: "general" }]); setSelectedFolderId(id); setNewProjectName(""); setModal(null); setView("folder"); addActivity(t("Project created", "專案已建立"), name, id); flash(t("Project created", "專案已建立")) }}>{t("Create project", "建立專案")}</button></div></section></div>}
 
       {modal === "rename" && showRename && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Rename {renameKind}</h2></div><button onClick={() => setModal(null)}>×</button></header><label>Name</label><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary" onClick={saveRename}>Save</button></div></section></div>}
 
-      {modal === "search" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Search Notique</h2><p>Find projects, recordings and files.</p></div><button onClick={() => setModal(null)}>×</button></header><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder="Search projects" /><div className="search-results">{searchResults.map((folder) => <button key={folder.id} onClick={() => { setModal(null); openFolder(folder.id) }}><span className={`mini-folder ${folder.color}`}>▰</span><span><strong>{folder.name}</strong><small>{folder.description}</small></span><b>›</b></button>)}</div></section></div>}
+      {modal === "search" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Search Notique", "搜尋 Notique")}</h2><p>{t("Find projects, recordings and files.", "尋找專案、錄音與檔案。")}</p></div><button onClick={() => setModal(null)}>×</button></header><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder={t("Search everything", "搜尋所有內容")} />{searchResults.length > 0 && <><p className="search-group-label">{t("PROJECTS", "專案")}</p><div className="search-results">{searchResults.map((folder) => <button key={folder.id} onClick={() => { setModal(null); openFolder(folder.id) }}><span className={`mini-folder ${folder.color}`}>▰</span><span><strong>{folder.name}</strong><small>{folder.description}</small></span><b>›</b></button>)}</div></>}{assetSearchResults.length > 0 && <><p className="search-group-label">{t("FILES AND RECORDINGS", "檔案與錄音")}</p><div className="search-results">{assetSearchResults.map((asset) => <button key={asset.id} onClick={() => { setModal(null); openItem(asset.id) }}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{folders.find((folder) => folder.id === asset.folderId)?.name || t("Inbox", "收件匣")}</small></span><b>›</b></button>)}</div></>}{!searchResults.length && !assetSearchResults.length && <div className="search-empty">{t("No matching projects or files", "找不到相符的專案或檔案")}</div>}</section></div>}
 
       {modal === "transcript" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal transcript-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{stagedAsset?.name || profile.event}</h2><p>Transcript with original timestamps</p></div><button onClick={() => setModal(null)}>×</button></header><div className="transcript-body"><button onClick={() => flash("Audio jumped to 12:18")}><b>12:18</b><span><strong>Customer</strong><p>The project view is useful because my decisions are spread across several conversations.</p></span></button><button onClick={() => flash(`Audio jumped to ${selectedClaim.time}`)}><b>{selectedClaim.time}</b><span><strong>{projectKind === "contractor" ? "Contractor" : "Customer"}</strong><p>{selectedClaim.quote}</p></span></button>{selectedClaim.againstQuote && <button onClick={() => flash("Audio jumped to 08:42")}><b>08:42</b><span><strong>Client</strong><p>{selectedClaim.againstQuote}</p></span></button>}</div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Close</button><button className="primary" onClick={() => { setModal(null); flash("Playing from selected evidence") }}>Play recording</button></div></section></div>}
 
-      {modal === "share" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Share project</h2><p>Anyone with the link can view the latest reviewed version.</p></div><button onClick={() => setModal(null)}>×</button></header><label>Share link</label><input readOnly value={`notique.local/project/${selectedFolder.id}`} /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary" onClick={() => { navigator.clipboard?.writeText(`http://localhost:3000/project/${selectedFolder.id}`); setModal(null); flash("Share link copied") }}>Copy link</button></div></section></div>}
+      {modal === "share" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal share-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Share project", "分享專案")}</h2><p>{t("Invite someone or copy a view-only link to the latest reviewed version.", "邀請協作者，或複製最新審閱版本的唯讀連結。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="share-form"><label>{t("Invite by email", "以電子郵件邀請")}</label><div><input value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} placeholder="name@company.com" /><select value={shareAccess} onChange={(event) => setShareAccess(event.target.value)}><option>Can view</option><option>Can comment</option><option>Can edit</option></select><button className="primary" disabled={!shareEmail.includes("@")} onClick={() => { addActivity(t("Project invitation sent", "專案邀請已傳送"), `${shareEmail} · ${shareAccess}`); setShareEmail(""); flash(t("Invitation sent", "邀請已傳送")) }}>{t("Invite", "邀請")}</button></div></div><div className="people-access"><h3>{t("People with access", "可存取的人員")}</h3><span><i className="avatar">A</i><b>Aaron Wen<small>{t("Owner", "擁有者")}</small></b></span><span><i className="avatar purple">{projectKind === "contractor" ? "M" : "K"}</i><b>{projectKind === "contractor" ? "Maria" : "Kevin"}<small>{t("Can edit", "可編輯")}</small></b></span></div><label>{t("Share link", "分享連結")}</label><div className="copy-link"><input readOnly value={`https://app.notique.ai/project/${selectedFolder.id}`} /><button className="secondary" onClick={() => { navigator.clipboard?.writeText(`https://app.notique.ai/project/${selectedFolder.id}`); addActivity(t("Share link copied", "分享連結已複製"), t("View-only project link", "專案唯讀連結")); flash(t("Share link copied", "分享連結已複製")) }}>{t("Copy link", "複製連結")}</button></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Done", "完成")}</button></div></section></div>}
 
       {modal === "newDeliverable" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>New deliverable</h2><p>Choose what this project should produce.</p></div><button onClick={() => setModal(null)}>×</button></header><div className="new-deliverable-list"><button onClick={() => { setActiveDeliverable(0); setModal(null) }}><span>▤</span><strong>{projectKind === "contractor" ? "Change Order" : "Project Brief"}</strong><small>Document with source-linked project facts</small></button><button onClick={() => { setActiveDeliverable(1); setModal(null) }}><span>✓</span><strong>{projectKind === "contractor" ? "Scope Checklist" : "Action Checklist"}</strong><small>Executable fields, owners and evidence requirements</small></button><button onClick={() => { setActiveDeliverable(2); setModal(null) }}><span>≋</span><strong>{projectKind === "contractor" ? "Site Report" : "Decision Log"}</strong><small>A durable record of reviewed project changes</small></button></div></section></div>}
 
@@ -809,7 +945,19 @@ export default function Home() {
 
       {modal === "deleteFolder" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Delete {selectedFolder.name}?</h2><p>Its files will move to Inbox so nothing is lost.</p></div><button onClick={() => setModal(null)}>×</button></header><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary destructive" onClick={deleteFolder}>Delete project</button></div></section></div>}
 
-      {modal === "evidence" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal evidence-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{view === "deliverables" ? "Add checklist evidence" : "Photo evidence"}</h2><p>Evidence stays connected to its original event and project.</p></div><button onClick={() => setModal(null)}>×</button></header><img src="/evidence-room-capture.jpg" alt="Room and site evidence" /><div className="evidence-meta"><span><small>Captured</small>Jul 25, 7:36 PM</span><span><small>Event</small>{profile.event}</span><span><small>Project</small>{profile.title}</span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Close</button>{view === "deliverables" && <button className="primary" onClick={() => { setChecklistEvidence((current) => ({ ...current, [evidenceTask]: true })); setModal(null); flash("Evidence attached to checklist item") }}>Attach evidence</button>}</div></section></div>}
+      {modal === "newEvent" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal event-capture-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Record a new event", "記錄新活動")}</h2><p>{t("This mock simulates capture, transcription and project analysis.", "這個 Mock 會模擬記錄、轉錄與專案分析。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="capture-meter"><span /><span /><span /><span /><span /><span /><span /><span /><span /><span /><b>00:18:42</b></div><label>{t("Event type", "活動類型")}</label><div className="event-type-options">{[projectKind === "contractor" ? "Site visit" : "Meeting", "Call", "Walkthrough"].map((type) => <button className={newEventType === type ? "active" : ""} onClick={() => setNewEventType(type)} key={type}>{type}</button>)}</div><label>{t("Event name", "活動名稱")}</label><input value={newEventTitle} onChange={(event) => setNewEventTitle(event.target.value)} placeholder={projectKind === "contractor" ? "Kitchen walkthrough" : "Customer interview"} /><div className="capture-options"><span>✓ {t("Record audio", "錄製音訊")}</span><span>✓ {t("Create transcript", "建立逐字稿")}</span><span>✓ {t("Link photos by time", "依時間連接照片")}</span><span>✓ {t("Compare with project", "與專案內容比較")}</span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary recording-action" onClick={createMockEvent}>■ {t("Finish and process", "完成並處理")}</button></div></section></div>}
+
+      {modal === "moveAsset" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Move item", "移動內容")}</h2><p>{selectedAsset.name}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Project", "專案")}</label><select className="full-select" value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" onClick={moveSelectedAsset}>{t("Move", "移動")}</button></div></section></div>}
+
+      {modal === "deliverableShare" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Send this document", "傳送這份文件")}</h2><p>{pendingCount ? t(`${pendingCount} updates are still excluded from the final version.`, `${pendingCount} 項更新仍未納入最終版本。`) : t("The document is ready to send.", "文件已可傳送。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Recipient", "收件人")}</label><input value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} placeholder="client@company.com" /><label>{t("Access", "權限")}</label><select className="full-select" value={shareAccess} onChange={(event) => setShareAccess(event.target.value)}><option>Can view</option><option>Can comment</option></select><div className="delivery-summary"><span>▤</span><span><strong>{projectKind === "contractor" ? ["Change Order", "Scope Checklist", "Site Report"][activeDeliverable] : ["Project Brief", "Action Checklist", "Decision Log"][activeDeliverable]}</strong><small>{t("Sources remain available to the project team.", "專案團隊仍可查看來源。")}</small></span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" disabled={!shareEmail.includes("@")} onClick={() => { const title = projectKind === "contractor" ? ["Change Order", "Scope Checklist", "Site Report"][activeDeliverable] : ["Project Brief", "Action Checklist", "Decision Log"][activeDeliverable]; setSavedDeliverables((items) => items.includes(activeDeliverable) ? items : [...items, activeDeliverable]); addActivity(t("Deliverable sent", "交付文件已傳送"), `${title} · ${shareEmail}`); setShareEmail(""); setModal(null); flash(t("Document sent", "文件已傳送")) }}>{t("Send", "傳送")}</button></div></section></div>}
+
+      {modal === "notifications" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal notifications-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Notifications", "通知")}</h2><p>{t("Recent work across your projects.", "最近的專案操作。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="notification-list">{activity.slice(0, 8).map((item) => <button key={item.id} onClick={() => { if (item.projectId) openWorkspace(item.projectId); setModal(null) }}><span>✓</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></button>)}</div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Done", "完成")}</button></div></section></div>}
+
+      {modal === "profile" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal profile-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Profile", "個人資料")}</h2><p>{t("The identity used on project records and exports.", "專案記錄與匯出文件使用的身分。")}</p></div><button onClick={() => setModal(null)}>×</button></header><span className="profile-avatar">A</span><label>{t("Name", "姓名")}</label><input defaultValue="Aaron Wen" /><label>{t("Email", "電子郵件")}</label><input defaultValue="aaron@notiqueai.com" /><div className="modal-actions"><button className="primary" onClick={() => { setModal(null); flash(t("Profile saved", "個人資料已儲存")) }}>{t("Save", "儲存")}</button></div></section></div>}
+
+      {modal === "workspaceSettings" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Workspace settings", "工作區設定")}</h2><p>Notique AI</p></div><button onClick={() => setModal(null)}>×</button></header><div className="settings-row"><span><strong>{t("Default language", "預設語言")}</strong><small>{t("Used for navigation and new documents.", "用於導覽與新文件。")}</small></span><select value={language} onChange={(event) => setLanguage(event.target.value as "en" | "zh")}><option value="en">English</option><option value="zh">繁體中文</option></select></div><div className="settings-row"><span><strong>{t("Require review for high-impact updates", "重要更新必須審閱")}</strong><small>{t("Money, scope, approvals and conflicting statements.", "金額、範圍、批准與互相衝突的說法。")}</small></span><input type="checkbox" defaultChecked /></div><div className="settings-row"><span><strong>{t("Keep source evidence on exports", "匯出時保留證據")}</strong><small>{t("Recipients can see where key statements came from.", "收件人可以查看重要內容的來源。")}</small></span><input type="checkbox" defaultChecked /></div><div className="settings-danger"><span><strong>{t("Reset demo data", "重設 Demo 資料")}</strong><small>{t("Restore every project, review item and checklist to the original state.", "將所有專案、審閱項目與清單還原。")}</small></span><button className="secondary" onClick={resetDemo}>{t("Reset", "重設")}</button></div><div className="modal-actions"><button className="primary" onClick={() => { setModal(null); flash(t("Workspace settings saved", "工作區設定已儲存")) }}>{t("Done", "完成")}</button></div></section></div>}
+
+      {modal === "evidence" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal evidence-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{view === "deliverables" ? t("Add checklist evidence", "加入清單證據") : t("Photo evidence", "照片證據")}</h2><p>{t("Evidence stays connected to its original event and project.", "證據會保留原始活動、時間與專案。")}</p></div><button onClick={() => setModal(null)}>×</button></header><img src="/evidence-room-capture.jpg" alt="Room and site evidence" /><div className="evidence-meta"><span><small>{t("Captured", "拍攝時間")}</small>Jul 25, 7:36 PM</span><span><small>{t("Event", "活動")}</small>{profile.event}</span><span><small>{t("Project", "專案")}</small>{profile.title}</span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Close", "關閉")}</button>{view === "deliverables" && <button className="primary" onClick={() => { setChecklistEvidence((current) => ({ ...current, [evidenceTask]: true })); addActivity(t("Checklist evidence attached", "清單證據已加入"), checklist[evidenceTask]); setModal(null); flash(t("Evidence attached to checklist item", "證據已加入清單項目")) }}>{t("Attach evidence", "加入證據")}</button>}</div></section></div>}
 
       {toast && <div className="toast">✓ {toast}</div>}
     </div>
