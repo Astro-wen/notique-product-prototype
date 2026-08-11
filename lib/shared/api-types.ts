@@ -30,6 +30,7 @@ export type ClaimLifecycleStatus =
   | "superseded"
   | "resolved"
   | "withdrawn";
+export type ReviewSessionStatus = "active" | "completed" | "abandoned";
 
 export type ApiErrorCode =
   | "BAD_REQUEST"
@@ -62,6 +63,7 @@ export type ApiErrorCode =
   | "SCENARIO_VERSION_CONFLICT"
   | "CLAIM_VERSION_CONFLICT"
   | "CLAIM_STATE_CONFLICT"
+  | "REVIEW_SESSION_CONFLICT"
   | "GLOSSARY_VERSION_CONFLICT"
   | "GLOSSARY_DUPLICATE"
   | "IDEMPOTENCY_KEY_REQUIRED"
@@ -170,6 +172,30 @@ export type EventRecord = {
   created_at: string;
   updated_at: string;
 };
+
+export type ReviewSessionRecord = {
+  id: string;
+  project_id: string;
+  actor_id: string;
+  status: ReviewSessionStatus;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  initial_pending_claim_count: number;
+  initial_pending_occurrence_count: number;
+  remaining_pending_claim_count: number;
+  remaining_pending_occurrence_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GetReviewSessionResponse = ApiSuccess<{
+  review_session: ReviewSessionRecord | null;
+}>;
+
+export type ReviewSessionResponse = ApiSuccess<{
+  review_session: ReviewSessionRecord;
+}>;
 
 export type AssetVersionRecord = {
   id: string;

@@ -238,6 +238,13 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .filter-tabs { min-height: 58px; display: flex; align-items: center; gap: 6px; }
 .filter-tabs button { min-height: 31px; border: 1px solid transparent; border-radius: 16px; background: transparent; padding: 0 13px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .filter-tabs button.active { border-color: #b8cae9; background: var(--blue-soft); color: #1d56ae; }
+.review-timing { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 18px; align-items: center; margin: 14px 0 4px; padding: 16px 18px; border: 1px solid #cbd7ea; border-radius: 16px; background: #f7faff; }
+.review-timing strong { display: block; margin-top: 3px; font-size: 14px; }
+.review-timing p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.review-timing time { color: #174d9f; font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 800; white-space: nowrap; }
+.review-timing > span:last-child { grid-column: 1 / -1; width: fit-content; border-radius: 999px; padding: 5px 9px; font-size: 10px; font-weight: 800; }
+.review-timing .timing-pass { background: #e8f6ed; color: #236a3e; }
+.review-timing .timing-over { background: #fff1e8; color: #9a4f1f; }
 .review-list { display: grid; gap: 10px; }
 .review-card { min-height: 150px; border: 1px solid var(--line); border-radius: 9px; background: #fff; display: grid; grid-template-columns: 42px 1fr; overflow: hidden; }
 .claim-select { border-right: 1px solid var(--line); display: flex; justify-content: center; padding-top: 20px; }

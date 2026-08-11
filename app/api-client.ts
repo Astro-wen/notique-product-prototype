@@ -19,6 +19,7 @@ import type {
   GetEventResponse,
   GetExtractionRunResponse,
   GetProjectResponse,
+  GetReviewSessionResponse,
   GetRunClaimsResponse,
   GetTranscriptionRunResponse,
   CreateTranscriptionRunResponse,
@@ -34,6 +35,7 @@ import type {
   OccurrenceVerdictResponse,
   ScenarioVerdictRequest,
   ScenarioVerdictResponse,
+  ReviewSessionResponse,
   WithdrawClaimRequest,
 } from "../lib/shared/api-types";
 
@@ -99,6 +101,19 @@ export type Project = {
   scenarioVersion?: number;
   scenario?: { key: string; label: string };
   scenarioCandidates?: ScenarioCandidate[];
+};
+
+export type ReviewSession = {
+  id: Id;
+  projectId: Id;
+  status: "active" | "completed" | "abandoned";
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  initialPendingClaimCount: number;
+  initialPendingOccurrenceCount: number;
+  remainingPendingClaimCount: number;
+  remainingPendingOccurrenceCount: number;
 };
 
 export type Asset = {
@@ -328,6 +343,48 @@ export function normalizeProject(value: unknown): Project {
     scenarioVersion: asNumber(pick(source, ["scenario_version", "scenarioVersion"])),
     scenario: scenario?.key ? { key: scenario.key, label: scenario.label || scenario.key } : undefined,
     scenarioCandidates: rawCandidates.map(normalizeScenarioCandidate).filter((item): item is ScenarioCandidate => Boolean(item)),
+  };
+}
+
+function normalizeReviewSession(value: unknown): ReviewSession | null {
+  if (!isRecord(value)) return null;
+  const id = asString(pick(value, ["id"]));
+  const projectId = asString(pick(value, ["project_id", "projectId"]));
+  const status = asString(pick(value, ["status"]));
+  const startedAt = asString(pick(value, ["started_at", "startedAt"]));
+  if (
+    !id ||
+    !projectId ||
+    !startedAt ||
+    !["active", "completed", "abandoned"].includes(status)
+  ) return null;
+  return {
+    id,
+    projectId,
+    status: status as ReviewSession["status"],
+    startedAt,
+    completedAt: asString(
+      pick(value, ["completed_at", "completedAt"]),
+      undefined as unknown as string,
+    ) || undefined,
+    durationMs: asNumber(pick(value, ["duration_ms", "durationMs"])),
+    initialPendingClaimCount:
+      asNumber(pick(value, ["initial_pending_claim_count", "initialPendingClaimCount"])) ?? 0,
+    initialPendingOccurrenceCount:
+      asNumber(
+        pick(value, ["initial_pending_occurrence_count", "initialPendingOccurrenceCount"]),
+      ) ?? 0,
+    remainingPendingClaimCount:
+      asNumber(
+        pick(value, ["remaining_pending_claim_count", "remainingPendingClaimCount"]),
+      ) ?? 0,
+    remainingPendingOccurrenceCount:
+      asNumber(
+        pick(value, [
+          "remaining_pending_occurrence_count",
+          "remainingPendingOccurrenceCount",
+        ]),
+      ) ?? 0,
   };
 }
 
@@ -579,6 +636,51 @@ export const api = {
   async getProject(projectId: Id): Promise<Project> {
     const body = await request<GetProjectResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}`, { cache: "no-store" });
     return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async getReviewSession(projectId: Id): Promise<ReviewSession | null> {
+    const body = await request<GetReviewSessionResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/review-session`,
+      { cache: "no-store" },
+    );
+    if (body.data.review_session === null) return null;
+    const session = normalizeReviewSession(body.data.review_session);
+    if (!session) invalidContract("The server returned an invalid review timing session.");
+    return session;
+  },
+
+  async startReviewSession(
+    projectId: Id,
+    idempotencyKey: string,
+  ): Promise<ReviewSession> {
+    const body = await request<ReviewSessionResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/review-sessions`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    const session = normalizeReviewSession(body.data.review_session);
+    if (!session) invalidContract("The server returned an invalid started review session.");
+    return session;
+  },
+
+  async completeReviewSession(
+    sessionId: Id,
+    idempotencyKey: string,
+  ): Promise<ReviewSession> {
+    const body = await request<ReviewSessionResponse>(
+      `/api/v1/review-sessions/${encodeURIComponent(sessionId)}/complete`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    const session = normalizeReviewSession(body.data.review_session);
+    if (!session) invalidContract("The server returned an invalid completed review session.");
+    return session;
   },
 
   async listGlossary(projectId: Id): Promise<GlossaryEntry[]> {

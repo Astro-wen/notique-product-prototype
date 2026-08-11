@@ -47,6 +47,11 @@ import {
   getTranscriptionRun,
 } from "@/lib/server/db/transcription-repository";
 import {
+  completeReviewSession,
+  getReviewSession,
+  startReviewSession,
+} from "@/lib/server/db/review-session-repository";
+import {
   ApiFault,
   enumValue,
   isoDate,
@@ -280,6 +285,13 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 2 && segments[0] === "events") {
     return ok(await getEvent(scope, segments[1]), id);
   }
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "review-session"
+  ) {
+    return ok({ review_session: await getReviewSession(scope, segments[1]) }, id);
+  }
   if (segments.length === 2 && segments[0] === "assets") {
     return ok({ asset: await getAsset(scope, segments[1]) }, id);
   }
@@ -412,6 +424,32 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       metadata: optionalRecord(body.metadata, "metadata"),
     }, idempotencyKey(request));
     return ok({ event }, id, 201);
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "review-sessions"
+  ) {
+    await jsonObject(request);
+    const reviewSession = await startReviewSession(
+      scope,
+      segments[1],
+      idempotencyKey(request),
+    );
+    return ok({ review_session: reviewSession }, id, 201);
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === "review-sessions" &&
+    segments[2] === "complete"
+  ) {
+    await jsonObject(request);
+    const reviewSession = await completeReviewSession(
+      scope,
+      segments[1],
+      idempotencyKey(request),
+    );
+    return ok({ review_session: reviewSession }, id);
   }
   if (
     segments.length === 3 &&

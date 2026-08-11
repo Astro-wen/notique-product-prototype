@@ -626,6 +626,51 @@ export const claimEvidenceReviewAttestations = sqliteTable(
   ],
 );
 
+// A review session measures the real time a person spends clearing a Project's
+// pending Claim and occurrence queue. The clock is server-owned and durable so
+// refreshes, tab changes, or a closed browser cannot reset the acceptance
+// metric. Only one active session may exist for an actor in a Project.
+export const reviewSessions = sqliteTable(
+  "review_sessions",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    status: text("status", { enum: ["active", "completed", "abandoned"] })
+      .notNull()
+      .default("active"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    durationMs: integer("duration_ms"),
+    initialPendingClaimCount: integer("initial_pending_claim_count").notNull(),
+    initialPendingOccurrenceCount: integer("initial_pending_occurrence_count").notNull(),
+    remainingPendingClaimCount: integer("remaining_pending_claim_count").notNull(),
+    remainingPendingOccurrenceCount: integer("remaining_pending_occurrence_count").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_review_sessions_active_actor_project")
+      .on(table.workspaceId, table.projectId, table.actorId)
+      .where(sql`${table.status} = 'active'`),
+    index("idx_review_sessions_project_started").on(
+      table.workspaceId,
+      table.projectId,
+      table.startedAt,
+    ),
+    index("idx_review_sessions_actor_status").on(
+      table.workspaceId,
+      table.actorId,
+      table.status,
+    ),
+  ],
+);
+
 export const verdicts = sqliteTable(
   "verdicts",
   {

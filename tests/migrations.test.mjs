@@ -46,6 +46,7 @@ test("all D1 migrations apply from an empty database", async () => {
     "claim_evidence_review_attestations",
     "transcription_runs",
     "transcription_queue_outbox",
+    "review_sessions",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }
@@ -110,6 +111,31 @@ test("all D1 migrations apply from an empty database", async () => {
     reviewIndexes.has("uq_claim_evidence_review_actor_version"),
     true,
     "batch review readiness must be unique per actor and Claim Version",
+  );
+
+  const reviewSessionIndexes = new Set(
+    database
+      .prepare("PRAGMA index_list(review_sessions)")
+      .all()
+      .map((row) => row.name),
+  );
+  assert.equal(
+    reviewSessionIndexes.has("uq_review_sessions_active_actor_project"),
+    true,
+    "only one active review timer may exist per actor and Project",
+  );
+
+  assert.throws(
+    () => database.prepare(
+      `INSERT INTO review_sessions (
+         id, workspace_id, project_id, actor_id, status, started_at,
+         initial_pending_claim_count, initial_pending_occurrence_count,
+         remaining_pending_claim_count, remaining_pending_occurrence_count
+       ) VALUES ('rvs_invalid', 'missing', 'missing', 'actor', 'active',
+         '2026-08-10T00:00:00.000Z', 0, 0, 0, 0)`,
+    ).run(),
+    /CHECK constraint failed|FOREIGN KEY constraint failed/,
+    "a timer with no review work must be rejected by the database",
   );
 
   database.close();

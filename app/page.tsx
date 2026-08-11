@@ -28,6 +28,7 @@ import {
   OccurrenceNewClaim,
   Project,
   ProjectViewName,
+  ReviewSession,
   RunDebug,
   TranscriptionRun,
   api,
@@ -103,6 +104,13 @@ function formatDate(value?: string, includeTime = false): string {
   return new Intl.DateTimeFormat("zh-CN", includeTime
     ? { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
     : { year: "numeric", month: "short", day: "numeric" }).format(date);
+}
+
+function formatReviewDuration(value: number): string {
+  const totalSeconds = Math.max(0, Math.floor(value / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes} 分 ${seconds.toString().padStart(2, "0")} 秒` : `${seconds} 秒`;
 }
 
 function formatBytes(value?: number): string {
@@ -322,6 +330,7 @@ function issueMessage(issue: ApiIssue): string {
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音已经安全保存，但服务端还没有配置 OpenAI 转写模型。本次没有生成逐字稿，配置完成后可以重新提交。";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音已经保存，但本次转写在时限内没有完成。可以安全重试，不需要重新上传。";
   if (issue.code === "TRANSCRIPTION_OUTPUT_INVALID") return "模型返回的逐字稿缺少可核对的说话人或时间点，系统没有把它写进正式材料。";
+  if (issue.code === "REVIEW_SESSION_CONFLICT") return "审核内容发生了变化，系统没有写入错误的计时结果。请刷新审核区后继续。";
   if (issue.code === "AUDIO_TRANSCRIPTION_FAILED") return "录音已经保存，但转写没有完成。请保留 Request ID，稍后重新提交转写。";
   if (issue.code === "QUEUE_NOT_CONFIGURED") return "后台处理队列还没有配置。本次任务没有开始，也没有写入半成品。";
   if (issue.code === "DATABASE_UNAVAILABLE") return "当前无法读取数据库中的真实记录，请稍后重试。";
@@ -760,6 +769,8 @@ export default function Home() {
   const [eventIssue, setEventIssue] = useState<ApiIssue | null>(null);
   const [run, setRun] = useState<ExtractionRun | null>(null);
   const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
+  const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
+  const [reviewClockNow, setReviewClockNow] = useState(() => Date.now());
   const [claims, setClaims] = useState<Claim[]>([]);
   const [occurrenceCandidates, setOccurrenceCandidates] = useState<OccurrenceCandidate[]>([]);
   const [claimsState, setClaimsState] = useState<AsyncState>("idle");
@@ -788,11 +799,18 @@ export default function Home() {
   const mutationKeys = useRef(new Map<string, string>());
   const localDispatchRuns = useRef(new Set<string>());
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
+  const completingReviewSessions = useRef(new Set<string>());
 
   const flash = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
+
+  useEffect(() => {
+    if (reviewSession?.status !== "active") return;
+    const timer = window.setInterval(() => setReviewClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [reviewSession?.id, reviewSession?.status]);
 
   const loadProjects = useCallback(async () => {
     setProjectsState("loading");
@@ -1028,6 +1046,51 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [event?.id, loadClaimsForRun, project?.id, run]);
 
+  const syncReviewTiming = useCallback(async (latestProject: Project) => {
+    const pendingTotal = latestProject.pendingClaimCount + latestProject.pendingOccurrenceCount;
+    if (pendingTotal > 0) {
+      const fingerprint = `review-start:${latestProject.id}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      try {
+        setReviewSession(await api.startReviewSession(latestProject.id, idempotencyKey));
+      } catch (error) {
+        const issue = toIssue(error);
+        if (issue.code !== "REVIEW_SESSION_CONFLICT") throw error;
+        setReviewSession(await api.getReviewSession(latestProject.id));
+      }
+      return;
+    }
+    const latest = await api.getReviewSession(latestProject.id);
+    setReviewSession(latest);
+    if (latest?.status === "completed") {
+      mutationKeys.current.delete(`review-start:${latestProject.id}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (
+      !project ||
+      !reviewSession ||
+      reviewSession.status !== "active" ||
+      project.pendingClaimCount + project.pendingOccurrenceCount > 0 ||
+      completingReviewSessions.current.has(reviewSession.id)
+    ) return;
+    completingReviewSessions.current.add(reviewSession.id);
+    const fingerprint = `review-complete:${reviewSession.id}`;
+    const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+    mutationKeys.current.set(fingerprint, idempotencyKey);
+    void api.completeReviewSession(reviewSession.id, idempotencyKey)
+      .then((completed) => {
+        mutationKeys.current.delete(fingerprint);
+        mutationKeys.current.delete(`review-start:${project.id}`);
+        setReviewSession(completed);
+        flash(`本次审核完成，用时 ${formatReviewDuration(completed.durationMs ?? 0)}`);
+      })
+      .catch((error) => setClaimsIssue(toIssue(error)))
+      .finally(() => completingReviewSessions.current.delete(reviewSession.id));
+  }, [flash, project, reviewSession]);
+
   const loadReviewQueue = useCallback(async () => {
     if (!project) return;
     setScreen("review");
@@ -1045,6 +1108,7 @@ export default function Home() {
         setClaims([]);
         setOccurrenceCandidates([]);
         setClaimsState("empty");
+        await syncReviewTiming(latestProject);
         return;
       }
       const results = await Promise.allSettled(runIds.map((runId) => api.getRunReview(runId)));
@@ -1057,11 +1121,12 @@ export default function Home() {
       setClaims(uniqueClaims);
       setOccurrenceCandidates(uniqueOccurrences);
       setClaimsState(uniqueClaims.length || uniqueOccurrences.length ? "ready" : "empty");
+      await syncReviewTiming(latestProject);
     } catch (error) {
       setClaimsIssue(toIssue(error));
       setClaimsState("error");
     }
-  }, [project]);
+  }, [project, syncReviewTiming]);
 
   const loadView = useCallback(async (tab: ResultTab) => {
     if (!project) return;
@@ -1610,7 +1675,7 @@ export default function Home() {
             await loadEvent(event.id).catch(() => undefined);
           } finally { setBusyAction(null); }
         }} busy={busyAction} />}
-        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
+        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
         {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} />}
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
@@ -2247,14 +2312,24 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
   );
 }
 
-function ReviewScreen({ state, issue, claims, occurrenceCandidates, selected, onBack, onRetry, onOpen, onToggle, onBatch, onOccurrenceVerdict, onOccurrenceConvert, batchCount, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; selected: Set<string>; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onToggle: (id: string) => void; onBatch: () => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; batchCount: number; busy: string | null }) {
+function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSession, reviewClockNow, selected, onBack, onRetry, onOpen, onToggle, onBatch, onOccurrenceVerdict, onOccurrenceConvert, batchCount, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; reviewSession: ReviewSession | null; reviewClockNow: number; selected: Set<string>; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onToggle: (id: string) => void; onBatch: () => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; batchCount: number; busy: string | null }) {
   const [filter, setFilter] = useState<"pending" | "reviewed" | "all">("pending");
   const visible = claims.filter((item) => filter === "pending" ? item.reviewStatus === "pending" : filter === "reviewed" ? item.reviewStatus !== "pending" : true);
   const visibleOccurrences = occurrenceCandidates.filter((item) => filter === "pending" ? item.status === "pending" : filter === "reviewed" ? item.status !== "pending" : true);
+  const elapsedMs = reviewSession?.status === "active"
+    ? Math.max(0, reviewClockNow - Date.parse(reviewSession.startedAt))
+    : reviewSession?.durationMs ?? 0;
+  const initialCount = reviewSession
+    ? reviewSession.initialPendingClaimCount + reviewSession.initialPendingOccurrenceCount
+    : 0;
+  const remainingCount = reviewSession
+    ? reviewSession.remainingPendingClaimCount + reviewSession.remainingPendingOccurrenceCount
+    : 0;
   return (
     <div className="page narrow-page">
       <PageHeader eyebrow="Review Queue" title="审核候选记录" body="逐条核对陈述和证据。打开一条记录并明确标记已核对后，才能把它加入批量确认。" back={onBack} actions={batchCount > 0 && <button className="button primary" disabled={Boolean(busy)} onClick={onBatch}>{busy === "batch" ? "正在确认…" : `确认所选 ${batchCount} 条`}</button>} />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
+      {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">真实审核计时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本次审核已完成" : "本次计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
       {state === "loading" && <LoadingBlock label="正在整理审核队列…" />}
       {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待审核记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}

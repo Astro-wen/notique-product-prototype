@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 106 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 的 Pending Claim 与 Pending Occurrence 计数、最小 UI 的 Scenario 刷新、用户入口隐藏 PDF、生产 Bundle 和真实数据前端外壳。
+- `npm test` 通过，合计 113 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、最小 UI 的 Scenario 刷新、用户入口隐藏 PDF、生产 Bundle 和真实数据前端外壳。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -145,6 +145,7 @@
 - Transcript Item 上传通过 `pending` 到 `uploaded` 的条件更新决定唯一赢家。Finalize 后同内容可重放，不同内容返回 409，上传路径没有把 `finalized` 改回 `uploaded` 的 SQL。
 - Outbox 遇到已持久化的 Terminal Failed Run 会确认消息，避免重复调用模型。遇到 `lease_not_acquired` 会先重读 Run；Run 仍是 Queued 或不存在时保留重试，只有 Processing 或 Terminal 状态才确认消息。
 - 生产 Worker 配置包含 `*/2 * * * *` 的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
+- 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
 
 ## K. 真实模型阶段的当前结论
 
