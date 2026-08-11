@@ -102,10 +102,20 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 npm run demo:eric -- --accept-fixture-scenario --confirm-reviewed-fixture
 ```
 
-这条命令只使用固定的 Oak Street 合成案例，并且只调用本地正式 API。它会创建
-Project，导入三次 Transcript 和三张照片，然后按时间顺序发起三次真实模型提取。
-每次提取都等待后台任务完成，再继续下一次。最后打印事项概况、时间线、决定、
-偏好、待确认问题、风险、下次议程和 Brief。
+默认使用 Oak Street contractor 合成案例。也可以从仓库内已经审核过的三套案例中
+明确选择一套：
+
+```bash
+npm run demo:eric -- --fixture=contractor --accept-fixture-scenario --confirm-reviewed-fixture
+npm run demo:eric -- --fixture=realtor --accept-fixture-scenario --confirm-reviewed-fixture
+npm run demo:eric -- --fixture=insurance --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+`--fixture` 只接受 `contractor`、`realtor` 和 `insurance`。命令不接受任意文件路径，
+因此不能把未审核的本地 manifest 带进自动确认流程。它只调用本地正式 API，创建
+Project，导入所选案例的 Transcript 和照片，再按时间顺序发起真实模型提取。每次
+提取都等待后台任务完成，再继续下一次。最后打印事项概况、时间线、决定、偏好、
+待确认问题、风险、下次议程和 Brief。
 
 `--accept-fixture-scenario` 只允许脚本确认案例清单中写明的预期场景。模型必须把该
 场景放进两个或三个候选项里，否则命令直接失败，不会改选其他高置信度候选。正式
@@ -126,10 +136,13 @@ npm run demo:eric -- --correlation-id=eric-homework-01 --accept-fixture-scenario
 ```
 
 同一个关联 ID 会复用导入和提取步骤的幂等键，避免因为不确定的网络结果重复付费。
+同一个关联 ID 用在不同行业案例时会生成不同的内部关联值，因此三套案例不会复用
+彼此的 Project、导入或提取结果。
 本地队列里即使已有其他任务，脚本也会持续 dispatch 和查询，直到本次 Run 完成或
 达到超时。每次调用仍会生成一份新的 JSON 文件，因此恢复记录不会覆盖旧记录。
 
-每次执行都会把完整 JSON 记录写入 `outputs/eric-demo/`。记录包含模型 Run ID、
+每次执行都会把完整 JSON 记录写入 `outputs/eric-demo/`。文件名包含所选 fixture。
+记录包含 fixture 名称、仓库相对路径、manifest SHA256、内部关联值、模型 Run ID、
 服务端 Request ID、模型 Provider Request ID、最终 Project 状态和八份结果。这个
 目录不会提交到 Git。失败也会保留已完成步骤和错误对应的 Request ID，方便排查。
 如果失败发生在本地网络层且服务端没有返回响应，对应 Request ID 会明确记录为

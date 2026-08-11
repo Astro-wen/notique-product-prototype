@@ -4,18 +4,16 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 import {
   formatEricDemoReport,
   runEricDemo,
 } from "./lib/run-eric-demo.mjs";
-
-const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_MANIFEST = path.resolve(
-  SCRIPT_DIRECTORY,
-  "../eval/cases/synthetic-contractor-v1/manifest.json",
-);
+import {
+  ERIC_DEMO_FIXTURE_KEYS,
+  resolveEricDemoFixture,
+} from "./lib/eric-demo-fixtures.mjs";
 
 function usage() {
   return `Usage:
@@ -23,15 +21,16 @@ function usage() {
 
 Options:
   --base-url=<url>                 Local full-stack URL (default: http://localhost:3000)
+  --fixture=<name>                 Fixed case: contractor, realtor, or insurance (default: contractor)
   --correlation-id=<id>            Reuse one stable demo identity to resume safely
   --accept-fixture-scenario        Confirm the fixed synthetic Scenario after Run 1
   --confirm-reviewed-fixture      Attest and confirm synthetic Claims/Occurrences after each Run
   --poll-ms=<ms>                   Poll interval (default: 1000)
   --timeout-ms=<ms>                Timeout per extraction Run (default: 600000)
-  --output=<path>                  JSON trace path (default: outputs/eric-demo/<id>-<invocation>.json)
+  --output=<path>                  JSON trace path (default: outputs/eric-demo/<fixture>-<id>-<invocation>.json)
   --help                           Show this help
 
-The script imports the fixed synthetic contractor fixture through the real local API and
+The script imports one repository-approved synthetic fixture through the real local API and
 uses the configured model. It never reads or prints model secrets. It does not run during
 tests or builds. The two confirmation flags are explicit because they create real Verdicts.
 Synthetic confirmations are regression aids, not evidence of human review or concept validation.`;
@@ -53,6 +52,7 @@ function correlationOption(value) {
 }
 
 export function parseArgs(argv, defaultCorrelationId = randomUUID(), invocationId = randomUUID()) {
+  let fixture = resolveEricDemoFixture("contractor");
   const options = {
     baseUrl: "http://localhost:3000",
     acceptFixtureScenario: false,
@@ -60,23 +60,34 @@ export function parseArgs(argv, defaultCorrelationId = randomUUID(), invocationI
     pollMs: 1_000,
     timeoutMs: 600_000,
     correlationId: defaultCorrelationId,
-    manifestPath: DEFAULT_MANIFEST,
+    fixtureKey: fixture.key,
+    manifestPath: fixture.manifestPath,
+    fixturePath: fixture.relativePath,
     outputPath: null,
     help: false,
   };
   let explicitOutput = null;
   let explicitCorrelationId = null;
+  let explicitFixture = null;
   for (const arg of argv) {
     if (arg === "--help") options.help = true;
     else if (arg === "--accept-fixture-scenario") options.acceptFixtureScenario = true;
     else if (arg === "--confirm-reviewed-fixture") options.confirmReviewedFixture = true;
     else if (arg.startsWith("--base-url=")) options.baseUrl = arg.slice("--base-url=".length);
+    else if (arg.startsWith("--fixture=")) {
+      if (explicitFixture !== null) throw new Error("--fixture may only be supplied once.");
+      explicitFixture = arg.slice("--fixture=".length);
+    }
     else if (arg.startsWith("--correlation-id=")) explicitCorrelationId = correlationOption(arg.slice("--correlation-id=".length));
     else if (arg.startsWith("--poll-ms=")) options.pollMs = integerOption(arg.slice("--poll-ms=".length), "--poll-ms", options.pollMs);
     else if (arg.startsWith("--timeout-ms=")) options.timeoutMs = integerOption(arg.slice("--timeout-ms=".length), "--timeout-ms", options.timeoutMs);
     else if (arg.startsWith("--output=")) explicitOutput = arg.slice("--output=".length);
     else throw new Error(`Unknown argument: ${arg}`);
   }
+  if (explicitFixture !== null) fixture = resolveEricDemoFixture(explicitFixture);
+  options.fixtureKey = fixture.key;
+  options.manifestPath = fixture.manifestPath;
+  options.fixturePath = fixture.relativePath;
   if (explicitCorrelationId !== null) options.correlationId = explicitCorrelationId;
   if (explicitOutput !== null) {
     if (!explicitOutput.trim()) throw new Error("--output requires a path.");
@@ -85,7 +96,7 @@ export function parseArgs(argv, defaultCorrelationId = randomUUID(), invocationI
     options.outputPath = path.resolve(
       "outputs",
       "eric-demo",
-      `${options.correlationId}-${invocationId}.json`,
+      `${options.fixtureKey}-${options.correlationId}-${invocationId}.json`,
     );
   }
   if (options.confirmReviewedFixture && !options.acceptFixtureScenario) {
@@ -93,6 +104,8 @@ export function parseArgs(argv, defaultCorrelationId = randomUUID(), invocationI
   }
   return options;
 }
+
+export { ERIC_DEMO_FIXTURE_KEYS };
 
 async function reserveReport(outputPath) {
   await mkdir(path.dirname(outputPath), { recursive: true });

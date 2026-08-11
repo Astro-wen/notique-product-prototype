@@ -1,12 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import {
   assertLoopbackBaseUrl,
   importSyntheticFixture,
   validateSyntheticManifest,
 } from "../import-synthetic-fixture.mjs";
+import { identifyEricDemoFixture } from "./eric-demo-fixtures.mjs";
 
 const SUCCESS_RUN_STATUSES = new Set(["succeeded", "completed_with_warnings"]);
 const TERMINAL_RUN_STATUSES = new Set([
@@ -159,11 +159,29 @@ function sanitizedError(error) {
 }
 
 async function fixtureManifest(manifestPath) {
+  const fixture = identifyEricDemoFixture(manifestPath);
+  const bytes = await readFile(fixture.manifestPath);
   const value = validateSyntheticManifest(
-    JSON.parse(await readFile(path.resolve(manifestPath), "utf8")),
+    JSON.parse(bytes.toString("utf8")),
   );
   invariant(value.synthetic === true, "The one-click demo only accepts a manifest marked synthetic=true.");
-  return value;
+  return {
+    fixture,
+    manifest: value,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function fixtureScopedCorrelationId(correlationId, fixtureKey, fixtureId) {
+  const digest = createHash("sha256")
+    .update(correlationId)
+    .update("\0")
+    .update(fixtureKey)
+    .update("\0")
+    .update(fixtureId)
+    .digest("hex")
+    .slice(0, 24);
+  return `eric-demo-${digest}`;
 }
 
 async function waitForRun({ client, runId, pollMs, timeoutMs }) {
@@ -402,13 +420,19 @@ export async function runEricDemo({
   invariant(typeof fetchImpl === "function", "A Fetch implementation is required.");
   invariant(typeof importFixture === "function", "A fixture importer is required.");
   const safeBaseUrl = assertLoopbackBaseUrl(baseUrl);
-  const manifest = await fixtureManifest(manifestPath);
+  const loadedFixture = await fixtureManifest(manifestPath);
+  const { fixture, manifest } = loadedFixture;
+  const scopedCorrelationId = fixtureScopedCorrelationId(correlationId, fixture.key, manifest.id);
   const requests = [];
   const report = {
     schema_version: "notique-eric-demo.v1",
     status: "running",
     correlation_id: correlationId,
+    fixture_correlation_id: scopedCorrelationId,
+    fixture_key: fixture.key,
     fixture_id: manifest.id,
+    fixture_manifest_path: fixture.relativePath,
+    fixture_manifest_sha256: loadedFixture.sha256,
     base_url: safeBaseUrl,
     project: null,
     scenario_selection: null,
@@ -454,7 +478,7 @@ export async function runEricDemo({
       manifestPath,
       baseUrl: safeBaseUrl,
       fetchImpl: tracedImportFetch,
-      runId: correlationId,
+      runId: scopedCorrelationId,
       probeUnconfiguredProvider: false,
     });
     report.project = imported.project;
@@ -466,7 +490,7 @@ export async function runEricDemo({
         `/api/v1/events/${encodeURIComponent(event.id)}/extraction-runs`,
         {
           phase: "create-extraction",
-          idempotency: idempotencyKey(correlationId, `extract:${event.id}`),
+          idempotency: idempotencyKey(scopedCorrelationId, `extract:${event.id}`),
           json: { asset_version_ids: event.asset_version_ids },
         },
       );
@@ -520,7 +544,7 @@ export async function runEricDemo({
         report.review_actions.push({
           event_id: event.id,
           run_id: runId,
-          ...(await confirmFixtureReview({ client, runId, correlationId, review })),
+          ...(await confirmFixtureReview({ client, runId, correlationId: scopedCorrelationId, review })),
         });
       }
 
@@ -537,7 +561,12 @@ export async function runEricDemo({
               "The first Run produced Scenario candidates. Rerun with --accept-fixture-scenario after reviewing the synthetic fixture expectation; later Events are intentionally blocked until Scenario confirmation.",
             );
           }
-          const accepted = await acceptFixtureScenario({ client, manifest, project, correlationId });
+          const accepted = await acceptFixtureScenario({
+            client,
+            manifest,
+            project,
+            correlationId: scopedCorrelationId,
+          });
           project = accepted.project;
           report.scenario_selection = accepted.selection;
         } else {
@@ -610,6 +639,9 @@ export function formatEricDemoReport(report) {
     "NOTIQUE ERIC DEMO",
     `Status: ${report.status}`,
     `Correlation ID: ${report.correlation_id}`,
+    `Fixture: ${report.fixture_key} (${report.fixture_id})`,
+    `Fixture manifest: ${report.fixture_manifest_path}`,
+    `Fixture SHA256: ${report.fixture_manifest_sha256}`,
     `Project ID: ${report.project?.id ?? "not created"}`,
   ];
   if (report.extraction_runs.length) {

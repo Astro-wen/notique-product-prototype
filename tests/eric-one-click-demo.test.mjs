@@ -11,6 +11,29 @@ import { parseArgs } from "../scripts/run-eric-demo.mjs";
 
 const manifestPath = path.resolve("eval/cases/synthetic-contractor-v1/manifest.json");
 const expectedScenario = "contractor_renovation_estimate_and_preconstruction";
+const fixtureCases = [
+  {
+    key: "contractor",
+    id: "synthetic-contractor-v1",
+    path: "eval/cases/synthetic-contractor-v1/manifest.json",
+    scenario: expectedScenario,
+    eventCount: 3,
+  },
+  {
+    key: "realtor",
+    id: "synthetic-realtor-v1",
+    path: "eval/cases/synthetic-realtor-v1/manifest.json",
+    scenario: "real_estate_buyer_journey",
+    eventCount: 4,
+  },
+  {
+    key: "insurance",
+    id: "synthetic-insurance-v1",
+    path: "eval/cases/synthetic-insurance-v1/manifest.json",
+    scenario: "insurance_water_damage_claim_assessment",
+    eventCount: 4,
+  },
+];
 
 function envelope(data, requestId, status = 200) {
   return new Response(JSON.stringify({ data, request_id: requestId }), {
@@ -39,8 +62,11 @@ function demoDouble({
   emptyReview = false,
   emptyViews = false,
   interruptDispatch = false,
+  expectedScenarioValue = expectedScenario,
+  eventCount = 3,
 } = {}) {
   const calls = [];
+  const imports = [];
   let scenarioConfirmed = false;
   let sequence = 0;
   const claimForRun = new Map();
@@ -51,11 +77,12 @@ function demoDouble({
   let dispatchInterrupted = false;
 
   const importFixture = async ({ fetchImpl, runId }) => {
+    imports.push({ runId });
     await fetchImpl("http://localhost:3000/api/v1/import-trace", { method: "GET" });
     return {
       run_id: runId,
       project: { id: "project-demo", name: "[SYNTHETIC] Oak Street" },
-      events: [1, 2, 3].map((number) => ({
+      events: Array.from({ length: eventCount }, (_, index) => index + 1).map((number) => ({
         id: `event-${number}`,
         title: `Event ${number}`,
         asset_version_ids: [`asset-version-${number}`],
@@ -176,7 +203,7 @@ function demoDouble({
         project: {
           id: "project-demo",
           name: "[SYNTHETIC] Oak Street",
-          scenario: scenarioConfirmed ? expectedScenario : null,
+          scenario: scenarioConfirmed ? expectedScenarioValue : null,
           scenario_status: scenarioConfirmed ? "confirmed" : "pending_confirmation",
           scenario_version: scenarioConfirmed ? 2 : 1,
           scenario_candidates: scenarioConfirmed
@@ -187,7 +214,7 @@ function demoDouble({
                   { scenario: "insurance_claim", confidence: 0.1, reason: "alternative" },
                 ]
               : [
-                  { scenario: expectedScenario, confidence: 0.2, reason: "fixture" },
+                  { scenario: expectedScenarioValue, confidence: 0.2, reason: "fixture" },
                   { scenario: "property_inspection", confidence: 0.9, reason: "alternative" },
                 ],
           pending_claim_count: [...claimStatus.values()].filter((status) => status === "pending").length,
@@ -201,7 +228,7 @@ function demoDouble({
         project: {
           id: "project-demo",
           name: "[SYNTHETIC] Oak Street",
-          scenario: expectedScenario,
+          scenario: expectedScenarioValue,
           scenario_status: "confirmed",
           scenario_version: 2,
           scenario_candidates: [],
@@ -232,7 +259,7 @@ function demoDouble({
       if (projectView[1] === "views/folder-summary") {
         return envelope({ view: {
           projectId: "project-demo",
-          scenario: scenarioConfirmed ? expectedScenario : null,
+          scenario: scenarioConfirmed ? expectedScenarioValue : null,
           currentClaims: hasVerified ? verifiedClaims : [],
           recentDeltas: hasVerified ? [{ id: "delta-1", displayText: "新增" }] : [],
           emptyReason: hasVerified ? null : "尚无已确认的当前记录。",
@@ -253,7 +280,7 @@ function demoDouble({
     return failure("NOT_FOUND", `${method} ${url.pathname}`, requestId, 404);
   };
 
-  return { calls, fetchImpl, importFixture };
+  return { calls, imports, fetchImpl, importFixture };
 }
 
 test("one-click demo runs three real API extractions and prints all requested views", async () => {
@@ -270,6 +297,12 @@ test("one-click demo runs three real API extractions and prints all requested vi
   });
 
   assert.equal(report.status, "succeeded");
+  assert.equal(report.fixture_key, "contractor");
+  assert.equal(report.fixture_id, "synthetic-contractor-v1");
+  assert.equal(report.fixture_manifest_path, "eval/cases/synthetic-contractor-v1/manifest.json");
+  assert.match(report.fixture_manifest_sha256, /^[a-f0-9]{64}$/);
+  assert.match(report.fixture_correlation_id, /^eric-demo-[a-f0-9]{24}$/);
+  assert.equal(api.imports[0].runId, report.fixture_correlation_id);
   assert.deepEqual(report.extraction_runs.map((run) => run.run_id), ["run-1", "run-2", "run-3"]);
   assert.deepEqual(report.extraction_runs.map((run) => run.provider_request_id), [
     "provider-run-1",
@@ -479,6 +512,7 @@ test("CLI requires separate explicit consent for synthetic review confirmation",
     /requires --accept-fixture-scenario/,
   );
   const parsed = parseArgs([
+    "--fixture=realtor",
     "--correlation-id=resume-demo-2026",
     "--accept-fixture-scenario",
     "--confirm-reviewed-fixture",
@@ -487,6 +521,8 @@ test("CLI requires separate explicit consent for synthetic review confirmation",
     "--output=outputs/demo.json",
   ], "fixed-id", "invocation-id");
   assert.equal(parsed.correlationId, "resume-demo-2026");
+  assert.equal(parsed.fixtureKey, "realtor");
+  assert.match(parsed.manifestPath, /synthetic-realtor-v1\/manifest\.json$/);
   assert.equal(parsed.acceptFixtureScenario, true);
   assert.equal(parsed.confirmReviewedFixture, true);
   assert.equal(parsed.pollMs, 0);
@@ -494,10 +530,66 @@ test("CLI requires separate explicit consent for synthetic review confirmation",
   assert.match(parsed.outputPath, /outputs\/demo\.json$/);
 
   const resumed = parseArgs(["--correlation-id=resume-demo-2026"], "unused", "attempt-2");
-  assert.match(resumed.outputPath, /resume-demo-2026-attempt-2\.json$/);
+  assert.match(resumed.outputPath, /contractor-resume-demo-2026-attempt-2\.json$/);
   assert.throws(() => parseArgs(["--correlation-id=../unsafe"]), /safe characters/);
+  assert.throws(() => parseArgs(["--fixture=other"]), /must be one of/);
+  assert.throws(
+    () => parseArgs(["--fixture=contractor", "--fixture=realtor"]),
+    /only be supplied once/,
+  );
 
   const defaults = parseArgs([], "default-timeout-id", "default-invocation-id");
+  assert.equal(defaults.fixtureKey, "contractor");
+  assert.match(defaults.manifestPath, /synthetic-contractor-v1\/manifest\.json$/);
   assert.equal(defaults.timeoutMs, 600_000);
-  assert.match(defaults.outputPath, /default-timeout-id-default-invocation-id\.json$/);
+  assert.match(defaults.outputPath, /contractor-default-timeout-id-default-invocation-id\.json$/);
+});
+
+test("each approved fixture is selectable, traceable, and gets its own idempotency correlation", async () => {
+  const correlations = new Set();
+  for (const fixture of fixtureCases) {
+    const parsed = parseArgs([`--fixture=${fixture.key}`], "shared-human-correlation", `invoke-${fixture.key}`);
+    assert.equal(parsed.fixtureKey, fixture.key);
+    assert.equal(parsed.fixturePath, fixture.path);
+    assert.equal(parsed.manifestPath, path.resolve(fixture.path));
+
+    const api = demoDouble({
+      expectedScenarioValue: fixture.scenario,
+      eventCount: fixture.eventCount,
+    });
+    const report = await runEricDemo({
+      ...parsed,
+      fetchImpl: api.fetchImpl,
+      importFixture: api.importFixture,
+      acceptFixtureScenario: true,
+      confirmReviewedFixture: true,
+      pollMs: 0,
+      timeoutMs: 1_000,
+    });
+
+    assert.equal(report.status, "succeeded");
+    assert.equal(report.fixture_key, fixture.key);
+    assert.equal(report.fixture_id, fixture.id);
+    assert.equal(report.fixture_manifest_path, fixture.path);
+    assert.match(report.fixture_manifest_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(report.scenario_selection.selected, fixture.scenario);
+    assert.equal(api.imports[0].runId, report.fixture_correlation_id);
+    correlations.add(report.fixture_correlation_id);
+  }
+  assert.equal(correlations.size, fixtureCases.length);
+});
+
+test("one-click runner refuses a manifest path outside the repository whitelist", async () => {
+  await assert.rejects(
+    runEricDemo({
+      manifestPath: "/tmp/unreviewed-fixture/manifest.json",
+      fetchImpl: async () => {
+        throw new Error("network must not be reached");
+      },
+      importFixture: async () => {
+        throw new Error("import must not be reached");
+      },
+    }),
+    /only accepts repository fixture manifests/,
+  );
 });

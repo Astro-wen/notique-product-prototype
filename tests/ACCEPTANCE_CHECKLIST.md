@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 148 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 最新 Run 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、音频上传和转写契约、音频任务重试与竞态、字节范围播放、一键 Eric 演示、最小 UI、生产 Bundle、发布包密钥扫描和真实数据前端外壳。
+- `npm test` 通过，合计 150 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 最新 Run 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、音频上传和转写契约、音频任务重试与竞态、字节范围播放、三行业一键 Eric 演示、最小 UI、生产 Bundle、发布包密钥扫描和真实数据前端外壳。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -150,7 +150,7 @@
 - 空白状态也可以直接选择照片或录音。页面会保留用户已经选择的 File，在后台创建 Project 和第一次 Event 后继续同一次上传，不要求重新选择文件。
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
 - Evidence 文件读取支持单一 Byte Range，覆盖完整响应、指定起止、开放结束、后缀范围和越界 416。浏览器音频播放可以从时间点继续读取，同时保持 Workspace 和 Project 范围校验。
-- `npm run demo:eric -- --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 依次运行固定 Oak Street 三个 Event。它只确认清单中预先写明的 Scenario，遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 Run ID、API Request ID、Provider Request ID 和八份结果。自动确认只允许合成回归案例，不能算作真人审核或 Concept Validation 证据。
+- `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。它只确认 manifest 中预先写明的 Scenario，遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID 和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
 - 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
 - 当前代码已锁定 `claim-extraction-prompt.v7` 和 `claim-extraction.v2`。Schema 强制结构化歧义至少包含两个候选，并要求有歧义时 `needs_additional_evidence=true`。旧 Prompt 或旧 Schema 创建的排队任务会在调用模型前失败，避免把不同版本混进同一质量结果。这里证明的是版本和结构约束，Prompt v7 还没有完成新的付费模型质量 Run。
