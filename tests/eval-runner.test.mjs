@@ -198,3 +198,17 @@ test("omitted View leakage adjudication does not default to zero", () => {
   assert.equal(report.metrics.viewLeakageCount, null);
   assert.equal(report.gates.checks.find((item) => item.name === "view_leakage").passed, false);
 });
+
+test("a weak later run cannot hide behind a strong primary run", () => {
+  const predictions = predictionSet();
+  predictions.runs[1].claims = predictions.runs[1].claims.filter((claim) => claim.matchedGroundTruthId !== "gt_budget");
+  predictions.runs[1].relations = [];
+  const report = evaluate(truth, predictions);
+  assert.equal(report.metrics.materialClaimRecall.value, 1, "the legacy primary-run metric remains available");
+  assert.equal(report.metrics.perRun[0].materialClaimRecall.value, 1);
+  assert.equal(report.metrics.perRun[1].materialClaimRecall.value, 0.5);
+  assert.equal(report.metrics.worstRun.materialClaimRecall, 0.5);
+  assert.equal(report.metrics.worstRun.relationRecall, 0);
+  assert.equal(report.gates.checks.find((item) => item.name === "material_recall").passed, false);
+  assert.equal(report.gates.checks.find((item) => item.name === "relation_recall").passed, false);
+});

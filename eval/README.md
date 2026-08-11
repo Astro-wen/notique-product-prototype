@@ -58,7 +58,7 @@ npm run eval:merge:synthetic-transcripts
 
 ## Predictions 关键字段
 
-每次运行保存固定的 Model、Prompt、Schema、参数、Commit SHA 和环境。每条预测 Claim 记录人工确认过的 `matchedGroundTruthId`、分类、目标版本、Evidence 合法性、原文精确匹配和语义支持。三次稳定性评测需要三个独立 Run。
+每次运行保存固定的 Model、Prompt、Schema、参数、Commit SHA 和环境。每条预测 Claim 记录人工确认过的 `matchedGroundTruthId`、分类、目标版本、Evidence 合法性、原文精确匹配和语义支持。三次稳定性评测需要三个独立 Run。报告同时列出每一次 Run 的指标，并使用三次中最差的 Recall、Precision、Evidence、Relation、View 和 Brief 指标执行硬门，避免第一次表现较好时掩盖后续漂移。
 
 Critical Ambiguity 命中还必须填写 `ambiguityAlternatives`、`ambiguityQuestion` 和 `assertedDefinitively: false`。只写 `ambiguityDetected: true` 不算通过。
 

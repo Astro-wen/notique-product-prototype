@@ -165,8 +165,106 @@ function gate(name, passed, actual, expected) {
   return { name, passed: passed === true, actual, expected };
 }
 
+function singleRunMetrics(groundTruth, run) {
+  const truthById = new Map(groundTruth.claims.map((claim) => [claim.id, claim]));
+  const relationTruthById = new Map(groundTruth.relations.map((relation) => [relation.id, relation]));
+  const materialTruth = groundTruth.claims.filter((claim) => claim.material === true);
+  const criticalTruth = materialTruth.filter((claim) => claim.critical === true);
+  const criticalAmbiguities = groundTruth.claims.filter((claim) => claim.ambiguity?.severity === "critical");
+  const predictionGroups = groupBy(run.claims, (claim) => claim.matchedGroundTruthId);
+  const uniqueMaterialMatches = materialTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
+  const supportedUniqueMaterial = uniqueMaterialMatches.filter((truth) => supported(predictionGroups.get(truth.id)[0]));
+  const supportedCritical = criticalTruth.filter((truth) => {
+    const matches = predictionGroups.get(truth.id) ?? [];
+    return matches.length === 1 && supported(matches[0]);
+  });
+  const evidence = run.claims.flatMap((claim) => claim.evidence);
+  const missingEvidenceClaims = run.claims.filter((claim) => claim.evidence.length === 0).length;
+  const transcriptChecks = run.claims.flatMap((prediction) => {
+    const truth = truthById.get(prediction.matchedGroundTruthId);
+    const refs = prediction.evidence.filter((item) => item.kind === "transcript");
+    if (truth?.modality === "transcript" && refs.length === 0) return [{ quoteExact: false }];
+    return refs;
+  });
+  const ambiguityHits = criticalAmbiguities.filter((truth) => {
+    const matches = predictionGroups.get(truth.id) ?? [];
+    return matches.length === 1 && matches[0].ambiguityDetected === true && matches[0].assertedDefinitively !== true &&
+      Array.isArray(matches[0].ambiguityAlternatives) && matches[0].ambiguityAlternatives.length >= 2 &&
+      typeof matches[0].ambiguityQuestion === "string" && matches[0].ambiguityQuestion.length > 0;
+  });
+  const relationPredictions = run.relations ?? [];
+  const validRelationPredictions = relationPredictions.filter((prediction) => {
+    const truth = relationTruthById.get(prediction.matchedGroundTruthRelationId);
+    return truth && truth.type === prediction.type && truth.sourceClaimId === prediction.sourceGroundTruthClaimId &&
+      truth.targetClaimId === prediction.targetGroundTruthClaimId &&
+      (truth.targetVersionId == null || truth.targetVersionId === prediction.targetVersionId);
+  });
+  const validRelationGroups = groupBy(validRelationPredictions, (relation) => relation.matchedGroundTruthRelationId);
+  const uniqueCorrectRelations = groundTruth.relations.filter((truth) => validRelationGroups.get(truth.id)?.length === 1);
+  const repeatOpportunities = groundTruth.claims.filter((claim) => claim.expectedClassification === "duplicate" || claim.expectedClassification === "reaffirmed");
+  const wronglyCreatedRepeats = repeatOpportunities.filter((truth) =>
+    (predictionGroups.get(truth.id) ?? []).some((prediction) => prediction.classification === "new"),
+  );
+  const reaffirmedTruth = groundTruth.claims.filter((claim) => claim.expectedClassification === "reaffirmed");
+  const correctReaffirmed = reaffirmedTruth.filter((truth) => {
+    const matches = predictionGroups.get(truth.id) ?? [];
+    return matches.length === 1 && matches[0].classification === "reaffirmed" && matches[0].targetVersionId === truth.targetVersionId;
+  });
+  const timestampDistances = uniqueMaterialMatches.flatMap((truth) => {
+    const distance = shortestTimestampDistance(predictionGroups.get(truth.id)[0], truth);
+    return distance == null ? [] : [distance];
+  });
+  const imageTruth = materialTruth.filter((claim) => claim.modality === "image");
+  const imageMatches = imageTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
+  const visualPredictions = run.claims.filter((claim) =>
+    truthById.get(claim.matchedGroundTruthId)?.modality === "image" || claim.evidence.some((item) => item.kind === "photo"),
+  );
+  const brief = validateBrief(run.brief);
+  return {
+    runId: run.id,
+    materialClaimRecall: ratio(uniqueMaterialMatches.length, materialTruth.length),
+    materialClaimPrecision: ratio(uniqueMaterialMatches.length, run.claims.length),
+    claimsWithEvidence: ratio(run.claims.length - missingEvidenceClaims, run.claims.length),
+    evidenceIdValidity: ratio(evidence.filter((item) => item.idValid === true).length, evidence.length + missingEvidenceClaims),
+    transcriptQuoteExactMatch: ratio(transcriptChecks.filter((item) => item.quoteExact === true).length, transcriptChecks.length),
+    citationSupportPrecision: ratio(supportedUniqueMaterial.length, run.claims.length),
+    criticalCitationSupport: ratio(supportedCritical.length, criticalTruth.length),
+    criticalAmbiguityRecall: ratio(ambiguityHits.length, criticalAmbiguities.length),
+    relationRecall: ratio(uniqueCorrectRelations.length, groundTruth.relations.length),
+    relationPrecision: ratio(uniqueCorrectRelations.length, relationPredictions.length),
+    duplicateCreationRate: ratio(wronglyCreatedRepeats.length, repeatOpportunities.length),
+    reaffirmedClassificationAccuracy: ratio(correctReaffirmed.length, reaffirmedTruth.length),
+    imageFactRecall: ratio(imageMatches.length, imageTruth.length),
+    unsupportedVisualClaimCount: visualPredictions.filter((claim) => claim.unsupportedVisualClaim === true).length,
+    visualClaimsAllAdjudicated: visualPredictions.every((claim) => typeof claim.unsupportedVisualClaim === "boolean"),
+    viewLeakageCount: Number.isInteger(run.viewLeakageCount) ? run.viewLeakageCount : null,
+    timestampDistanceMs: {
+      sampleCount: timestampDistances.length,
+      mean: average(timestampDistances),
+      max: timestampDistances.length ? Math.max(...timestampDistances) : null,
+      withinFiveSeconds: ratio(timestampDistances.filter((value) => value < 5_000).length, timestampDistances.length),
+    },
+    briefSourceValidity: brief.sourceValidity,
+    briefUsefulRate: brief.usefulRate,
+    briefStructurallyComplete: brief.structurallyComplete,
+    usage: {
+      inputTokens: run.usage?.inputTokens ?? 0,
+      outputTokens: run.usage?.outputTokens ?? 0,
+      costUsd: run.usage?.costUsd ?? 0,
+      latencyMs: run.usage?.latencyMs ?? 0,
+    },
+  };
+}
+
+function worstRatio(perRun, field, mode = "min") {
+  const values = perRun.map((item) => item[field]?.value).filter(Number.isFinite);
+  if (values.length !== perRun.length || values.length === 0) return null;
+  return mode === "max" ? Math.max(...values) : Math.min(...values);
+}
+
 export function evaluate(groundTruth, predictionSet) {
   validateInput(groundTruth, predictionSet);
+  const perRun = predictionSet.runs.map((run) => singleRunMetrics(groundTruth, run));
   const truthById = new Map(groundTruth.claims.map((claim) => [claim.id, claim]));
   const primaryRun = predictionSet.runs[0];
   const materialTruth = groundTruth.claims.filter((claim) => claim.material === true);
@@ -303,31 +401,60 @@ export function evaluate(groundTruth, predictionSet) {
     briefUsefulRate: brief.usefulRate,
     briefStructurallyComplete: brief.structurallyComplete,
     usage: totals,
+    perRun,
+    worstRun: {
+      materialClaimRecall: worstRatio(perRun, "materialClaimRecall"),
+      materialClaimPrecision: worstRatio(perRun, "materialClaimPrecision"),
+      claimsWithEvidence: worstRatio(perRun, "claimsWithEvidence"),
+      evidenceIdValidity: worstRatio(perRun, "evidenceIdValidity"),
+      transcriptQuoteExactMatch: worstRatio(perRun, "transcriptQuoteExactMatch"),
+      citationSupportPrecision: worstRatio(perRun, "citationSupportPrecision"),
+      criticalCitationSupport: worstRatio(perRun, "criticalCitationSupport"),
+      criticalAmbiguityRecall: worstRatio(perRun, "criticalAmbiguityRecall"),
+      relationRecall: worstRatio(perRun, "relationRecall"),
+      relationPrecision: worstRatio(perRun, "relationPrecision"),
+      duplicateCreationRate: worstRatio(perRun, "duplicateCreationRate", "max"),
+      reaffirmedClassificationAccuracy: worstRatio(perRun, "reaffirmedClassificationAccuracy"),
+      imageFactRecall: worstRatio(perRun, "imageFactRecall"),
+      unsupportedVisualClaimCount: Math.max(...perRun.map((item) => item.unsupportedVisualClaimCount)),
+      visualClaimsAllAdjudicated: perRun.every((item) => item.visualClaimsAllAdjudicated),
+      viewLeakageCount: perRun.every((item) => Number.isInteger(item.viewLeakageCount))
+        ? Math.max(...perRun.map((item) => item.viewLeakageCount))
+        : null,
+      timestampDistanceMaxMs: perRun.every((item) => item.timestampDistanceMs.sampleCount > 0)
+        ? Math.max(...perRun.map((item) => item.timestampDistanceMs.max))
+        : null,
+      briefSourceValidity: worstRatio(perRun, "briefSourceValidity"),
+      briefUsefulRate: worstRatio(perRun, "briefUsefulRate"),
+      briefStructurallyComplete: perRun.every((item) => item.briefStructurallyComplete),
+    },
   };
+
+  const worst = metrics.worstRun;
 
   const checks = [
     gate("sample_eligible", sampleEligibility.meetsTranscriptMinimum, sampleEligibility.meetsTranscriptMinimum, true),
-    gate("material_recall", metrics.materialClaimRecall.value >= 0.8, metrics.materialClaimRecall.value, ">= 0.80"),
-    gate("material_precision", metrics.materialClaimPrecision.value >= 0.85, metrics.materialClaimPrecision.value, ">= 0.85"),
-    gate("claims_have_evidence", metrics.claimsWithEvidence.value === 1, metrics.claimsWithEvidence.value, "1.00"),
-    gate("evidence_id_validity", metrics.evidenceIdValidity.value === 1, metrics.evidenceIdValidity.value, "1.00"),
-    gate("transcript_quote_exact", metrics.transcriptQuoteExactMatch.value === 1, metrics.transcriptQuoteExactMatch.value, "1.00"),
-    gate("citation_support", metrics.citationSupportPrecision.value >= 0.95, metrics.citationSupportPrecision.value, ">= 0.95"),
-    gate("critical_citation_support", metrics.criticalCitationSupport.value === 1, metrics.criticalCitationSupport.value, "1.00"),
-    gate("critical_ambiguity", metrics.criticalAmbiguityRecall.value === 1, metrics.criticalAmbiguityRecall.value, "1.00"),
-    gate("relation_recall", metrics.relationRecall.value === 1, metrics.relationRecall.value, "1.00"),
-    gate("relation_precision", metrics.relationPrecision.value === 1, metrics.relationPrecision.value, "1.00"),
-    gate("duplicate_creation", metrics.duplicateCreationRate.value != null && metrics.duplicateCreationRate.value < 0.1, metrics.duplicateCreationRate.value, "< 0.10"),
-    gate("reaffirmed_accuracy", metrics.reaffirmedClassificationAccuracy.value === 1, metrics.reaffirmedClassificationAccuracy.value, "1.00"),
-    gate("visual_adjudication", visualClaimsAllAdjudicated, visualClaimsAllAdjudicated, true),
-    gate("unsupported_visual", metrics.unsupportedVisualClaimCount === 0, metrics.unsupportedVisualClaimCount, 0),
-    gate("view_leakage", metrics.viewLeakageCount === 0, metrics.viewLeakageCount, 0),
+    gate("material_recall", worst.materialClaimRecall >= 0.8, worst.materialClaimRecall, ">= 0.80 in every run"),
+    gate("material_precision", worst.materialClaimPrecision >= 0.85, worst.materialClaimPrecision, ">= 0.85 in every run"),
+    gate("claims_have_evidence", worst.claimsWithEvidence === 1, worst.claimsWithEvidence, "1.00 in every run"),
+    gate("evidence_id_validity", worst.evidenceIdValidity === 1, worst.evidenceIdValidity, "1.00 in every run"),
+    gate("transcript_quote_exact", worst.transcriptQuoteExactMatch === 1, worst.transcriptQuoteExactMatch, "1.00 in every run"),
+    gate("citation_support", worst.citationSupportPrecision >= 0.95, worst.citationSupportPrecision, ">= 0.95 in every run"),
+    gate("critical_citation_support", worst.criticalCitationSupport === 1, worst.criticalCitationSupport, "1.00 in every run"),
+    gate("critical_ambiguity", worst.criticalAmbiguityRecall === 1, worst.criticalAmbiguityRecall, "1.00 in every run"),
+    gate("relation_recall", worst.relationRecall === 1, worst.relationRecall, "1.00 in every run"),
+    gate("relation_precision", worst.relationPrecision === 1, worst.relationPrecision, "1.00 in every run"),
+    gate("duplicate_creation", worst.duplicateCreationRate != null && worst.duplicateCreationRate < 0.1, worst.duplicateCreationRate, "< 0.10 in every run"),
+    gate("reaffirmed_accuracy", worst.reaffirmedClassificationAccuracy === 1, worst.reaffirmedClassificationAccuracy, "1.00 in every run"),
+    gate("visual_adjudication", worst.visualClaimsAllAdjudicated, worst.visualClaimsAllAdjudicated, true),
+    gate("unsupported_visual", worst.unsupportedVisualClaimCount === 0, worst.unsupportedVisualClaimCount, 0),
+    gate("view_leakage", worst.viewLeakageCount === 0, worst.viewLeakageCount, 0),
     gate("three_run_consistency", sampleEligibility.hasThreeIndependentRuns && metrics.consistency.value >= 0.85, metrics.consistency.value, ">= 0.85 across >= 3 runs"),
-    gate("timestamp_max", metrics.timestampDistanceMs.sampleCount > 0 && metrics.timestampDistanceMs.max < 5_000, metrics.timestampDistanceMs.max, "< 5000 ms"),
-    gate("brief_sources", metrics.briefStructurallyComplete && metrics.briefSourceValidity.value === 1, metrics.briefSourceValidity.value, "6/6 unique valid sources"),
-    gate("brief_useful", metrics.briefUsefulRate.value >= 5 / 6, metrics.briefUsefulRate.value, ">= 5/6"),
+    gate("timestamp_max", worst.timestampDistanceMaxMs != null && worst.timestampDistanceMaxMs < 5_000, worst.timestampDistanceMaxMs, "< 5000 ms in every run"),
+    gate("brief_sources", worst.briefStructurallyComplete && worst.briefSourceValidity === 1, worst.briefSourceValidity, "6/6 unique valid sources in every run"),
+    gate("brief_useful", worst.briefUsefulRate >= 5 / 6, worst.briefUsefulRate, ">= 5/6 in every run"),
   ];
-  if (imageTruth.length > 0) checks.push(gate("image_fact_recall", sampleEligibility.meetsImageMinimum && metrics.imageFactRecall.value >= 0.8, metrics.imageFactRecall.value, ">= 0.80 with >= 12 image facts"));
+  if (imageTruth.length > 0) checks.push(gate("image_fact_recall", sampleEligibility.meetsImageMinimum && worst.imageFactRecall >= 0.8, worst.imageFactRecall, ">= 0.80 in every run with >= 12 image facts"));
 
   return {
     schemaVersion: "notique-eval-report.v1",

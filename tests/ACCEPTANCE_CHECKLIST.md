@@ -146,7 +146,8 @@
 - Outbox 遇到已持久化的 Terminal Failed Run 会确认消息，避免重复调用模型。遇到 `lease_not_acquired` 会先重读 Run；Run 仍是 Queued 或不存在时保留重试，只有 Processing 或 Terminal 状态才确认消息。
 - 生产 Worker 配置包含 `*/2 * * * *` 的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
 - 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
-- 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这只证明音频工程链路，不证明现场收音品质。
+- 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
+- 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
 
 ## K. 真实模型阶段的当前结论
 
