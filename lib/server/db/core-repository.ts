@@ -1458,7 +1458,11 @@ export async function getAsset(scope: RequestScope, assetId: string): Promise<As
   return assetRecord(row);
 }
 
-export async function getAssetEvidenceObject(scope: RequestScope, assetId: string) {
+export async function getAssetEvidenceObject(
+  scope: RequestScope,
+  assetId: string,
+  range?: { offset: number; length: number },
+) {
   const row = await first(
     `${ASSET_SELECT} WHERE a.id = ? AND a.workspace_id = ?`,
     [assetId, scope.workspaceId],
@@ -1466,7 +1470,10 @@ export async function getAssetEvidenceObject(scope: RequestScope, assetId: strin
   if (!row || !row.r2_original_key) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset evidence was not found.");
   }
-  const object = await getEvidenceBucket().get(String(row.r2_original_key));
+  const object = await getEvidenceBucket().get(
+    String(row.r2_original_key),
+    range ? { range } : undefined,
+  );
   if (!object) {
     throw new ApiFault(404, "NOT_FOUND", "Stored evidence object was not found.");
   }

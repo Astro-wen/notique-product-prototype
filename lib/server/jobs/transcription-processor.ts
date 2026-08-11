@@ -5,14 +5,19 @@ import {
   validateDiarizedTranscriptOutput,
   type ValidatedDiarizedTranscript,
 } from "@/lib/domain/audio-transcription";
+import {
+  classifyTranscriptionHttpFailure,
+  classifyTranscriptionTransportFailure,
+  loadOrStageTranscriptionResult,
+} from "@/lib/domain/transcription-retry";
 import { normalizeTranscriptText } from "@/lib/domain/transcript";
-import { sha256Hex, transcriptionResultObjectKey } from "@/lib/server/storage/keys";
+import { sha256Hex, transcriptionStagingObjectKey } from "@/lib/server/storage/keys";
 
 type Row = Record<string, unknown>;
 
 export type TranscriptionProcessResult = {
   runId: string;
-  status: "already_terminal" | "lease_not_acquired" | "succeeded" | "failed";
+  status: "already_terminal" | "lease_not_acquired" | "succeeded" | "retryable" | "failed";
   segmentCount: number;
   errorCode?: string;
 };
@@ -21,7 +26,7 @@ const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_PROVIDER_ERROR_CHARS = 500;
 
 class TranscriptionFault extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string, readonly retryable = false) {
     super(message);
     this.name = "TranscriptionFault";
   }
@@ -54,6 +59,14 @@ function errorCode(error: unknown): string {
 function safeError(error: unknown): string {
   if (error instanceof Error) return error.message.slice(0, MAX_PROVIDER_ERROR_CHARS);
   return "Audio transcription failed.";
+}
+
+function persistenceRetry(error: unknown, fallback: string): TranscriptionFault {
+  return new TranscriptionFault(
+    "TRANSCRIPTION_PERSIST_RETRY",
+    error instanceof Error ? safeError(error) : fallback,
+    true,
+  );
 }
 
 async function acquireLease(runId: string, owner: string, timestamp: string): Promise<Row | null> {
@@ -132,15 +145,29 @@ async function callProvider(run: Row): Promise<{
     const baseUrl = (bindings.AI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
     response = await fetch(`${baseUrl}/audio/transcriptions`, {
       method: "POST",
-      headers: { authorization: `Bearer ${bindings.AI_API_KEY}` },
+      headers: {
+        authorization: `Bearer ${bindings.AI_API_KEY}`,
+        "idempotency-key": `notique-transcription-${String(run.id)}`,
+      },
       body: form,
       signal: controller.signal,
     });
+  } catch (error) {
+    const failure = classifyTranscriptionTransportFailure(
+      controller.signal.aborted || error instanceof DOMException && error.name === "AbortError",
+    );
+    throw new TranscriptionFault(failure.code, safeError(error), failure.retryable);
   } finally {
     clearTimeout(timer);
   }
   const providerRequestId = response.headers.get("x-request-id");
-  const body = await response.text();
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (error) {
+    const failure = classifyTranscriptionTransportFailure(false);
+    throw new TranscriptionFault(failure.code, safeError(error), failure.retryable);
+  }
   if (!response.ok) {
     let message = `OpenAI transcription returned HTTP ${response.status}.`;
     try {
@@ -149,7 +176,8 @@ async function callProvider(run: Row): Promise<{
     } catch {
       // Provider bodies are intentionally not persisted when they are not JSON.
     }
-    throw new TranscriptionFault("AUDIO_TRANSCRIPTION_FAILED", message);
+    const failure = classifyTranscriptionHttpFailure(response.status);
+    throw new TranscriptionFault(failure.code, message, failure.retryable);
   }
   let parsed: unknown;
   try {
@@ -180,71 +208,147 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
   providerRequestId: string | null;
 }> {
   const bucket = getEvidenceBucket();
-  if (run.staged_result_r2_key && run.staged_result_sha256) {
-    const staged = await bucket.get(String(run.staged_result_r2_key));
-    if (!staged) {
-      throw new TranscriptionFault(
-        "AUDIO_TRANSCRIPTION_FAILED",
-        "The staged transcription result is missing.",
-      );
-    }
+  let resultKey = run.staged_result_r2_key ? String(run.staged_result_r2_key) : "";
+  if (!resultKey) {
+    resultKey = transcriptionStagingObjectKey({
+      workspaceId: String(run.workspace_id),
+      projectId: String(run.project_id),
+      eventId: String(run.event_id),
+      runId: String(run.id),
+    });
     try {
-      return {
-        transcript: validateDiarizedTranscriptOutput(JSON.parse(await staged.text())),
-        resultKey: String(run.staged_result_r2_key),
-        resultSha: String(run.staged_result_sha256),
-        providerRequestId: run.provider_request_id ? String(run.provider_request_id) : null,
-      };
+      const reserved = await getD1()
+        .prepare(
+          `UPDATE transcription_runs
+              SET staged_result_r2_key = ?, updated_at = ?
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+              AND staged_result_r2_key IS NULL`,
+        )
+        .bind(resultKey, now(), run.id, owner)
+        .run();
+      if (Number(reserved.meta.changes ?? 0) !== 1) {
+        throw new Error("The transcription staging slot could not be reserved.");
+      }
+    } catch (error) {
+      throw persistenceRetry(error, "The transcription staging slot could not be reserved.");
+    }
+  }
+
+  let existing: R2ObjectBody | null;
+  try {
+    existing = await bucket.get(resultKey);
+  } catch (error) {
+    throw persistenceRetry(error, "The staged transcription result could not be loaded.");
+  }
+
+  let existingResult: {
+    transcript: ValidatedDiarizedTranscript;
+    resultKey: string;
+    resultSha: string;
+    providerRequestId: string | null;
+  } | null = null;
+  if (existing) {
+    let content: string;
+    try {
+      content = await existing.text();
+    } catch (error) {
+      throw persistenceRetry(error, "The staged transcription result could not be read.");
+    }
+    let transcript: ValidatedDiarizedTranscript;
+    try {
+      transcript = validateDiarizedTranscriptOutput(JSON.parse(content));
     } catch {
       throw new TranscriptionFault(
         "TRANSCRIPTION_OUTPUT_INVALID",
         "The staged transcription result is invalid.",
       );
     }
-  }
-  const called = await callProvider(run);
-  const content = diarizedTranscriptJson(called.transcript);
-  const bytes = new TextEncoder().encode(content);
-  const resultSha = await sha256Hex(bytes.buffer);
-  const resultKey = transcriptionResultObjectKey({
-    workspaceId: String(run.workspace_id),
-    projectId: String(run.project_id),
-    eventId: String(run.event_id),
-    runId: String(run.id),
-    sha256: resultSha,
-  });
-  await bucket.put(resultKey, bytes, {
-    httpMetadata: { contentType: "application/json" },
-    customMetadata: {
-      sha256: resultSha,
-      schema: "diarized-transcript.v1",
-      source_audio_asset_version_id: String(run.audio_asset_version_id),
-    },
-  });
-  const updated = await getD1()
-    .prepare(
-      `UPDATE transcription_runs
-          SET staged_result_r2_key = ?, staged_result_sha256 = ?,
-              provider_request_id = ?, updated_at = ?
-        WHERE id = ? AND status = 'processing' AND lease_owner = ?
-          AND staged_result_r2_key IS NULL`,
-    )
-    .bind(
-      resultKey,
-      resultSha,
-      called.providerRequestId,
-      now(),
-      run.id,
-      owner,
-    )
-    .run();
-  if (Number(updated.meta.changes ?? 0) !== 1) {
+    const resultSha = await sha256Hex(new TextEncoder().encode(content).buffer);
+    if (run.staged_result_sha256 && String(run.staged_result_sha256) !== resultSha) {
+      throw new TranscriptionFault(
+        "TRANSCRIPTION_OUTPUT_INVALID",
+        "The staged transcription checksum does not match the Run record.",
+      );
+    }
+    const providerRequestId = run.provider_request_id
+      ? String(run.provider_request_id)
+      : existing.customMetadata?.provider_request_id || null;
+    if (!run.staged_result_sha256) {
+      try {
+        const recovered = await getD1()
+          .prepare(
+            `UPDATE transcription_runs
+                SET staged_result_sha256 = ?, provider_request_id = COALESCE(?, provider_request_id),
+                    updated_at = ?
+              WHERE id = ? AND status = 'processing' AND lease_owner = ?
+                AND staged_result_r2_key = ? AND staged_result_sha256 IS NULL`,
+          )
+          .bind(resultSha, providerRequestId, now(), run.id, owner, resultKey)
+          .run();
+        if (Number(recovered.meta.changes ?? 0) !== 1) {
+          throw new Error("The recovered staged transcription could not be recorded.");
+        }
+      } catch (error) {
+        throw persistenceRetry(error, "The recovered staged transcription could not be recorded.");
+      }
+    }
+    existingResult = { transcript, resultKey, resultSha, providerRequestId };
+  } else if (run.staged_result_sha256) {
     throw new TranscriptionFault(
       "AUDIO_TRANSCRIPTION_FAILED",
-      "The transcription run lease changed before the result was staged.",
+      "The staged transcription result is missing.",
     );
   }
-  return { ...called, resultKey, resultSha };
+
+  return loadOrStageTranscriptionResult({
+    stagedResultAvailable: existingResult !== null,
+    loadStagedResult: async () => existingResult!,
+    callProvider: () => callProvider(run),
+    stageProviderResult: async (called) => {
+      const content = diarizedTranscriptJson(called.transcript);
+      const bytes = new TextEncoder().encode(content);
+      const resultSha = await sha256Hex(bytes.buffer);
+      try {
+        await bucket.put(resultKey, bytes, {
+          httpMetadata: { contentType: "application/json" },
+          customMetadata: {
+            sha256: resultSha,
+            schema: "diarized-transcript.v1",
+            source_audio_asset_version_id: String(run.audio_asset_version_id),
+            ...(called.providerRequestId
+              ? { provider_request_id: called.providerRequestId }
+              : {}),
+          },
+        });
+      } catch (error) {
+        throw persistenceRetry(error, "The transcription result could not be staged.");
+      }
+      try {
+        const updated = await getD1()
+          .prepare(
+            `UPDATE transcription_runs
+                SET staged_result_sha256 = ?, provider_request_id = ?, updated_at = ?
+              WHERE id = ? AND status = 'processing' AND lease_owner = ?
+                AND staged_result_r2_key = ? AND staged_result_sha256 IS NULL`,
+          )
+          .bind(
+            resultSha,
+            called.providerRequestId,
+            now(),
+            run.id,
+            owner,
+            resultKey,
+          )
+          .run();
+        if (Number(updated.meta.changes ?? 0) !== 1) {
+          throw new Error("The transcription run lease changed before the result was recorded.");
+        }
+      } catch (error) {
+        throw persistenceRetry(error, "The transcription result could not be recorded.");
+      }
+      return { ...called, resultKey, resultSha };
+    },
+  });
 }
 
 function derivedFilename(filename: string): string {
@@ -380,13 +484,26 @@ async function persistTranscript(
     db
       .prepare(
         `UPDATE assets
-            SET metadata_json = json_set(
-              COALESCE(metadata_json, '{}'),
-              '$.transcription_status', 'succeeded',
-              '$.derived_transcript_asset_id', ?,
-              '$.derived_transcript_asset_version_id', ?
+            SET metadata_json = json_remove(
+              json_set(
+                COALESCE(metadata_json, '{}'),
+                '$.transcription_status', 'succeeded',
+                '$.derived_transcript_asset_id', ?,
+                '$.derived_transcript_asset_version_id', ?
+              ),
+              '$.transcription_error_code'
             ), updated_at = ?
-          WHERE id = ? AND workspace_id = ? AND current_version_id = ?`,
+          WHERE id = ? AND workspace_id = ? AND current_version_id = ?
+            AND json_extract(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_run_id'
+            ) = ?
+            AND EXISTS (
+              SELECT 1 FROM transcription_runs
+               WHERE id = ? AND status = 'succeeded'
+                 AND derived_transcript_asset_id = ?
+                 AND derived_transcript_asset_version_id = ?
+            )`,
       )
       .bind(
         transcriptAssetId,
@@ -395,6 +512,10 @@ async function persistTranscript(
         run.audio_asset_id,
         run.workspace_id,
         run.audio_asset_version_id,
+        run.id,
+        run.id,
+        transcriptAssetId,
+        transcriptVersionId,
       ),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
@@ -436,11 +557,86 @@ async function markFailed(
               '$.transcription_status', 'failed',
               '$.transcription_error_code', ?
             ), updated_at = ?
-          WHERE id = ? AND workspace_id = ?`,
+          WHERE id = ? AND workspace_id = ?
+            AND json_extract(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_run_id'
+            ) = ?
+            AND EXISTS (
+              SELECT 1 FROM transcription_runs
+               WHERE id = ? AND status = 'failed' AND error_code = ?
+                 AND finished_at = ?
+            )`,
       )
-      .bind(code, timestamp, run.audio_asset_id, run.workspace_id),
+      .bind(
+        code,
+        timestamp,
+        run.audio_asset_id,
+        run.workspace_id,
+        run.id,
+        run.id,
+        code,
+        timestamp,
+      ),
   ]);
   return { runId: String(run.id), status: "failed", segmentCount: 0, errorCode: code };
+}
+
+async function markRetryable(
+  run: Row,
+  owner: string,
+  error: unknown,
+): Promise<TranscriptionProcessResult> {
+  const timestamp = now();
+  const code = errorCode(error);
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `UPDATE transcription_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                queued_at = ?, finished_at = NULL, error_code = ?,
+                error_details_json = ?, updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(
+        timestamp,
+        code,
+        JSON.stringify({ message: safeError(error), retryable: true }),
+        timestamp,
+        run.id,
+        owner,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'queued',
+              '$.transcription_error_code', ?
+            ), updated_at = ?
+          WHERE id = ? AND workspace_id = ?
+            AND json_extract(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_run_id'
+            ) = ?
+            AND EXISTS (
+              SELECT 1 FROM transcription_runs
+               WHERE id = ? AND status = 'queued' AND error_code = ?
+                 AND queued_at = ?
+            )`,
+      )
+      .bind(
+        code,
+        timestamp,
+        run.audio_asset_id,
+        run.workspace_id,
+        run.id,
+        run.id,
+        code,
+        timestamp,
+      ),
+  ]);
+  return { runId: String(run.id), status: "retryable", segmentCount: 0, errorCode: code };
 }
 
 export async function processTranscriptionRun(
@@ -454,41 +650,64 @@ export async function processTranscriptionRun(
   const owner = `transcriber_${crypto.randomUUID()}`;
   const leased = await acquireLease(runId, owner, now());
   if (!leased) return { runId, status: "lease_not_acquired", segmentCount: 0 };
+  let stagedReady = false;
   try {
     const staged = await loadOrCreateStagedResult(leased, owner);
+    stagedReady = true;
     return await persistTranscript(leased, owner, staged);
   } catch (error) {
+    if (error instanceof TranscriptionFault && error.retryable) {
+      return markRetryable(leased, owner, error);
+    }
+    if (stagedReady) {
+      return markRetryable(
+        leased,
+        owner,
+        new TranscriptionFault(
+          "TRANSCRIPTION_PERSIST_RETRY",
+          safeError(error),
+          true,
+        ),
+      );
+    }
     return markFailed(leased, owner, error);
   }
 }
 
-export async function failExpiredTranscriptionRuns(timestamp = now()): Promise<number> {
-  const expired = await getD1()
-    .prepare(
-      `UPDATE transcription_runs
-          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-              finished_at = ?, error_code = 'TRANSCRIPTION_TIMEOUT',
-              error_details_json = '{"reason":"consumer_lease_expired"}', updated_at = ?
-        WHERE status = 'processing' AND lease_expires_at IS NOT NULL
-          AND lease_expires_at <= ?`,
-    )
-    .bind(timestamp, timestamp, timestamp)
-    .run();
-  await getD1()
-    .prepare(
-      `UPDATE assets
-          SET metadata_json = json_set(
-            COALESCE(metadata_json, '{}'),
-            '$.transcription_status', 'failed',
-            '$.transcription_error_code', 'TRANSCRIPTION_TIMEOUT'
-          ), updated_at = ?
-        WHERE id IN (
-          SELECT audio_asset_id FROM transcription_runs
-           WHERE status = 'failed' AND error_code = 'TRANSCRIPTION_TIMEOUT'
-             AND finished_at = ?
-        )`,
-    )
-    .bind(timestamp, timestamp)
-    .run();
+export async function requeueExpiredTranscriptionRuns(timestamp = now()): Promise<number> {
+  const [expired] = await getD1().batch([
+    getD1()
+      .prepare(
+        `UPDATE transcription_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                queued_at = ?, finished_at = NULL, error_code = 'TRANSCRIPTION_TIMEOUT',
+                error_details_json = '{"reason":"consumer_lease_expired","retryable":true}', updated_at = ?
+          WHERE status = 'processing' AND lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ?`,
+      )
+      .bind(timestamp, timestamp, timestamp),
+    getD1()
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'queued',
+              '$.transcription_error_code', 'TRANSCRIPTION_TIMEOUT'
+            ), updated_at = ?
+          WHERE EXISTS (
+            SELECT 1 FROM transcription_runs
+             WHERE id = json_extract(
+               COALESCE(assets.metadata_json, '{}'),
+               '$.transcription_run_id'
+             )
+               AND audio_asset_id = assets.id
+               AND workspace_id = assets.workspace_id
+               AND status = 'queued'
+               AND error_code = 'TRANSCRIPTION_TIMEOUT'
+               AND queued_at = ?
+          )`,
+      )
+      .bind(timestamp, timestamp),
+  ]);
   return Number(expired.meta.changes ?? 0);
 }

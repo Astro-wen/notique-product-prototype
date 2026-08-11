@@ -94,6 +94,58 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 
 `npm run eval` 需要填入人工确认过的 Ground Truth 和模型结果。空模板只用于说明格式，不能产生验证结论。完整说明见 `eval/README.md`。
 
+## Eric 一键演示
+
+先按上面的步骤启动本地服务。另开一个终端运行下面这条命令：
+
+```bash
+npm run demo:eric -- --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+这条命令只使用固定的 Oak Street 合成案例，并且只调用本地正式 API。它会创建
+Project，导入三次 Transcript 和三张照片，然后按时间顺序发起三次真实模型提取。
+每次提取都等待后台任务完成，再继续下一次。最后打印事项概况、时间线、决定、
+偏好、待确认问题、风险、下次议程和 Brief。
+
+`--accept-fixture-scenario` 只允许脚本确认案例清单中写明的预期场景。模型必须把该
+场景放进两个或三个候选项里，否则命令直接失败，不会改选其他高置信度候选。正式
+用户测试仍然必须由人阅读候选项后再作选择。
+
+`--confirm-reviewed-fixture` 表示你明确允许脚本为这个合成案例提交 Evidence 审阅
+确认、Claim 确认和重复事实确认。去掉该参数时，Claim 会保留在待审核状态。去掉
+`--accept-fixture-scenario` 时，脚本会在第一次提取后停止，因为后续 Event 按产品
+规则必须等待场景确认。保留场景确认、去掉自动审阅参数时，三个 Run 会完成，但
+报告状态为 `awaiting_review`，不会把空的已确认结果写成成功。脚本不会静默代替
+用户作决定。
+
+如果终端连接在 dispatch 后中断，脚本会继续查询已经创建的 Run ID，不会重新创建
+Run。若需要从同一个案例身份恢复，可重复使用一个安全的关联 ID：
+
+```bash
+npm run demo:eric -- --correlation-id=eric-homework-01 --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+同一个关联 ID 会复用导入和提取步骤的幂等键，避免因为不确定的网络结果重复付费。
+本地队列里即使已有其他任务，脚本也会持续 dispatch 和查询，直到本次 Run 完成或
+达到超时。每次调用仍会生成一份新的 JSON 文件，因此恢复记录不会覆盖旧记录。
+
+每次执行都会把完整 JSON 记录写入 `outputs/eric-demo/`。记录包含模型 Run ID、
+服务端 Request ID、模型 Provider Request ID、最终 Project 状态和八份结果。这个
+目录不会提交到 Git。失败也会保留已完成步骤和错误对应的 Request ID，方便排查。
+如果失败发生在本地网络层且服务端没有返回响应，对应 Request ID 会明确记录为
+`null`，不会借用上一条成功请求的 ID。
+
+如果模型没有配置，命令会明确报 `MODEL_PROVIDER_NOT_CONFIGURED`。脚本不读取或
+打印 API Key，也不会在安装、构建或测试时自动运行。只有人工执行
+`npm run demo:eric` 才会调用付费模型。合成案例只用于工程演示和回归，不能作为
+Concept Validation 已经通过的证据。
+
+单次 Run 默认最多等待 10 分钟，覆盖当前服务允许的 9 分钟模型超时。脚本依赖
+已经启动的本地服务，本身不会创建后台服务，因此结束时没有临时服务需要清理。
+成功 Run 必须至少生成一条可审核 Claim 或 Occurrence。显式自动确认后，Folder
+Summary 与 Timeline 必须包含已确认内容，Brief 也必须引用一条已确认状态；否则
+命令失败，避免把结构正确但内容为空的响应当成演示成功。
+
 ## 尚未完成的外部接入
 
 开始真实 Concept Validation 前还需要确认 Sites 已按 `.openai/hosting.json` 为 `DB` 和 `EVIDENCE` 创建并接好 D1/R2 资源，写入服务端 Secret，选择固定版本的高质量多模态模型，并完成 Ground Truth、稳定性、费用、延迟和 Blind Set 测试。Cloudflare Access 或 ChatGPT 托管网关的可信 Header 注入也必须由部署方确认。没有这些结果时，不能把本仓库称为已经完成的概念验证。

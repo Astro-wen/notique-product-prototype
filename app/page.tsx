@@ -14,6 +14,7 @@ import {
   MAX_AUDIO_BYTES,
   audioMimeFor,
 } from "@/lib/domain/audio-transcription";
+import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
 import {
   ApiIssue,
   Claim,
@@ -1701,7 +1702,9 @@ export default function Home() {
     }
   }
 
-  async function beginSimpleTest(openTranscriptAfterCreate = false) {
+  async function beginSimpleTest(
+    openTranscriptAfterCreate = false,
+  ): Promise<{ project: Project; event: Event } | null> {
     setSimpleFlow(true);
     setBusyAction("simple-start");
     setProjectsIssue(null);
@@ -1732,38 +1735,50 @@ export default function Home() {
       await loadSimpleProject(created.id, createdEvent.id);
       if (openTranscriptAfterCreate) setShowImport(true);
       flash("空白测试已经建立，可以直接上传录音、Transcript 或照片");
+      return { project: created, event: createdEvent };
     } catch (error) {
       setProjectsIssue(toIssue(error));
+      return null;
     } finally {
       setBusyAction(null);
     }
   }
 
   async function attachSimpleFile(file: File) {
-    if (!project) return;
     const localIssue = photoUploadIssue(file.name, file.type, file.size)
       ?? audioUploadIssue(file.name, file.type, file.size);
     if (localIssue) {
       setEventIssue(localIssue);
       return;
     }
-    setBusyAction("asset");
-    setEventIssue(null);
+    let targetProject = project;
     let targetEvent = event;
     try {
-      if (!targetEvent) {
-        const fingerprint = `simple-event:${project.id}`;
-        const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-        mutationKeys.current.set(fingerprint, idempotencyKey);
-        targetEvent = await api.createEvent(
-          project.id,
-          { title: "第一次沟通", event_type: "meeting", occurred_at: new Date().toISOString() },
-          idempotencyKey,
-        );
-        mutationKeys.current.delete(fingerprint);
-        setEvent(targetEvent);
-        setEvents((current) => current.some((item) => item.id === targetEvent?.id) ? current : [...current, targetEvent!]);
-      }
+      const target = await resolveSimpleImportTarget({
+        project: targetProject,
+        event: targetEvent,
+        createTest: () => beginSimpleTest(false),
+        createEvent: async (currentProject) => {
+          const fingerprint = `simple-event:${currentProject.id}`;
+          const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+          mutationKeys.current.set(fingerprint, idempotencyKey);
+          const createdEvent = await api.createEvent(
+            currentProject.id,
+            { title: "第一次沟通", event_type: "meeting", occurred_at: new Date().toISOString() },
+            idempotencyKey,
+          );
+          mutationKeys.current.delete(fingerprint);
+          return createdEvent;
+        },
+      });
+      if (!target) return;
+      targetProject = target.project;
+      targetEvent = target.event;
+      setProject(targetProject);
+      setEvent(targetEvent);
+      setEvents((current) => current.some((item) => item.id === targetEvent?.id) ? current : [...current, targetEvent!]);
+      setBusyAction("asset");
+      setEventIssue(null);
       const imageMime = modelImageMimeFor(file.name, file.type);
       const audioMime = audioMimeFor(file.name, file.type);
       const kind = imageMime ? "photo" : audioMime ? "audio" : file.type === "application/pdf" ? "pdf" : "text";
@@ -1781,11 +1796,13 @@ export default function Home() {
       } else {
         flash("材料已加入");
       }
-      await loadSimpleProject(project.id, targetEvent.id);
+      await loadSimpleProject(targetProject.id, targetEvent.id);
     } catch (error) {
       const issue = toIssue(error);
       const targetEventId = targetEvent?.id;
-      if (targetEventId) await loadSimpleProject(project.id, targetEventId).catch(() => undefined);
+      if (targetProject && targetEventId) {
+        await loadSimpleProject(targetProject.id, targetEventId).catch(() => undefined);
+      }
       setEventIssue(issue);
     } finally {
       setBusyAction(null);
@@ -2146,12 +2163,12 @@ function SimpleTestScreen({
         <section className="simple-import-panel" aria-label="添加材料">
           <div>
             <h2>添加自己的材料</h2>
-            <p>{project ? "Transcript 会建立一条新记录。照片和录音会加到当前记录，录音完成转写后自动成为可分析材料。" : "新建一次测试后，可以上传 Transcript 或录音。"}</p>
+            <p>{project ? "Transcript 会建立一条新记录。照片和录音会加到当前记录，录音完成转写后自动成为可分析材料。" : "可以直接上传录音或照片，系统会自动建立测试和第一条记录。"}</p>
           </div>
           <div className="simple-import-actions">
             <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span>TXT</span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></button>
-            <label className={`simple-import-action ${!project || busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : project ? "会自动建立第一条沟通记录" : "先新建一次测试"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={!project || Boolean(busy)} onChange={chooseSupportingFile} /></label>
-            <label className={`simple-import-action ${!project || busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : project ? "会自动建立第一条沟通记录" : "先新建一次测试"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={!project || Boolean(busy)} onChange={chooseSupportingFile} /></label>
+            <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : project ? "会自动建立第一条沟通记录" : "会自动建立测试和第一条沟通记录"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
+            <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : project ? "会自动建立第一条沟通记录" : "会自动建立测试和第一条沟通记录"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
             <button className="simple-import-action quiet-choice" disabled={Boolean(busy)} onClick={onStartOwn}><span>NEW</span><strong>新建一次测试</strong><small>使用一组新的材料</small></button>
           </div>
           {event && event.assets.length > 0 && (

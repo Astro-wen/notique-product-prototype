@@ -67,6 +67,7 @@ import {
   toResponse,
 } from "@/lib/server/http/api";
 import { getRequestScope } from "@/lib/server/http/context";
+import { planByteRangeResponse } from "@/lib/server/http/byte-range";
 import type {
   BatchClaimVerdictRequest,
   ClaimVerdictRequest,
@@ -307,20 +308,33 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
     segments[0] === "assets" &&
     segments[2] === "evidence-view"
   ) {
-    const { row, object } = await getAssetEvidenceObject(scope, segments[1]);
+    const asset = await getAsset(scope, segments[1]);
+    if (!asset.version) {
+      await getAssetEvidenceObject(scope, segments[1]);
+      throw new ApiFault(404, "NOT_FOUND", "Stored evidence object was not found.");
+    }
+    const totalSize = asset.version.size_bytes;
+    const rangePlan = planByteRangeResponse(request.headers.get("range"), totalSize);
+    const commonHeaders = new Headers({
+      "accept-ranges": rangePlan.acceptRanges,
+      "cache-control": "private, no-store",
+      "content-type": asset.version.mime_type || "application/octet-stream",
+      "content-disposition": `inline; filename="evidence"; filename*=UTF-8''${contentDispositionFilename(asset.filename)}`,
+      "content-security-policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+      "cross-origin-resource-policy": "same-origin",
+      "x-content-type-options": "nosniff",
+      "x-request-id": id,
+    });
+    commonHeaders.set("content-length", String(rangePlan.contentLength));
+    if (rangePlan.contentRange) commonHeaders.set("content-range", rangePlan.contentRange);
+    if (rangePlan.status === 416) {
+      return new Response(null, { status: 416, headers: commonHeaders });
+    }
+    const { object } = await getAssetEvidenceObject(scope, segments[1], rangePlan.range);
+    commonHeaders.set("etag", object.httpEtag);
     return new Response(object.body, {
-      status: 200,
-      headers: {
-        "cache-control": "private, no-store",
-        "content-type": String(row.version_mime_type || "application/octet-stream"),
-        "content-length": String(object.size),
-        "content-disposition": `inline; filename="evidence"; filename*=UTF-8''${contentDispositionFilename(row.filename)}`,
-        "content-security-policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
-        "cross-origin-resource-policy": "same-origin",
-        etag: object.httpEtag,
-        "x-content-type-options": "nosniff",
-        "x-request-id": id,
-      },
+      status: rangePlan.status,
+      headers: commonHeaders,
     });
   }
   if (segments.length === 2 && segments[0] === "extraction-runs") {

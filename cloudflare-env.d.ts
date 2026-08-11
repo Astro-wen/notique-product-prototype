@@ -57,7 +57,10 @@ interface R2ObjectBody extends R2Object {
 
 interface R2Bucket {
   head(key: string): Promise<R2Object | null>;
-  get(key: string): Promise<R2ObjectBody | null>;
+  get(
+    key: string,
+    options?: { range?: { offset: number; length: number } },
+  ): Promise<R2ObjectBody | null>;
   put(
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,

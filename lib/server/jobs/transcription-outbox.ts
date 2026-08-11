@@ -1,9 +1,13 @@
 import { getD1 } from "@/db";
 import {
-  failExpiredTranscriptionRuns,
   processTranscriptionRun,
+  requeueExpiredTranscriptionRuns,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
+import {
+  TRANSCRIPTION_MAX_ATTEMPTS,
+  transcriptionRetryDecision,
+} from "@/lib/domain/transcription-retry";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
 type Row = Record<string, unknown>;
@@ -23,12 +27,12 @@ export type TranscriptionDispatchResult = {
 export type TranscriptionSweepResult = {
   recoveredOutbox: number;
   deadLetteredOutbox: number;
-  failedExpiredRuns: number;
+  requeuedExpiredRuns: number;
   failedUndeliverableRuns: number;
   requeuedLongRunningMessages: number;
 };
 
-const MAX_OUTBOX_ATTEMPTS = 3;
+const MAX_OUTBOX_ATTEMPTS = TRANSCRIPTION_MAX_ATTEMPTS;
 const BATCH_LIMIT = 1;
 
 function now(): string {
@@ -103,11 +107,11 @@ async function markSent(row: Row, owner: string): Promise<void> {
     .run();
 }
 
-async function markFailure(row: Row, owner: string, code: string): Promise<void> {
+async function markFailure(row: Row, owner: string, code: string): Promise<boolean> {
   const timestamp = now();
   const attempt = Number(row.attempt);
   const terminal = attempt >= MAX_OUTBOX_ATTEMPTS;
-  await getD1()
+  const updated = await getD1()
     .prepare(
       `UPDATE transcription_queue_outbox
           SET status = 'failed', next_attempt_at = ?, lease_owner = NULL,
@@ -124,6 +128,47 @@ async function markFailure(row: Row, owner: string, code: string): Promise<void>
       owner,
     )
     .run();
+  return Number(updated.meta.changes ?? 0) === 1;
+}
+
+async function markRetryExhaustedRun(runId: string, code: string): Promise<void> {
+  const timestamp = now();
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `UPDATE transcription_runs
+            SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED',
+                error_details_json = ?, updated_at = ?
+          WHERE id = ? AND status = 'queued'`,
+      )
+      .bind(
+        timestamp,
+        JSON.stringify({ reason: "provider_retry_exhausted", last_error_code: code }),
+        timestamp,
+        runId,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'failed',
+              '$.transcription_error_code', 'TRANSCRIPTION_RETRY_EXHAUSTED'
+            ), updated_at = ?
+          WHERE id = (SELECT audio_asset_id FROM transcription_runs WHERE id = ?)
+            AND json_extract(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_run_id'
+            ) = ?
+            AND EXISTS (
+              SELECT 1 FROM transcription_runs
+               WHERE id = ? AND status = 'failed'
+                 AND error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED'
+                 AND finished_at = ?
+            )`,
+      )
+      .bind(timestamp, runId, runId, runId, timestamp),
+  ]);
 }
 
 export async function dispatchDueTranscriptionOutbox(): Promise<TranscriptionDispatchResult> {
@@ -181,6 +226,29 @@ export async function dispatchDueTranscriptionOutbox(): Promise<TranscriptionDis
         continue;
       }
       const processed = await processTranscriptionRun(String(leased.run_id));
+      if (processed.status === "retryable") {
+        const code = processed.errorCode || "TRANSCRIPTION_RETRYABLE_FAILURE";
+        const retryDecision = transcriptionRetryDecision({
+          runId: String(leased.run_id),
+          outboxId: String(leased.id),
+          errorCode: code,
+          outboxAttempt: Number(leased.attempt),
+          maxAttempts: MAX_OUTBOX_ATTEMPTS,
+        });
+        const markedFailure = await markFailure(leased, owner, code);
+        if (retryDecision.exhausted && markedFailure) {
+          await markRetryExhaustedRun(retryDecision.runId, retryDecision.errorCode);
+        } else {
+          result.deferred += 1;
+        }
+        result.items.push({
+          outboxId: retryDecision.outboxId,
+          runId: retryDecision.runId,
+          outcome: processed.status,
+          errorCode: retryDecision.errorCode,
+        });
+        continue;
+      }
       if (processed.status === "lease_not_acquired") {
         const run = await first(`SELECT status FROM transcription_runs WHERE id = ?`, [leased.run_id]);
         const status = String(run?.status ?? "missing");
@@ -219,7 +287,7 @@ export async function sweepTranscriptionJobs(
   timestamp = now(),
 ): Promise<TranscriptionSweepResult> {
   const db = getD1();
-  const failedExpiredRuns = await failExpiredTranscriptionRuns(timestamp);
+  const requeuedExpiredRuns = await requeueExpiredTranscriptionRuns(timestamp);
   const recovered = await db
     .prepare(
       `UPDATE transcription_queue_outbox
@@ -254,23 +322,46 @@ export async function sweepTranscriptionJobs(
     )
     .bind(timestamp, timestamp, threshold)
     .run();
-  const failedRuns = await db
-    .prepare(
-      `UPDATE transcription_runs
-          SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
-              error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
-        WHERE status = 'queued' AND id IN (
-          SELECT run_id FROM transcription_queue_outbox
-           WHERE status = 'failed' AND attempt >= ?
-             AND next_attempt_at = '9999-12-31T23:59:59.999Z'
-        )`,
-    )
-    .bind(timestamp, timestamp, MAX_OUTBOX_ATTEMPTS)
-    .run();
+  const [failedRuns] = await db.batch([
+    db
+      .prepare(
+        `UPDATE transcription_runs
+            SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
+                error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
+          WHERE status = 'queued' AND id IN (
+            SELECT run_id FROM transcription_queue_outbox
+             WHERE status = 'failed' AND attempt >= ?
+               AND next_attempt_at = '9999-12-31T23:59:59.999Z'
+          )`,
+      )
+      .bind(timestamp, timestamp, MAX_OUTBOX_ATTEMPTS),
+    db
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'failed',
+              '$.transcription_error_code', 'QUEUE_DISPATCH_FAILED'
+            ), updated_at = ?
+          WHERE EXISTS (
+            SELECT 1 FROM transcription_runs
+             WHERE id = json_extract(
+               COALESCE(assets.metadata_json, '{}'),
+               '$.transcription_run_id'
+             )
+               AND audio_asset_id = assets.id
+               AND workspace_id = assets.workspace_id
+               AND status = 'failed'
+               AND error_code = 'QUEUE_DISPATCH_FAILED'
+               AND finished_at = ?
+          )`,
+      )
+      .bind(timestamp, timestamp),
+  ]);
   return {
     recoveredOutbox: Number(recovered.meta.changes ?? 0),
     deadLetteredOutbox: Number(deadLettered.meta.changes ?? 0),
-    failedExpiredRuns,
+    requeuedExpiredRuns,
     failedUndeliverableRuns: Number(failedRuns.meta.changes ?? 0),
     requeuedLongRunningMessages: Number(requeued.meta.changes ?? 0),
   };
