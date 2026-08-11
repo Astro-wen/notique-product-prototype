@@ -5,7 +5,7 @@ export type ProjectScenarioStatus =
   | "confirmed";
 
 export type MaterialStatus = "draft" | "ready" | "archived";
-export type AssetKind = "transcript" | "photo" | "pdf" | "text";
+export type AssetKind = "transcript" | "photo" | "pdf" | "text" | "audio";
 export type AssetProcessingStatus =
   | "uploading"
   | "parsing"
@@ -16,6 +16,12 @@ export type ExtractionRunStatus =
   | "processing"
   | "succeeded"
   | "completed_with_warnings"
+  | "failed"
+  | "cancelled";
+export type TranscriptionRunStatus =
+  | "queued"
+  | "processing"
+  | "succeeded"
   | "failed"
   | "cancelled";
 export type ClaimReviewStatus = "pending" | "verified" | "rejected";
@@ -37,6 +43,10 @@ export type ApiErrorCode =
   | "TOO_MANY_IMAGES"
   | "IMAGE_CONVERSION_FAILED"
   | "TRANSCRIPT_PARSE_FAILED"
+  | "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED"
+  | "TRANSCRIPTION_TIMEOUT"
+  | "TRANSCRIPTION_OUTPUT_INVALID"
+  | "AUDIO_TRANSCRIPTION_FAILED"
   | "EVENT_NOT_READY"
   | "MODEL_PROVIDER_NOT_CONFIGURED"
   | "MODEL_TIMEOUT"
@@ -171,6 +181,8 @@ export type AssetVersionRecord = {
   parser_version: string | null;
   r2_original_key: string;
   r2_model_key: string | null;
+  derived_from_asset_version_id: string | null;
+  transform: Record<string, unknown> | null;
   finalized_at: string;
 };
 
@@ -228,6 +240,38 @@ export type ExtractionRunRecord = {
   queued_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type TranscriptionSegmentRecord = {
+  id: string;
+  ordinal: number;
+  speaker: string;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+};
+
+export type TranscriptionRunRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  audio_asset_id: string;
+  audio_asset_version_id: string;
+  status: TranscriptionRunStatus;
+  provider: string;
+  model: string;
+  response_format: "diarized_json";
+  derived_transcript_asset_id: string | null;
+  derived_transcript_asset_version_id: string | null;
+  segment_count: number | null;
+  duration_ms: number | null;
+  provider_request_id: string | null;
+  error_code: string | null;
+  created_at: string;
+  queued_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  segments?: TranscriptionSegmentRecord[];
 };
 
 export type ClaimRecord = {
@@ -445,6 +489,12 @@ export type CreateExtractionRunResponse = ApiSuccess<{
 }>;
 export type GetExtractionRunResponse = ApiSuccess<{
   run: ExtractionRunRecord;
+}>;
+export type CreateTranscriptionRunResponse = ApiSuccess<{
+  transcription_run: TranscriptionRunRecord;
+}>;
+export type GetTranscriptionRunResponse = ApiSuccess<{
+  transcription_run: TranscriptionRunRecord;
 }>;
 export type GetRunClaimsResponse = ApiSuccess<{
   run: ExtractionRunRecord;

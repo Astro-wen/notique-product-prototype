@@ -20,6 +20,8 @@ import type {
   GetExtractionRunResponse,
   GetProjectResponse,
   GetRunClaimsResponse,
+  GetTranscriptionRunResponse,
+  CreateTranscriptionRunResponse,
   GetVerifiedViewResponse,
   GlossaryCategory,
   GlossaryEntryRecord,
@@ -107,6 +109,27 @@ export type Asset = {
   contentType?: string;
   sizeBytes?: number;
   status?: string;
+  metadata: Record<string, unknown>;
+};
+
+export type TranscriptionRun = {
+  id: Id;
+  eventId: Id;
+  audioAssetId: Id;
+  status: string;
+  model: string;
+  derivedTranscriptAssetId?: Id;
+  segmentCount?: number;
+  durationMs?: number;
+  errorCode?: string;
+  segments: Array<{
+    id: Id;
+    ordinal: number;
+    speaker: string;
+    startMs: number;
+    endMs: number;
+    text: string;
+  }>;
 };
 
 export type ExtractionRun = {
@@ -150,6 +173,7 @@ export type EvidenceRef = {
   viewUrl?: string;
   caption?: string;
   assetId?: Id;
+  audioUrl?: string;
 };
 
 export type Claim = {
@@ -321,6 +345,41 @@ function normalizeAsset(value: unknown): Asset | null {
     contentType: asString(pick(value, ["content_type", "mime_type", "contentType"]), undefined as unknown as string) || asString(pick(version, ["mime_type"]), undefined as unknown as string) || undefined,
     sizeBytes: asNumber(pick(value, ["size_bytes", "sizeBytes", "size"])) ?? asNumber(pick(version, ["size_bytes"])),
     status: asString(pick(value, ["status", "processing_status"]), undefined as unknown as string) || undefined,
+    metadata: isRecord(pick(value, ["metadata"]))
+      ? pick(value, ["metadata"]) as Record<string, unknown>
+      : {},
+  };
+}
+
+function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
+  const source = isRecord(unwrap(value)) ? unwrap(value) as JsonRecord : {};
+  const segments = Array.isArray(source.segments) ? source.segments : [];
+  return {
+    id: asString(pick(source, ["id", "run_id"])),
+    eventId: asString(pick(source, ["event_id"])),
+    audioAssetId: asString(pick(source, ["audio_asset_id"])),
+    status: asString(pick(source, ["status"]), "unknown"),
+    model: asString(pick(source, ["model"])),
+    derivedTranscriptAssetId: asString(
+      pick(source, ["derived_transcript_asset_id"]),
+      undefined as unknown as string,
+    ) || undefined,
+    segmentCount: asNumber(pick(source, ["segment_count"])),
+    durationMs: asNumber(pick(source, ["duration_ms"])),
+    errorCode: asString(pick(source, ["error_code"]), undefined as unknown as string) || undefined,
+    segments: segments.flatMap((item): TranscriptionRun["segments"] => {
+      if (!isRecord(item)) return [];
+      const id = asString(pick(item, ["id"]));
+      if (!id) return [];
+      return [{
+        id,
+        ordinal: asNumber(pick(item, ["ordinal"])) ?? 0,
+        speaker: asString(pick(item, ["speaker"]), "Speaker"),
+        startMs: asNumber(pick(item, ["start_ms"])) ?? 0,
+        endMs: asNumber(pick(item, ["end_ms"])) ?? 0,
+        text: asString(pick(item, ["text"])),
+      }];
+    }),
   };
 }
 
@@ -385,6 +444,7 @@ function normalizeEvidence(value: unknown): EvidenceRef | null {
     viewUrl,
     caption: asString(pick(value, ["caption", "description", "observation"]), undefined as unknown as string) || undefined,
     assetId: asString(pick(value, ["asset_id", "assetId"]), undefined as unknown as string) || undefined,
+    audioUrl: asString(pick(value, ["audio_view_url", "audioUrl"]), undefined as unknown as string) || undefined,
   };
 }
 
@@ -682,6 +742,32 @@ export const api = {
     const result = normalizeAsset(dataValue(body, ["asset"]));
     if (!result?.id) invalidContract("The server returned an invalid finalized asset.");
     return result;
+  },
+
+  async startTranscription(assetId: Id, idempotencyKey: string): Promise<TranscriptionRun> {
+    const body = await request<CreateTranscriptionRunResponse>(
+      `/api/v1/assets/${encodeURIComponent(assetId)}/transcription-runs`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    return requireId(
+      normalizeTranscriptionRun(body.data.transcription_run),
+      "transcription run",
+    );
+  },
+
+  async getTranscriptionRun(runId: Id): Promise<TranscriptionRun> {
+    const body = await request<GetTranscriptionRunResponse>(
+      `/api/v1/transcription-runs/${encodeURIComponent(runId)}`,
+      { cache: "no-store" },
+    );
+    return requireId(
+      normalizeTranscriptionRun(body.data.transcription_run),
+      "transcription run",
+    );
   },
 
   async startExtraction(eventId: Id, assetVersionIds: Id[], idempotencyKey: string): Promise<ExtractionRun> {

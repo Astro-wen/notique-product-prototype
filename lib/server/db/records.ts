@@ -7,6 +7,7 @@ import type {
   ExtractionRunRecord,
   ProjectRecord,
   ScenarioCandidate,
+  TranscriptionRunRecord,
   TranscriptImportItemRecord,
   TranscriptImportRecord,
 } from "@/lib/shared/api-types";
@@ -73,6 +74,11 @@ export function assetVersionRecord(row: Row): AssetVersionRecord | null {
     parser_version: nullableText(row, "parser_version"),
     r2_original_key: text(row, "r2_original_key"),
     r2_model_key: nullableText(row, "r2_model_key"),
+    derived_from_asset_version_id: nullableText(row, "derived_from_asset_version_id"),
+    transform: parseJson<Record<string, unknown> | null>(
+      nullableText(row, "transform_json"),
+      null,
+    ),
     finalized_at: text(row, "finalized_at"),
   };
 }
@@ -138,6 +144,39 @@ export function extractionRunRecord(row: Row): ExtractionRunRecord {
     model: nullableText(row, "model"),
     prompt_version: text(row, "prompt_version"),
     schema_version: text(row, "schema_version"),
+    error_code: nullableText(row, "error_code"),
+    created_at: text(row, "created_at"),
+    queued_at: nullableText(row, "queued_at"),
+    started_at: nullableText(row, "started_at"),
+    finished_at: nullableText(row, "finished_at"),
+  };
+}
+
+export function transcriptionRunRecord(row: Row): TranscriptionRunRecord {
+  return {
+    id: text(row, "id"),
+    project_id: text(row, "project_id"),
+    event_id: text(row, "event_id"),
+    audio_asset_id: text(row, "audio_asset_id"),
+    audio_asset_version_id: text(row, "audio_asset_version_id"),
+    status: text(row, "status") as TranscriptionRunRecord["status"],
+    provider: text(row, "provider"),
+    model: text(row, "model"),
+    response_format: "diarized_json",
+    derived_transcript_asset_id: nullableText(row, "derived_transcript_asset_id"),
+    derived_transcript_asset_version_id: nullableText(
+      row,
+      "derived_transcript_asset_version_id",
+    ),
+    segment_count:
+      row.segment_count === null || row.segment_count === undefined
+        ? null
+        : integer(row, "segment_count"),
+    duration_ms:
+      row.duration_ms === null || row.duration_ms === undefined
+        ? null
+        : integer(row, "duration_ms"),
+    provider_request_id: nullableText(row, "provider_request_id"),
     error_code: nullableText(row, "error_code"),
     created_at: text(row, "created_at"),
     queued_at: nullableText(row, "queued_at"),

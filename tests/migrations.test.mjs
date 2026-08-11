@@ -44,9 +44,23 @@ test("all D1 migrations apply from an empty database", async () => {
     "glossary_entries",
     "glossary_entry_audits",
     "claim_evidence_review_attestations",
+    "transcription_runs",
+    "transcription_queue_outbox",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }
+
+  const transcriptionIndexes = new Set(
+    database
+      .prepare("PRAGMA index_list(transcription_runs)")
+      .all()
+      .map((row) => row.name),
+  );
+  assert.equal(
+    transcriptionIndexes.has("uq_transcription_runs_audio_idempotency"),
+    true,
+    "audio transcription retries must be idempotent per audio version",
+  );
 
   const extractionRunColumns = new Set(
     database

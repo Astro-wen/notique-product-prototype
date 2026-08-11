@@ -1,4 +1,4 @@
-import { dispatchDueOutbox } from "@/lib/server/jobs/outbox";
+import { dispatchAllDueOutbox } from "@/lib/server/jobs/outbox";
 import { ApiFault, ok, requestId, toResponse } from "@/lib/server/http/api";
 import { requireInternalJobAuthorization } from "@/lib/server/http/internal-auth";
 
@@ -24,7 +24,7 @@ export async function POST(request: Request): Promise<Response> {
         throw new ApiFault(400, "BAD_REQUEST", "POC dispatch limit must be 1.");
       }
     }
-    return ok({ dispatch: await dispatchDueOutbox() }, id);
+    return ok({ dispatch: await dispatchAllDueOutbox() }, id);
   } catch (error) {
     return toResponse(error, id);
   }

@@ -43,6 +43,10 @@ import {
   withdrawClaim,
 } from "@/lib/server/db/verdict-repository";
 import {
+  createTranscriptionRun,
+  getTranscriptionRun,
+} from "@/lib/server/db/transcription-repository";
+import {
   ApiFault,
   enumValue,
   isoDate,
@@ -70,7 +74,7 @@ type RouteContext = { params: Promise<{ segments: string[] }> };
 type JsonRecord = Record<string, unknown>;
 
 const EVENT_TYPES = ["meeting", "showing", "estimate", "walkthrough"] as const;
-const ASSET_KINDS = ["transcript", "photo", "pdf", "text"] as const;
+const ASSET_KINDS = ["transcript", "photo", "pdf", "text", "audio"] as const;
 const CLAIM_TYPES = [
   "budget",
   "preference",
@@ -303,6 +307,9 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 2 && segments[0] === "extraction-runs") {
     return ok({ run: await getExtractionRun(scope, segments[1]) }, id);
   }
+  if (segments.length === 2 && segments[0] === "transcription-runs") {
+    return ok({ transcription_run: await getTranscriptionRun(scope, segments[1]) }, id);
+  }
   if (
     segments.length === 3 &&
     segments[0] === "extraction-runs" &&
@@ -505,6 +512,22 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
   }
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "finalize") {
     return ok({ asset: await finalizeAsset(scope, segments[1]) }, id);
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === "assets" &&
+    segments[2] === "transcription-runs"
+  ) {
+    const result = await createTranscriptionRun(
+      scope,
+      segments[1],
+      idempotencyKey(request),
+    );
+    return ok(
+      { transcription_run: result.transcriptionRun },
+      id,
+      result.created ? 202 : 200,
+    );
   }
   if (
     segments.length === 3 &&

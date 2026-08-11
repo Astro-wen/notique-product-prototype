@@ -12,6 +12,8 @@ export type RuntimeBindings = {
   AI_REASONING_EFFORT?: string;
   AI_TIMEOUT_MS?: string;
   AI_MAX_OUTPUT_TOKENS?: string;
+  AI_TRANSCRIPTION_MODEL?: string;
+  AI_TRANSCRIPTION_TIMEOUT_MS?: string;
   APP_ENV?: string;
   AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
   INTERNAL_JOB_TOKEN?: string;
@@ -23,6 +25,7 @@ export type RuntimeBindings = {
   MAX_CONCURRENT_RUNS_PER_WORKSPACE?: string;
   MAX_DAILY_EVAL_COST_USD?: string;
   MAX_DAILY_MODEL_TOKENS?: string;
+  MAX_AUDIO_BYTES?: string;
 };
 
 export function getBindings(): RuntimeBindings {
