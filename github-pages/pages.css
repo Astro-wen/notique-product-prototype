@@ -1,0 +1,106 @@
+:root {
+  color: #152234;
+  background: #f3f6fa;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+
+button,
+a { font: inherit; }
+
+.launcher-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 16% 12%, rgba(107, 143, 196, 0.17), transparent 34%),
+    radial-gradient(circle at 86% 88%, rgba(203, 221, 244, 0.42), transparent 36%),
+    #f3f6fa;
+}
+
+.launcher-card {
+  width: min(720px, 100%);
+  padding: clamp(34px, 7vw, 72px);
+  border: 1px solid #d9e2ee;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 70px rgba(31, 48, 70, 0.12);
+  text-align: center;
+}
+
+.launcher-mark {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background: #1f4f8f;
+  color: white;
+  font-size: 26px;
+  font-weight: 760;
+}
+
+.launcher-kicker {
+  margin: 0 0 12px;
+  color: #456d9f;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  color: #142033;
+  font-size: clamp(36px, 7vw, 62px);
+  line-height: 1.05;
+  letter-spacing: -0.045em;
+}
+
+.launcher-copy {
+  max-width: 560px;
+  margin: 24px auto 30px;
+  color: #607087;
+  font-size: clamp(16px, 2.4vw, 19px);
+  line-height: 1.75;
+}
+
+.launcher-button {
+  min-height: 58px;
+  padding: 0 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: #1f4f8f;
+  color: white;
+  font-weight: 720;
+  text-decoration: none;
+  box-shadow: 0 10px 28px rgba(31, 79, 143, 0.23);
+}
+
+.launcher-button:hover { background: #193f72; }
+.launcher-button:focus-visible { outline: 3px solid #9fc2ee; outline-offset: 4px; }
+
+.launcher-note {
+  margin: 18px 0 0;
+  color: #8a96a7;
+  font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  .launcher-shell { padding: 14px; }
+  .launcher-card { padding: 34px 22px; border-radius: 24px; }
+  .launcher-button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}
