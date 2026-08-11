@@ -400,14 +400,16 @@ test("edit structure is explicit and cannot inherit a hidden normalized value", 
     validateExplicitClaimEditProjection({
       type: "budget",
       normalizedValue: null,
+      needsAdditionalEvidence: false,
       uncertainty: null,
     }),
-    { type: "budget", normalizedValue: null, uncertainty: null },
+    { type: "budget", normalizedValue: null, needsAdditionalEvidence: false, uncertainty: null },
   );
   expectConflict(
     () => validateExplicitClaimEditProjection({
       type: "budget",
       normalizedValue: undefined,
+      needsAdditionalEvidence: false,
       uncertainty: null,
     }),
     "INVALID_STATE_TRANSITION",
@@ -416,6 +418,7 @@ test("edit structure is explicit and cannot inherit a hidden normalized value", 
     () => validateExplicitClaimEditProjection({
       type: "budget",
       normalizedValue: null,
+      needsAdditionalEvidence: false,
       uncertainty: undefined,
     }),
     "INVALID_STATE_TRANSITION",
@@ -424,7 +427,30 @@ test("edit structure is explicit and cannot inherit a hidden normalized value", 
     () => validateExplicitClaimEditProjection({
       type: "budegt",
       normalizedValue: null,
+      needsAdditionalEvidence: false,
       uncertainty: null,
+    }),
+    "INVALID_STATE_TRANSITION",
+  );
+  expectConflict(
+    () => validateExplicitClaimEditProjection({
+      type: "budget",
+      normalizedValue: null,
+      needsAdditionalEvidence: undefined,
+      uncertainty: null,
+    }),
+    "INVALID_STATE_TRANSITION",
+  );
+  expectConflict(
+    () => validateExplicitClaimEditProjection({
+      type: "budget",
+      normalizedValue: null,
+      needsAdditionalEvidence: false,
+      uncertainty: {
+        reason: "Two readings remain plausible.",
+        alternatives: ["6500", "6050"],
+        question: "Which amount is correct?",
+      },
     }),
     "INVALID_STATE_TRANSITION",
   );

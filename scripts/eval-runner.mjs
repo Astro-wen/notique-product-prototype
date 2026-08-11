@@ -170,7 +170,7 @@ function singleRunMetrics(groundTruth, run) {
   const relationTruthById = new Map(groundTruth.relations.map((relation) => [relation.id, relation]));
   const materialTruth = groundTruth.claims.filter((claim) => claim.material === true);
   const criticalTruth = materialTruth.filter((claim) => claim.critical === true);
-  const criticalAmbiguities = groundTruth.claims.filter((claim) => claim.ambiguity?.severity === "critical");
+  const criticalAmbiguities = materialTruth.filter((claim) => claim.ambiguity?.severity === "critical");
   const predictionGroups = groupBy(run.claims, (claim) => claim.matchedGroundTruthId);
   const uniqueMaterialMatches = materialTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
   const supportedUniqueMaterial = uniqueMaterialMatches.filter((truth) => supported(predictionGroups.get(truth.id)[0]));
@@ -286,7 +286,7 @@ export function evaluate(groundTruth, predictionSet) {
     return refs;
   });
 
-  const criticalAmbiguities = groundTruth.claims.filter((claim) => claim.ambiguity?.severity === "critical");
+  const criticalAmbiguities = materialTruth.filter((claim) => claim.ambiguity?.severity === "critical");
   const ambiguityHits = criticalAmbiguities.filter((truth) => {
     const matches = predictionGroups.get(truth.id) ?? [];
     return matches.length === 1 && matches[0].ambiguityDetected === true && matches[0].assertedDefinitively !== true &&
@@ -338,23 +338,32 @@ export function evaluate(groundTruth, predictionSet) {
   const doubleAnnotated = groundTruth.claims.filter((claim) => claim.annotation?.doubleAnnotated === true);
   const scenarios = groupBy(groundTruth.claims, (claim) => claim.scenarioId);
   const scenarioEventCounts = Object.fromEntries([...scenarios].map(([id, claims]) => [id, new Set(claims.map((claim) => claim.eventId)).size]));
-  const scenarioShapeValid = Object.keys(scenarioEventCounts).length >= 2 && Object.values(scenarioEventCounts).every((count) => count >= 3 && count <= 5);
+  const scenarioShapeValid = Object.keys(scenarioEventCounts).length >= 3 && Object.values(scenarioEventCounts).every((count) => count >= 3 && count <= 5);
+  const allEventIds = [...new Set(groundTruth.claims.map((claim) => claim.eventId))].sort();
+  const materialTruthByEvent = groupBy(materialTruth, (claim) => claim.eventId);
   const eventMaterialClaimCounts = Object.fromEntries(
-    [...groupBy(materialTruth, (claim) => claim.eventId)]
-      .map(([eventId, claims]) => [eventId, claims.length]),
+    allEventIds.map((eventId) => [eventId, materialTruthByEvent.get(eventId)?.length ?? 0]),
   );
   // Eric's exercise caps review at ten material Claims per Event. A Ground Truth
   // set with more than ten makes the recall gate mathematically impossible and
   // must be fixed before it is allowed to produce a formal score.
   const eventMaterialShapeValid = Object.values(eventMaterialClaimCounts)
     .every((count) => count >= 5 && count <= 10);
+  const eventMaximumRecallAtReviewCap = Object.fromEntries(
+    Object.entries(eventMaterialClaimCounts).map(([eventId, count]) => [
+      eventId,
+      count === 0 ? null : Math.min(10, count) / count,
+    ]),
+  );
   const sampleEligibility = {
     scenarioCount: scenarios.size,
     scenarioEventCounts,
     scenarioShapeValid,
     eventMaterialClaimCounts,
+    reviewClaimCap: 10,
+    eventMaximumRecallAtReviewCap,
     eventMaterialShapeValid,
-    eventCount: new Set(groundTruth.claims.map((claim) => claim.eventId)).size,
+    eventCount: allEventIds.length,
     materialClaimCount: materialTruth.length,
     criticalClaimCount: criticalTruth.length,
     criticalAmbiguityCount: criticalAmbiguities.length,

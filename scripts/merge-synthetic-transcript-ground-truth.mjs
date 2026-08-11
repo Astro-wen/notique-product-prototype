@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const SOURCE_RELATIVE_PATHS = Object.freeze([
   "eval/cases/synthetic-realtor-v1/ground-truth.json",
   "eval/cases/synthetic-insurance-v1/ground-truth.json",
+  "eval/cases/synthetic-contractor-v1/ground-truth.json",
 ]);
 
 export const OUTPUT_RELATIVE_PATH =
@@ -17,7 +18,59 @@ export const OUTPUT_RELATIVE_PATH =
 const EXPECTED_DATASETS = new Set([
   "synthetic-realtor-v1",
   "synthetic-insurance-v1",
+  "synthetic-contractor-v1",
 ]);
+
+/**
+ * The raw Contractor fixture intentionally contains 13 to 14 transcript facts
+ * plus image observations per Event. It remains the exhaustive multimodal
+ * pressure test. Eric's review exercise, however, allows at most ten cards per
+ * Event. This explicit, pre-model allowlist is the single-author development
+ * annotation for the review queue. It never deletes or relabels the source
+ * fixture and must still receive independent annotation before formal use.
+ */
+export const CONTRACTOR_REVIEW_PRIORITY_IDS = Object.freeze({
+  "event-01-estimate": Object.freeze([
+    "gt-e1-scope",
+    "gt-e1-surface-quartz",
+    "gt-e1-budget-18000",
+    "gt-e1-pendant-remove",
+    "gt-e1-outlet-condition",
+    "gt-e1-hidden-change-order",
+    "gt-e1-decision-makers",
+    "gt-e1-loadbearing-open",
+    "gt-e1-labor-allowance-ambiguous",
+    "gt-e1-appliance-move-open",
+  ]),
+  "event-02-scope-followup": Object.freeze([
+    "gt-e2-budget-21500",
+    "gt-e2-surface-porcelain",
+    "gt-e2-opening-72",
+    "gt-e2-loadbearing-reaffirmed",
+    "gt-e2-pendant-keep",
+    "gt-e2-outlet-relocate",
+    "gt-e2-change-order-due",
+    "gt-e2-appliance-split",
+    "gt-e2-moisture-source-open",
+    "gt-e2-tile-buyer-open",
+  ]),
+  "event-03-preconstruction": Object.freeze([
+    "gt-e3-wall-not-loadbearing",
+    "gt-e3-header-sketch",
+    "gt-e3-budget-reaffirmed",
+    "gt-e3-pendant-final",
+    "gt-e3-moisture-cause",
+    "gt-e3-moisture-recheck",
+    "gt-e3-tile-approved",
+    "gt-e3-labor-allowance-6500",
+    "gt-e3-appliances-both-crew",
+    "gt-e3-inspection-slot-open",
+  ]),
+});
+
+const CONTRACTOR_REVIEW_PRIORITY_ID_SET = new Set(
+  Object.values(CONTRACTOR_REVIEW_PRIORITY_IDS).flat(),
+);
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -48,7 +101,6 @@ function sourceSummary(source, index) {
   invariant(Array.isArray(document.relations), `${prefix}.relations must be an array.`);
   const dataset = nonEmptyString(document.dataset, `${prefix}.dataset`);
   invariant(EXPECTED_DATASETS.has(dataset), `Dataset ${dataset} is not allowed in the transcript development package.`);
-  invariant(!source.path.includes("synthetic-contractor"), "The contractor pressure fixture must not enter this transcript development package.");
 
   const scenarioIds = new Set(document.claims.map((claim) => nonEmptyString(claim.scenarioId, `${prefix}.claims[].scenarioId`)));
   invariant(scenarioIds.size === 1, `${dataset} must contain exactly one scenario.`);
@@ -60,12 +112,12 @@ function sourceSummary(source, index) {
 }
 
 export function buildCombinedGroundTruth(sources) {
-  invariant(Array.isArray(sources) && sources.length === 2, "Exactly two transcript source datasets are required.");
+  invariant(Array.isArray(sources) && sources.length === 3, "Exactly three source datasets are required.");
   const sourcePaths = sources.map((source, index) => nonEmptyString(source.path, `sources[${index}].path`));
   invariant(new Set(sourcePaths).size === sourcePaths.length, "Source paths must be unique.");
 
   const summaries = sources.map(sourceSummary);
-  invariant(new Set(summaries.map((item) => item.dataset)).size === EXPECTED_DATASETS.size, "Both required datasets must be present exactly once.");
+  invariant(new Set(summaries.map((item) => item.dataset)).size === EXPECTED_DATASETS.size, "All required datasets must be present exactly once.");
 
   const scenarioIds = new Set();
   const eventIds = new Set();
@@ -80,14 +132,39 @@ export function buildCombinedGroundTruth(sources) {
   const relations = [];
   const transcriptNegativeControls = [];
   for (const [sourceIndex, source] of sources.entries()) {
+    const contractorProjection = source.document.dataset === "synthetic-contractor-v1";
+    if (contractorProjection) {
+      const sourceClaimById = new Map(source.document.claims.map((claim) => [claim.id, claim]));
+      for (const [eventId, selectedIds] of Object.entries(CONTRACTOR_REVIEW_PRIORITY_IDS)) {
+        invariant(selectedIds.length === 10 && new Set(selectedIds).size === 10, `${eventId} must select exactly ten unique review priorities.`);
+        for (const selectedId of selectedIds) {
+          const selected = sourceClaimById.get(selectedId);
+          invariant(selected, `Unknown Contractor review-priority Claim: ${selectedId}`);
+          invariant(selected.eventId === eventId, `Contractor review-priority Claim ${selectedId} belongs to the wrong Event.`);
+          invariant(selected.material === true, `Contractor review-priority Claim ${selectedId} was not material in the source fixture.`);
+          invariant(selected.modality === "transcript", `Contractor review-priority Claim ${selectedId} is not transcript-only.`);
+        }
+      }
+    }
     for (const [claimIndex, claim] of source.document.claims.entries()) {
+      if (contractorProjection && claim.modality !== "transcript") continue;
       addUnique(claimIds, claim.id, `claim ID at sources[${sourceIndex}].claims[${claimIndex}]`);
       invariant(claim.modality === "transcript", `Claim ${claim.id} is not transcript-only.`);
       invariant(Array.isArray(claim.acceptableEvidenceIds) && claim.acceptableEvidenceIds.length > 0, `Claim ${claim.id} has no acceptable Evidence.`);
       invariant(claim.annotation && typeof claim.annotation === "object", `Claim ${claim.id} has no annotation record.`);
-      claims.push(structuredClone(claim));
+      const projected = structuredClone(claim);
+      if (contractorProjection) {
+        projected.material = CONTRACTOR_REVIEW_PRIORITY_ID_SET.has(claim.id);
+        projected.critical = projected.material && claim.critical === true;
+      }
+      claims.push(projected);
     }
     for (const [relationIndex, relation] of source.document.relations.entries()) {
+      if (
+        contractorProjection &&
+        (!CONTRACTOR_REVIEW_PRIORITY_ID_SET.has(relation.sourceClaimId) ||
+          !CONTRACTOR_REVIEW_PRIORITY_ID_SET.has(relation.targetClaimId))
+      ) continue;
       addUnique(relationIds, relation.id, `relation ID at sources[${sourceIndex}].relations[${relationIndex}]`);
       relations.push(structuredClone(relation));
     }
@@ -114,10 +191,12 @@ export function buildCombinedGroundTruth(sources) {
 
   const materialClaimCount = claims.filter((claim) => claim.material === true).length;
   const criticalClaimCount = claims.filter((claim) => claim.material === true && claim.critical === true).length;
-  const criticalAmbiguityCount = claims.filter((claim) => claim.ambiguity?.severity === "critical").length;
+  const criticalAmbiguityCount = claims.filter(
+    (claim) => claim.material === true && claim.ambiguity?.severity === "critical",
+  ).length;
   const doubleAnnotatedCount = claims.filter((claim) => claim.annotation?.doubleAnnotated === true).length;
-  invariant(scenarioIds.size === 2, "The combined package must contain exactly two scenarios.");
-  invariant(eventIds.size === 8, "The combined package must contain exactly eight events.");
+  invariant(scenarioIds.size === 3, "The combined package must contain exactly three scenarios.");
+  invariant(eventIds.size === 11, "The combined package must contain exactly eleven events.");
   invariant(materialClaimCount >= 40, "The combined package must contain at least 40 material Claims.");
   invariant(criticalClaimCount >= 10, "The combined package must contain at least 10 critical material Claims.");
   invariant(criticalAmbiguityCount >= 8, "The combined package must contain at least eight critical ambiguities.");
@@ -129,6 +208,15 @@ export function buildCombinedGroundTruth(sources) {
     sha256: sha256(source.raw),
     scenarioId: summaries[index].scenarioId,
     eventIds: [...summaries[index].eventIds].sort(),
+    ...(summaries[index].dataset === "synthetic-contractor-v1"
+      ? {
+          projection: "single-author-review-priority-v1",
+          selectedMaterialClaimIds: Object.fromEntries(
+            Object.entries(CONTRACTOR_REVIEW_PRIORITY_IDS).map(([eventId, ids]) => [eventId, [...ids]]),
+          ),
+          sourceFixturePurpose: "exhaustive-multimodal-pressure-test",
+        }
+      : {}),
   }));
 
   return {
@@ -141,7 +229,7 @@ export function buildCombinedGroundTruth(sources) {
       modality: "transcript-only",
       purpose: "development-evaluation-and-regression-only",
       sourceDatasets: sourceMetadata,
-      excludedDatasets: ["synthetic-contractor-v1"],
+      sourceProjectionNotice: "The Contractor source is projected to ten preselected transcript review priorities per Event; its raw multimodal pressure fixture is unchanged.",
       structuralCounts: {
         scenarioCount: scenarioIds.size,
         eventCount: eventIds.size,

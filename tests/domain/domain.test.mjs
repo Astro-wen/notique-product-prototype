@@ -43,6 +43,8 @@ function claim({
   statement = id,
   materiality = "medium",
   normalizedValue = null,
+  uncertainty = null,
+  needsAdditionalEvidence = uncertainty !== null,
   evidenceRefIds = [`evidence-${id}`],
   openedAt = null,
   lastRepeatedAt = null,
@@ -59,7 +61,7 @@ function claim({
     currentVersionId: versionId,
     materiality,
     confidenceBp: 8000,
-    needsAdditionalEvidence: false,
+    needsAdditionalEvidence,
     openedAt,
     lastRepeatedAt,
     repeatCount,
@@ -71,7 +73,7 @@ function claim({
       versionNo: 1,
       statement,
       normalizedValue,
-      uncertainty: null,
+      uncertainty,
       source: "ai",
       evidenceRefIds,
       createdAt: NOW,
@@ -104,7 +106,7 @@ function ledger(overrides = {}) {
 
 function validModelOutput() {
   return {
-    schema_version: "claim-extraction.v1",
+    schema_version: "claim-extraction.v2",
     event_id: "event-1",
     scenario_assessment: null,
     claims: [{
@@ -491,7 +493,58 @@ test("gap, agenda, risks, and brief use verified sources only", () => {
   });
   const risk = claim({ id: "risk", type: "risk", statement: "Financing is not confirmed." });
   const pendingRisk = claim({ id: "pending-risk", type: "risk", reviewStatus: "pending" });
-  const data = ledger({ claims: [budget, question, risk, pendingRisk] });
+  const uncertainBudget = claim({
+    id: "uncertain-budget",
+    type: "budget",
+    statement: "The allowance may be $6,500 or $6,050.",
+    uncertainty: {
+      reason: "The spoken amount has two plausible readings.",
+      alternatives: ["$6,500", "$6,050"],
+      question: "Is the allowance $6,500 or $6,050?",
+    },
+  });
+  const pendingUncertainty = claim({
+    id: "pending-uncertainty",
+    type: "budget",
+    reviewStatus: "pending",
+    uncertainty: {
+      reason: "Pending model candidate.",
+      alternatives: ["A", "B"],
+      question: "A or B?",
+    },
+  });
+  const evidenceGap = claim({
+    id: "evidence-gap",
+    type: "requirement",
+    statement: "The permit requirement still needs written proof.",
+    needsAdditionalEvidence: true,
+    uncertainty: null,
+  });
+  const pendingEvidenceGap = claim({
+    id: "pending-evidence-gap",
+    type: "requirement",
+    reviewStatus: "pending",
+    needsAdditionalEvidence: true,
+  });
+  const withdrawnEvidenceGap = claim({
+    id: "withdrawn-evidence-gap",
+    type: "requirement",
+    lifecycleStatus: "withdrawn",
+    needsAdditionalEvidence: true,
+  });
+  const data = ledger({
+    claims: [
+      budget,
+      question,
+      risk,
+      pendingRisk,
+      uncertainBudget,
+      pendingUncertainty,
+      evidenceGap,
+      pendingEvidenceGap,
+      withdrawnEvidenceGap,
+    ],
+  });
   const gap = buildGapCheck(data);
   assert.equal(gap.applicable, true);
   assert.equal(gap.missingSlots.includes("budget"), false);
@@ -502,11 +555,45 @@ test("gap, agenda, risks, and brief use verified sources only", () => {
   const agenda = buildNextMeetingAgenda(data);
   assert.equal(agenda.some((item) => item.sourceKind === "gap"), true);
   assert.equal(agenda.some((item) => item.sourceKind === "open_question"), true);
+  assert.deepEqual(agenda.find((item) => item.sourceKind === "uncertainty"), {
+    id: "agenda_uncertainty_uncertain-budget-v1",
+    sourceKind: "uncertainty",
+    claimId: "uncertain-budget",
+    claimVersionId: "uncertain-budget-v1",
+    statement: "Is the allowance $6,500 or $6,050?",
+    reason: "The spoken amount has two plausible readings.",
+    alternatives: ["$6,500", "$6,050"],
+    evidenceRefIds: ["evidence-uncertain-budget"],
+  });
+  assert.equal(
+    agenda.some((item) => item.sourceKind === "uncertainty" && item.claimId === "pending-uncertainty"),
+    false,
+  );
+  assert.deepEqual(agenda.find((item) => item.sourceKind === "evidence_gap"), {
+    id: "agenda_evidence_gap_evidence-gap-v1",
+    sourceKind: "evidence_gap",
+    claimId: "evidence-gap",
+    claimVersionId: "evidence-gap-v1",
+    statement: "补充证据：The permit requirement still needs written proof.",
+    evidenceRefIds: ["evidence-evidence-gap"],
+  });
+  assert.equal(agenda.filter((item) => item.sourceKind === "evidence_gap").length, 1);
+  assert.deepEqual(agenda.slice(0, 2).map((item) => item.sourceKind), ["open_question", "uncertainty"]);
   const brief = buildDeterministicBrief(data);
   assert.equal(brief.stateClaimId, "budget");
   assert.equal(brief.riskClaimId, "risk");
   assert.equal(brief.deltaItemIds.length <= 2, true);
   assert.equal(brief.agendaItemIds.length <= 2, true);
+  assert.notEqual(brief.stateClaimId, brief.riskClaimId);
+});
+
+test("Brief leaves the risk slot empty when the only current state is the same risk", () => {
+  const onlyRisk = ledger({
+    claims: [claim({ id: "only-risk", type: "risk", statement: "A permit may be required." })],
+  });
+  const brief = buildDeterministicBrief(onlyRisk);
+  assert.equal(brief.stateClaimId, "only-risk");
+  assert.equal(brief.riskClaimId, null);
 });
 
 test("risk and agenda contradictions expose both verified statements and evidence", () => {
@@ -608,8 +695,67 @@ test("model output contract rejects extra fields and invalid targets", () => {
   }).valid, false);
 });
 
-test("claim extraction prompt contract is v5", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v5");
+test("claim extraction prompt contract is v7", () => {
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v7");
+});
+
+test("model uncertainty and additional-evidence flags have one unambiguous contract", () => {
+  const withUncertainty = validModelOutput();
+  withUncertainty.claims[0].needs_additional_evidence = true;
+  withUncertainty.claims[0].uncertainty = {
+    reason: "The spoken amount has two plausible readings.",
+    alternatives: ["$6,500", "$6,050"],
+    question: "Which amount is correct?",
+  };
+  assert.equal(validateExtractClaimsOutput(withUncertainty).valid, true);
+
+  const flagMissing = structuredClone(withUncertainty);
+  flagMissing.claims[0].needs_additional_evidence = false;
+  assert.equal(validateExtractClaimsOutput(flagMissing).valid, false);
+
+  const oneAlternative = structuredClone(withUncertainty);
+  oneAlternative.claims[0].uncertainty.alternatives = ["$6,500"];
+  assert.equal(validateExtractClaimsOutput(oneAlternative).valid, false);
+
+  const straightforwardEvidenceGap = validModelOutput();
+  straightforwardEvidenceGap.claims[0].needs_additional_evidence = true;
+  assert.equal(
+    validateExtractClaimsOutput(straightforwardEvidenceGap).valid,
+    true,
+    "an evidence gap does not have to pretend that two interpretations exist",
+  );
+});
+
+test("claim output limit has no minimum that could force hallucinated filler", () => {
+  const empty = validModelOutput();
+  empty.claims = [];
+  assert.equal(validateExtractClaimsOutput(empty).valid, true);
+
+  const four = validModelOutput();
+  four.claims = Array.from({ length: 4 }, (_, index) => ({
+    ...structuredClone(four.claims[0]),
+    client_claim_key: `claim-${index + 1}`,
+  }));
+  assert.equal(validateExtractClaimsOutput(four).valid, true);
+});
+
+test("resolves accepts an active prerequisite requirement", () => {
+  const context = contextPackWithTarget({
+    type: "requirement",
+    statement: "Written approval is required before demolition.",
+    normalizedValue: null,
+    uncertainty: null,
+  });
+  const target = context.verified_context.active_risks[0];
+  const output = validModelOutput();
+  output.claims[0].relations = [{
+    type: "resolves",
+    target_claim_id: target.claimId,
+    target_claim_version_id: target.claimVersionId,
+    reason: "The signed approval now satisfies the prerequisite.",
+    confidence: 0.95,
+  }];
+  assert.equal(validateExtractClaimsOutput(output, context).valid, true);
 });
 
 test("reaffirmed occurrences are exact target facts and never carry relations", () => {

@@ -47,6 +47,7 @@ export type ClaimVerdictResult = {
 export type ExplicitClaimEditProjection = {
   type: ClaimType;
   normalizedValue: Record<string, unknown> | null;
+  needsAdditionalEvidence: boolean;
   uncertainty: {
     reason: string;
     alternatives: string[];
@@ -65,6 +66,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function validateExplicitClaimEditProjection(input: {
   type: unknown;
   normalizedValue: unknown;
+  needsAdditionalEvidence: unknown;
   uncertainty: unknown;
 }): ExplicitClaimEditProjection {
   if (typeof input.type !== "string" || !CLAIM_TYPE_SET.has(input.type.trim())) {
@@ -77,6 +79,12 @@ export function validateExplicitClaimEditProjection(input: {
     throw new DomainConflictError(
       "INVALID_STATE_TRANSITION",
       "Edited normalized value must be an object or null.",
+    );
+  }
+  if (typeof input.needsAdditionalEvidence !== "boolean") {
+    throw new DomainConflictError(
+      "INVALID_STATE_TRANSITION",
+      "Edited evidence requirement must be reviewed explicitly.",
     );
   }
   if (input.uncertainty !== null) {
@@ -99,9 +107,16 @@ export function validateExplicitClaimEditProjection(input: {
       );
     }
   }
+  if (input.uncertainty !== null && input.needsAdditionalEvidence !== true) {
+    throw new DomainConflictError(
+      "INVALID_STATE_TRANSITION",
+      "A structured uncertainty must keep the additional-evidence requirement.",
+    );
+  }
   return {
     type: input.type.trim() as ClaimType,
     normalizedValue: input.normalizedValue,
+    needsAdditionalEvidence: input.needsAdditionalEvidence,
     uncertainty: input.uncertainty as ExplicitClaimEditProjection["uncertainty"],
   };
 }

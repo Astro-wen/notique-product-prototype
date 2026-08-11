@@ -28,6 +28,8 @@ import {
   OccurrenceNewClaim,
   Project,
   ProjectViewName,
+  RelationTarget,
+  RelationType,
   ReviewSession,
   RunDebug,
   TranscriptionRun,
@@ -46,6 +48,12 @@ type ContradictionResolutionInput = {
   targetClaimVersionId: string;
   winningClaimVersionId: string;
   explanation: string;
+};
+
+type ManualRelationSubmission = {
+  type: RelationType;
+  target: RelationTarget;
+  reason: string;
 };
 
 type BriefDisplayData = Record<string, unknown> & {
@@ -264,6 +272,11 @@ function UncertaintyNotice({ value, compact = false }: { value: unknown; compact
   </div>;
 }
 
+function EvidenceRequirementNotice({ claim, compact = false }: { claim: Claim; compact?: boolean }) {
+  if (!claim.needsAdditionalEvidence || uncertaintyForEdit(claim.uncertainty)) return null;
+  return <p className="uncertainty">{compact ? "仍需补充证据" : "这条记录仍需补充证据，确认前请检查现有材料是否足够。"}</p>;
+}
+
 function typeLabel(value?: string): string {
   const labels: Record<string, string> = {
     fact: "事实",
@@ -418,6 +431,27 @@ function Modal({ title, description, onClose, children, wide = false }: { title:
         {children}
       </section>
     </div>
+  );
+}
+
+function TranscriptViewer({ run, onClose }: { run: TranscriptionRun; onClose: () => void }) {
+  return (
+    <Modal
+      title="完整逐字稿"
+      description={`${run.segments.length} 个带说话人和时间点的片段`}
+      onClose={onClose}
+      wide
+    >
+      <div className="full-transcript" data-testid="full-transcript">
+        {run.segments.length > 0 ? run.segments.map((segment) => (
+          <article key={segment.id}>
+            <time>{formatTimestamp(segment.startMs / 1000)}</time>
+            <strong>{segment.speaker}</strong>
+            <p>{segment.text}</p>
+          </article>
+        )) : <p className="muted">服务器没有返回可显示的逐字稿片段。</p>}
+      </div>
+    </Modal>
   );
 }
 
@@ -706,6 +740,7 @@ function briefItemText(item: Record<string, unknown>, kind: BriefItemKind): stri
   if (kind === "agenda") {
     const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
     if (sourceKind === "gap") return `还需要补齐：${slotLabel(firstString(item, ["slot"]) || "资料")}`;
+    if (sourceKind === "evidence_gap") return firstString(item, ["statement"]) || "这条记录仍需补充证据";
     if (sourceKind === "contradiction") {
       const source = firstString(item, ["sourceStatement", "source_statement"]) || "第一条记录";
       const target = firstString(item, ["targetStatement", "target_statement"]) || "第二条记录";
@@ -792,8 +827,12 @@ export default function Home() {
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedClaimIds, setSelectedClaimIds] = useState<Set<string>>(new Set());
+  const [runPollCycle, setRunPollCycle] = useState(0);
+  const [transcriptionPollCycle, setTranscriptionPollCycle] = useState(0);
   const pollAttempts = useRef(0);
   const transcriptionPollAttempts = useRef(0);
+  const pollingRunKey = useRef("");
+  const transcriptionPollingRunKey = useRef("");
   const extractionKeys = useRef(new Map<string, string>());
   const transcriptionKeys = useRef(new Map<string, string>());
   const mutationKeys = useRef(new Map<string, string>());
@@ -977,24 +1016,44 @@ export default function Home() {
     });
   }, [transcriptionRun]);
 
+  const activeTranscriptionRunId = transcriptionRun?.id;
+  const activeTranscriptionRunStatus = transcriptionRun?.status;
+
   useEffect(() => {
-    if (!transcriptionRun || !runInProgress.has(transcriptionRun.status)) return;
-    transcriptionPollAttempts.current = 0;
+    if (!activeTranscriptionRunId || !runInProgress.has(activeTranscriptionRunStatus ?? "")) return;
+    const runId = activeTranscriptionRunId;
+    const pollKey = `${runId}:${transcriptionPollCycle}`;
+    if (transcriptionPollingRunKey.current !== pollKey) {
+      transcriptionPollingRunKey.current = pollKey;
+      transcriptionPollAttempts.current = 0;
+    }
     const timer = window.setInterval(async () => {
       if (transcriptionPollAttempts.current >= 240) {
         window.clearInterval(timer);
+        setEventIssue({
+          code: "TRANSCRIPTION_POLL_TIMEOUT",
+          message: "等待逐字稿的时间过长。录音已经保存，可以重新检查后台状态；如果服务器已经标记失败，也可以重新转写。",
+          status: 408,
+        });
         return;
       }
       transcriptionPollAttempts.current += 1;
       try {
-        const latest = await api.getTranscriptionRun(transcriptionRun.id);
+        const latest = await api.getTranscriptionRun(runId);
         setTranscriptionRun(latest);
         if (!runInProgress.has(latest.status)) {
           window.clearInterval(timer);
           if (latest.status === "succeeded" && event?.id) {
             const refreshed = await api.getEvent(event.id);
             setEvent(refreshed);
+            setEventIssue(null);
             flash(`逐字稿已生成，包含 ${latest.segmentCount ?? latest.segments.length} 个带时间点的片段`);
+          } else if (latest.status === "failed") {
+            setEventIssue({
+              code: latest.errorCode || "TRANSCRIPTION_FAILED",
+              message: "录音仍然保留在这次沟通中。请检查错误后点击“重新转写”。",
+              status: 502,
+            });
           }
         }
       } catch (error) {
@@ -1005,26 +1064,40 @@ export default function Home() {
       }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [event?.id, flash, transcriptionRun]);
+  }, [activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
+
+  const activeExtractionRunId = run?.id;
+  const activeExtractionRunStatus = run?.status;
 
   useEffect(() => {
-    if (!run || !runInProgress.has(run.status)) return;
-    pollAttempts.current = 0;
+    if (!activeExtractionRunId || !runInProgress.has(activeExtractionRunStatus ?? "")) return;
+    const runId = activeExtractionRunId;
+    const pollKey = `${runId}:${runPollCycle}`;
+    if (pollingRunKey.current !== pollKey) {
+      pollingRunKey.current = pollKey;
+      pollAttempts.current = 0;
+    }
     const timer = window.setInterval(async () => {
       // Luna Max may legitimately spend several minutes reasoning before it
       // returns structured output. Keep the simple test screen live for up to
       // 15 minutes; the server remains the source of truth if the page closes.
       if (pollAttempts.current >= 360) {
         window.clearInterval(timer);
+        setEventIssue({
+          code: "EXTRACTION_POLL_TIMEOUT",
+          message: "等待分析结果的时间过长。材料和后台任务都已保留，可以重新检查任务状态。",
+          status: 408,
+        });
         return;
       }
       pollAttempts.current += 1;
       try {
-        const latest = await api.getRun(run.id);
+        const latest = await api.getRun(runId);
         setRun(latest);
         if (!runInProgress.has(latest.status)) {
           window.clearInterval(timer);
           if (runComplete.has(latest.status)) {
+            setEventIssue(null);
             await loadClaimsForRun(latest.id);
             const refreshes: Promise<unknown>[] = [];
             if (project?.id) {
@@ -1034,6 +1107,12 @@ export default function Home() {
               refreshes.push(api.getEvent(event.id).then((latestEvent) => setEvent(latestEvent)));
             }
             await Promise.all(refreshes);
+          } else if (latest.status === "failed") {
+            setEventIssue({
+              code: latest.errorCode || "EXTRACTION_FAILED",
+              message: latest.errorMessage || "这次分析没有完成。材料仍然保留，可以直接重新分析。",
+              status: 502,
+            });
           }
         }
       } catch (error) {
@@ -1044,7 +1123,7 @@ export default function Home() {
       }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [event?.id, loadClaimsForRun, project?.id, run]);
+  }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, loadClaimsForRun, project?.id, runPollCycle]);
 
   const syncReviewTiming = useCallback(async (latestProject: Project) => {
     const pendingTotal = latestProject.pendingClaimCount + latestProject.pendingOccurrenceCount;
@@ -1280,6 +1359,7 @@ export default function Home() {
         ]);
         setProject(latestProject);
         setEvents(latestEvents);
+        await syncReviewTiming(latestProject);
       }
       flash(action === "reject" ? "已记录为不采纳" : action === "edit" ? "修改已保存并确认" : "记录已确认");
       if (action === "edit") await openClaim(updated.id);
@@ -1359,6 +1439,7 @@ export default function Home() {
         ]);
         setProject(latestProject);
         setEvents(latestEvents);
+        await syncReviewTiming(latestProject);
       }
       flash(`已确认 ${selectedBatch.length} 条记录`);
     } catch (error) {
@@ -1450,6 +1531,145 @@ export default function Home() {
     }
   }
 
+  async function runManualRelation(input: ManualRelationSubmission) {
+    if (!project || !selectedClaim) return;
+    setBusyAction("manual-relation");
+    setClaimsIssue(null);
+    const fingerprint = [
+      "manual-relation",
+      project.id,
+      project.contextVersion,
+      selectedClaim.id,
+      selectedClaim.versionId,
+      input.target.claim_id,
+      input.target.claim_version_id,
+      input.type,
+      input.reason,
+    ].join(":");
+    try {
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      await api.createManualRelation(
+        {
+          project_id: project.id,
+          base_context_version: project.contextVersion,
+          source_claim_id: selectedClaim.id,
+          source_claim_version_id: selectedClaim.versionId,
+          target_claim_id: input.target.claim_id,
+          target_claim_version_id: input.target.claim_version_id,
+          type: input.type,
+          reason: input.reason,
+        },
+        idempotencyKey,
+      );
+      mutationKeys.current.delete(fingerprint);
+      const [latestProject, latestEvents] = await Promise.all([
+        api.getProject(project.id),
+        api.listEvents(project.id),
+      ]);
+      setProject(latestProject);
+      setEvents(latestEvents);
+      flash("记录关系已保存，当前结果已经重新计算");
+      await openClaim(selectedClaim.id);
+    } catch (error) {
+      const issue = toIssue(error);
+      setClaimsIssue(issue);
+      if (issue.code === "CLAIM_VERSION_CONFLICT") {
+        flash("记录或 Project 已经变化，请刷新后重新关联");
+      }
+      throw error;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function launchTranscription(
+    audioAssetId: string,
+    targetEventId: string,
+    retryOfRunId = "initial",
+  ): Promise<TranscriptionRun> {
+    const fingerprint = ["transcription", audioAssetId, retryOfRunId].join(":");
+    const key = transcriptionKeys.current.get(fingerprint) || crypto.randomUUID();
+    transcriptionKeys.current.set(fingerprint, key);
+    const next = await api.startTranscription(audioAssetId, key);
+    transcriptionKeys.current.delete(fingerprint);
+    setTranscriptionRun(next);
+    setTranscriptionPollCycle((current) => current + 1);
+    const refreshed = await api.getEvent(targetEventId);
+    setEvent(refreshed);
+    return next;
+  }
+
+  async function retryAudioTranscription(audioAssetId: string) {
+    if (!event) return;
+    setBusyAction("transcription");
+    setEventIssue(null);
+    try {
+      let current = transcriptionRun?.audioAssetId === audioAssetId ? transcriptionRun : null;
+      if (!current) {
+        const refreshedEvent = await api.getEvent(event.id);
+        setEvent(refreshedEvent);
+        const persistedAudio = refreshedEvent.assets.find((asset) => asset.id === audioAssetId);
+        const persistedRunId = persistedAudio
+          ? stringValue(persistedAudio.metadata.transcription_run_id)
+          : undefined;
+        if (persistedRunId) {
+          const persistedRun = await api.getTranscriptionRun(persistedRunId);
+          if (persistedRun.audioAssetId === audioAssetId) {
+            current = persistedRun;
+            setTranscriptionRun(persistedRun);
+          }
+        }
+      }
+      if (current && runInProgress.has(current.status)) {
+        await api.kickLocalDispatcher().catch(() => undefined);
+        const latest = await api.getTranscriptionRun(current.id);
+        if (runInProgress.has(latest.status)) {
+          setTranscriptionRun(latest);
+          setTranscriptionPollCycle((value) => value + 1);
+          flash("已重新检查后台任务，会继续等待转写结果");
+          return;
+        }
+        if (latest.status === "succeeded") {
+          setTranscriptionRun(latest);
+          setEvent(await api.getEvent(event.id));
+          flash("逐字稿已经生成");
+          return;
+        }
+      }
+      await launchTranscription(audioAssetId, event.id, current?.id || "retry-without-run");
+      flash("已重新开始转写，录音不会重复上传");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function retryRunStatus() {
+    if (!run || !event) return;
+    setBusyAction("run-status");
+    setEventIssue(null);
+    try {
+      await api.kickLocalDispatcher().catch(() => undefined);
+      const latest = await api.getRun(run.id);
+      setRun(latest);
+      if (runInProgress.has(latest.status)) {
+        setRunPollCycle((value) => value + 1);
+        flash("已重新检查后台任务，会继续等待分析结果");
+      } else if (runComplete.has(latest.status)) {
+        await loadClaimsForRun(latest.id);
+        flash("分析已经完成");
+      } else {
+        await startExtractionForEvent(event);
+      }
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function startExtractionForEvent(targetEvent: Event) {
     const ids = targetEvent.assets
       .filter(assetIsAnalyzable)
@@ -1481,7 +1701,7 @@ export default function Home() {
     }
   }
 
-  async function beginSimpleTest() {
+  async function beginSimpleTest(openTranscriptAfterCreate = false) {
     setSimpleFlow(true);
     setBusyAction("simple-start");
     setProjectsIssue(null);
@@ -1499,7 +1719,19 @@ export default function Home() {
       setRun(null);
       setClaims([]);
       setProjectState("ready");
-      setShowImport(true);
+      const eventFingerprint = `simple-event:${created.id}`;
+      const eventKey = mutationKeys.current.get(eventFingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(eventFingerprint, eventKey);
+      const createdEvent = await api.createEvent(
+        created.id,
+        { title: "第一次沟通", event_type: "meeting", occurred_at: now.toISOString() },
+        eventKey,
+      );
+      mutationKeys.current.delete(eventFingerprint);
+      await loadProjects();
+      await loadSimpleProject(created.id, createdEvent.id);
+      if (openTranscriptAfterCreate) setShowImport(true);
+      flash("空白测试已经建立，可以直接上传录音、Transcript 或照片");
     } catch (error) {
       setProjectsIssue(toIssue(error));
     } finally {
@@ -1508,7 +1740,7 @@ export default function Home() {
   }
 
   async function attachSimpleFile(file: File) {
-    if (!event) return;
+    if (!project) return;
     const localIssue = photoUploadIssue(file.name, file.type, file.size)
       ?? audioUploadIssue(file.name, file.type, file.size);
     if (localIssue) {
@@ -1517,33 +1749,44 @@ export default function Home() {
     }
     setBusyAction("asset");
     setEventIssue(null);
+    let targetEvent = event;
     try {
+      if (!targetEvent) {
+        const fingerprint = `simple-event:${project.id}`;
+        const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+        mutationKeys.current.set(fingerprint, idempotencyKey);
+        targetEvent = await api.createEvent(
+          project.id,
+          { title: "第一次沟通", event_type: "meeting", occurred_at: new Date().toISOString() },
+          idempotencyKey,
+        );
+        mutationKeys.current.delete(fingerprint);
+        setEvent(targetEvent);
+        setEvents((current) => current.some((item) => item.id === targetEvent?.id) ? current : [...current, targetEvent!]);
+      }
       const imageMime = modelImageMimeFor(file.name, file.type);
       const audioMime = audioMimeFor(file.name, file.type);
       const kind = imageMime ? "photo" : audioMime ? "audio" : file.type === "application/pdf" ? "pdf" : "text";
       const contentType = imageMime || audioMime || file.type || "text/plain";
-      const fingerprint = ["asset-init", event.id, kind, file.name, contentType, file.size].join(":");
+      const fingerprint = ["asset-init", targetEvent.id, kind, file.name, contentType, file.size].join(":");
       const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, idempotencyKey);
-      const init = await api.initAsset(event.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size }, idempotencyKey);
+      const init = await api.initAsset(targetEvent.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size }, idempotencyKey);
       await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
       if (kind === "audio") {
-        const transcriptionFingerprint = ["transcription", init.assetId, file.name, file.size, file.lastModified].join(":");
-        const transcriptionKey = transcriptionKeys.current.get(transcriptionFingerprint) || crypto.randomUUID();
-        transcriptionKeys.current.set(transcriptionFingerprint, transcriptionKey);
-        const nextTranscription = await api.startTranscription(init.assetId, transcriptionKey);
-        transcriptionKeys.current.delete(transcriptionFingerprint);
-        setTranscriptionRun(nextTranscription);
+        await launchTranscription(init.assetId, targetEvent.id);
         flash("录音已保存，正在生成带说话人和时间点的逐字稿");
       } else {
         flash("材料已加入");
       }
-      if (project) await loadSimpleProject(project.id, event.id);
+      await loadSimpleProject(project.id, targetEvent.id);
     } catch (error) {
-      setEventIssue(toIssue(error));
-      if (project) await loadSimpleProject(project.id, event.id).catch(() => undefined);
+      const issue = toIssue(error);
+      const targetEventId = targetEvent?.id;
+      if (targetEventId) await loadSimpleProject(project.id, targetEventId).catch(() => undefined);
+      setEventIssue(issue);
     } finally {
       setBusyAction(null);
     }
@@ -1621,9 +1864,11 @@ export default function Home() {
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => void beginSimpleTest()}
-          onAddTranscript={() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(); }}
+          onAddTranscript={() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(true); }}
           onAddFile={(file) => void attachSimpleFile(file)}
           onAnalyze={() => { if (event) void startExtractionForEvent(event); }}
+          onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
+          onRetryRunStatus={() => void retryRunStatus()}
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
           onReview={() => void loadReviewQueue()}
@@ -1659,24 +1904,20 @@ export default function Home() {
             await api.finalizeAsset(init.assetId);
             mutationKeys.current.delete(fingerprint);
             if (preparedInput.kind === "audio") {
-              const transcriptionFingerprint = ["transcription", init.assetId, preparedInput.filename, preparedInput.blob.size].join(":");
-              const transcriptionKey = transcriptionKeys.current.get(transcriptionFingerprint) || crypto.randomUUID();
-              transcriptionKeys.current.set(transcriptionFingerprint, transcriptionKey);
-              const nextTranscription = await api.startTranscription(init.assetId, transcriptionKey);
-              transcriptionKeys.current.delete(transcriptionFingerprint);
-              setTranscriptionRun(nextTranscription);
+              await launchTranscription(init.assetId, event.id);
               flash("录音已保存，正在生成逐字稿");
             } else {
               flash("材料已加入这次沟通");
             }
             await loadEvent(event.id);
           } catch (error) {
-            setEventIssue(toIssue(error));
+            const issue = toIssue(error);
             await loadEvent(event.id).catch(() => undefined);
+            setEventIssue(issue);
           } finally { setBusyAction(null); }
-        }} busy={busyAction} />}
+        }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
       </main>
@@ -1742,6 +1983,8 @@ type SimpleTestScreenProps = {
   onAddTranscript: () => void;
   onAddFile: (file: File) => void;
   onAnalyze: () => void;
+  onRetryTranscription: (audioAssetId: string) => void;
+  onRetryRunStatus: () => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onReview: () => void;
   onResult: () => void;
@@ -1768,11 +2011,14 @@ function SimpleTestScreen({
   onAddTranscript,
   onAddFile,
   onAnalyze,
+  onRetryTranscription,
+  onRetryRunStatus,
   onConfirmScenario,
   onReview,
   onResult,
 }: SimpleTestScreenProps) {
   const [showImportChoices, setShowImportChoices] = useState(false);
+  const [showFullTranscript, setShowFullTranscript] = useState(false);
   const [scenario, setScenario] = useState(project?.scenarioCandidates?.[0]?.key ?? "");
   const [customScenario, setCustomScenario] = useState("");
   const sortedProjects = [...projects].sort((left, right) => {
@@ -1787,6 +2033,7 @@ function SimpleTestScreen({
   const transcriptionFailed = transcriptionRun?.status === "failed";
   const analysisRunning = Boolean(run && runInProgress.has(run.status));
   const analysisDone = Boolean(run && runComplete.has(run.status));
+  const analysisFailed = Boolean(run && !analysisRunning && !analysisDone);
   const pendingCount = event
     ? event.pendingClaimCount + event.pendingOccurrenceCount
     : project
@@ -1795,6 +2042,15 @@ function SimpleTestScreen({
   const verifiedCount = claims.filter((claim) => claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn").length;
   const loadingSelection = projectState === "loading" || eventState === "loading";
   const issue = eventIssue ?? projectIssue ?? projectsIssue;
+  const audioAssets = event?.assets.filter((asset) => asset.kind === "audio") ?? [];
+  const retryAudioAsset = audioAssets.find((asset) => asset.id === transcriptionRun?.audioAssetId) ?? audioAssets[0];
+  const issueRetry = issue?.code.includes("TRANSCRIPTION") && retryAudioAsset
+    ? () => onRetryTranscription(retryAudioAsset.id)
+    : issue?.code === "EXTRACTION_POLL_TIMEOUT"
+      ? onRetryRunStatus
+      : analysisFailed && materialsReady
+        ? onAnalyze
+        : undefined;
   const needsScenario = project?.scenarioStatus === "pending_confirmation"
     || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
 
@@ -1851,8 +2107,8 @@ function SimpleTestScreen({
         </button>
         <button className={`simple-step-button ${analysisDone ? "complete" : ""}`} disabled={!materialsReady || analysisRunning || Boolean(busy)} onClick={onAnalyze}>
           <span className="simple-step-number">2</span>
-          <span className="simple-step-copy"><strong>开始分析</strong><small>{analysisRunning ? "正在读取材料并整理内容" : analysisDone ? "分析已完成，可以重新运行" : "从材料中提取陈述和对应证据"}</small></span>
-          <span className="simple-step-state">{analysisRunning ? "处理中" : analysisDone ? "已完成" : "运行"}</span>
+          <span className="simple-step-copy"><strong>{analysisFailed ? "重试分析" : "开始分析"}</strong><small>{analysisRunning ? "正在读取材料并整理内容" : analysisDone ? "分析已完成，可以重新运行" : analysisFailed ? "上一次没有完成，材料仍然保留" : "从材料中提取陈述和对应证据"}</small></span>
+          <span className="simple-step-state">{analysisRunning ? "处理中" : analysisDone ? "已完成" : analysisFailed ? "重试" : "运行"}</span>
         </button>
         <button className={`simple-step-button ${verifiedCount > 0 ? "complete" : ""}`} disabled={!analysisDone || Boolean(busy)} onClick={onReview}>
           <span className="simple-step-number">3</span>
@@ -1894,26 +2150,33 @@ function SimpleTestScreen({
           </div>
           <div className="simple-import-actions">
             <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span>TXT</span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></button>
-            <label className={`simple-import-action ${!event || busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : "先选择一条记录"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={!event || Boolean(busy)} onChange={chooseSupportingFile} /></label>
-            <label className={`simple-import-action ${!event || busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : "先选择一条记录"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={!event || Boolean(busy)} onChange={chooseSupportingFile} /></label>
+            <label className={`simple-import-action ${!project || busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : project ? "会自动建立第一条沟通记录" : "先新建一次测试"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={!project || Boolean(busy)} onChange={chooseSupportingFile} /></label>
+            <label className={`simple-import-action ${!project || busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : project ? "会自动建立第一条沟通记录" : "先新建一次测试"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={!project || Boolean(busy)} onChange={chooseSupportingFile} /></label>
             <button className="simple-import-action quiet-choice" disabled={Boolean(busy)} onClick={onStartOwn}><span>NEW</span><strong>新建一次测试</strong><small>使用一组新的材料</small></button>
           </div>
           {event && event.assets.length > 0 && (
             <div className="simple-material-list">
-              {event.assets.map((asset) => <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun.status : asset.status} /></span>)}
+              {event.assets.map((asset) => {
+                const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
+                const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
+                const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
+                return <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span>;
+              })}
             </div>
           )}
           {transcriptionRun && <section className={`transcription-progress ${transcriptionFailed ? "failed" : ""}`}>
             <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>
-            {transcriptionDone && transcriptionRun.segments.length > 0 && <div className="transcript-preview">{transcriptionRun.segments.slice(0, 5).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div>}
+            {transcriptionDone && transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 5).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}
+            {transcriptionFailed && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button>}
           </section>}
         </section>
       )}
 
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
-      {issue && <ErrorNotice issue={issue} onRetry={materialsReady ? onAnalyze : undefined} />}
+      {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
       {!project && projectsState === "empty" && <p className="simple-footnote">还没有可选材料。点击“导入材料”后再选择“新建一次测试”。</p>}
-      {run && !analysisRunning && !analysisDone && <p className="simple-footnote">最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "可以重新开始分析。"}</p>}
+      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以重新开始分析。"}</p><button className="button secondary" disabled={!materialsReady || Boolean(busy)} onClick={onAnalyze}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button></div>}
+      {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
   );
 }
@@ -2149,18 +2412,26 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
   );
 }
 
-function EventScreen({ state, issue, event, run, transcriptionRun, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; transcriptionRun: TranscriptionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; busy: string | null }) {
+function EventScreen({ state, issue, event, run, transcriptionRun, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, onRetryTranscription, onRetryRunStatus, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; transcriptionRun: TranscriptionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; onRetryTranscription: (audioAssetId: string) => void; onRetryRunStatus: () => void; busy: string | null }) {
   const [paste, setPaste] = useState("");
+  const [showFullTranscript, setShowFullTranscript] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取这次沟通…" /></div>;
   if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const readyAssets = event.assets.filter(assetIsAnalyzable);
   const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
+  const audioAssets = event.assets.filter((asset) => asset.kind === "audio");
+  const retryAudioAsset = audioAssets.find((asset) => asset.id === transcriptionRun?.audioAssetId) ?? audioAssets[0];
+  const retryIssue = issue?.code.includes("TRANSCRIPTION") && retryAudioAsset
+    ? () => onRetryTranscription(retryAudioAsset.id)
+    : issue?.code === "EXTRACTION_POLL_TIMEOUT"
+      ? onRetryRunStatus
+      : onRetry;
   return (
     <div className="page">
       <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
-      {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
-      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{statusLabel(run.status)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? "你可以离开这个页面，处理会在后台继续。" : run.status === "completed_with_warnings" ? "部分候选没有通过证据校验，合格内容仍可审核。" : "打开审核区查看通过程序校验的候选记录。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></section>}
+      {issue && <ErrorNotice issue={issue} onRetry={retryIssue} />}
+      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{statusLabel(run.status)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? "你可以离开这个页面，处理会在后台继续。" : run.status === "completed_with_warnings" ? "部分候选没有通过证据校验，合格内容仍可审核。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "打开审核区查看通过程序校验的候选记录。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
           <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" onClick={() => fileRef.current?.click()}>上传材料</button></div>
@@ -2173,8 +2444,13 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
             void onAttach({ kind, filename: file.name, contentType: imageMime || audioMime || file.type || "text/plain", blob: file });
             change.target.value = "";
           }} />
-          {!event.assets.length ? <EmptyState title="还没有材料" body="上传 Transcript、录音或照片，也可以在下面粘贴一段文字。" /> : <div className="asset-list">{event.assets.map((asset) => <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}</span><StatusBadge value={asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun.status : asset.status} /></article>)}</div>}
-          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div>}</section>}
+          {!event.assets.length ? <EmptyState title="还没有材料" body="上传 Transcript、录音或照片，也可以在下面粘贴一段文字。" /> : <div className="asset-list">{event.assets.map((asset) => {
+            const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
+            const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
+            const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
+            return <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
+          })}</div>}
+          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button>}</section>}
           <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={async () => { const blob = new Blob([paste], { type: "text/plain" }); await onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }); setPaste(""); }}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
         </section>
         <aside className="event-rail">
@@ -2184,6 +2460,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
       {claimsIssue && <ErrorNotice issue={claimsIssue} compact />}
       {claimsState === "loading" && <LoadingBlock label="正在读取候选记录…" />}
       {claims.length > 0 && <section className="inline-claims"><div className="section-heading"><div><h2>本次候选记录</h2><p>{claims.filter((item) => item.reviewStatus === "pending").length} 条仍待审核</p></div><button className="button secondary" onClick={onReview}>进入完整审核</button></div><div>{claims.slice(0, 5).map((claim) => <button key={claim.id} onClick={() => onOpenClaim(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /><b>›</b></button>)}</div></section>}
+      {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
   );
 }
@@ -2333,7 +2610,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
       {state === "loading" && <LoadingBlock label="正在整理审核队列…" />}
       {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待审核记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
-      {visible.length > 0 && <div className="review-list">{visible.map((claim) => <article key={claim.id} className="review-card"><label className="claim-select" title={claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={claim.reviewStatus !== "pending" || !claim.batchReviewAttested} checked={selected.has(claim.id)} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span></div><UncertaintyNotice value={claim.uncertainty} compact /><span className="review-evidence-link">{claim.reviewStatus === "pending" && claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : claim.reviewStatus === "pending" ? "打开并核对证据后才能批量选择 ›" : "查看证据和处理记录 ›"}</span></button></article>)}</div>}
+      {visible.length > 0 && <div className="review-list">{visible.map((claim) => <article key={claim.id} className="review-card"><label className="claim-select" title={claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={claim.reviewStatus !== "pending" || !claim.batchReviewAttested} checked={selected.has(claim.id)} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span></div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus === "pending" && claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : claim.reviewStatus === "pending" ? "打开并核对证据后才能批量选择 ›" : "查看证据和处理记录 ›"}</span></button></article>)}</div>}
       {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新证据附到原记录。如果里面有新变化，可以拆成新的待审核记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
     </div>
   );
@@ -2380,7 +2657,7 @@ function relationReviewLabel(type: string): string {
   return "参考原记录";
 }
 
-function ClaimScreen({ claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw }: { claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void }) {
+function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
   const [edit, setEdit] = useState(false);
   const [statement, setStatement] = useState(claim?.statement ?? "");
   const [claimType, setClaimType] = useState(claim?.type ?? "other");
@@ -2391,13 +2668,24 @@ function ClaimScreen({ claim, evidence, evidenceState, issue, busy, onBack, onVe
     claim?.normalizedValue ? "" : "clear",
   );
   const originalUncertainty = uncertaintyForEdit(claim?.uncertainty);
+  const [evidenceNeedDecision, setEvidenceNeedDecision] = useState<"retain" | "clear" | "">(
+    claim?.needsAdditionalEvidence ? "" : "clear",
+  );
   const [uncertaintyDecision, setUncertaintyDecision] = useState<"retain" | "clear" | "">(
     originalUncertainty ? "" : "clear",
   );
   const [retainedRelationIds, setRetainedRelationIds] = useState<Set<string>>(new Set());
+  const [relationOpen, setRelationOpen] = useState(false);
+  const [relationTargets, setRelationTargets] = useState<RelationTarget[]>([]);
+  const [relationTargetsState, setRelationTargetsState] = useState<AsyncState>("idle");
+  const [relationIssue, setRelationIssue] = useState<ApiIssue | null>(null);
+  const [relationType, setRelationType] = useState<RelationType>("resolves");
+  const [relationTargetVersionId, setRelationTargetVersionId] = useState("");
+  const [relationReason, setRelationReason] = useState("");
   if (!claim) return <div className="page narrow-page"><PageHeader title="记录" back={onBack} /><EmptyState title="没有找到这条记录" body="它可能已经更新。返回审核区重新打开。" /></div>;
   const pending = claim.reviewStatus === "pending";
   const verified = claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn";
+  const activeRelations = claim.relationsForReview.filter((relation) => relation.status === "active");
   const evidenceReady = evidenceState === "ready";
   const editHasSupportingEvidence = evidence.some(
     (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
@@ -2407,13 +2695,56 @@ function ClaimScreen({ claim, evidence, evidenceState, issue, busy, onBack, onVe
     statement.trim() &&
     claimType.trim() &&
     normalizedDecision &&
+    evidenceNeedDecision &&
     uncertaintyDecision &&
+    !(uncertaintyDecision === "retain" && evidenceNeedDecision === "clear") &&
     (editHasSupportingEvidence || secondaryEvidenceNote.trim()),
   );
+  const eligibleRelationTargets = relationTargets.filter((target) => {
+    if (target.claim_id === claim.id || target.claim_version_id === claim.versionId) return false;
+    if (relationType !== "resolves") return true;
+    return ["open_question", "risk", "concern", "requirement"].includes(target.type) || target.has_uncertainty;
+  });
+  const selectedRelationTarget = eligibleRelationTargets.find(
+    (target) => target.claim_version_id === relationTargetVersionId,
+  );
+  async function openRelationForm() {
+    setRelationOpen(true);
+    if (!projectId || relationTargetsState === "loading" || relationTargetsState === "ready") return;
+    setRelationTargetsState("loading");
+    setRelationIssue(null);
+    try {
+      const targets = await api.listRelationTargets(projectId);
+      setRelationTargets(targets);
+      setRelationTargetsState(targets.length ? "ready" : "empty");
+    } catch (error) {
+      setRelationIssue(toIssue(error));
+      setRelationTargetsState("error");
+    }
+  }
+  async function submitManualRelation() {
+    if (!selectedRelationTarget || relationReason.trim().length < 3) return;
+    setRelationIssue(null);
+    try {
+      await onCreateRelation({
+        type: relationType,
+        target: selectedRelationTarget,
+        reason: relationReason.trim(),
+      });
+      setRelationOpen(false);
+      setRelationReason("");
+      setRelationTargetVersionId("");
+      setRelationTargetsState("idle");
+      setRelationTargets([]);
+    } catch (error) {
+      setRelationIssue(toIssue(error));
+    }
+  }
   const submitEdit = () => onVerdict("edit", reason.trim(), {
     statement: statement.trim(),
     type: claimType.trim(),
     normalizedValue: normalizedDecision === "retain" ? claim.normalizedValue : null,
+    needsAdditionalEvidence: uncertaintyDecision === "retain" || evidenceNeedDecision === "retain",
     uncertainty: uncertaintyDecision === "retain" ? originalUncertainty : null,
     retainRelationIds: [...retainedRelationIds],
     evidenceRefIds: [...editEvidenceIds],
@@ -2425,19 +2756,20 @@ function ClaimScreen({ claim, evidence, evidenceState, issue, busy, onBack, onVe
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>确认前，请检查原文是否真的支持这条陈述。</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
-        <aside className="panel verdict-panel"><h2>{edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} />{(pending || (verified && edit)) && <>
+        <aside className="panel verdict-panel"><h2>{edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{(pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
             <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
             <label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
             <fieldset className="edit-review-choice"><legend>结构化值</legend>{claim.normalizedValue ? <><pre>{JSON.stringify(claim.normalizedValue, null, 2)}</pre><label><input type="radio" name="normalized-decision" checked={normalizedDecision === "retain"} onChange={() => setNormalizedDecision("retain")} />我已核对，修改后仍适用</label><label><input type="radio" name="normalized-decision" checked={normalizedDecision === "clear"} onChange={() => setNormalizedDecision("clear")} />清除，之后重新提取</label></> : <p>原记录没有结构化值，本次继续留空。</p>}</fieldset>
             <fieldset className="edit-review-choice"><legend>不确定性</legend>{originalUncertainty ? <><UncertaintyNotice value={originalUncertainty} compact /><label><input type="radio" name="uncertainty-decision" checked={uncertaintyDecision === "retain"} onChange={() => setUncertaintyDecision("retain")} />我已核对，修改后仍需保留</label><label><input type="radio" name="uncertainty-decision" checked={uncertaintyDecision === "clear"} onChange={() => setUncertaintyDecision("clear")} />问题已经消失，清除提醒</label></> : <p>原记录没有不确定性，本次继续留空。</p>}</fieldset>
+            <fieldset className="edit-review-choice"><legend>是否仍需补充证据</legend>{claim.needsAdditionalEvidence ? <><p>原记录要求继续补证据。修改时必须明确保留或清除这项要求。</p><label><input type="radio" name="evidence-need-decision" checked={evidenceNeedDecision === "retain"} onChange={() => setEvidenceNeedDecision("retain")} />仍需补充证据</label><label><input type="radio" name="evidence-need-decision" checked={evidenceNeedDecision === "clear"} onChange={() => setEvidenceNeedDecision("clear")} />现有证据已经足够</label>{uncertaintyDecision === "retain" && evidenceNeedDecision === "clear" && <p className="uncertainty">保留结构化不确定性时，也必须保留补证要求。</p>}</> : <p>原记录没有额外补证要求，本次继续留空。</p>}</fieldset>
             {claim.relationsForReview.length > 0 && <fieldset className="edit-review-choice"><legend>这条记录与旧记录的关系</legend><p>只勾选修改后仍然成立的关系。系统会为新版本建立新关系，未勾选的关系不会生效。</p>{claim.relationsForReview.map((relation) => <label key={relation.id}><input type="checkbox" checked={retainedRelationIds.has(relation.id)} onChange={() => setRetainedRelationIds((current) => { const next = new Set(current); if (next.has(relation.id)) next.delete(relation.id); else next.add(relation.id); return next; })} /><span><b>{relationReviewLabel(relation.type)}</b><small>{relation.targetStatement}</small>{relation.reason && <small>{relation.reason}</small>}</span></label>)}</fieldset>}
             <div className="edit-evidence"><strong>重新选择支持修改后陈述的证据</strong><p>系统不会自动沿用旧证据。至少勾选一条直接或佐证材料；只有背景参考时，请补充人工依据。</p>{evidence.map((item) => <label key={item.id}><input type="checkbox" disabled={!evidenceReady} checked={editEvidenceIds.has(item.id)} onChange={() => setEditEvidenceIds((current) => { const next = new Set(current); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next; })} /><span><b>{typeLabel(item.role)}</b> · {item.quote || item.caption || item.filename || typeLabel(item.kind)}</span></label>)}</div>
             <label className="field"><span>补充证据说明</span><textarea value={secondaryEvidenceNote} onChange={(event) => setSecondaryEvidenceNote(event.target.value)} placeholder="没有可勾选的证据时，请说明你依据了什么补充信息。" /></label>
             <label className="field"><span>修改原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
             <div className="button-row"><button className="button secondary" onClick={() => setEdit(false)}>取消</button><button className="button primary" disabled={busy === "edit" || !canSaveEdit} onClick={submitEdit}>{busy === "edit" ? "正在保存…" : "保存并确认"}</button></div>
           </div> : <div className="verdict-actions"><button className="button primary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => onVerdict("confirm", reason.trim())}>确认并加入正式结果</button><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改后确认</button><div className="batch-review-attestation"><strong>需要一次批量处理多条？</strong><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</div><label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button></div>}
-        </>}{verified && !edit && <div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
+        </>}{verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或风险</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
       </div>
     </div>
   );

@@ -30,3 +30,5 @@
 这是一套刻意放入大量现场细节的多模态压力测试。三个 Event 分别有 15、15、17 条 material Ground Truth，超过产品每次最多给用户审核 10 条的限制。因此它适合测试图片归属、证据边界、信息取舍和长输出失败，不适合计算 Eric 要求的正式 Transcript Recall。Eval Runner 会把这种数学上无法同时满足“最多 10 条”和完整 Recall 的样本判为不合格。
 
 Ground Truth 目前是单人起草，尚未经过两位标注者独立复核。它只有一个连续场景，因此不能单独作为正式概念验证结果，也不能进入 Blind Set。正式 Transcript 验收应使用每个 Event 只有 5 到 10 条 material Claims 的场景集；本案例保留为独立的多模态压力测试。
+
+三场景 Transcript 开发包通过 `scripts/merge-synthetic-transcript-ground-truth.mjs` 中公开、固定的优先级清单，从本案例每次 Event 预先选择十条审核事实。这个投影不会改动本文件，也不会把压力测试的 Recall 当成正式 Recall。优先级仍是单人标注，正式使用前必须由第二位标注者独立复核并完成分歧裁决。

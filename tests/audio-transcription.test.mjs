@@ -86,3 +86,63 @@ test("audio smoke test uses the production Event response envelope and stays on 
   assert.match(smoke, /item\.processing_status === "ready"/);
   assert.doesNotMatch(smoke, /request\([^\n]+events[^\n]+\)\)\.event;/);
 });
+
+test("simple flow supports audio-first setup and preserves a transcription start error after refresh", async () => {
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  const beginSimple = page.slice(
+    page.indexOf("async function beginSimpleTest"),
+    page.indexOf("async function attachSimpleFile"),
+  );
+  assert.match(beginSimple, /api\.createProject/);
+  assert.match(beginSimple, /api\.createEvent/);
+  assert.match(beginSimple, /await loadSimpleProject\(created\.id, createdEvent\.id\)/);
+  assert.match(beginSimple, /async function beginSimpleTest\(openTranscriptAfterCreate = false\)/);
+  assert.match(beginSimple, /if \(openTranscriptAfterCreate\) setShowImport\(true\)/);
+  assert.match(page, /onStartOwn=\{\(\) => void beginSimpleTest\(\)\}/);
+  assert.match(page, /else void beginSimpleTest\(true\)/);
+
+  const attachSimple = page.slice(
+    page.indexOf("async function attachSimpleFile"),
+    page.indexOf("function goSimple"),
+  );
+  assert.match(attachSimple, /if \(!targetEvent\)[\s\S]*api\.createEvent/);
+  assert.match(attachSimple, /await launchTranscription\(init\.assetId, targetEvent\.id\)/);
+  assert.match(
+    attachSimple,
+    /const issue = toIssue\(error\);[\s\S]*await loadSimpleProject[\s\S]*setEventIssue\(issue\)/,
+    "refresh must finish before restoring the actionable transcription error",
+  );
+});
+
+test("audio and extraction recovery remain actionable without duplicating an in-flight run", async () => {
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  const retryAudio = page.slice(
+    page.indexOf("async function retryAudioTranscription"),
+    page.indexOf("async function retryRunStatus"),
+  );
+  assert.match(retryAudio, /runInProgress\.has\(current\.status\)/);
+  assert.match(retryAudio, /api\.kickLocalDispatcher/);
+  assert.match(retryAudio, /api\.getTranscriptionRun\(current\.id\)/);
+  assert.match(retryAudio, /launchTranscription\(audioAssetId, event\.id, current\?\.id/);
+  assert.match(page, /重新转写/);
+  assert.match(page, /重新检查后台状态/);
+  assert.match(page, /重新分析/);
+});
+
+test("polling keeps attempt state per run, surfaces timeout recovery, and exposes the full transcript", async () => {
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page, /transcriptionPollingRunKey\.current !== pollKey/);
+  assert.match(page, /pollingRunKey\.current !== pollKey/);
+  assert.match(page, /TRANSCRIPTION_POLL_TIMEOUT/);
+  assert.match(page, /EXTRACTION_POLL_TIMEOUT/);
+  assert.doesNotMatch(page, /\[event\?\.id, flash, transcriptionRun\]/);
+  assert.doesNotMatch(page, /\[event\?\.id, loadClaimsForRun, project\?\.id, run\]/);
+
+  const viewer = page.slice(
+    page.indexOf("function TranscriptViewer"),
+    page.indexOf("function recordArray"),
+  );
+  assert.match(viewer, /run\.segments\.map/);
+  assert.doesNotMatch(viewer, /\.slice\(/);
+  assert.match(page, /查看完整逐字稿/);
+});

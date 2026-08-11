@@ -64,11 +64,25 @@ async function pendingCounts(
            SELECT COUNT(*) FROM claims c
             WHERE c.project_id = p.id AND c.workspace_id = p.workspace_id
               AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+              AND EXISTS (
+                SELECT 1 FROM events latest
+                 WHERE latest.id = c.event_id
+                   AND latest.project_id = p.id
+                   AND latest.workspace_id = p.workspace_id
+                   AND latest.active_run_id = c.extraction_run_id
+              )
          ), 0) AS pending_claim_count,
          COALESCE((
            SELECT COUNT(*) FROM claim_occurrence_candidates occ
             WHERE occ.project_id = p.id AND occ.workspace_id = p.workspace_id
               AND occ.status = 'pending'
+              AND EXISTS (
+                SELECT 1 FROM events latest
+                 WHERE latest.id = occ.event_id
+                   AND latest.project_id = p.id
+                   AND latest.workspace_id = p.workspace_id
+                   AND latest.active_run_id = occ.extraction_run_id
+              )
          ), 0) AS pending_occurrence_count
        FROM projects p
        WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL`,
@@ -234,27 +248,51 @@ export async function startReviewSession(
            SELECT ?, p.workspace_id, p.id, ?, 'active', ?,
              (SELECT COUNT(*) FROM claims c
                WHERE c.project_id = p.id AND c.workspace_id = p.workspace_id
-                 AND c.review_status = 'pending' AND c.lifecycle_status = 'active'),
+                 AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+                 AND EXISTS (SELECT 1 FROM events latest
+                   WHERE latest.id = c.event_id AND latest.project_id = p.id
+                     AND latest.workspace_id = p.workspace_id
+                     AND latest.active_run_id = c.extraction_run_id)),
              (SELECT COUNT(*) FROM claim_occurrence_candidates occ
                WHERE occ.project_id = p.id AND occ.workspace_id = p.workspace_id
-                 AND occ.status = 'pending'),
+                 AND occ.status = 'pending'
+                 AND EXISTS (SELECT 1 FROM events latest
+                   WHERE latest.id = occ.event_id AND latest.project_id = p.id
+                     AND latest.workspace_id = p.workspace_id
+                     AND latest.active_run_id = occ.extraction_run_id)),
              (SELECT COUNT(*) FROM claims c
                WHERE c.project_id = p.id AND c.workspace_id = p.workspace_id
-                 AND c.review_status = 'pending' AND c.lifecycle_status = 'active'),
+                 AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+                 AND EXISTS (SELECT 1 FROM events latest
+                   WHERE latest.id = c.event_id AND latest.project_id = p.id
+                     AND latest.workspace_id = p.workspace_id
+                     AND latest.active_run_id = c.extraction_run_id)),
              (SELECT COUNT(*) FROM claim_occurrence_candidates occ
                WHERE occ.project_id = p.id AND occ.workspace_id = p.workspace_id
-                 AND occ.status = 'pending'),
+                 AND occ.status = 'pending'
+                 AND EXISTS (SELECT 1 FROM events latest
+                   WHERE latest.id = occ.event_id AND latest.project_id = p.id
+                     AND latest.workspace_id = p.workspace_id
+                     AND latest.active_run_id = occ.extraction_run_id)),
              ?, ?
            FROM projects p
            WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
              AND (
                (SELECT COUNT(*) FROM claims c
                  WHERE c.project_id = p.id AND c.workspace_id = p.workspace_id
-                   AND c.review_status = 'pending' AND c.lifecycle_status = 'active')
+                   AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+                   AND EXISTS (SELECT 1 FROM events latest
+                     WHERE latest.id = c.event_id AND latest.project_id = p.id
+                       AND latest.workspace_id = p.workspace_id
+                       AND latest.active_run_id = c.extraction_run_id))
                +
                (SELECT COUNT(*) FROM claim_occurrence_candidates occ
                  WHERE occ.project_id = p.id AND occ.workspace_id = p.workspace_id
-                   AND occ.status = 'pending')
+                   AND occ.status = 'pending'
+                   AND EXISTS (SELECT 1 FROM events latest
+                     WHERE latest.id = occ.event_id AND latest.project_id = p.id
+                       AND latest.workspace_id = p.workspace_id
+                       AND latest.active_run_id = occ.extraction_run_id))
              ) > 0`,
         )
         .bind(
@@ -373,12 +411,22 @@ export async function completeReviewSession(
                      AND c.workspace_id = rs.workspace_id
                      AND c.review_status = 'pending'
                      AND c.lifecycle_status = 'active'
+                     AND EXISTS (SELECT 1 FROM events latest
+                       WHERE latest.id = c.event_id
+                         AND latest.project_id = rs.project_id
+                         AND latest.workspace_id = rs.workspace_id
+                         AND latest.active_run_id = c.extraction_run_id)
                 )
                 AND NOT EXISTS (
                   SELECT 1 FROM claim_occurrence_candidates occ
                    WHERE occ.project_id = rs.project_id
                      AND occ.workspace_id = rs.workspace_id
                      AND occ.status = 'pending'
+                     AND EXISTS (SELECT 1 FROM events latest
+                       WHERE latest.id = occ.event_id
+                         AND latest.project_id = rs.project_id
+                         AND latest.workspace_id = rs.workspace_id
+                         AND latest.active_run_id = occ.extraction_run_id)
                 )
            ) THEN 1 ELSE 0 END, ?`,
         )

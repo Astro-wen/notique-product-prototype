@@ -135,15 +135,21 @@ function fixtureFetch() {
         semantic_support_verdict: "unreviewed",
       },
     }],
-    ["/api/v1/projects/project-1/views/folder-summary", { view: { currentClaims: [] } }],
-    ["/api/v1/projects/project-1/views/timeline", { view: [] }],
+    ["/api/v1/projects/project-1/views/folder-summary", {
+      view: {
+        currentClaims: [{ id: "production-claim-1" }, { id: "risk-1" }],
+      },
+    }],
+    ["/api/v1/projects/project-1/views/timeline", {
+      view: [{ deltas: [{ id: "delta-1" }, { id: "delta-2" }] }],
+    }],
     ["/api/v1/projects/project-1/views/decisions", { view: [] }],
     ["/api/v1/projects/project-1/views/preferences", { view: [] }],
     ["/api/v1/projects/project-1/views/open-questions", { view: [] }],
     ["/api/v1/projects/project-1/views/risks", { view: { claims: [], contradictions: [] } }],
     ["/api/v1/projects/project-1/gap-check", { gap_check: { applicable: false } }],
     ["/api/v1/projects/project-1/next-meeting-agenda", {
-      agenda: { items: [{ id: "agenda-1" }, { id: "agenda-2" }] },
+      agenda: [{ id: "agenda-1" }, { id: "agenda-2" }],
     }],
     ["/api/v1/projects/project-1/brief-card", {
       brief_card: {
@@ -311,8 +317,38 @@ test("production Run export is deterministic and preserves unadjudicated fields"
   assert.equal(exported.claims[0].evidence[0].quoteExact, true);
   assert.equal(exported.viewLeakageCount, null);
   assert.equal(exported.brief.slots.length, 6);
+  assert.equal(exported.brief.slots.every((slot) => slot.sourceValid), true);
   assert.equal("generated_at" in exported.views.briefCard, false);
   assert.equal(stableStringify(first).includes("secret"), false);
+});
+
+test("production Run export does not treat a nonempty missing Brief source as valid", async () => {
+  const baseFetch = fixtureFetch();
+  const fetchImpl = async (url, options) => {
+    if (url.pathname === "/api/v1/projects/project-1/brief-card") {
+      return response({
+        brief_card: {
+          stateClaimId: "missing-claim",
+          deltaItemIds: ["missing-delta", "delta-2"],
+          agendaItemIds: ["missing-agenda", "agenda-2"],
+          riskClaimId: "risk-1",
+        },
+      });
+    }
+    return baseFetch(url, options);
+  };
+  const exported = await buildPredictionPackage({
+    baseUrl: "http://localhost:3000",
+    environment: "local",
+    allowedTestHost: null,
+    projectId: "project-1",
+    runIds: ["run-1"],
+    fetchImpl,
+  });
+  assert.deepEqual(
+    exported.runs[0].brief.slots.map((slot) => slot.sourceValid),
+    [false, false, true, false, true, true],
+  );
 });
 
 test("project assertion and comparable frozen configurations are enforced", async () => {

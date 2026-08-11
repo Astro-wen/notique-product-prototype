@@ -31,27 +31,79 @@
           "event-03-contractor-estimate",
           "event-04-coverage-authorization"
         ]
+      },
+      {
+        "dataset": "synthetic-contractor-v1",
+        "path": "eval/cases/synthetic-contractor-v1/ground-truth.json",
+        "sha256": "bc42337151437db6fae379983acc2bf932ce2507055b819b0f226068ca7808a9",
+        "scenarioId": "scenario-oak-street-kitchen",
+        "eventIds": [
+          "event-01-estimate",
+          "event-02-scope-followup",
+          "event-03-preconstruction"
+        ],
+        "projection": "single-author-review-priority-v1",
+        "selectedMaterialClaimIds": {
+          "event-01-estimate": [
+            "gt-e1-scope",
+            "gt-e1-surface-quartz",
+            "gt-e1-budget-18000",
+            "gt-e1-pendant-remove",
+            "gt-e1-outlet-condition",
+            "gt-e1-hidden-change-order",
+            "gt-e1-decision-makers",
+            "gt-e1-loadbearing-open",
+            "gt-e1-labor-allowance-ambiguous",
+            "gt-e1-appliance-move-open"
+          ],
+          "event-02-scope-followup": [
+            "gt-e2-budget-21500",
+            "gt-e2-surface-porcelain",
+            "gt-e2-opening-72",
+            "gt-e2-loadbearing-reaffirmed",
+            "gt-e2-pendant-keep",
+            "gt-e2-outlet-relocate",
+            "gt-e2-change-order-due",
+            "gt-e2-appliance-split",
+            "gt-e2-moisture-source-open",
+            "gt-e2-tile-buyer-open"
+          ],
+          "event-03-preconstruction": [
+            "gt-e3-wall-not-loadbearing",
+            "gt-e3-header-sketch",
+            "gt-e3-budget-reaffirmed",
+            "gt-e3-pendant-final",
+            "gt-e3-moisture-cause",
+            "gt-e3-moisture-recheck",
+            "gt-e3-tile-approved",
+            "gt-e3-labor-allowance-6500",
+            "gt-e3-appliances-both-crew",
+            "gt-e3-inspection-slot-open"
+          ]
+        },
+        "sourceFixturePurpose": "exhaustive-multimodal-pressure-test"
       }
     ],
-    "excludedDatasets": [
-      "synthetic-contractor-v1"
-    ],
+    "sourceProjectionNotice": "The Contractor source is projected to ten preselected transcript review priorities per Event; its raw multimodal pressure fixture is unchanged.",
     "structuralCounts": {
-      "scenarioCount": 2,
-      "eventCount": 8,
-      "materialClaimCount": 77,
-      "criticalClaimCount": 58,
-      "criticalAmbiguityCount": 16,
-      "relationCount": 40,
+      "scenarioCount": 3,
+      "eventCount": 11,
+      "materialClaimCount": 107,
+      "criticalClaimCount": 80,
+      "criticalAmbiguityCount": 20,
+      "relationCount": 51,
       "doubleAnnotatedCount": 0,
       "independentRunCount": 0,
       "eventMaterialClaimCounts": {
         "event-01-buyer-consultation": 9,
+        "event-01-estimate": 10,
         "event-01-first-loss-call": 10,
         "event-02-adjuster-inspection": 10,
         "event-02-redwood-showing": 9,
+        "event-02-scope-followup": 10,
         "event-03-contractor-estimate": 9,
         "event-03-harbor-showing": 10,
+        "event-03-preconstruction": 10,
         "event-04-coverage-authorization": 10,
         "event-04-offer-strategy": 10
       }
@@ -85,6 +137,15 @@
         "event-02-adjuster-inspection",
         "event-03-contractor-estimate",
         "event-04-coverage-authorization"
+      ]
+    },
+    {
+      "id": "scenario-oak-street-kitchen",
+      "dataset": "synthetic-contractor-v1",
+      "eventIds": [
+        "event-01-estimate",
+        "event-02-scope-followup",
+        "event-03-preconstruction"
       ]
     }
   ],
@@ -2392,6 +2453,1075 @@
         "doubleAnnotated": false,
         "adjudication": null
       }
+    },
+    {
+      "id": "gt-e1-scope",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "requirement",
+      "statement": "The requested initial scope is to remove the short wall between the kitchen and dining room and patch affected drywall.",
+      "normalizedValue": {
+        "removeShortWall": true,
+        "patchDrywall": true
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 12000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-wall-measurement",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "measurement",
+      "statement": "Aaron measured the wall at 7 feet 4 inches from finished corner to finished corner.",
+      "normalizedValue": {
+        "inches": 88
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 28000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-cabinets-stay",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "decision",
+      "statement": "The existing cabinets will remain and will not be replaced.",
+      "normalizedValue": {
+        "existingCabinets": "remain"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 42000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-surface-quartz",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "preference",
+      "statement": "Maria prefers warm off-white quartz for the new counter cap.",
+      "normalizedValue": {
+        "surface": "quartz",
+        "color": "warm off-white"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 54000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-budget-18000",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "budget",
+      "statement": "Maria's total budget cap is $18,000 including labor and materials.",
+      "normalizedValue": {
+        "amount": 18000,
+        "currency": "USD",
+        "includes": [
+          "labor",
+          "materials"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 68000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-pendant-remove",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "decision",
+      "statement": "Maria initially instructed that the black pendant over the opening should be removed.",
+      "normalizedValue": {
+        "pendant": "remove"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 82000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-outlet-condition",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "requirement",
+      "statement": "Outlet relocation is included only if the existing wiring is standard and accessible.",
+      "normalizedValue": {
+        "outletRelocation": "conditional",
+        "condition": "standard and accessible wiring"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 94000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-hidden-change-order",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "requirement",
+      "statement": "Hidden wiring or plumbing requires a separate change order and written approval before extra work proceeds.",
+      "normalizedValue": {
+        "hiddenConditions": "separate written change order required"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 94000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-decision-makers",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "person_role",
+      "statement": "Maria and Daniel must approve the final scope and price together.",
+      "normalizedValue": {
+        "decisionMakers": [
+          "Maria Lopez",
+          "Daniel Lopez"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 118000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-loadbearing-open",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "open_question",
+      "statement": "Whether the short wall is load-bearing requires an engineer's confirmation.",
+      "normalizedValue": {
+        "question": "wall load-bearing status",
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 134000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "unknown_condition",
+        "alternatives": [
+          "load-bearing",
+          "not load-bearing"
+        ],
+        "question": "Is the short wall load-bearing?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-start-after-sep8",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "timing",
+      "statement": "Work can start after September 8, 2026.",
+      "normalizedValue": {
+        "notBefore": "2026-09-09"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 150000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-labor-allowance-ambiguous",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "open_question",
+      "statement": "The labor allowance is unclear between $6,500 and $6,050 and must be confirmed before it enters the estimate.",
+      "normalizedValue": {
+        "field": "labor allowance",
+        "status": "open",
+        "alternatives": [
+          6500,
+          6050
+        ],
+        "currency": "USD"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:11"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 162000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "numeric",
+        "alternatives": [
+          "USD 6,500",
+          "USD 6,050"
+        ],
+        "question": "Is the labor allowance $6,500 or $6,050?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e1-appliance-move-open",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-01-estimate",
+      "type": "open_question",
+      "statement": "Who will move the refrigerator and range before demolition is undecided.",
+      "normalizedValue": {
+        "question": "appliance movers",
+        "status": "open"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e1:seg:12"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 178000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-decision-makers-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "person_role",
+      "statement": "Maria and Daniel remain the joint decision-makers for final scope and price.",
+      "normalizedValue": {
+        "decisionMakers": [
+          "Maria Lopez",
+          "Daniel Lopez"
+        ]
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e1-decision-makers",
+      "timestampMs": 14000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-cabinets-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "decision",
+      "statement": "The existing cabinets are still staying.",
+      "normalizedValue": {
+        "existingCabinets": "remain"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e1-cabinets-stay",
+      "timestampMs": 30000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-budget-21500",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "budget",
+      "statement": "The total project budget cap changed to $21,500 including tax.",
+      "normalizedValue": {
+        "amount": 21500,
+        "currency": "USD",
+        "includes": [
+          "tax"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 43000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-surface-porcelain",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "preference",
+      "statement": "Maria changed the preferred surface to matte white porcelain tile instead of warm off-white quartz.",
+      "normalizedValue": {
+        "surface": "porcelain tile",
+        "finish": "matte",
+        "color": "white"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 62000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-opening-72",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "requirement",
+      "statement": "The revised scope is a 72-inch opening with a 16-inch return on each side instead of full partition removal.",
+      "normalizedValue": {
+        "openingWidthInches": 72,
+        "returnEachSideInches": 16,
+        "fullRemoval": false
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 81000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-loadbearing-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "open_question",
+      "statement": "The engineer's answer about the wall's load-bearing status remains outstanding.",
+      "normalizedValue": {
+        "question": "wall load-bearing status",
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e1-loadbearing-open",
+      "timestampMs": 102000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "unknown_condition",
+        "alternatives": [
+          "load-bearing",
+          "not load-bearing"
+        ],
+        "question": "Is the short wall load-bearing?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-pendant-keep",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "decision",
+      "statement": "Maria instructed that the black pendant should stay and should not be removed.",
+      "normalizedValue": {
+        "pendant": "keep"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 118000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-outlet-relocate",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "decision",
+      "statement": "Daniel approved relocating the outlet, subject to a separate change order for hidden wiring or plumbing.",
+      "normalizedValue": {
+        "outletRelocation": "approved",
+        "hiddenConditions": "separate change order"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 132000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-change-order-due",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "timing",
+      "statement": "A written change order must be signed by August 18, 2026 to hold a September 10 start.",
+      "normalizedValue": {
+        "changeOrderDue": "2026-08-18",
+        "conditionalStart": "2026-09-10"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 151000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-start-sep10",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "timing",
+      "statement": "Maria agreed that September 10, 2026 works as the start date.",
+      "normalizedValue": {
+        "startDate": "2026-09-10"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 166000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-appliance-split",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "decision",
+      "statement": "Maria will move the refrigerator and Aaron's crew will move the range.",
+      "normalizedValue": {
+        "refrigeratorMover": "Maria Lopez",
+        "rangeMover": "Aaron's crew"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:11"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 177000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-moisture-source-open",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "open_question",
+      "statement": "The source of the brown ceiling stain is unknown and must be identified before closing or painting the drywall.",
+      "normalizedValue": {
+        "question": "ceiling moisture source",
+        "status": "open",
+        "blocker": "close or paint drywall"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:12",
+        "tx-e2:seg:13"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 192000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "unknown_cause",
+        "alternatives": [
+          "plumbing",
+          "roof or exterior",
+          "other"
+        ],
+        "question": "What caused the ceiling stain?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e2-tile-buyer-open",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-02-scope-followup",
+      "type": "open_question",
+      "statement": "Whether Maria or Aaron will purchase the tile remains undecided.",
+      "normalizedValue": {
+        "question": "tile purchaser",
+        "status": "open",
+        "alternatives": [
+          "Maria Lopez",
+          "Aaron Kim"
+        ]
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e2:seg:14"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 228000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-wall-not-loadbearing",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "property_fact",
+      "statement": "Aaron reported engineer Nina Patel's written finding that the short wall is not load-bearing.",
+      "normalizedValue": {
+        "loadBearing": false,
+        "source": "engineer Nina Patel"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 16000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-header-sketch",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "requirement",
+      "statement": "The new header must follow engineer Nina Patel's sketch.",
+      "normalizedValue": {
+        "headerRequirement": "follow engineer sketch"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 16000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-opening-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "requirement",
+      "statement": "The clients reaffirmed the 72-inch opening with 16-inch returns on both sides.",
+      "normalizedValue": {
+        "openingWidthInches": 72,
+        "returnEachSideInches": 16
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e2-opening-72",
+      "timestampMs": 39000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-budget-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "budget",
+      "statement": "The $21,500 total budget remains the cap.",
+      "normalizedValue": {
+        "amount": 21500,
+        "currency": "USD"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e2-budget-21500",
+      "timestampMs": 55000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-pendant-final",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "decision",
+      "statement": "The final instruction is to keep the black pendant, and the earlier removal instruction is canceled.",
+      "normalizedValue": {
+        "pendant": "keep",
+        "priorRemovalInstruction": "canceled"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 71000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-moisture-cause",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "property_fact",
+      "statement": "Aaron reported that the plumber found and replaced a loose supply connection above the stained area.",
+      "normalizedValue": {
+        "reportedCause": "loose supply connection",
+        "repair": "replaced"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 91000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-moisture-recheck",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "requirement",
+      "statement": "The stained area must be checked again before closing the drywall despite a dry surface reading that morning.",
+      "normalizedValue": {
+        "action": "recheck moisture",
+        "deadline": "before closing drywall"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 91000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-tile-approved",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "decision",
+      "statement": "The clients approved matte white 12 by 24 inch porcelain tile from lot PZ-2408.",
+      "normalizedValue": {
+        "material": "porcelain tile",
+        "finish": "matte",
+        "color": "white",
+        "sizeInches": [
+          12,
+          24
+        ],
+        "lot": "PZ-2408"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 118000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-tile-purchase",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "decision",
+      "statement": "Aaron will purchase the approved tile after the clients sign the sample sheet.",
+      "normalizedValue": {
+        "purchaser": "Aaron Kim",
+        "condition": "signed sample sheet"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 118000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-start-reaffirmed",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "timing",
+      "statement": "The September 10, 2026 start date remains in place.",
+      "normalizedValue": {
+        "startDate": "2026-09-10"
+      },
+      "material": false,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-e2-start-sep10",
+      "timestampMs": 151000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-labor-allowance-6500",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "budget",
+      "statement": "Maria clarified that the labor allowance is $6,500, not $6,050.",
+      "normalizedValue": {
+        "amount": 6500,
+        "currency": "USD",
+        "rejectedAlternative": 6050
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 173000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-appliances-both-crew",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "decision",
+      "statement": "Aaron's crew will move both the refrigerator and the range.",
+      "normalizedValue": {
+        "refrigeratorMover": "Aaron's crew",
+        "rangeMover": "Aaron's crew"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 188000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-e3-inspection-slot-open",
+      "scenarioId": "scenario-oak-street-kitchen",
+      "eventId": "event-03-preconstruction",
+      "type": "open_question",
+      "statement": "The city inspection slot has not been assigned, and Aaron will check the status by August 22, 2026.",
+      "normalizedValue": {
+        "question": "city inspection slot",
+        "status": "open",
+        "followUpBy": "2026-08-22"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-e3:seg:12"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 231000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
     }
   ],
   "relations": [
@@ -2674,6 +3804,83 @@
       "sourceClaimId": "gt-i4-cause-refrigerator-accepted",
       "targetClaimId": "gt-i2-cause-refrigerator-coupling",
       "targetVersionId": "gtv-i2-cause-refrigerator-coupling"
+    },
+    {
+      "id": "rel-e2-budget-supersedes-e1",
+      "type": "supersedes",
+      "sourceClaimId": "gt-e2-budget-21500",
+      "targetClaimId": "gt-e1-budget-18000",
+      "targetVersionId": "gtv-e1-budget-18000"
+    },
+    {
+      "id": "rel-e2-surface-supersedes-e1",
+      "type": "supersedes",
+      "sourceClaimId": "gt-e2-surface-porcelain",
+      "targetClaimId": "gt-e1-surface-quartz",
+      "targetVersionId": "gtv-e1-surface-quartz"
+    },
+    {
+      "id": "rel-e2-opening-supersedes-e1",
+      "type": "supersedes",
+      "sourceClaimId": "gt-e2-opening-72",
+      "targetClaimId": "gt-e1-scope",
+      "targetVersionId": "gtv-e1-scope"
+    },
+    {
+      "id": "rel-e2-pendant-contradicts-e1",
+      "type": "contradicts",
+      "sourceClaimId": "gt-e2-pendant-keep",
+      "targetClaimId": "gt-e1-pendant-remove",
+      "targetVersionId": "gtv-e1-pendant-remove"
+    },
+    {
+      "id": "rel-e2-appliance-resolves-e1",
+      "type": "resolves",
+      "sourceClaimId": "gt-e2-appliance-split",
+      "targetClaimId": "gt-e1-appliance-move-open",
+      "targetVersionId": "gtv-e1-appliance-move-open"
+    },
+    {
+      "id": "rel-e3-wall-resolves-e1",
+      "type": "resolves",
+      "sourceClaimId": "gt-e3-wall-not-loadbearing",
+      "targetClaimId": "gt-e1-loadbearing-open",
+      "targetVersionId": "gtv-e1-loadbearing-open"
+    },
+    {
+      "id": "rel-e3-pendant-resolves-e1",
+      "type": "resolves",
+      "sourceClaimId": "gt-e3-pendant-final",
+      "targetClaimId": "gt-e1-pendant-remove",
+      "targetVersionId": "gtv-e1-pendant-remove"
+    },
+    {
+      "id": "rel-e3-moisture-resolves-e2",
+      "type": "resolves",
+      "sourceClaimId": "gt-e3-moisture-cause",
+      "targetClaimId": "gt-e2-moisture-source-open",
+      "targetVersionId": "gtv-e2-moisture-source-open"
+    },
+    {
+      "id": "rel-e3-tile-informed-by-e2",
+      "type": "informed_by",
+      "sourceClaimId": "gt-e3-tile-approved",
+      "targetClaimId": "gt-e2-surface-porcelain",
+      "targetVersionId": "gtv-e2-surface-porcelain"
+    },
+    {
+      "id": "rel-e3-allowance-resolves-e1",
+      "type": "resolves",
+      "sourceClaimId": "gt-e3-labor-allowance-6500",
+      "targetClaimId": "gt-e1-labor-allowance-ambiguous",
+      "targetVersionId": "gtv-e1-labor-allowance-ambiguous"
+    },
+    {
+      "id": "rel-e3-appliances-supersedes-e2",
+      "type": "supersedes",
+      "sourceClaimId": "gt-e3-appliances-both-crew",
+      "targetClaimId": "gt-e2-appliance-split",
+      "targetVersionId": "gtv-e2-appliance-split"
     }
   ],
   "transcriptNegativeControls": [

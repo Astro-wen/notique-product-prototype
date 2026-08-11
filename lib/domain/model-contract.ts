@@ -1,8 +1,8 @@
 import type { ClaimType, EvidenceRole } from "./types";
 import type { ContextPack } from "./context-pack";
 
-export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v1" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v5" as const;
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v2" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v7" as const;
 
 export const MODEL_CONTRACT_LIMITS = {
   claims: 10,
@@ -375,11 +375,12 @@ function validateRelationsAgainstContext(
         target.type !== "open_question" &&
         target.type !== "risk" &&
         target.type !== "concern" &&
+        target.type !== "requirement" &&
         target.uncertainty === null
       ) {
         issues.push({
           path: `${path}.type`,
-          message: "Resolves requires an open question, risk, concern, or explicitly uncertain target.",
+          message: "Resolves requires an open question, risk, concern, prerequisite requirement, or explicitly uncertain target.",
         });
       }
 
@@ -526,6 +527,12 @@ export function validateExtractClaimsOutput(value: unknown, context?: ContextPac
       claim.evidence.forEach((item, evidenceIndex) => validateEvidence(item, `${path}.evidence[${evidenceIndex}]`, issues));
     }
     if (claim.uncertainty !== null) {
+      if (claim.needs_additional_evidence !== true) {
+        issues.push({
+          path: `${path}.needs_additional_evidence`,
+          message: "A structured uncertainty requires needs_additional_evidence=true.",
+        });
+      }
       if (!record(claim.uncertainty)) issues.push({ path: `${path}.uncertainty`, message: "Expected an object or null." });
       else {
         exactKeys(claim.uncertainty, ["reason", "alternatives", "question"], `${path}.uncertainty`, issues);
@@ -533,6 +540,7 @@ export function validateExtractClaimsOutput(value: unknown, context?: ContextPac
         stringField(claim.uncertainty.question, `${path}.uncertainty.question`, issues, false, MODEL_CONTRACT_LIMITS.explanationLength);
         if (
           !Array.isArray(claim.uncertainty.alternatives) ||
+          claim.uncertainty.alternatives.length < 2 ||
           claim.uncertainty.alternatives.length > MODEL_CONTRACT_LIMITS.alternativesPerUncertainty ||
           claim.uncertainty.alternatives.some(
             (item) =>
@@ -543,7 +551,7 @@ export function validateExtractClaimsOutput(value: unknown, context?: ContextPac
         ) {
           issues.push({
             path: `${path}.uncertainty.alternatives`,
-            message: `Expected at most ${MODEL_CONTRACT_LIMITS.alternativesPerUncertainty} bounded non-empty strings.`,
+            message: `Expected two to ${MODEL_CONTRACT_LIMITS.alternativesPerUncertainty} bounded non-empty strings.`,
           });
         }
       }

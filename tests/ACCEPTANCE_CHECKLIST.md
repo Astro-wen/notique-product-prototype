@@ -125,7 +125,7 @@
 ## J. 确定性工程阶段的完成门
 
 - [x] `npm run build` 通过。
-- [x] `npx tsc --noEmit` 除已知 Cloudflare 类型绑定问题外无错误。
+- [x] `npx tsc --noEmit` 通过，没有忽略或豁免类型错误。
 - [x] 原有测试已经更新到当前产品，不再测试已删除的 starter skeleton。
 - [x] `node --test tests/domain-invariants.test.mjs` 全部通过。
 - [x] `node --test tests/repo-readiness.audit.mjs` 全部通过。
@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 114 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、音频上传和转写契约、最小 UI 的 Scenario 刷新、用户入口隐藏 PDF、生产 Bundle 和真实数据前端外壳。
+- `npm test` 通过，合计 133 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 最新 Run 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、音频上传和转写契约、最小 UI、生产 Bundle、发布包密钥扫描和真实数据前端外壳。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -146,21 +146,54 @@
 - Outbox 遇到已持久化的 Terminal Failed Run 会确认消息，避免重复调用模型。遇到 `lease_not_acquired` 会先重读 Run；Run 仍是 Queued 或不存在时保留重试，只有 Processing 或 Terminal 状态才确认消息。
 - 生产 Worker 配置包含 `*/2 * * * *` 的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
 - 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
+- 最小测试页支持从空白状态直接上传录音。系统会先建立 Project 和第一次 Event，再保存音频并启动转写，不再要求用户先上传 Transcript。转写启动失败时，错误不会被随后的页面刷新覆盖，已上传的音频也不会丢失。失败或长时间停留的任务可以重新检查或重新转写；轮询次数按同一个 Run 累积，不会因页面重复渲染不断归零。成功后既保留简短预览，也可打开包含全部说话人、原文和时间点的完整逐字稿。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
 - 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
+- 当前代码已锁定 `claim-extraction-prompt.v7` 和 `claim-extraction.v2`。Schema 强制结构化歧义至少包含两个候选，并要求有歧义时 `needs_additional_evidence=true`。旧 Prompt 或旧 Schema 创建的排队任务会在调用模型前失败，避免把不同版本混进同一质量结果。这里证明的是版本和结构约束，Prompt v7 还没有完成新的付费模型质量 Run。
+- 已确认、仍处于 Active 状态且带结构化歧义的 Claim 会进入 Agenda，并显示追问、原因和候选答案。Pending 歧义不会进入 Agenda。普通 Open Question、未解决矛盾和 Scenario Gap 仍按各自来源生成，结果页不从原始 Transcript 临时补内容。
+- 三个合成场景已确定性合并为一个 Transcript-only 开发包，共 3 个 Scenario、11 个 Event。每个 Event 固定有 5 到 10 条 material Ground Truth。原始 Contractor 压力样本每个 Event 分别有 15、15、17 条 material Ground Truth，超过十条模型输出上限，理论最高 Recall 只有 66.7%、66.7% 和 58.8%，不能直接用于正式 80% Recall 判定。合并脚本使用提交在代码中的固定 `single-author-review-priority-v1` 投影，在看到模型结果前为 Contractor 三个 Event 各选定 10 条审核重点，并记录源文件哈希和所选 ID。这个开发包仍是单人标注，`sample_eligible=false`。
+- GitHub Pages 构建现在只生成跳转页，指向完整 Sites 应用，避免把静态页面伪装成可处理上传和分析请求的全栈产品。完整 Sites 目前仍是私有访问，线上版本也尚未更新到这次代码。公开地址完成新版本部署、权限和端到端验证前，不能算可交付测试入口。
 
 ## K. 真实模型阶段的当前结论
 
-已经完成同一个本地合成 Project 中连续两个 Event 的 production code path 调用，使用本地 D1、R2 与 Outbox Bindings，并实际调用 OpenAI Responses API。两次均使用 `gpt-5.6-luna`、`reasoning=max` 和严格结构化输出；Event 1 使用 Prompt v3，Event 2 使用 Prompt v4。Ground Truth 没有进入模型 Prompt。当前执行示例为 `AI_TIMEOUT_MS=540000`、`AI_MAX_OUTPUT_TOKENS=64000`，不包含任何 Key。
+工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是 Prompt v7、Schema v2，但还没有用这两个版本完成新的固定输入三次 Run。下面的模型数字来自已保存的历史 Run，只用于判断问题在哪里，不能直接代表 Prompt v7 的质量。
 
-- Event 1 使用 Prompt v3，同时输入 Transcript 和一张 PNG。Run 成功，耗时 3 分 06 秒，5,338 input tokens，24,955 output tokens。模型生成 10 条候选，其中一条确实引用并持久化了照片 Evidence。Transcript 召回为 10/13，图片独立事实召回为 0/4。
-- Event 2 使用 Prompt v4，同时输入 Transcript 和一张 PNG，并继承经人工确认的 Event 1 Ledger。Run 成功，耗时 3 分 56 秒，7,181 input tokens，35,157 output tokens。Transcript 召回为 11/13，7 条跨 Event 关系全部正确；图片独立事实召回仍为 0/4，也没有生成照片 Evidence。
-- 两次共 20 个模型输出项都有原始材料支持，没有发现无依据的承重、批准、责任、费用或因果推断。
-- 结论：多模态传输、模型调用和照片 Evidence 持久化已经真实跑通。Transcript 抽取和跨 Event 关系有可用信号。图片理解目前不稳定，完整召回没有通过。由于两次 Event 使用的 Prompt 版本不同，这组结果也不能充当 v4 的正式质量基线。
+### 同一输入三次稳定性
 
-核心测试页已经补上 Scenario 确认，并把普通 Claim 与 Occurrence Candidate 一起计入待核对数量。当前 Provider 没有 PDF Adapter，因此核心测试页和高级 Event 上传入口只允许 Transcript 与 JPG、PNG、WebP，不再声称 PDF 可直接分析。后端仍保留 PDF 资产结构，待 Adapter 完成后再开放。`.env.example` 已使用真实成功 Run 所需的 540,000ms Timeout 和 64,000 Output Token 上限。
+Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt v5 和参数独立运行三次：
 
-详细记录见 `work/clean-multimodal-rerun/REPORT.md` 和 `work/clean-multimodal-rerun/event2-v4-audit-summary.json`。
+| 指标 | Run 1 | Run 2 | Run 3 | 门槛 |
+|---|---:|---:|---:|---:|
+| 重要事实 Recall | 6/9，66.7% | 6/9，66.7% | 8/9，88.9% | 每次至少 80% |
+| Claim Precision | 6/10，60.0% | 6/10，60.0% | 8/10，80.0% | 每次至少 85% |
+| Relation Recall | 2/5，40.0% | 2/5，40.0% | 3/5，60.0% | 每次 100% |
+| Relation Precision | 2/5，40.0% | 2/6，33.3% | 3/6，50.0% | 每次 100% |
+| 原文逐字匹配 | 100% | 100% | 100% | 100% |
+| 最大时间点误差 | 0 ms | 0 ms | 0 ms | 小于 5,000 ms |
+
+三次严格语义稳定性为 1/17，也就是 5.9%，低于 85% 门槛。Brief 每次只有 4/6 个来源有效，人工 Useful 判定为 0/6。详细记录见 `work/stability-v5-realtor/REPORT.md`。这组结果证明 Evidence 回填稳定，也证明事实取舍、关系分类、重复事实判断和 Brief 仍然不稳定。
+
+### Contractor 三次连续 Event
+
+一个全新 Contractor Project 已连续完成三个 Event。三个 Event 都使用 Prompt v6，并在后续 Event 继承前面已确认的 Ledger。
+
+| 指标 | Event 1 | Event 2 | Event 3 |
+|---|---:|---:|---:|
+| Transcript Ground Truth 覆盖 | 8/13，61.5% | 7/13，53.8% | 约 9/14，64.3% |
+| Critical Ground Truth 覆盖 | 未单列 | 4/7，57.1% | 6/8，75.0% |
+| 图片独立事实覆盖 | 0/4 | 0/4 | 0/4 |
+| 内部审核时间 | 1 分 25 秒 | 4 分 12 秒 | 2 分 28 秒 |
+
+这组原始 Contractor Ground Truth 超过十条输出上限，只能用作压力测试和遗漏诊断，不能用来给 Homework 的 80% Recall 下正式结论。Event 3 漏掉了一条应当解决旧风险的关系，之后已通过人工补关系修复结果页。这证明 Human Review 可以修正项目状态，也说明模型关系能力仍未通过。
+
+### 当前结论
+
+- Transcript、图片和音频都能进入真实服务链路，Claim、Evidence、人工审核、关系和结果页可以持久化工作。
+- 已保存 Run 的逐字引用和时间点准确，重要事实 Recall、Precision、关系和稳定性没有达到门槛。
+- Contractor 三次图片独立事实覆盖均为 0/4，图片理解没有通过。
+- 音频只用合成 WAV 跑过一次。现场噪音、距离、多人重叠、口音和设备差异没有测试。
+- Prompt v7 和 Schema v2 的确定性约束已经有自动测试，模型质量仍需重新跑固定样本。
+- 当前成果可称为可继续测试的工程原型，不能称为已经完成 Concept Validation。
 
 ## 尚未取得证据的正式验证
 
@@ -172,7 +205,8 @@
 - [ ] 建立 Ground Truth 数据集，由专业人员标注 Claim、Evidence、Scenario 和应当拒绝的结论。
 - [ ] 进行 Blind Eval，评审者不知道输出来自哪一版 Prompt 或模型，并按预先固定的指标评分。
 - [ ] 对同一合格输入完成至少三次独立 Run，并通过稳定性门。
-- [ ] 从空 Project 开始，用 Prompt v4 连续跑完 Event 1、人工审核和 Event 2，建立同版本基线。
+- [ ] 从空 Project 开始，用当前 Prompt v7、Schema v2 连续跑完 Event 1、人工审核和后续 Event，建立同版本基线。
 - [ ] 由第二位标注者独立标注 Realtor 和 Insurance 开发集并完成分歧裁决。
 - [ ] 真实计时验证一次人工审核可以在两分钟内完成。
 - [ ] 通过 live API 验证跨 Workspace、跨 Project 隔离，以及 Verdict、Import、Extraction 的真实并发冲突。
+- [ ] 把当前代码部署为新的 Sites 版本，完成权限、Secret、D1、R2、后台任务、上传、审核和结果页的线上端到端验证；在此之前 GitHub Pages 跳转页不算完整产品部署。

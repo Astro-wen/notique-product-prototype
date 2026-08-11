@@ -360,6 +360,25 @@ export type AgendaItem =
   | {
       id: string;
       sourceKind: "open_question";
+      claimId: string;
+      claimVersionId: string;
+      statement: string;
+      evidenceRefIds: string[];
+    }
+  | {
+      id: string;
+      sourceKind: "uncertainty";
+      claimId: string;
+      claimVersionId: string;
+      statement: string;
+      reason: string;
+      alternatives: string[];
+      evidenceRefIds: string[];
+    }
+  | {
+      id: string;
+      sourceKind: "evidence_gap";
+      claimId: string;
       claimVersionId: string;
       statement: string;
       evidenceRefIds: string[];
@@ -381,21 +400,7 @@ export type AgendaItem =
 export function buildNextMeetingAgenda(ledger: ProjectLedger): AgendaItem[] {
   const gap = buildGapCheck(ledger);
   const gapCheckId = `gap_${ledger.projectId}_${ledger.scenario.version}`;
-  const items: AgendaItem[] = gap.missingSlots.map((slot) => ({
-    id: `agenda_gap_${gapCheckId}_${slot}`,
-    sourceKind: "gap",
-    slot,
-    gapCheckId,
-  }));
-  for (const question of buildOpenQuestions(ledger)) {
-    items.push({
-      id: `agenda_question_${question.claimVersionId}`,
-      sourceKind: "open_question",
-      claimVersionId: question.claimVersionId,
-      statement: question.statement,
-      evidenceRefIds: question.evidenceRefIds,
-    });
-  }
+  const items: AgendaItem[] = [];
   for (const contradiction of buildRisks(ledger).contradictions) {
     items.push({
       id: `agenda_contradiction_${contradiction.relationId}`,
@@ -403,6 +408,52 @@ export function buildNextMeetingAgenda(ledger: ProjectLedger): AgendaItem[] {
       ...contradiction,
     });
   }
+  for (const question of buildOpenQuestions(ledger)) {
+    const claim = ledger.claims.find((candidate) => candidate.version.id === question.claimVersionId);
+    if (!claim) continue;
+    items.push({
+      id: `agenda_question_${question.claimVersionId}`,
+      sourceKind: "open_question",
+      claimId: claim.id,
+      claimVersionId: question.claimVersionId,
+      statement: question.statement,
+      evidenceRefIds: question.evidenceRefIds,
+    });
+  }
+  for (const claim of currentVerifiedClaims(ledger.claims)) {
+    if (claim.type === "open_question" || claim.version.uncertainty === null) continue;
+    items.push({
+      id: `agenda_uncertainty_${claim.version.id}`,
+      sourceKind: "uncertainty",
+      claimId: claim.id,
+      claimVersionId: claim.version.id,
+      statement: claim.version.uncertainty.question,
+      reason: claim.version.uncertainty.reason,
+      alternatives: [...claim.version.uncertainty.alternatives],
+      evidenceRefIds: [...claim.version.evidenceRefIds],
+    });
+  }
+  for (const claim of currentVerifiedClaims(ledger.claims)) {
+    if (
+      claim.type === "open_question" ||
+      claim.version.uncertainty !== null ||
+      !claim.needsAdditionalEvidence
+    ) continue;
+    items.push({
+      id: `agenda_evidence_gap_${claim.version.id}`,
+      sourceKind: "evidence_gap",
+      claimId: claim.id,
+      claimVersionId: claim.version.id,
+      statement: `补充证据：${claim.version.statement}`,
+      evidenceRefIds: [...claim.version.evidenceRefIds],
+    });
+  }
+  items.push(...gap.missingSlots.map((slot) => ({
+    id: `agenda_gap_${gapCheckId}_${slot}`,
+    sourceKind: "gap" as const,
+    slot,
+    gapCheckId,
+  })));
   return items;
 }
 
@@ -411,13 +462,14 @@ export function buildDeterministicBrief(ledger: ProjectLedger) {
   const changes = buildTimeline(ledger).flatMap((event) => event.deltas).slice(-2).reverse();
   const agenda = buildNextMeetingAgenda(ledger).slice(0, 2);
   const risk = current.find((claim) => claim.type === "risk" || claim.type === "concern") ?? null;
-  const state = current[0] ?? null;
-  const slots = [state, ...changes, ...agenda, risk];
+  const state = current.find((claim) => claim.id !== risk?.id) ?? current[0] ?? null;
+  const uniqueRisk = risk?.id === state?.id ? null : risk;
+  const slots = [state, ...changes, ...agenda, uniqueRisk];
   return {
     stateClaimId: state?.id ?? null,
     deltaItemIds: changes.map((item) => item.id),
     agendaItemIds: agenda.map((item) => item.id),
-    riskClaimId: risk?.id ?? null,
+    riskClaimId: uniqueRisk?.id ?? null,
     missingSlotCount: slots.filter((item) => item == null).length + Math.max(0, 2 - changes.length) + Math.max(0, 2 - agenda.length),
     source: "deterministic_fallback" as const,
   };

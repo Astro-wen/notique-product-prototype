@@ -43,6 +43,16 @@ test("both pending Claims and pending occurrences participate in the timer gate"
     repository,
     /INSERT INTO mutation_guards[\s\S]+NOT EXISTS \([\s\S]+FROM claims c[\s\S]+NOT EXISTS \([\s\S]+FROM claim_occurrence_candidates occ/,
   );
+  assert.match(
+    repository,
+    /latest\.active_run_id = c\.extraction_run_id/,
+    "the timer must ignore pending Claims left by an older Run",
+  );
+  assert.match(
+    repository,
+    /latest\.active_run_id = occ\.extraction_run_id/,
+    "the timer must ignore occurrence candidates left by an older Run",
+  );
 });
 
 test("the real UI starts, resumes, and completes the server timer", () => {
@@ -55,4 +65,9 @@ test("the real UI starts, resumes, and completes the server timer", () => {
   assert.match(page, /达到两分钟目标/);
   assert.match(page, /initialPendingClaimCount \+ reviewSession\.initialPendingOccurrenceCount/);
   assert.match(page, /remainingPendingClaimCount \+ reviewSession\.remainingPendingOccurrenceCount/);
+  assert.equal(
+    page.match(/await syncReviewTiming\(latestProject\);/g)?.length,
+    4,
+    "single and batch Claim verdicts must refresh the server-owned remaining count",
+  );
 });

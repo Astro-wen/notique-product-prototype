@@ -381,11 +381,39 @@ async function collectRun(get, runId, expectedProjectId) {
     return [name, stableValue(value)];
   }));
   const briefCard = record(views.briefCard, "brief card");
+  const folderSummary = record(views.folderSummary, "folder summary");
+  const currentClaimIds = new Set(
+    array(folderSummary.currentClaims, "folder summary currentClaims")
+      .map((claim) => record(claim, "folder summary claim").id)
+      .filter((id) => typeof id === "string"),
+  );
+  const timelineDeltaIds = new Set(
+    array(views.timeline, "timeline")
+      .flatMap((group) => array(record(group, "timeline group").deltas, "timeline group deltas"))
+      .map((delta) => record(delta, "timeline delta").id)
+      .filter((id) => typeof id === "string"),
+  );
+  const agendaValue = views.agenda;
+  const agendaItems = Array.isArray(agendaValue)
+    ? agendaValue
+    : array(record(agendaValue, "agenda").items, "agenda items");
+  const availableAgendaIds = new Set(
+    agendaItems
+      .map((item) => record(item, "agenda item").id)
+      .filter((id) => typeof id === "string"),
+  );
+  const validBriefSource = (sourceKind, sourceId) => {
+    if (typeof sourceId !== "string" || sourceId.length === 0) return false;
+    if (sourceKind === "claim") return currentClaimIds.has(sourceId);
+    if (sourceKind === "timeline_delta") return timelineDeltaIds.has(sourceId);
+    if (sourceKind === "agenda_item") return availableAgendaIds.has(sourceId);
+    return false;
+  };
   const briefSlot = (slot, sourceKind, sourceId) => ({
     slot,
     sourceKind,
     sourceId: typeof sourceId === "string" ? sourceId : "",
-    sourceValid: typeof sourceId === "string" && sourceId.length > 0,
+    sourceValid: validBriefSource(sourceKind, sourceId),
     useful: false,
   });
   const deltaIds = Array.isArray(briefCard.deltaItemIds) ? briefCard.deltaItemIds : [];

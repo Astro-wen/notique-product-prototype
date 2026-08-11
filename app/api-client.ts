@@ -7,6 +7,8 @@ import type {
   ClaimEvidenceReviewAttestationResponse,
   ClaimVerdictRequest,
   ClaimVerdictResponse,
+  CreateManualRelationRequest,
+  CreateManualRelationResponse,
   CreateEventRequest,
   CreateEventResponse,
   CreateExtractionRunResponse,
@@ -30,6 +32,8 @@ import type {
   ListEventsResponse,
   ListGlossaryEntriesResponse,
   ListProjectsResponse,
+  ManualRelationTargetRecord,
+  ManualRelationType,
   OccurrenceCandidateRecord,
   OccurrenceConversionClaimInput,
   OccurrenceVerdictResponse,
@@ -45,6 +49,8 @@ export type OccurrenceCandidate = OccurrenceCandidateRecord;
 export type OccurrenceNewClaim = OccurrenceConversionClaimInput;
 export type GlossaryEntry = GlossaryEntryRecord;
 export type GlossaryEntryCategory = GlossaryCategory;
+export type RelationTarget = ManualRelationTargetRecord;
+export type RelationType = ManualRelationType;
 
 export type RunReview = {
   claims: Claim[];
@@ -97,6 +103,8 @@ export type Project = {
   pendingCount?: number;
   pendingClaimCount: number;
   pendingOccurrenceCount: number;
+  ledgerVersion: number;
+  contextVersion: number;
   scenarioStatus?: "unassessed" | "assessing" | "pending_confirmation" | "confirmed";
   scenarioVersion?: number;
   scenario?: { key: string; label: string };
@@ -200,6 +208,7 @@ export type Claim = {
   type: string;
   statement: string;
   normalizedValue: Record<string, unknown> | null;
+  needsAdditionalEvidence: boolean;
   uncertainty?: unknown;
   confidence?: number;
   reviewStatus: string;
@@ -227,6 +236,7 @@ export type ClaimEditSubmission = {
   statement: string;
   type: string;
   normalizedValue: Record<string, unknown> | null;
+  needsAdditionalEvidence: boolean;
   uncertainty: {
     reason: string;
     alternatives: string[];
@@ -339,6 +349,8 @@ export function normalizeProject(value: unknown): Project {
     pendingCount: pendingClaimCount + pendingOccurrenceCount,
     pendingClaimCount,
     pendingOccurrenceCount,
+    ledgerVersion: asNumber(pick(source, ["ledger_version", "ledgerVersion"])) ?? 0,
+    contextVersion: asNumber(pick(source, ["context_version", "contextVersion"])) ?? 0,
     scenarioStatus: pick(source, ["scenario_status", "scenarioStatus"]),
     scenarioVersion: asNumber(pick(source, ["scenario_version", "scenarioVersion"])),
     scenario: scenario?.key ? { key: scenario.key, label: scenario.label || scenario.key } : undefined,
@@ -548,6 +560,7 @@ export function normalizeClaim(value: unknown): Claim {
     type: asString(pick(source, ["type", "claim_type", "claimType"]), "fact"),
     statement: asString(pick(version, ["statement", "text", "value"]), ""),
     normalizedValue: isRecord(normalizedValue) ? normalizedValue : null,
+    needsAdditionalEvidence: Boolean(pick(source, ["needs_additional_evidence", "needsAdditionalEvidence"])),
     uncertainty: pick(version, ["uncertainty", "ambiguity", "needs_more_evidence"]),
     confidence: asNumber(pick(source, ["confidence", "score"])) ?? (() => {
       const basisPoints = asNumber(pick(source, ["confidenceBp", "confidence_bp"]));
@@ -961,6 +974,7 @@ export const api = {
           statement: edit!.statement,
           type: edit!.type,
           normalized_value: edit!.normalizedValue,
+          needs_additional_evidence: edit!.needsAdditionalEvidence,
           uncertainty: edit!.uncertainty,
           retain_relation_ids: edit!.retainRelationIds,
           evidence_ref_ids: edit!.evidenceRefIds,
@@ -1108,6 +1122,39 @@ export const api = {
     ) {
       invalidContract("The server returned an invalid contradiction verdict response.");
     }
+  },
+
+  async listRelationTargets(projectId: Id): Promise<RelationTarget[]> {
+    const body = await request<ApiSuccess<{ relation_targets: RelationTarget[] }>>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/relation-targets`,
+      { cache: "no-store" },
+    );
+    if (!Array.isArray(body.data.relation_targets)) {
+      invalidContract("The server returned invalid relation targets.");
+    }
+    return body.data.relation_targets;
+  },
+
+  async createManualRelation(
+    input: CreateManualRelationRequest,
+    idempotencyKey: string,
+  ): Promise<CreateManualRelationResponse["data"]["relation"]> {
+    const body = await request<CreateManualRelationResponse>("/api/v1/claim-relations", {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(input),
+    });
+    const relation = body.data.relation;
+    if (
+      !relation?.relation_id ||
+      !relation.verdict_id ||
+      relation.status !== "active" ||
+      relation.source_claim_version_id !== input.source_claim_version_id ||
+      relation.target_claim_version_id !== input.target_claim_version_id
+    ) {
+      invalidContract("The server returned an invalid manual relationship.");
+    }
+    return relation;
   },
 
   async confirmScenario(project: Project, scenarioKey: string, idempotencyKey: string, customLabel?: string): Promise<Project> {

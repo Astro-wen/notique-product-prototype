@@ -38,10 +38,22 @@ test("transcript development package is deterministic and matches the committed 
   assert.deepEqual(SOURCE_RELATIVE_PATHS, [
     "eval/cases/synthetic-realtor-v1/ground-truth.json",
     "eval/cases/synthetic-insurance-v1/ground-truth.json",
+    "eval/cases/synthetic-contractor-v1/ground-truth.json",
   ]);
-  assert.equal(first.metadata.sourceDatasets.some((source) => source.path.includes("synthetic-contractor")), false);
-  assert.equal(first.metadata.structuralCounts.scenarioCount, 2);
-  assert.equal(first.metadata.structuralCounts.eventCount, 8);
+  const contractorSource = first.metadata.sourceDatasets.find((source) => source.path.includes("synthetic-contractor"));
+  assert.ok(contractorSource);
+  assert.equal(contractorSource.projection, "single-author-review-priority-v1");
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(contractorSource.selectedMaterialClaimIds).map(([eventId, ids]) => [eventId, ids.length])),
+    {
+      "event-01-estimate": 10,
+      "event-02-scope-followup": 10,
+      "event-03-preconstruction": 10,
+    },
+  );
+  assert.equal(first.metadata.structuralCounts.scenarioCount, 3);
+  assert.equal(first.metadata.structuralCounts.eventCount, 11);
+  assert.equal(first.claims.some((claim) => claim.critical === true && claim.material !== true), false);
   assert.ok(first.metadata.structuralCounts.materialClaimCount >= 40);
   assert.ok(first.metadata.structuralCounts.criticalAmbiguityCount >= 8);
   assert.ok(first.metadata.structuralCounts.relationCount >= 8);
@@ -97,4 +109,25 @@ test("structural thresholds pass while formal sample eligibility stays false", a
   assert.equal(report.sampleEligibility.meetsTranscriptMinimum, false);
   assert.equal(report.gates.checks.find((item) => item.name === "sample_eligible").passed, false);
   assert.equal(report.gates.pass, false);
+});
+
+test("the exhaustive Contractor fixture is rejected as a formal Recall sample", async () => {
+  const contractor = JSON.parse(await readFile(
+    path.resolve(repositoryRoot, "eval/cases/synthetic-contractor-v1/ground-truth.json"),
+    "utf8",
+  ));
+  const report = evaluate(contractor, oneRunPredictions());
+  assert.deepEqual(report.sampleEligibility.eventMaterialClaimCounts, {
+    "event-01-estimate": 15,
+    "event-02-scope-followup": 15,
+    "event-03-preconstruction": 17,
+  });
+  assert.deepEqual(report.sampleEligibility.eventMaximumRecallAtReviewCap, {
+    "event-01-estimate": 10 / 15,
+    "event-02-scope-followup": 10 / 15,
+    "event-03-preconstruction": 10 / 17,
+  });
+  assert.equal(report.sampleEligibility.eventMaterialShapeValid, false);
+  assert.equal(report.sampleEligibility.meetsTranscriptMinimum, false);
+  assert.equal(report.gates.checks.find((item) => item.name === "sample_eligible").passed, false);
 });

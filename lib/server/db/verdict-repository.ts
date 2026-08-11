@@ -21,6 +21,8 @@ import type {
   ClaimRecord,
   ClaimRelationForReviewRecord,
   ClaimVerdictRequest,
+  CreateManualRelationRequest,
+  ManualRelationTargetRecord,
   OccurrenceConversionClaimInput,
 } from "@/lib/shared/api-types";
 
@@ -523,6 +525,7 @@ export async function applyClaimVerdict(
       projection = validateExplicitClaimEditProjection({
         type: edit.type,
         normalizedValue: edit.normalized_value,
+        needsAdditionalEvidence: edit.needs_additional_evidence,
         uncertainty: edit.uncertainty,
       });
     } catch (error) {
@@ -794,7 +797,7 @@ export async function applyClaimVerdict(
           .bind(
             newVersionId,
             projection.type,
-            projection.uncertainty === null ? 0 : 1,
+            projection.needsAdditionalEvidence ? 1 : 0,
             timestamp,
             claimId,
             scope.workspaceId,
@@ -1673,6 +1676,234 @@ export async function applyOccurrenceVerdict(
       (persistedResult.converted_claim_ids ?? []).map((claimId) => getClaim(scope, claimId)),
     ),
   };
+}
+
+export async function listManualRelationTargets(
+  scope: RequestScope,
+  projectId: string,
+): Promise<ManualRelationTargetRecord[]> {
+  const project = await first(
+    `SELECT id FROM projects WHERE id = ? AND workspace_id = ?`,
+    [projectId, scope.workspaceId],
+  );
+  if (!project) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Project was not found.");
+  }
+  const rows = await all(
+    `SELECT c.id AS claim_id, c.current_version_id AS claim_version_id,
+            c.type, cv.statement, c.event_id, e.title AS event_title,
+            e.occurred_at, cv.uncertainty_json
+       FROM claims c
+       JOIN claim_versions cv ON cv.id = c.current_version_id
+       JOIN events e ON e.id = c.event_id
+      WHERE c.workspace_id = ? AND c.project_id = ?
+        AND c.review_status = 'verified' AND c.lifecycle_status = 'active'
+      ORDER BY e.sequence_no DESC, c.created_at DESC, c.id`,
+    [scope.workspaceId, projectId],
+  );
+  return rows.map((row) => ({
+    claim_id: String(row.claim_id),
+    claim_version_id: String(row.claim_version_id),
+    type: String(row.type) as ManualRelationTargetRecord["type"],
+    statement: String(row.statement),
+    event_id: String(row.event_id),
+    event_title: String(row.event_title),
+    occurred_at: String(row.occurred_at),
+    has_uncertainty: row.uncertainty_json !== null && row.uncertainty_json !== undefined,
+  }));
+}
+
+export async function createManualRelation(
+  scope: RequestScope,
+  input: CreateManualRelationRequest,
+  idempotencyKey: string,
+) {
+  const endpointScope = "claim-relations";
+  const replay = await findMutationReplay<{
+    relation_id: string;
+    verdict_id: string;
+    status: "active";
+    type: CreateManualRelationRequest["type"];
+    source_claim_version_id: string;
+    target_claim_version_id: string;
+  }>(scope, endpointScope, idempotencyKey, input);
+  if (replay.response) return replay.response;
+  if (input.source_claim_id === input.target_claim_id) {
+    throw new ApiFault(400, "BAD_REQUEST", "A Claim cannot be related to itself.");
+  }
+
+  const [source, target, project] = await Promise.all([
+    claimRow(scope, input.source_claim_id),
+    claimRow(scope, input.target_claim_id),
+    first(`SELECT * FROM projects WHERE id = ? AND workspace_id = ?`, [
+      input.project_id,
+      scope.workspaceId,
+    ]),
+  ]);
+  if (!project) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Project was not found.");
+  }
+  const sourceMatches =
+    String(source.project_id) === input.project_id &&
+    String(source.current_version_id) === input.source_claim_version_id &&
+    String(source.review_status) === "verified" &&
+    String(source.lifecycle_status) === "active";
+  const targetMatches =
+    String(target.project_id) === input.project_id &&
+    String(target.current_version_id) === input.target_claim_version_id &&
+    String(target.review_status) === "verified" &&
+    String(target.lifecycle_status) === "active";
+  if (
+    !sourceMatches ||
+    !targetMatches ||
+    Number(project.context_version) !== input.base_context_version
+  ) {
+    throw conflict();
+  }
+  if (
+    input.type === "resolves" &&
+    !["open_question", "risk", "concern", "requirement"].includes(String(target.type)) &&
+    target.uncertainty_json == null
+  ) {
+    throw new ApiFault(
+      422,
+      "BAD_REQUEST",
+      "Resolve can only close an open question, risk, concern, prerequisite, or uncertain record.",
+    );
+  }
+  const lifecycleTypes = new Set(["supersedes", "contradicts", "resolves"]);
+  const existingRelation = await first(
+    `SELECT id FROM claim_relations
+      WHERE workspace_id = ? AND project_id = ? AND status = 'active'
+        AND source_claim_version_id = ? AND target_claim_version_id = ?
+        AND (type = ? OR (type IN ('supersedes', 'contradicts', 'resolves') AND ? = 1))
+      LIMIT 1`,
+    [
+      scope.workspaceId,
+      input.project_id,
+      input.source_claim_version_id,
+      input.target_claim_version_id,
+      input.type,
+      lifecycleTypes.has(input.type) ? 1 : 0,
+    ],
+  );
+  if (existingRelation) {
+    throw new ApiFault(409, "CLAIM_STATE_CONFLICT", "This relationship is already active.");
+  }
+
+  const relationId = id("rel");
+  const verdictId = id("rvdt");
+  const guardId = id("guard");
+  const timestamp = now();
+  const db = getD1();
+  const result = {
+    relation_id: relationId,
+    verdict_id: verdictId,
+    status: "active" as const,
+    type: input.type,
+    source_claim_version_id: input.source_claim_version_id,
+    target_claim_version_id: input.target_claim_version_id,
+  };
+  try {
+    await db.batch([
+      guardStatement(
+        guardId,
+        `EXISTS (
+           SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND context_version = ?
+         ) AND EXISTS (
+           SELECT 1 FROM claims WHERE id = ? AND workspace_id = ? AND project_id = ?
+             AND current_version_id = ? AND review_status = 'verified'
+             AND lifecycle_status = 'active'
+         ) AND EXISTS (
+           SELECT 1 FROM claims WHERE id = ? AND workspace_id = ? AND project_id = ?
+             AND current_version_id = ? AND review_status = 'verified'
+             AND lifecycle_status = 'active'
+         ) AND NOT EXISTS (
+           SELECT 1 FROM claim_relations
+            WHERE workspace_id = ? AND project_id = ? AND status = 'active'
+              AND source_claim_version_id = ? AND target_claim_version_id = ?
+              AND (type = ? OR (type IN ('supersedes', 'contradicts', 'resolves') AND ? = 1))
+         )`,
+        [
+          input.project_id,
+          scope.workspaceId,
+          input.base_context_version,
+          input.source_claim_id,
+          scope.workspaceId,
+          input.project_id,
+          input.source_claim_version_id,
+          input.target_claim_id,
+          scope.workspaceId,
+          input.project_id,
+          input.target_claim_version_id,
+          scope.workspaceId,
+          input.project_id,
+          input.source_claim_version_id,
+          input.target_claim_version_id,
+          input.type,
+          lifecycleTypes.has(input.type) ? 1 : 0,
+        ],
+        timestamp,
+      ),
+      db
+        .prepare(
+          `INSERT INTO claim_relations (
+             id, workspace_id, project_id, type,
+             source_claim_version_id, target_claim_version_id,
+             context_version, status, contradiction_status,
+             reason, confidence, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
+        )
+        .bind(
+          relationId,
+          scope.workspaceId,
+          input.project_id,
+          input.type,
+          input.source_claim_version_id,
+          input.target_claim_version_id,
+          input.base_context_version,
+          input.type === "contradicts" ? "open" : null,
+          input.reason,
+          timestamp,
+        ),
+      db
+        .prepare(
+          `INSERT INTO relation_verdicts
+           (id, relation_id, action, base_relation_status,
+            secondary_evidence_note, user_id, created_at)
+           VALUES (?, ?, 'confirm', 'proposed', ?, ?, ?)`,
+        )
+        .bind(verdictId, relationId, input.reason, scope.actorId, timestamp),
+      ...lifecycleRecalculationStatements(input.project_id, timestamp),
+      db
+        .prepare(
+          `UPDATE projects
+              SET ledger_version = ledger_version + 1,
+                  context_version = context_version + 1, updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND context_version = ?`,
+        )
+        .bind(timestamp, input.project_id, scope.workspaceId, input.base_context_version),
+      mutationReplayStatement(
+        scope,
+        endpointScope,
+        idempotencyKey,
+        replay.requestHash,
+        result,
+        timestamp,
+      ),
+      deleteGuard(guardId),
+    ]);
+  } catch {
+    const recovered = await findMutationReplay<typeof result>(
+      scope,
+      endpointScope,
+      idempotencyKey,
+      input,
+    );
+    if (recovered.response) return recovered.response;
+    throw conflict();
+  }
+  return result;
 }
 
 export async function resolveContradiction(

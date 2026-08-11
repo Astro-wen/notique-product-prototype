@@ -19,15 +19,17 @@ Runner 不会调用另一个 AI 自动决定两条自然语言 Claim 是否相�
 
 ## 合成 Transcript 开发包
 
-Realtor 和 Insurance 两个合成场景可以确定性合并成一个 Transcript-only 开发包：
+Realtor、Insurance 和 Contractor 三个合成场景可以确定性合并成一个 Transcript-only 开发包：
 
 ```bash
 npm run eval:merge:synthetic-transcripts
 ```
 
-输出固定为 `eval/combined/synthetic-transcript-development-v1.ground-truth.json`。命令只读取这两个明确列出的 Ground Truth，不接受自定义来源或输出路径。输出会记录来源路径和 SHA-256，合并前检查全局 Claim、Relation、Scenario 和 Event ID，且要求每个 Event 有 5 到 10 条 material Claims。
+输出固定为 `eval/combined/synthetic-transcript-development-v1.ground-truth.json`。命令只读取三个明确列出的 Ground Truth，不接受自定义来源或输出路径。输出会记录来源路径和 SHA-256，合并前检查全局 Claim、Relation、Scenario 和 Event ID，且要求每个 Event 有 5 到 10 条 material Claims。
 
-这个开发包不包含 Contractor pressure fixture，也没有图片 Ground Truth。它目前满足两个场景、八次 Event、材料事实、关键歧义和关系数量等结构门槛，但仍是单人起草的开发集，没有完成双人标注与裁决，也没有三个独立模型 Run。`sample_eligible` 必须保持为 `false`。它可以用于开发回归，不能被描述成 Concept 验证结果或 Blind Set。
+原始 Contractor fixture 每次包含 15、15、17 条 material Ground Truth，用于多模态压力测试。它超过十条审核上限，不能直接计算正式 Recall。合并脚本不会修改原文件，而是使用提交在代码中的单人优先级标注，每次预先选择十条 Transcript 事实，其余事实保留为非审核队列事实，并只保留两端都在优先集合中的关系。选择清单和源文件哈希都会写进合并结果，不能在看到模型结果后临时改动。
+
+这个开发包目前满足三个场景、十一次 Event、每次 5 到 10 条审核事实、关键歧义和关系数量等结构门槛，但仍是单人起草的开发集，没有完成双人标注与裁决，也没有三个独立模型 Run。`sample_eligible` 必须保持为 `false`。它可以用于开发回归，不能被描述成 Concept 验证结果或 Blind Set。
 
 评测按以下保守规则计算：
 
@@ -35,7 +37,8 @@ npm run eval:merge:synthetic-transcripts
 - 所有模型输出的 Claim 都进入 Precision 分母。预测自行填写的 `material` 和 `critical` 不参与口径，二者以 Ground Truth 为准。
 - Claim 没有 Evidence 时，`claimsWithEvidence` 和 `evidenceIdValidity` 都会失败。
 - 三次一致性包含未匹配 Ground Truth 的幻觉内容，也会识别同一 Run 中的重复 Claim。
-- 每个 Event 的 Ground Truth 必须有 5 到 10 条 material Claims。超过 10 条会让“最多输出 10 条”和 80% Recall 互相冲突，Runner 会把这种样本判为不合格，不会给模型一个数学上不可能通过的正式分数。
+- 正式样本至少包含三个场景，每个场景有 3 到 5 次 Event。
+- 每个 Event 的 Ground Truth 必须有 5 到 10 条 material Claims。超过 10 条会让“最多输出 10 条”和 80% Recall 互相冲突，Runner 会把这种样本判为不合格，并给出十条上限下每次 Event 的理论最高 Recall。
 - Timestamp 对每个 Evidence 区间分别计算最短距离，不用两个不连续引用之间的大区间覆盖答案。
 - `viewLeakageCount` 必须经过审查后明确填写。缺失不会默认成零。
 - Brief 必须使用 `current_status`、`change_1`、`change_2`、`question_1`、`question_2`、`risk` 六个不同槽位。每项都要有唯一且有效的来源。

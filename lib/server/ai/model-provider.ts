@@ -241,6 +241,7 @@ function extractionJsonSchema() {
                     reason: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.explanationLength },
                     alternatives: {
                       type: "array",
+                      minItems: 2,
                       maxItems: MODEL_CONTRACT_LIMITS.alternativesPerUncertainty,
                       items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.alternativeLength },
                     },
@@ -409,16 +410,18 @@ class OpenAiCompatibleModelProvider implements ModelProvider {
         "Only cite IDs present in the Context Pack. Do not invent quotes, IDs, timestamps, or facts.",
         "A photo supports only visible observations, not agreement, intent, payment, liability, causation, or hidden conditions.",
         scenarioInstruction,
-        "First identify every candidate business proposition in the new event. Then rank them by materiality and return no more than 10. Never combine propositions merely to fit the limit; omit a lower-priority proposition instead.",
-        "One Claim must express exactly one independently reviewable business proposition. Split a sentence when it contains separate decisions, dates, assignments, amounts, conditions, risks, questions, approvals, or next steps. A single material specification or a correction such as '$6,500, not $6,050' may stay together because it is one proposition.",
+        "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and return no more than 10. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
+        "One Claim must express exactly one independently reviewable business proposition. Split a sentence when it contains separate dates, assignments, amounts, conditions, risks, questions, approvals, or next steps. An explicit business decision may include the reason that directly explains that decision when the reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' may stay together because it is one proposition.",
+        "Represent the resulting business state once. Do not create a second Claim merely saying that a person mentioned, confirmed, repeated, sent, or acknowledged the same fact. A communication act is a separate Claim only when the act itself is a contractual, approval, delivery, notice, or audit requirement.",
         "Use disposition=reaffirmed only when the event repeats one existing atomic fact without changing or adding any decision, date, person, amount, state, condition, or next step. For reaffirmed, copy the target statement, type, and normalized_value exactly from verified_context; set both target IDs; and return relations=[].",
         "If one source sentence repeats an old fact and also introduces new information, emit the unchanged old fact as a reaffirmed occurrence and split every material change, resolution, decision, date, assignment, state, risk, or next step into one or more new atomic claims. Never hide new information inside a reaffirmed statement.",
-        "Relation policy: use supersedes only when the same subject now has a changed value, state, assignment, or decision. Use resolves only when the new Claim gives a final answer or closure to an active open question, risk, concern, or explicitly uncertain Claim. Use contradicts only when two incompatible active Claims remain unresolved. Use informed_by when the target provides context but is neither changed nor closed. Never attach both supersedes and resolves to the same target.",
+        "Relation policy: use supersedes only when the same subject now has a changed value, state, assignment, or decision and the old value is no longer current. Use resolves when the new Claim gives a final answer or closure to an active open question, risk, concern, explicitly uncertain Claim, prerequisite, blocker, or outstanding condition. Satisfying a prerequisite is resolves, not supersedes. Use contradicts only when two incompatible active Claims remain unresolved. Use informed_by when the target provides context but is neither changed nor closed. Never attach both supersedes and resolves to the same target.",
         "The verified Context includes lifecycleStatus, uncertainty, openedAt, lastRepeatedAt, and repeatCount. Use these fields to distinguish an unanswered question from a fact that merely changed.",
-        "Within the 10-claim limit, prioritize changed values, resolved questions, explicit decisions, commitments, dates, assignments, material risks, and material photo observations. Reaffirmations and minor observations have lower priority.",
+        "Within the 10-claim limit, prioritize explicit decisions, material changed values, resolved questions or prerequisites, commitments, budgets, requirements, constraints, assignments, material risks, and material photo observations. A deliberately repeated material decision, requirement, preference, budget, or constraint must be retained as a reaffirmed occurrence before administrative timing or low-value communication acts. Only incidental repetition and minor observations have lower priority.",
         "A photo should support a business Claim when it visibly corroborates that Claim. Create a standalone photo property_fact only when the visible condition materially changes scope, risk, cost, responsibility, or the next action. Do not create claims for incidental visual clutter.",
+        "Set needs_additional_evidence=true when the available evidence does not fully establish the proposition or when an open question still needs an answer. A straightforward unresolved question may have uncertainty=null. Set uncertainty only when two or more values or interpretations remain plausible; then include at least two alternatives, one precise follow-up question, and set needs_additional_evidence=true. Never return uncertainty with needs_additional_evidence=false.",
         "normalized_value must be null or an entries envelope with unique scalar key/value pairs. Use null when no useful normalization exists.",
-        "Return strict JSON matching claim-extraction.v1. Duplicate items must not become new claims.",
+        "Return strict JSON matching claim-extraction.v2. Duplicate items must not become new claims.",
         JSON.stringify(contextForPrompt(input)),
       ].join("\n\n");
       const content: Array<Record<string, unknown>> = [
@@ -537,7 +540,10 @@ class OpenAiCompatibleModelProvider implements ModelProvider {
         if (decoded.issues.length) {
           throw new ModelOutputInvalidError(decoded.issues, usage);
         }
-        const validated = validateExtractClaimsOutput(decoded.value, input);
+        // Provider output is validated for shape and bounded values here. Context-sensitive
+        // relation and occurrence targets are checked again against the leased ledger in the
+        // processor. A stale or mistyped relation must not discard otherwise grounded Claims.
+        const validated = validateExtractClaimsOutput(decoded.value);
         if (!validated.valid || !validated.output) {
           throw new ModelOutputInvalidError(validated.issues, usage);
         }

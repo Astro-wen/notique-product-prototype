@@ -11,6 +11,8 @@ import {
   validatePhotoBbox,
 } from "@/lib/domain/evidence";
 import {
+  CLAIM_EXTRACTION_PROMPT_VERSION,
+  CLAIM_EXTRACTION_SCHEMA_VERSION,
   validateExtractClaimsOutput,
   type ExtractClaimsOutput,
   type ModelEvidence,
@@ -595,6 +597,15 @@ function prepareCandidates(
       .filter((claim) => claim.reviewStatus === "verified" && claim.lifecycleStatus === "active")
       .map((claim) => [claim.id, claim]),
   );
+  const contextVerified = new Map(
+    ledgerClaims
+      .filter(
+        (claim) =>
+          claim.reviewStatus === "verified" &&
+          claim.lifecycleStatus !== "withdrawn",
+      )
+      .map((claim) => [claim.id, claim]),
+  );
   const clientKeys = new Set<string>();
   for (const model of output.claims) {
     if (clientKeys.has(model.client_claim_key)) {
@@ -614,7 +625,7 @@ function prepareCandidates(
     if (
       !hasMaterialEvidence &&
       model.type !== "open_question" &&
-      !(model.needs_additional_evidence && model.uncertainty)
+      !model.needs_additional_evidence
     ) {
       warnings.push({ code: "CONTEXTUAL_EVIDENCE_ONLY", client_claim_key: model.client_claim_key });
       continue;
@@ -635,8 +646,11 @@ function prepareCandidates(
       continue;
     }
     const relationKeys = new Set<string>();
+    const lifecycleTargets = new Set<string>();
     const relations = model.relations.filter((relation) => {
-      const target = activeVerified.get(relation.target_claim_id);
+      const target = relation.type === "informed_by"
+        ? contextVerified.get(relation.target_claim_id)
+        : activeVerified.get(relation.target_claim_id);
       const key = `${relation.type}:${relation.target_claim_id}:${relation.target_claim_version_id}`;
       if (
         !target ||
@@ -645,6 +659,37 @@ function prepareCandidates(
       ) {
         warnings.push({ code: "RELATION_TARGET_CONFLICT", client_claim_key: model.client_claim_key });
         return false;
+      }
+      if (
+        relation.type === "resolves" &&
+        target.type !== "open_question" &&
+        target.type !== "risk" &&
+        target.type !== "concern" &&
+        target.type !== "requirement" &&
+        target.version.uncertainty === null
+      ) {
+        warnings.push({
+          code: "RELATION_SEMANTICS_INVALID",
+          client_claim_key: model.client_claim_key,
+          relation_type: relation.type,
+          target_claim_id: relation.target_claim_id,
+        });
+        return false;
+      }
+      if (
+        relation.type === "supersedes" ||
+        relation.type === "contradicts" ||
+        relation.type === "resolves"
+      ) {
+        if (lifecycleTargets.has(relation.target_claim_id)) {
+          warnings.push({
+            code: "RELATION_LIFECYCLE_CONFLICT",
+            client_claim_key: model.client_claim_key,
+            target_claim_id: relation.target_claim_id,
+          });
+          return false;
+        }
+        lifecycleTargets.add(relation.target_claim_id);
       }
       relationKeys.add(key);
       return true;
@@ -1027,6 +1072,21 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
   }
   let completedUsage: ModelUsage | null = null;
   try {
+    if (
+      String(leased.prompt_version) !== CLAIM_EXTRACTION_PROMPT_VERSION ||
+      String(leased.schema_version) !== CLAIM_EXTRACTION_SCHEMA_VERSION
+    ) {
+      throw new ProcessingFault(
+        "STALE_MODEL_CONTRACT",
+        "Extraction run was created for an older prompt or schema and must be submitted again.",
+        {
+          run_prompt_version: leased.prompt_version,
+          run_schema_version: leased.schema_version,
+          current_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION,
+          current_schema_version: CLAIM_EXTRACTION_SCHEMA_VERSION,
+        },
+      );
+    }
     const input = await loadContextInput(leased);
     await persistContextSnapshot(
       leased,
@@ -1058,7 +1118,10 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
     });
     const result = await provider.extractClaims(input.contextPack);
     completedUsage = result.usage;
-    const validated = validateExtractClaimsOutput(result.output, input.contextPack);
+    // Keep strict structural validation at the processor boundary. Context-sensitive target
+    // drift is handled deterministically by prepareCandidates so one bad proposed relation
+    // becomes a warning instead of destroying every otherwise valid Claim in the Run.
+    const validated = validateExtractClaimsOutput(result.output);
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }

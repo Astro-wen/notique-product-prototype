@@ -377,6 +377,7 @@ export type ClaimVerdictRequest = {
     statement: string;
     type: string;
     normalized_value: Record<string, unknown> | null;
+    needs_additional_evidence: boolean;
     uncertainty: {
       reason: string;
       alternatives: string[];
@@ -444,6 +445,45 @@ export type WithdrawClaimRequest = {
   base_version_id: string;
   explanation?: string;
 };
+
+export type ManualRelationType =
+  | "supersedes"
+  | "contradicts"
+  | "resolves"
+  | "informed_by";
+
+export type ManualRelationTargetRecord = {
+  claim_id: string;
+  claim_version_id: string;
+  type: OccurrenceConversionClaimInput["type"];
+  statement: string;
+  event_id: string;
+  event_title: string;
+  occurred_at: string;
+  has_uncertainty: boolean;
+};
+
+export type CreateManualRelationRequest = {
+  project_id: string;
+  base_context_version: number;
+  source_claim_id: string;
+  source_claim_version_id: string;
+  target_claim_id: string;
+  target_claim_version_id: string;
+  type: ManualRelationType;
+  reason: string;
+};
+
+export type CreateManualRelationResponse = ApiSuccess<{
+  relation: {
+    relation_id: string;
+    verdict_id: string;
+    status: "active";
+    type: ManualRelationType;
+    source_claim_version_id: string;
+    target_claim_version_id: string;
+  };
+}>;
 
 export type BatchClaimVerdictRequest = {
   verdicts: Array<{

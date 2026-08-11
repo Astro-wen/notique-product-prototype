@@ -631,6 +631,7 @@ test("reaffirmed evidence stays pending until occurrence confirmation materializ
 test("provider schema and server validator share bounded output limits", async () => {
   const provider = await read("lib/server/ai/model-provider.ts");
   const contract = await read("lib/domain/model-contract.ts");
+  const processor = await read("lib/server/jobs/extraction-processor.ts");
 
   assert.match(provider, /MODEL_CONTRACT_LIMITS/);
   for (const bound of [
@@ -679,6 +680,16 @@ test("provider schema and server validator share bounded output limits", async (
     /scenario_assessment[\s\S]{0,900}candidates[\s\S]{0,250}minItems:\s*2[\s\S]{0,120}maxItems:\s*3/i,
     "first-scenario candidates must be constrained to two or three in the provider schema",
   );
+  assert.match(
+    provider,
+    /uncertainty:\s*\{[\s\S]{0,500}alternatives:\s*\{[\s\S]{0,120}minItems:\s*2/i,
+    "structured uncertainty must contain at least two plausible alternatives",
+  );
+  assert.doesNotMatch(
+    provider,
+    /claims:\s*\{\s*type:\s*["']array["'],\s*minItems:/i,
+    "the provider schema must not force filler Claims when fewer than five material propositions exist",
+  );
   assert.match(provider, /strict:\s*true/i, "OpenAI Structured Outputs must use strict schema enforcement");
   assert.doesNotMatch(provider, /strict:\s*false|\boneOf\s*:|maxProperties\s*:/i);
   assert.match(
@@ -693,8 +704,23 @@ test("provider schema and server validator share bounded output limits", async (
   );
   assert.match(
     provider,
-    /validateExtractClaimsOutput\(decoded\.value,\s*input\)/,
-    "provider output must cross the authoritative context-aware local validator before it reaches persistence",
+    /validateExtractClaimsOutput\(decoded\.value\)/,
+    "provider output must cross the authoritative structural validator before it reaches the processor",
+  );
+  assert.match(
+    processor,
+    /validateExtractClaimsOutput\(result\.output\)/,
+    "the processor must revalidate provider output structure before persistence",
+  );
+  assert.match(
+    processor,
+    /prepareCandidates\(output,\s*run,\s*manifestRows,\s*segments,\s*ledger\.claims\)/,
+    "the processor must deterministically filter stale relation targets before persistence",
+  );
+  assert.match(
+    processor,
+    /RELATION_TARGET_CONFLICT[\s\S]{0,1200}RELATION_SEMANTICS_INVALID[\s\S]{0,1200}RELATION_LIFECYCLE_CONFLICT/,
+    "context-sensitive relation failures must be retained as bounded warnings rather than discarding grounded Claims",
   );
   assert.match(
     provider,
@@ -715,6 +741,16 @@ test("provider schema and server validator share bounded output limits", async (
     provider,
     /lifecycleStatus, uncertainty, openedAt, lastRepeatedAt, and repeatCount/i,
     "the model must receive the target lifecycle and uncertainty needed for stable relation decisions",
+  );
+  assert.match(
+    provider,
+    /Set needs_additional_evidence=true[\s\S]{0,650}Never return uncertainty with needs_additional_evidence=false/i,
+    "the prompt must distinguish a simple evidence gap from a structured multi-alternative uncertainty",
+  );
+  assert.match(
+    processor,
+    /leased\.prompt_version[\s\S]{0,350}STALE_MODEL_CONTRACT[\s\S]{0,1500}provider\.extractClaims/i,
+    "a queued run created under an older prompt or schema must fail before it can spend a model request",
   );
   assert.match(
     contract,
@@ -1186,6 +1222,26 @@ test("Project and Event review counts stay separate from verified-only views", a
     /claim_occurrence_candidates occ[\s\S]{0,220}occ\.status = 'pending'/,
     "occurrence counts must include only pending candidates",
   );
+  assert.match(
+    core,
+    /latest\.active_run_id = c\.extraction_run_id/,
+    "Project review counts must not expose stale pending Claims from older Runs",
+  );
+  assert.match(
+    core,
+    /latest\.active_run_id = occ\.extraction_run_id/,
+    "Project review counts must not expose stale occurrences from older Runs",
+  );
+  assert.match(
+    core,
+    /c\.event_id = e\.id[\s\S]{0,180}c\.extraction_run_id = e\.active_run_id/,
+    "Event pending Claim counts must be scoped to the current active Run",
+  );
+  assert.match(
+    core,
+    /occ\.event_id = e\.id[\s\S]{0,180}occ\.extraction_run_id = e\.active_run_id/,
+    "Event pending occurrence counts must be scoped to the current active Run",
+  );
   assert.match(core, /c\.project_id = p\.id AND c\.workspace_id = p\.workspace_id/);
   assert.match(core, /c\.event_id = e\.id AND c\.workspace_id = e\.workspace_id/);
   assert.match(
@@ -1212,4 +1268,49 @@ test("Project and Event review counts stay separate from verified-only views", a
     /function goSimple\(\)[\s\S]{0,350}event\?\.projectId === project\.id[\s\S]{0,180}loadSimpleProject\(project\.id, preferredEventId\)/,
     "switching from advanced tools must reload a Project-consistent Event before showing the core flow",
   );
+});
+
+test("manual Claim relations are scoped, atomic, idempotent, and visible after confirmation", async () => {
+  const repository = await read("lib/server/db/verdict-repository.ts");
+  const route = await read("app/api/v1/[...segments]/route.ts");
+  const client = await read("app/api-client.ts");
+  const page = await read("app/page.tsx");
+
+  assert.match(route, /segments\[2\] === ["']relation-targets["']/);
+  assert.match(route, /segments\[0\] === ["']claim-relations["']/);
+  assert.match(route, /createManualRelation\([\s\S]{0,2600}idempotencyKey\(request\)/);
+  assert.match(client, /listRelationTargets/);
+  assert.match(client, /createManualRelation/);
+  assert.match(
+    repository,
+    /c\.review_status = 'verified' AND c\.lifecycle_status = 'active'/,
+    "manual relation targets must be current verified records",
+  );
+  assert.match(
+    repository,
+    /String\(source\.current_version_id\) === input\.source_claim_version_id[\s\S]{0,420}String\(target\.current_version_id\) === input\.target_claim_version_id/,
+    "both relation endpoints must stay pinned to the reviewed Claim versions",
+  );
+  assert.match(
+    repository,
+    /Number\(project\.context_version\) !== input\.base_context_version/,
+    "a stale project context must not accept a new relation",
+  );
+  assert.match(
+    repository,
+    /input\.type === ["']resolves["'][\s\S]{0,300}\["open_question", "risk", "concern", "requirement"\]/,
+    "resolve must only close a genuine open or uncertain record",
+  );
+  assert.match(repository, /findMutationReplay[\s\S]{0,500}endpointScope[\s\S]{0,500}idempotencyKey/);
+  assert.match(
+    repository,
+    /await db\.batch\(\[[\s\S]{0,3000}INSERT INTO claim_relations[\s\S]{0,1800}INSERT INTO relation_verdicts[\s\S]{0,1800}lifecycleRecalculationStatements[\s\S]{0,1200}ledger_version = ledger_version \+ 1/,
+    "relation, audit verdict, lifecycle, and ledger update must commit together",
+  );
+  assert.match(page, /activeRelations = claim\.relationsForReview\.filter/);
+  assert.match(page, /已经生效/);
+  assert.match(page, /再关联一条旧记录/);
+  for (const label of ["解决了旧问题", "取代了旧记录", "参考了旧记录", "互相冲突"]) {
+    assert.match(page, new RegExp(label), `manual relation UI is missing ${label}`);
+  }
 });

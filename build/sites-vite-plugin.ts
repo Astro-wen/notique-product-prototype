@@ -2,6 +2,21 @@ import { access, cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 
+const FORBIDDEN_OUTPUT_BASENAMES = [
+  /^\.dev\.vars(?:\..+)?$/i,
+  /^\.env(?:\..+)?$/i,
+  /^\.?secrets?(?:\..+)?$/i,
+  /^(?:credentials?|service-account)(?:\..+)?$/i,
+  /^\.(?:npmrc|netrc|yarnrc(?:\.yml)?)$/i,
+  /\.(?:pem|key|p12|pfx|jks)$/i,
+];
+
+function isForbiddenOutput(fileName: string): boolean {
+  return fileName
+    .split("/")
+    .some((part) => FORBIDDEN_OUTPUT_BASENAMES.some((pattern) => pattern.test(part)));
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -39,6 +54,24 @@ export function sites(): Plugin {
         await cp(drizzleSource, resolve(outputDirectory, "drizzle"), {
           recursive: true,
         });
+      }
+    },
+  };
+}
+
+// The Cloudflare Vite plugin emits local preview variables into the server
+// bundle. They are useful for `vite preview`, but a Sites package must never
+// contain local environment files or private keys.
+export function stripLocalSecrets(): Plugin {
+  return {
+    name: "strip-local-secrets",
+    apply: "build",
+    enforce: "post",
+    generateBundle(_options, bundle) {
+      for (const fileName of Object.keys(bundle)) {
+        if (isForbiddenOutput(fileName)) {
+          delete bundle[fileName];
+        }
       }
     },
   };

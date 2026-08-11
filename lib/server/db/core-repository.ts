@@ -109,11 +109,25 @@ const PROJECT_WITH_REVIEW_COUNTS_SELECT = `
            SELECT COUNT(*) FROM claims c
             WHERE c.project_id = p.id AND c.workspace_id = p.workspace_id
               AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+              AND EXISTS (
+                SELECT 1 FROM events latest
+                 WHERE latest.id = c.event_id
+                   AND latest.project_id = p.id
+                   AND latest.workspace_id = p.workspace_id
+                   AND latest.active_run_id = c.extraction_run_id
+              )
          ), 0) AS pending_claim_count,
          COALESCE((
            SELECT COUNT(*) FROM claim_occurrence_candidates occ
             WHERE occ.project_id = p.id AND occ.workspace_id = p.workspace_id
               AND occ.status = 'pending'
+              AND EXISTS (
+                SELECT 1 FROM events latest
+                 WHERE latest.id = occ.event_id
+                   AND latest.project_id = p.id
+                   AND latest.workspace_id = p.workspace_id
+                   AND latest.active_run_id = occ.extraction_run_id
+              )
          ), 0) AS pending_occurrence_count
     FROM projects p`;
 
@@ -123,11 +137,13 @@ const EVENT_WITH_REVIEW_COUNTS_SELECT = `
            SELECT COUNT(*) FROM claims c
             WHERE c.event_id = e.id AND c.workspace_id = e.workspace_id
               AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+              AND c.extraction_run_id = e.active_run_id
          ), 0) AS pending_claim_count,
          COALESCE((
            SELECT COUNT(*) FROM claim_occurrence_candidates occ
             WHERE occ.event_id = e.id AND occ.workspace_id = e.workspace_id
               AND occ.status = 'pending'
+              AND occ.extraction_run_id = e.active_run_id
          ), 0) AS pending_occurrence_count
     FROM events e`;
 

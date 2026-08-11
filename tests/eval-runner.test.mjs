@@ -119,6 +119,24 @@ test("eval runner derives material and critical status from Ground Truth", () =>
   assert.equal(report.gates.pass, false);
 });
 
+test("formal sample eligibility counts an Event with no material Claims as zero", () => {
+  const emptyEventTruth = structuredClone(truth);
+  emptyEventTruth.claims.push({
+    id: "gt_non_material_only",
+    scenarioId: "s1",
+    eventId: "e3",
+    material: false,
+    critical: false,
+    modality: "transcript",
+    expectedClassification: "new",
+    annotation: { doubleAnnotated: false },
+  });
+  const report = evaluate(emptyEventTruth, predictionSet());
+  assert.equal(report.sampleEligibility.eventMaterialClaimCounts.e3, 0);
+  assert.equal(report.sampleEligibility.eventMaximumRecallAtReviewCap.e3, null);
+  assert.equal(report.sampleEligibility.eventMaterialShapeValid, false);
+});
+
 test("duplicate Claim matches and missing Evidence lower the metrics", () => {
   const predictions = predictionSet();
   predictions.runs[0].claims[0].evidence = [];

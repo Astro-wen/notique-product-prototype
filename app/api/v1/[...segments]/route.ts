@@ -38,7 +38,9 @@ import {
   applyClaimVerdict,
   applyOccurrenceVerdict,
   attestClaimEvidenceReview,
+  createManualRelation,
   getClaim,
+  listManualRelationTargets,
   resolveContradiction,
   withdrawClaim,
 } from "@/lib/server/db/verdict-repository";
@@ -95,6 +97,7 @@ const CLAIM_TYPES = [
   "measurement",
   "other",
 ] as const;
+const RELATION_TYPES = ["supersedes", "contradicts", "resolves", "informed_by"] as const;
 const VIEW_TYPES = [
   "folder-summary",
   "timeline",
@@ -196,11 +199,15 @@ function parseClaimVerdict(body: JsonRecord): ClaimVerdictRequest {
     if (!("uncertainty" in edit)) {
       throw new ApiFault(400, "BAD_REQUEST", "edit.uncertainty must be reviewed explicitly.");
     }
+    if (typeof edit.needs_additional_evidence !== "boolean") {
+      throw new ApiFault(400, "BAD_REQUEST", "edit.needs_additional_evidence must be reviewed explicitly.");
+    }
     const normalizedValue = edit.normalized_value;
     result.edit = {
       statement: requiredString(edit.statement, "edit.statement", { max: 10_000 }),
       type: requiredString(edit.type, "edit.type", { max: 100 }),
       normalized_value: normalizedValue as NonNullable<ClaimVerdictRequest["edit"]>["normalized_value"],
+      needs_additional_evidence: edit.needs_additional_evidence,
       uncertainty: edit.uncertainty as NonNullable<ClaimVerdictRequest["edit"]>["uncertainty"],
       retain_relation_ids: stringArray(
         edit.retain_relation_ids,
@@ -367,11 +374,54 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "glossary") {
     return ok({ glossary_entries: await listGlossaryEntries(scope, segments[1]) }, id);
   }
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "relation-targets"
+  ) {
+    return ok(
+      { relation_targets: await listManualRelationTargets(scope, segments[1]) },
+      id,
+    );
+  }
   throw new ApiFault(404, "NOT_FOUND", "API route was not found.");
 }
 
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  if (segments.length === 1 && segments[0] === "claim-relations") {
+    const body = await jsonObject(request);
+    const relation = await createManualRelation(
+      scope,
+      {
+        project_id: requiredString(body.project_id, "project_id", { max: 128 }),
+        base_context_version: nonNegativeInteger(
+          body.base_context_version,
+          "base_context_version",
+        ),
+        source_claim_id: requiredString(body.source_claim_id, "source_claim_id", {
+          max: 128,
+        }),
+        source_claim_version_id: requiredString(
+          body.source_claim_version_id,
+          "source_claim_version_id",
+          { max: 128 },
+        ),
+        target_claim_id: requiredString(body.target_claim_id, "target_claim_id", {
+          max: 128,
+        }),
+        target_claim_version_id: requiredString(
+          body.target_claim_version_id,
+          "target_claim_version_id",
+          { max: 128 },
+        ),
+        type: enumValue(body.type, "type", RELATION_TYPES),
+        reason: requiredString(body.reason, "reason", { min: 3, max: 2_000 }),
+      },
+      idempotencyKey(request),
+    );
+    return ok({ relation }, id, 201);
+  }
   if (segments.length === 1 && segments[0] === "projects") {
     const body = await jsonObject(request);
     const project = await createProject(scope, {
