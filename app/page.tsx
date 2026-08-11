@@ -16,6 +16,12 @@ import {
 } from "@/lib/domain/audio-transcription";
 import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
 import {
+  planProjectWorkflow,
+  projectNeedsScenarioConfirmation,
+  type ProjectWorkflowPlan,
+} from "@/lib/domain/project-workflow";
+import {
+  ApiClientError,
   ApiIssue,
   Claim,
   ClaimEditSubmission,
@@ -70,6 +76,18 @@ type ImportRow = {
   title: string;
   occurredAt: string;
   eventType: "meeting" | "showing" | "estimate" | "walkthrough";
+};
+
+type ProjectWorkflowState = Omit<ProjectWorkflowPlan, "phase"> & {
+  phase: ProjectWorkflowPlan["phase"] | "idle" | "loading" | "error";
+  issue?: ApiIssue;
+};
+
+type ProjectWorkflowSnapshot = {
+  project: Project;
+  events: Event[];
+  details: Array<{ event: Event; run: ExtractionRun | null; candidateCount?: number }>;
+  plan: ProjectWorkflowPlan;
 };
 
 const resultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
@@ -205,6 +223,55 @@ function transcriptionRunIdFromEvent(value: Event): string | undefined {
 
 function assetIsAnalyzable(asset: Event["assets"][number]): boolean {
   return asset.status === "ready" && Boolean(asset.versionId) && asset.kind !== "audio";
+}
+
+const idleProjectWorkflow: ProjectWorkflowState = {
+  phase: "idle",
+  total: 0,
+  completed: 0,
+  currentPosition: 0,
+  ignoredEmptyCount: 0,
+};
+
+async function inspectProjectWorkflow(projectId: string): Promise<ProjectWorkflowSnapshot> {
+  const [latestProject, latestEvents] = await Promise.all([
+    api.getProject(projectId),
+    api.listEvents(projectId),
+  ]);
+  const details = await Promise.all(latestEvents.map(async (listedEvent) => {
+    const currentEvent = await api.getEvent(listedEvent.id);
+    const runId = currentEvent.latestRun?.id || currentEvent.latestRunId || listedEvent.latestRunId;
+    const latestRun = runId ? await api.getRun(runId) : null;
+    const review = latestRun && runComplete.has(latestRun.status)
+      ? await api.getRunReview(latestRun.id)
+      : null;
+    return {
+      event: currentEvent,
+      run: latestRun,
+      candidateCount: review
+        ? review.claims.length + review.occurrenceCandidates.length
+        : undefined,
+    };
+  }));
+  const plan = planProjectWorkflow({
+    events: details.map(({ event: currentEvent, run: latestRun, candidateCount }) => ({
+      id: currentEvent.id,
+      title: currentEvent.title,
+      occurredAt: currentEvent.occurredAt,
+      createdAt: currentEvent.createdAt,
+      hasMaterial: currentEvent.assets.length > 0,
+      ready: currentEvent.assets.some(assetIsAnalyzable),
+      runId: latestRun?.id || currentEvent.latestRunId,
+      runStatus: latestRun?.status,
+      candidateCount,
+      pendingCount: currentEvent.pendingClaimCount + currentEvent.pendingOccurrenceCount,
+    })),
+    needsScenarioConfirmation: projectNeedsScenarioConfirmation({
+      scenarioStatus: latestProject.scenarioStatus,
+      scenarioCandidateCount: latestProject.scenarioCandidates?.length ?? 0,
+    }),
+  });
+  return { project: latestProject, events: latestEvents, details, plan };
 }
 
 function formatTimestamp(value?: string | number): string {
@@ -827,6 +894,7 @@ export default function Home() {
   const [simpleFlow, setSimpleFlow] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [projectWorkflow, setProjectWorkflow] = useState<ProjectWorkflowState>(idleProjectWorkflow);
   const [selectedClaimIds, setSelectedClaimIds] = useState<Set<string>>(new Set());
   const [runPollCycle, setRunPollCycle] = useState(0);
   const [transcriptionPollCycle, setTranscriptionPollCycle] = useState(0);
@@ -840,6 +908,7 @@ export default function Home() {
   const localDispatchRuns = useRef(new Set<string>());
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
+  const projectWorkflowRefreshToken = useRef(0);
 
   const flash = useCallback((message: string) => {
     setToast(message);
@@ -918,6 +987,31 @@ export default function Home() {
     }
   }, []);
 
+  const refreshProjectWorkflow = useCallback(async (
+    projectId: string,
+  ): Promise<ProjectWorkflowSnapshot | null> => {
+    const token = projectWorkflowRefreshToken.current + 1;
+    projectWorkflowRefreshToken.current = token;
+    setProjectWorkflow((current) => current.phase === "running"
+      ? current
+      : { ...current, phase: "loading", issue: undefined });
+    try {
+      const snapshot = await inspectProjectWorkflow(projectId);
+      if (projectWorkflowRefreshToken.current !== token) return null;
+      setProject(snapshot.project);
+      setProjectWorkflow(snapshot.plan);
+      return snapshot;
+    } catch (error) {
+      if (projectWorkflowRefreshToken.current !== token) return null;
+      setProjectWorkflow({
+        ...idleProjectWorkflow,
+        phase: "error",
+        issue: toIssue(error),
+      });
+      return null;
+    }
+  }, []);
+
   const loadSimpleProject = useCallback(async (projectId: string, preferredEventId?: string) => {
     setScreen("simple");
     setProjectState("loading");
@@ -973,6 +1067,84 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadSimpleProject(sample.id), 0);
     return () => window.clearTimeout(timer);
   }, [loadSimpleProject, project, projects, projectsState, screen]);
+
+  useEffect(() => {
+    if (!project?.id) {
+      projectWorkflowRefreshToken.current += 1;
+      return;
+    }
+    if (screen !== "simple") return;
+    const projectId = project.id;
+    const timer = window.setTimeout(() => {
+      void refreshProjectWorkflow(projectId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    event?.pendingClaimCount,
+    event?.pendingOccurrenceCount,
+    events,
+    project?.contextVersion,
+    project?.id,
+    project?.pendingClaimCount,
+    project?.pendingOccurrenceCount,
+    project?.scenarioVersion,
+    refreshProjectWorkflow,
+    run?.id,
+    run?.status,
+    screen,
+  ]);
+
+  useEffect(() => {
+    if (
+      screen !== "simple"
+      || !project?.id
+      || projectWorkflow.phase !== "running"
+      || !projectWorkflow.currentRunId
+    ) return;
+    const projectId = project.id;
+    const runId = projectWorkflow.currentRunId;
+    if (run?.id === runId && runInProgress.has(run.status)) return;
+    void api.kickLocalDispatcher().catch(() => undefined);
+    let attempts = 0;
+    const timer = window.setInterval(async () => {
+      if (attempts >= 360) {
+        window.clearInterval(timer);
+        const issue: ApiIssue = {
+          code: "EXTRACTION_POLL_TIMEOUT",
+          message: "等待分析结果的时间过长。材料和后台任务都已保留，可以重新检查任务状态。",
+          status: 408,
+        };
+        setProjectWorkflow((current) => current.currentRunId === runId
+          ? { ...current, phase: "error", issue }
+          : current);
+        return;
+      }
+      attempts += 1;
+      try {
+        const latestRun = await api.getRun(runId);
+        if (!runInProgress.has(latestRun.status)) {
+          window.clearInterval(timer);
+          await refreshProjectWorkflow(projectId);
+        }
+      } catch (error) {
+        const issue = toIssue(error);
+        if (issue.status >= 500 || issue.status === 0) return;
+        window.clearInterval(timer);
+        setProjectWorkflow((current) => current.currentRunId === runId
+          ? { ...current, phase: "error", issue }
+          : current);
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [
+    project?.id,
+    projectWorkflow.currentRunId,
+    projectWorkflow.phase,
+    refreshProjectWorkflow,
+    run?.id,
+    run?.status,
+    screen,
+  ]);
 
   const loadEvent = useCallback(async (eventId: string) => {
     setEventState("loading");
@@ -1084,11 +1256,15 @@ export default function Home() {
       // 15 minutes; the server remains the source of truth if the page closes.
       if (pollAttempts.current >= 360) {
         window.clearInterval(timer);
-        setEventIssue({
+        const issue: ApiIssue = {
           code: "EXTRACTION_POLL_TIMEOUT",
           message: "等待分析结果的时间过长。材料和后台任务都已保留，可以重新检查任务状态。",
           status: 408,
-        });
+        };
+        setEventIssue(issue);
+        setProjectWorkflow((current) => current.currentRunId === runId
+          ? { ...current, phase: "error", issue }
+          : current);
         return;
       }
       pollAttempts.current += 1;
@@ -1121,6 +1297,9 @@ export default function Home() {
         if (issue.status >= 500 || issue.status === 0) return;
         window.clearInterval(timer);
         setClaimsIssue(issue);
+        setProjectWorkflow((current) => current.currentRunId === runId
+          ? { ...current, phase: "error", issue }
+          : current);
       }
     }, 2500);
     return () => window.clearInterval(timer);
@@ -1671,6 +1850,33 @@ export default function Home() {
     }
   }
 
+  function extractionAssetVersionIds(targetEvent: Event): string[] {
+    return targetEvent.assets
+      .filter(assetIsAnalyzable)
+      .map((asset) => asset.versionId)
+      .filter((id): id is string => Boolean(id));
+  }
+
+  async function requestExtractionForEvent(targetEvent: Event): Promise<ExtractionRun> {
+    const ids = extractionAssetVersionIds(targetEvent);
+    if (!ids.length) {
+      throw new ApiClientError({
+        code: "EVENT_NOT_READY",
+        message: "当前材料还没有可用于分析的已完成版本。",
+        status: 409,
+      });
+    }
+    const fingerprint = `${targetEvent.id}:${[...ids].sort().join(",")}`;
+    let key = extractionKeys.current.get(fingerprint);
+    if (!key) {
+      key = crypto.randomUUID();
+      extractionKeys.current.set(fingerprint, key);
+    }
+    const nextRun = await api.startExtraction(targetEvent.id, ids, key);
+    extractionKeys.current.delete(fingerprint);
+    return nextRun;
+  }
+
   async function startExtractionForEvent(targetEvent: Event) {
     const ids = targetEvent.assets
       .filter(assetIsAnalyzable)
@@ -1683,20 +1889,90 @@ export default function Home() {
     setBusyAction("extraction");
     setEventIssue(null);
     try {
-      const fingerprint = `${targetEvent.id}:${[...ids].sort().join(",")}`;
-      let key = extractionKeys.current.get(fingerprint);
-      if (!key) {
-        key = crypto.randomUUID();
-        extractionKeys.current.set(fingerprint, key);
-      }
-      const nextRun = await api.startExtraction(targetEvent.id, ids, key);
-      extractionKeys.current.delete(fingerprint);
+      const nextRun = await requestExtractionForEvent(targetEvent);
       setRun(nextRun);
+      setRunPollCycle((value) => value + 1);
       setClaims([]);
       setClaimsState("idle");
       flash("分析已经开始，可以稍后回来查看");
     } catch (error) {
       setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function advanceProjectWorkflow() {
+    if (!project) return;
+    setBusyAction("project-workflow");
+    setEventIssue(null);
+    try {
+      projectWorkflowRefreshToken.current += 1;
+      const snapshot = await inspectProjectWorkflow(project.id);
+      setProject(snapshot.project);
+      setEvents(snapshot.events);
+      setProjectWorkflow(snapshot.plan);
+      const current = snapshot.plan.currentEventId
+        ? snapshot.details.find((item) => item.event.id === snapshot.plan.currentEventId)
+        : undefined;
+
+      if (snapshot.plan.phase === "waiting_review") {
+        if (current) {
+          setEvent(current.event);
+          setEventState("ready");
+          setRun(current.run);
+        }
+        await loadReviewQueue();
+        return;
+      }
+      if (snapshot.plan.phase === "waiting_scenario") {
+        if (current) await loadSimpleProject(project.id, current.event.id);
+        flash("先确认使用场景，再核对这次结果");
+        return;
+      }
+      if (snapshot.plan.phase === "waiting_material") {
+        if (current) await loadSimpleProject(project.id, current.event.id);
+        flash("前一次沟通的材料还没有准备好，暂时不会越过它处理后面的内容");
+        return;
+      }
+      if (snapshot.plan.phase === "complete") {
+        flash("全部沟通都已处理并核对完成");
+        return;
+      }
+      if (snapshot.plan.phase === "empty" || !current) {
+        flash("当前 Project 还没有可处理的材料");
+        return;
+      }
+
+      setScreen("simple");
+      setEvent(current.event);
+      setEventState("ready");
+      setEventIssue(null);
+      setRun(current.run);
+      setClaims([]);
+      setClaimsState("idle");
+      await loadTranscriptionForEvent(current.event);
+
+      if (snapshot.plan.phase === "running" && current.run) {
+        await api.kickLocalDispatcher().catch(() => undefined);
+        setRunPollCycle((value) => value + 1);
+        flash(`继续等待第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通的处理结果`);
+        return;
+      }
+
+      const nextRun = await requestExtractionForEvent(current.event);
+      setRun(nextRun);
+      setRunPollCycle((value) => value + 1);
+      setProjectWorkflow({
+        ...snapshot.plan,
+        phase: "running",
+        currentRunId: nextRun.id,
+      });
+      flash(`正在处理第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通`);
+    } catch (error) {
+      const issue = toIssue(error);
+      setEventIssue(issue);
+      setProjectWorkflow((current) => ({ ...current, phase: "error", issue }));
     } finally {
       setBusyAction(null);
     }
@@ -1878,14 +2154,14 @@ export default function Home() {
           run={run}
           claims={claims}
           busy={busyAction}
+          projectWorkflow={projectWorkflow}
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => void beginSimpleTest()}
           onAddTranscript={() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(true); }}
           onAddFile={(file) => void attachSimpleFile(file)}
-          onAnalyze={() => { if (event) void startExtractionForEvent(event); }}
+          onProjectWorkflowAction={() => void advanceProjectWorkflow()}
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
-          onRetryRunStatus={() => void retryRunStatus()}
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
           onReview={() => void loadReviewQueue()}
@@ -1994,14 +2270,14 @@ type SimpleTestScreenProps = {
   transcriptionRun: TranscriptionRun | null;
   claims: Claim[];
   busy: string | null;
+  projectWorkflow: ProjectWorkflowState;
   onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
   onAddTranscript: () => void;
   onAddFile: (file: File) => void;
-  onAnalyze: () => void;
+  onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
-  onRetryRunStatus: () => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onReview: () => void;
   onResult: () => void;
@@ -2022,21 +2298,21 @@ function SimpleTestScreen({
   transcriptionRun,
   claims,
   busy,
+  projectWorkflow,
   onUseProject,
   onUseEvent,
   onStartOwn,
   onAddTranscript,
   onAddFile,
-  onAnalyze,
+  onProjectWorkflowAction,
   onRetryTranscription,
-  onRetryRunStatus,
   onConfirmScenario,
   onReview,
   onResult,
 }: SimpleTestScreenProps) {
   const [showImportChoices, setShowImportChoices] = useState(false);
   const [showFullTranscript, setShowFullTranscript] = useState(false);
-  const [scenario, setScenario] = useState(project?.scenarioCandidates?.[0]?.key ?? "");
+  const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
   const sortedProjects = [...projects].sort((left, right) => {
     const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
@@ -2063,13 +2339,114 @@ function SimpleTestScreen({
   const retryAudioAsset = audioAssets.find((asset) => asset.id === transcriptionRun?.audioAssetId) ?? audioAssets[0];
   const issueRetry = issue?.code.includes("TRANSCRIPTION") && retryAudioAsset
     ? () => onRetryTranscription(retryAudioAsset.id)
-    : issue?.code === "EXTRACTION_POLL_TIMEOUT"
-      ? onRetryRunStatus
-      : analysisFailed && materialsReady
-        ? onAnalyze
-        : undefined;
+    : project && (issue?.code === "EXTRACTION_POLL_TIMEOUT" || (analysisFailed && materialsReady))
+      ? onProjectWorkflowAction
+      : undefined;
   const needsScenario = project?.scenarioStatus === "pending_confirmation"
     || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
+  const workflowPosition = projectWorkflow.currentPosition || Math.min(projectWorkflow.completed + 1, projectWorkflow.total);
+  const workflowActionable = projectWorkflow.phase === "ready"
+    || projectWorkflow.phase === "waiting_review"
+    || projectWorkflow.phase === "empty_output"
+    || projectWorkflow.phase === "error";
+  const workflowActionLabels: Record<ProjectWorkflowState["phase"], string> = {
+    idle: "正在准备整组材料",
+    loading: "正在检查整组材料",
+    empty: "请先导入材料",
+    waiting_material: "等待当前材料准备完成",
+    ready: projectWorkflow.completed > 0 ? "继续处理下一次沟通" : "开始处理全部沟通",
+    running: "正在处理，请稍候",
+    empty_output: "重新处理这次沟通",
+    waiting_scenario: "请先确认使用场景",
+    waiting_review: "核对这次结果",
+    complete: "整组处理已完成",
+    error: "重新检查并继续",
+  };
+  const workflowActionLabel = workflowActionLabels[projectWorkflow.phase];
+  const workflowCopy: Record<ProjectWorkflowState["phase"], { title: string; body: string }> = {
+    idle: {
+      title: "准备整组材料",
+      body: "系统会按 Project 中现有的沟通顺序处理。",
+    },
+    loading: {
+      title: "正在检查整组材料",
+      body: "正在读取每次沟通的材料和处理状态。",
+    },
+    empty: {
+      title: "还没有可处理的材料",
+      body: "先导入 Transcript、照片或录音，再从这里开始。",
+    },
+    waiting_material: {
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通还没准备好`,
+      body: "这次沟通仍在上传或转写。系统会保留顺序，不会先处理后面的内容。",
+    },
+    ready: {
+      title: projectWorkflow.completed > 0 ? "可以继续下一次沟通" : "一次入口，按顺序处理整组沟通",
+      body: "每次处理一条沟通。处理完成后会停下来让你核对，确认过的内容才会带入下一次。",
+    },
+    running: {
+      title: `正在处理第 ${workflowPosition}/${projectWorkflow.total} 次沟通`,
+      body: "页面会继续检查现有任务，不会重复提交同一份材料。",
+    },
+    empty_output: {
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通没有生成可核对的记录`,
+      body: "这次运行虽然结束了，但 Claim 和再次出现记录都是 0，不能算作完成，也不会继续处理后面的沟通。请检查材料后重新处理本次沟通。",
+    },
+    waiting_scenario: {
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通已处理`,
+      body: "先在下方确认这组材料的使用场景，再核对本次结果。",
+    },
+    waiting_review: {
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通等你核对`,
+      body: "请确认或不采纳本次生成的记录。待核对内容清空后，才能继续下一次沟通。",
+    },
+    complete: {
+      title: projectWorkflow.ignoredEmptyCount > 0 ? "所有有材料的沟通已经处理完成" : "整组沟通已经处理完成",
+      body: projectWorkflow.ignoredEmptyCount > 0
+        ? `${projectWorkflow.ignoredEmptyCount} 次沟通没有材料，未纳入处理。其余沟通已经完成并经过人工核对。`
+        : "每次沟通的结果都已经经过人工核对。",
+    },
+    error: {
+      title: "暂时无法确认当前进度",
+      body: projectWorkflow.issue?.message || "材料和已有任务都已保留，可以重新检查后继续。",
+    },
+  };
+  const currentWorkflowCopy = workflowCopy[projectWorkflow.phase];
+  const workflowSelectedCurrent = Boolean(
+    event?.id && event.id === projectWorkflow.currentEventId,
+  );
+  const workflowStepActionable = workflowActionable && workflowSelectedCurrent;
+  const workflowStepComplete = projectWorkflow.completed > 0
+    || projectWorkflow.phase === "waiting_scenario"
+    || projectWorkflow.phase === "waiting_review"
+    || projectWorkflow.phase === "complete";
+  const workflowStepStateLabels: Record<ProjectWorkflowState["phase"], string> = {
+    idle: "准备中",
+    loading: "检查中",
+    empty: "缺少材料",
+    waiting_material: "等待材料",
+    ready: "运行",
+    running: "处理中",
+    empty_output: "输出为空",
+    waiting_scenario: "待确认场景",
+    waiting_review: "待核对",
+    complete: "已完成",
+    error: "重新检查",
+  };
+  const workflowStepTitle = projectWorkflow.currentEventId && !workflowSelectedCurrent
+    ? "请先选择当前沟通"
+    : workflowActionLabel;
+  const workflowStepBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
+    ? `当前顺序应处理“${projectWorkflow.currentEventTitle || "前一次沟通"}”，这里不会越过它。`
+    : currentWorkflowCopy.body;
+  const workflowReviewReady = projectWorkflow.phase === "waiting_review" && workflowSelectedCurrent;
+  const workflowReviewBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
+    ? `请先选择“${projectWorkflow.currentEventTitle || "当前沟通"}”。`
+    : projectWorkflow.phase === "waiting_scenario"
+      ? "先确认使用场景，再核对本次生成的记录。"
+      : workflowReviewReady
+        ? `${pendingCount} 条内容等你确认`
+        : "当前沟通处理完成后才能核对。";
 
   function chooseSupportingFile(change: ChangeEvent<HTMLInputElement>) {
     const file = change.target.files?.[0];
@@ -2116,28 +2493,26 @@ function SimpleTestScreen({
         )}
       </section>
 
-      <section className="simple-steps" aria-label="四步测试流程">
-        <button className={`simple-step-button ${materialsReady ? "complete" : ""}`} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>
-          <span className="simple-step-number">1</span>
-          <span className="simple-step-copy"><strong>导入材料</strong><small>{transcriptionRunning ? "正在把录音转成逐字稿" : materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript、照片或录音"}</small></span>
-          <span className="simple-step-state">{transcriptionRunning ? "转写中" : materialsReady ? "已就绪" : "开始"}</span>
-        </button>
-        <button className={`simple-step-button ${analysisDone ? "complete" : ""}`} disabled={!materialsReady || analysisRunning || Boolean(busy)} onClick={onAnalyze}>
-          <span className="simple-step-number">2</span>
-          <span className="simple-step-copy"><strong>{analysisFailed ? "重试分析" : "开始分析"}</strong><small>{analysisRunning ? "正在读取材料并整理内容" : analysisDone ? "分析已完成，可以重新运行" : analysisFailed ? "上一次没有完成，材料仍然保留" : "从材料中提取陈述和对应证据"}</small></span>
-          <span className="simple-step-state">{analysisRunning ? "处理中" : analysisDone ? "已完成" : analysisFailed ? "重试" : "运行"}</span>
-        </button>
-        <button className={`simple-step-button ${verifiedCount > 0 ? "complete" : ""}`} disabled={!analysisDone || Boolean(busy)} onClick={onReview}>
-          <span className="simple-step-number">3</span>
-          <span className="simple-step-copy"><strong>核对证据</strong><small>{pendingCount > 0 ? `${pendingCount} 条内容等你确认` : analysisDone ? "逐条查看原文或照片依据" : "分析完成后可以核对"}</small></span>
-          <span className="simple-step-state">{verifiedCount > 0 ? `已确认 ${verifiedCount}` : "核对"}</span>
-        </button>
-        <button className="simple-step-button" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>
-          <span className="simple-step-number">4</span>
-          <span className="simple-step-copy"><strong>查看报告</strong><small>{verifiedCount > 0 ? "查看已经确认的内容" : analysisDone ? "未确认的内容不会进入报告" : "完成前三步后查看结果"}</small></span>
-          <span className="simple-step-state">查看</span>
-        </button>
-      </section>
+      {project && (
+        <section className={`project-workflow-card ${projectWorkflow.phase}`} aria-label="整组沟通处理" aria-live="polite">
+          <div className="project-workflow-copy">
+            <span className="section-kicker">整组处理</span>
+            <h2>{currentWorkflowCopy.title}</h2>
+            <p>{currentWorkflowCopy.body}</p>
+          </div>
+          <div className="project-workflow-progress">
+            <div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div>
+            <progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} />
+          </div>
+          <button
+            className="project-workflow-action"
+            disabled={!workflowActionable || Boolean(busy)}
+            onClick={onProjectWorkflowAction}
+          >
+            {busy === "project-workflow" ? "正在检查…" : workflowActionLabel}
+          </button>
+        </section>
+      )}
 
       {needsScenario && (
         <section className="simple-scenario-panel" aria-label="确认使用场景">
@@ -2158,6 +2533,29 @@ function SimpleTestScreen({
           <button className="button primary" disabled={busy === "scenario" || (!scenario && !customScenario.trim())} onClick={() => void onConfirmScenario(scenario || "custom", customScenario.trim() || undefined)}>{busy === "scenario" ? "正在保存…" : "确认后继续"}</button>
         </section>
       )}
+
+      <section className="simple-steps" aria-label="四步测试流程">
+        <button className={`simple-step-button ${materialsReady ? "complete" : ""}`} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>
+          <span className="simple-step-number">1</span>
+          <span className="simple-step-copy"><strong>导入材料</strong><small>{transcriptionRunning ? "正在把录音转成逐字稿" : materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript、照片或录音"}</small></span>
+          <span className="simple-step-state">{transcriptionRunning ? "转写中" : materialsReady ? "已就绪" : "开始"}</span>
+        </button>
+        <button className={`simple-step-button ${workflowStepComplete ? "complete" : ""}`} disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>
+          <span className="simple-step-number">2</span>
+          <span className="simple-step-copy"><strong>{workflowStepTitle}</strong><small>{workflowStepBody}</small></span>
+          <span className="simple-step-state">{workflowSelectedCurrent || !projectWorkflow.currentEventId ? workflowStepStateLabels[projectWorkflow.phase] : "顺序锁定"}</span>
+        </button>
+        <button className={`simple-step-button ${verifiedCount > 0 ? "complete" : ""}`} disabled={!workflowReviewReady || Boolean(busy)} onClick={onReview}>
+          <span className="simple-step-number">3</span>
+          <span className="simple-step-copy"><strong>核对证据</strong><small>{workflowReviewBody}</small></span>
+          <span className="simple-step-state">{workflowReviewReady ? "核对" : projectWorkflow.phase === "waiting_scenario" ? "等待场景" : verifiedCount > 0 ? `已确认 ${verifiedCount}` : "等待"}</span>
+        </button>
+        <button className="simple-step-button" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>
+          <span className="simple-step-number">4</span>
+          <span className="simple-step-copy"><strong>查看报告</strong><small>{verifiedCount > 0 ? "查看已经确认的内容" : analysisDone ? "未确认的内容不会进入报告" : "完成前三步后查看结果"}</small></span>
+          <span className="simple-step-state">查看</span>
+        </button>
+      </section>
 
       {showImportChoices && (
         <section className="simple-import-panel" aria-label="添加材料">
@@ -2192,7 +2590,7 @@ function SimpleTestScreen({
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
       {!project && projectsState === "empty" && <p className="simple-footnote">还没有可选材料。点击“导入材料”后再选择“新建一次测试”。</p>}
-      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以重新开始分析。"}</p><button className="button secondary" disabled={!materialsReady || Boolean(busy)} onClick={onAnalyze}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button></div>}
+      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新处理当前沟通" : "请先选择当前沟通"}</button></div>}
       {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
   );
@@ -2231,7 +2629,7 @@ function ProjectsScreen({ state, issue, projects, onRetry, onOpen, onCreate }: {
 }
 
 function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenEvent, onNewEvent, onImport, onReview, onResults, onConfirmScenario, busy }: { state: AsyncState; issue: ApiIssue | null; project: Project | null; events: Event[]; onBack: () => void; onRetry: () => void; onOpenEvent: (id: string) => void; onNewEvent: () => void; onImport: () => void; onReview: () => void; onResults: (tab: ResultTab) => void; onConfirmScenario: (scenario: string, custom?: string) => Promise<void>; busy: boolean }) {
-  const [scenario, setScenario] = useState(project?.scenarioCandidates?.[0]?.key ?? "");
+  const [scenario, setScenario] = useState("");
   const [custom, setCustom] = useState("");
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取 Project…" /></div>;
   if (state === "error" || !project) return <div className="page"><PageHeader title="Project" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;

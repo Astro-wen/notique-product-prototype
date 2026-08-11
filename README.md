@@ -96,6 +96,12 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 
 ## Eric 一键演示
 
+普通测试界面支持先导入一到十份 Transcript，再从“开始处理全部沟通”进入整组流程。
+系统按 Project 中的沟通顺序一次处理一条，首次结果会停下来确认 Scenario，每次结果
+会停下来人工核对。待审核内容清空后，按钮会变成“继续处理下一次沟通”，确保后续
+分析只继承已经确认的内容。页面刷新后会继续读取服务器中的 Run，不会重复发起模型
+请求。
+
 先按上面的步骤启动本地服务。另开一个终端运行下面这条命令：
 
 ```bash

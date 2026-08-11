@@ -67,6 +67,23 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .simple-session label { display: grid; gap: 6px; }
 .simple-session label > span { color: var(--muted); font-size: 9px; font-weight: 750; }
 .simple-session select { width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; padding: 0 10px; font-size: 11px; }
+.project-workflow-card { margin-top: 16px; border: 1px solid #b8cbea; border-radius: 14px; background: #f7faff; padding: 20px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 0.34fr); gap: 18px 24px; align-items: center; }
+.project-workflow-card.waiting_scenario, .project-workflow-card.waiting_review { border-color: #d6c58f; background: #fffdf6; }
+.project-workflow-card.empty_output { border-color: #d8ad73; background: #fffaf2; }
+.project-workflow-card.complete { border-color: #a9d0c1; background: #f8fdfb; }
+.project-workflow-card.error { border-color: #e1bdc1; background: #fffafa; }
+.project-workflow-copy { min-width: 0; }
+.project-workflow-copy h2 { margin: 5px 0 7px; font-size: 20px; letter-spacing: -0.025em; }
+.project-workflow-copy p { max-width: 650px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.project-workflow-progress { display: grid; gap: 7px; }
+.project-workflow-progress > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }
+.project-workflow-progress strong { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+.project-workflow-progress progress { width: 100%; height: 8px; border: 0; border-radius: 999px; overflow: hidden; accent-color: #2458a6; }
+.project-workflow-progress progress::-webkit-progress-bar { background: #dfe5ee; }
+.project-workflow-progress progress::-webkit-progress-value { border-radius: 999px; background: #2458a6; }
+.project-workflow-action { grid-column: 1 / -1; min-height: 58px; width: 100%; border: 1px solid #1d2026; border-radius: 9px; background: #1d2026; color: #fff; padding: 0 20px; font-size: 16px; font-weight: 800; }
+.project-workflow-action:hover:not(:disabled) { background: #30343d; }
+.project-workflow-action:disabled { border-color: #cad1dc; background: #e5e9ef; color: #717b89; }
 .simple-steps { margin-top: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .simple-step-button { min-height: 148px; width: 100%; border: 1px solid var(--line); border-radius: 13px; background: #fff; padding: 19px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: start; gap: 14px; text-align: left; box-shadow: 0 3px 12px rgba(29, 37, 52, 0.035); }
 .simple-step-button:hover:not(:disabled) { border-color: #9db8e7; box-shadow: 0 9px 26px rgba(29, 52, 91, 0.08); transform: translateY(-1px); }
@@ -488,6 +505,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
   .simple-page { padding-top: 30px; }
   .simple-session { grid-template-columns: 1fr 1fr; }
   .simple-session-copy { grid-column: 1 / -1; }
+  .project-workflow-card { grid-template-columns: minmax(0, 1fr) minmax(130px, 0.35fr); }
   .page-header { min-height: 84px; }
   .scenario-panel, .simple-scenario-panel { grid-template-columns: 1fr; }
   .scenario-panel > .field, .scenario-panel > .button, .simple-scenario-panel > .field, .simple-scenario-panel > .button { grid-column: auto; }
@@ -509,6 +527,9 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
   .simple-header p { font-size: 12px; }
   .simple-session, .simple-steps, .simple-import-actions { grid-template-columns: 1fr; }
   .simple-session-copy { grid-column: auto; }
+  .project-workflow-card { padding: 17px; grid-template-columns: 1fr; }
+  .project-workflow-copy h2 { font-size: 18px; }
+  .project-workflow-action { min-height: 54px; font-size: 14px; }
   .simple-step-button { min-height: 126px; padding: 16px; grid-template-columns: 38px minmax(0, 1fr); }
   .simple-step-number { width: 38px; height: 38px; }
   .simple-step-state { grid-column: 2; width: fit-content; }
