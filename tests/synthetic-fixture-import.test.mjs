@@ -1,0 +1,263 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  assertLoopbackBaseUrl,
+  importSyntheticFixture,
+  validateSyntheticManifest,
+} from "../scripts/import-synthetic-fixture.mjs";
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function data(value, status = 200) {
+  return json({ data: value, request_id: "req-test" }, status);
+}
+
+function error(code, message, status) {
+  return json({ error: { code, message }, request_id: "req-test" }, status);
+}
+
+function requestJson(options) {
+  return JSON.parse(String(options.body));
+}
+
+function createApiDouble() {
+  const requests = [];
+  const transcriptItems = new Map();
+  const events = [];
+  const assets = new Map();
+  let assetSequence = 0;
+
+  const fetchImpl = async (input, options = {}) => {
+    const url = new URL(input);
+    const method = options.method ?? "GET";
+    const pathname = url.pathname;
+    const headers = new Headers(options.headers);
+    requests.push({ method, pathname, headers, body: options.body });
+
+    if (method === "POST" && pathname === "/api/v1/projects") {
+      const body = requestJson(options);
+      return data({ project: { id: "prj-test", name: body.name } }, 201);
+    }
+    if (method === "POST" && pathname === "/api/v1/projects/prj-test/transcript-imports") {
+      const body = requestJson(options);
+      const items = body.files.map((file, index) => ({
+        id: `item-${index + 1}`,
+        filename: file.filename,
+        upload_status: "pending",
+      }));
+      for (const item of items) transcriptItems.set(item.id, { ...item, bytes: null });
+      return data({ transcript_import: { id: "import-test", items } }, 201);
+    }
+    const transcriptUpload = pathname.match(/^\/api\/v1\/transcript-imports\/import-test\/items\/([^/]+)\/content$/);
+    if (method === "PUT" && transcriptUpload) {
+      const item = transcriptItems.get(transcriptUpload[1]);
+      item.bytes = Buffer.from(options.body);
+      item.upload_status = "uploaded";
+      return data({ transcript_import: { id: "import-test", items: [...transcriptItems.values()] } });
+    }
+    if (method === "POST" && pathname === "/api/v1/transcript-imports/import-test/finalize") {
+      const body = requestJson(options);
+      for (const [index, ordered] of body.ordered_items.entries()) {
+        const item = transcriptItems.get(ordered.item_id);
+        const event = {
+          id: `evt-${index + 1}`,
+          title: ordered.title,
+          event_type: ordered.event_type,
+          material_status: "ready",
+          sequence_no: index + 1,
+        };
+        events.push(event);
+        const asset = {
+          id: `ast-transcript-${index + 1}`,
+          event_id: event.id,
+          filename: item.filename,
+          kind: "transcript",
+          processing_status: "ready",
+          version: { id: `av-transcript-${index + 1}` },
+          bytes: item.bytes,
+        };
+        assets.set(asset.id, asset);
+      }
+      return data({
+        transcript_import: { id: "import-test", status: "finalized" },
+        events,
+      });
+    }
+    const initialize = pathname.match(/^\/api\/v1\/events\/([^/]+)\/assets\/init$/);
+    if (method === "POST" && initialize) {
+      const body = requestJson(options);
+      assetSequence += 1;
+      const asset = {
+        id: `ast-upload-${assetSequence}`,
+        event_id: initialize[1],
+        filename: body.filename,
+        kind: body.kind,
+        processing_status: "uploading",
+        version: null,
+        bytes: null,
+      };
+      assets.set(asset.id, asset);
+      return data({ asset, content_url: `/api/v1/assets/${asset.id}/content` }, 201);
+    }
+    const content = pathname.match(/^\/api\/v1\/assets\/([^/]+)\/content$/);
+    if (method === "PUT" && content) {
+      const asset = assets.get(content[1]);
+      asset.bytes = Buffer.from(options.body);
+      asset.processing_status = "parsing";
+      return data({ asset });
+    }
+    const finalize = pathname.match(/^\/api\/v1\/assets\/([^/]+)\/finalize$/);
+    if (method === "POST" && finalize) {
+      const asset = assets.get(finalize[1]);
+      asset.processing_status = "ready";
+      asset.version = { id: `av-${asset.id}` };
+      return data({ asset });
+    }
+    if (method === "GET" && pathname === "/api/v1/projects/prj-test") {
+      return data({ project: { id: "prj-test", name: "[SYNTHETIC] Contractor regression" } });
+    }
+    if (method === "GET" && pathname === "/api/v1/projects/prj-test/events") {
+      return data({ events });
+    }
+    const eventDetail = pathname.match(/^\/api\/v1\/events\/([^/]+)$/);
+    if (method === "GET" && eventDetail) {
+      const event = events.find((value) => value.id === eventDetail[1]);
+      return data({
+        event,
+        assets: [...assets.values()].filter((asset) => asset.event_id === event.id),
+      });
+    }
+    const evidence = pathname.match(/^\/api\/v1\/assets\/([^/]+)\/evidence-view$/);
+    if (method === "GET" && evidence) {
+      return new Response(assets.get(evidence[1]).bytes, {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+    }
+    if (method === "POST" && /^\/api\/v1\/events\/[^/]+\/extraction-runs$/.test(pathname)) {
+      return error("MODEL_PROVIDER_NOT_CONFIGURED", "No extraction run was created.", 503);
+    }
+    return error("NOT_FOUND", `${method} ${pathname}`, 404);
+  };
+
+  return { fetchImpl, requests };
+}
+
+async function createFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "notique-fixture-"));
+  await mkdir(path.join(root, "transcripts"));
+  await mkdir(path.join(root, "images"));
+  await writeFile(path.join(root, "transcripts", "visit-1.txt"), "[00:01] Owner: Remove the short wall.\n");
+  await writeFile(path.join(root, "transcripts", "visit-2.txt"), "[00:02] Owner: Keep the existing outlet.\n");
+  await writeFile(path.join(root, "images", "wall.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  const manifest = {
+    schemaVersion: "notique-synthetic-case.v1",
+    id: "contractor-regression",
+    project: { name: "Contractor regression", locale: "en-US" },
+    events: [
+      {
+        key: "estimate",
+        type: "estimate_visit",
+        title: "Estimate visit",
+        occurredAt: "2026-08-01T10:00:00.000Z",
+        transcript: { path: "transcripts/visit-1.txt", format: "txt" },
+        assets: [
+          {
+            key: "wall-before",
+            kind: "photo",
+            path: "images/wall.png",
+            mimeType: "image/png",
+            description: "Synthetic wall photo",
+          },
+        ],
+      },
+      {
+        key: "follow-up",
+        type: "meeting",
+        title: "Scope follow-up",
+        occurredAt: "2026-08-02T10:00:00.000Z",
+        transcript: { path: "transcripts/visit-2.txt", format: "txt" },
+        assets: [],
+      },
+    ],
+  };
+  const manifestPath = path.join(root, "manifest.json");
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  return { manifest, manifestPath };
+}
+
+test("synthetic fixture importer uses only the public API and verifies persisted bytes", async () => {
+  const { manifestPath } = await createFixture();
+  const api = createApiDouble();
+  const result = await importSyntheticFixture({
+    manifestPath,
+    baseUrl: "http://127.0.0.1:3000",
+    fetchImpl: api.fetchImpl,
+    runId: "unit-run",
+    probeUnconfiguredProvider: true,
+  });
+
+  assert.equal(result.fixture_id, "contractor-regression");
+  assert.equal(result.project.name, "[SYNTHETIC] Contractor regression");
+  assert.equal(result.events.length, 2);
+  assert.equal(eventsFromRequests(api.requests)[0].event_type, "estimate");
+  assert.equal(result.checks.persisted_event_count, 2);
+  assert.equal(result.checks.verified_object_count, 3);
+  assert.deepEqual(result.provider_probe, {
+    performed: true,
+    status: "passed",
+    error_code: "MODEL_PROVIDER_NOT_CONFIGURED",
+  });
+
+  const writes = api.requests.filter((request) => request.method === "POST" || request.method === "PUT");
+  assert.ok(writes.every((request) => request.pathname.startsWith("/api/v1/")));
+  const resourceCreates = writes.filter((request) =>
+    request.method === "POST" &&
+    (request.pathname === "/api/v1/projects" ||
+      request.pathname.endsWith("/transcript-imports") ||
+      request.pathname.endsWith("/assets/init")),
+  );
+  assert.ok(resourceCreates.every((request) => request.headers.has("idempotency-key")));
+  assert.ok(writes.every((request) => request.headers.get("sec-fetch-site") === "same-origin"));
+});
+
+function eventsFromRequests(requests) {
+  const finalize = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/v1/transcript-imports/import-test/finalize",
+  );
+  return JSON.parse(String(finalize.body)).ordered_items;
+}
+
+test("synthetic fixture tooling refuses production and external URLs", () => {
+  assert.equal(assertLoopbackBaseUrl("http://localhost:3000"), "http://localhost:3000");
+  assert.equal(assertLoopbackBaseUrl("http://127.0.0.1:8788/"), "http://127.0.0.1:8788");
+  assert.throws(() => assertLoopbackBaseUrl("https://notique.example.com"), /restricted to localhost/);
+});
+
+test("synthetic fixture manifest rejects duplicate identities and path escapes", async () => {
+  const { manifest, manifestPath } = await createFixture();
+  const duplicate = structuredClone(manifest);
+  duplicate.events[1].key = duplicate.events[0].key;
+  assert.throws(() => validateSyntheticManifest(duplicate), /event keys must be unique/);
+
+  const escaped = structuredClone(manifest);
+  escaped.events[0].transcript.path = "../outside.txt";
+  await writeFile(manifestPath, JSON.stringify(escaped));
+  const api = createApiDouble();
+  await assert.rejects(
+    importSyntheticFixture({ manifestPath, fetchImpl: api.fetchImpl }),
+    /must remain inside the fixture directory/,
+  );
+  assert.equal(api.requests.length, 0, "invalid fixtures must fail before any API write");
+});

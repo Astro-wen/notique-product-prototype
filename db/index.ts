@@ -2,12 +2,51 @@ import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./schema";
 
+export type RuntimeBindings = {
+  DB?: D1Database;
+  EVIDENCE?: R2Bucket;
+  AI_API_KEY?: string;
+  AI_API_BASE_URL?: string;
+  AI_MODEL?: string;
+  AI_PROVIDER?: string;
+  AI_REASONING_EFFORT?: string;
+  AI_TIMEOUT_MS?: string;
+  AI_MAX_OUTPUT_TOKENS?: string;
+  APP_ENV?: string;
+  AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
+  INTERNAL_JOB_TOKEN?: string;
+  INTERNAL_WORKSPACE_ID?: string;
+  INTERNAL_WORKSPACE_NAME?: string;
+  MAX_RUN_INPUT_TOKENS?: string;
+  MAX_RUN_IMAGE_UNITS?: string;
+  MAX_RUN_IMAGE_BYTES?: string;
+  MAX_CONCURRENT_RUNS_PER_WORKSPACE?: string;
+  MAX_DAILY_EVAL_COST_USD?: string;
+  MAX_DAILY_MODEL_TOKENS?: string;
+};
+
+export function getBindings(): RuntimeBindings {
+  return env as unknown as RuntimeBindings;
+}
+
+export function getD1(): D1Database {
+  const bindings = getBindings();
+  if (!bindings.DB) {
+    throw new Error("DATABASE_UNAVAILABLE: Cloudflare D1 binding `DB` is unavailable.");
+  }
+  return bindings.DB;
+}
+
 export function getDb() {
-  if (!env.DB) {
+  return drizzle(getD1(), { schema });
+}
+
+export function getEvidenceBucket(): R2Bucket {
+  const bucket = getBindings().EVIDENCE;
+  if (!bucket) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
+      "R2_BINDING_UNAVAILABLE: Cloudflare R2 binding `EVIDENCE` is unavailable.",
     );
   }
-
-  return drizzle(env.DB, { schema });
+  return bucket;
 }

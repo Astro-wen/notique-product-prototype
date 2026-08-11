@@ -30,12 +30,18 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+.dev.vars*
+
+# local browser QA evidence
+/tests/artifacts/
 
 # vercel
 .vercel
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /pages-dist/
 /.wrangler/

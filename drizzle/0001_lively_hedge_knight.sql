@@ -1,0 +1,2 @@
+ALTER TABLE `projects` ADD `next_event_sequence` integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX `uq_verdicts_claim_base_action` ON `verdicts` (`claim_id`,`base_version_id`,`action`);

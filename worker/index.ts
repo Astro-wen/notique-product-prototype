@@ -1,10 +1,12 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { sweepAndDispatch } from "@/lib/server/jobs/outbox";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  EVIDENCE: R2Bucket;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -41,6 +43,9 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+  scheduled(_controller: unknown, _env: Env, ctx: ExecutionContext): void {
+    ctx.waitUntil(sweepAndDispatch());
   },
 };
 

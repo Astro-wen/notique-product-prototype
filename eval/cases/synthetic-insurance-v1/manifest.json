@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "notique-synthetic-case.v1",
+  "id": "synthetic-insurance-v1",
+  "synthetic": true,
+  "usage": "development-evaluation-and-regression-only",
+  "scenario": {
+    "expected": "insurance_water_damage_claim_assessment",
+    "candidates": [
+      "insurance_water_damage_claim_assessment",
+      "contractor_repair_scope",
+      "property_inspection"
+    ]
+  },
+  "project": {
+    "key": "chen-kitchen-water-claim",
+    "name": "Chen Kitchen Water Claim",
+    "locale": "en-US"
+  },
+  "events": [
+    {
+      "key": "event-01-first-loss-call",
+      "type": "meeting",
+      "title": "First notice of loss",
+      "occurredAt": "2026-10-03T16:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-01",
+        "path": "transcripts/event-01-first-loss-call.txt",
+        "filename": "event-01-first-loss-call.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-02-adjuster-inspection",
+      "type": "walkthrough",
+      "title": "Adjuster field inspection",
+      "occurredAt": "2026-10-05T17:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-02",
+        "path": "transcripts/event-02-adjuster-inspection.txt",
+        "filename": "event-02-adjuster-inspection.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-03-contractor-estimate",
+      "type": "estimate",
+      "title": "Contractor repair estimate",
+      "occurredAt": "2026-10-08T18:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-03",
+        "path": "transcripts/event-03-contractor-estimate.txt",
+        "filename": "event-03-contractor-estimate.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-04-coverage-authorization",
+      "type": "meeting",
+      "title": "Coverage and repair authorization",
+      "occurredAt": "2026-10-10T17:30:00.000Z",
+      "transcript": {
+        "key": "tx-event-04",
+        "path": "transcripts/event-04-coverage-authorization.txt",
+        "filename": "event-04-coverage-authorization.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    }
+  ],
+  "evidenceAliases": {
+    "transcript": {
+      "tx-i1": {
+        "eventKey": "event-01-first-loss-call",
+        "transcriptKey": "tx-event-01",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-i1:seg:{zeroBasedOrdinal}"
+      },
+      "tx-i2": {
+        "eventKey": "event-02-adjuster-inspection",
+        "transcriptKey": "tx-event-02",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-i2:seg:{zeroBasedOrdinal}"
+      },
+      "tx-i3": {
+        "eventKey": "event-03-contractor-estimate",
+        "transcriptKey": "tx-event-03",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-i3:seg:{zeroBasedOrdinal}"
+      },
+      "tx-i4": {
+        "eventKey": "event-04-coverage-authorization",
+        "transcriptKey": "tx-event-04",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-i4:seg:{zeroBasedOrdinal}"
+      }
+    },
+    "images": {}
+  },
+  "plannedPhotoEvidence": [
+    {
+      "id": "planned-photo-i1-curled-floor",
+      "eventKey": "event-01-first-loss-call",
+      "status": "not-included",
+      "expectedVisibleObservation": "Curled or raised flooring near a kitchen appliance and a measurement reference.",
+      "mustNotInfer": ["the leak source", "coverage", "repair cost", "who is responsible"]
+    },
+    {
+      "id": "planned-photo-i2-moisture-map",
+      "eventKey": "event-02-adjuster-inspection",
+      "status": "not-included",
+      "expectedVisibleObservation": "A moisture meter reading at a documented floor location and the pantry threshold.",
+      "mustNotInfer": ["the full affected area without the measurement log", "mold", "coverage"]
+    },
+    {
+      "id": "planned-photo-i3-toe-kicks",
+      "eventKey": "event-03-contractor-estimate",
+      "status": "not-included",
+      "expectedVisibleObservation": "Two accessible cabinet toe-kicks with visible swelling or deformation.",
+      "mustNotInfer": ["damage to every cabinet", "replacement authorization", "repair price"]
+    },
+    {
+      "id": "planned-photo-i3-ceiling-texture",
+      "eventKey": "event-03-contractor-estimate",
+      "status": "not-included",
+      "expectedVisibleObservation": "Existing hand-applied ceiling texture and the proposed repair boundary.",
+      "mustNotInfer": ["that a patch cannot match", "which repair option was approved", "coverage"]
+    }
+  ],
+  "expectationNotes": [
+    "Event 1 establishes the initially reported cause and damage, a minimal-repair preference, a critical deductible ambiguity, joint authorization rules, and an unresolved cabinet-coverage question.",
+    "Event 2 expands the measured scope, contradicts the reported cause, corrects remediation to water mitigation, records a reasoned mitigation-vendor decision, and repeats unresolved facts without creating duplicate current claims.",
+    "Event 3 introduces a conflicting flooring measurement, two reasoned permanent-repair choices, a second critical amount ambiguity, and continuing authorization and coverage risks.",
+    "Event 4 confirms the written amounts, accepted cause, final repair scope, cabinet decision, and joint authorization while preserving the earlier evidence and changes.",
+    "Photo entries are planning metadata only. No photo file or image Ground Truth is included in this transcript-only version.",
+    "All names, events, statements, measurements, policy details, and amounts are synthetic. This is a single-author development fixture, not a blind set or real-user dataset."
+  ]
+}

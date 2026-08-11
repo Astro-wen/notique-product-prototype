@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "notique-synthetic-case.v1",
+  "id": "synthetic-contractor-v1",
+  "synthetic": true,
+  "usage": "development-smoke-and-regression-only",
+  "scenario": {
+    "expected": "contractor_renovation_estimate_and_preconstruction",
+    "candidates": [
+      "contractor_renovation_estimate_and_preconstruction",
+      "property_inspection",
+      "insurance_damage_assessment"
+    ]
+  },
+  "project": {
+    "key": "oak-street-kitchen",
+    "name": "Oak Street Kitchen Renovation",
+    "locale": "en-US"
+  },
+  "events": [
+    {
+      "key": "event-01-estimate",
+      "type": "estimate_visit",
+      "title": "Initial kitchen estimate",
+      "occurredAt": "2026-08-12T17:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-01",
+        "path": "transcripts/event-01-estimate.txt",
+        "filename": "event-01-estimate.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": [
+        {
+          "key": "photo-event-01-short-wall",
+          "kind": "photo",
+          "path": "images/event-1-short-wall.png",
+          "mimeType": "image/png",
+          "capturedAt": "2026-08-12T17:04:00.000Z",
+          "description": "Synthetic jobsite image of the short kitchen partition."
+        }
+      ]
+    },
+    {
+      "key": "event-02-scope-followup",
+      "type": "scope_followup",
+      "title": "Scope and budget follow-up",
+      "occurredAt": "2026-08-15T18:30:00.000Z",
+      "transcript": {
+        "key": "tx-event-02",
+        "path": "transcripts/event-02-scope-followup.txt",
+        "filename": "event-02-scope-followup.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": [
+        {
+          "key": "photo-event-02-material-samples",
+          "kind": "photo",
+          "path": "images/event-2-material-samples.png",
+          "mimeType": "image/png",
+          "capturedAt": "2026-08-15T18:35:00.000Z",
+          "description": "Synthetic image of two unlabeled finish samples and a tape measure."
+        }
+      ]
+    },
+    {
+      "key": "event-03-preconstruction",
+      "type": "preconstruction_walkthrough",
+      "title": "Pre-construction walkthrough",
+      "occurredAt": "2026-08-20T16:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-03",
+        "path": "transcripts/event-03-preconstruction.txt",
+        "filename": "event-03-preconstruction.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": [
+        {
+          "key": "photo-event-03-hidden-wiring",
+          "kind": "photo",
+          "path": "images/event-3-hidden-wiring.png",
+          "mimeType": "image/png",
+          "capturedAt": "2026-08-20T16:03:30.000Z",
+          "description": "Synthetic image of an access opening with visible wiring and an outlet box."
+        }
+      ]
+    }
+  ],
+  "evidenceAliases": {
+    "transcript": {
+      "tx-e1": {
+        "eventKey": "event-01-estimate",
+        "transcriptKey": "tx-event-01",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-e1:seg:{zeroBasedOrdinal}"
+      },
+      "tx-e2": {
+        "eventKey": "event-02-scope-followup",
+        "transcriptKey": "tx-event-02",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-e2:seg:{zeroBasedOrdinal}"
+      },
+      "tx-e3": {
+        "eventKey": "event-03-preconstruction",
+        "transcriptKey": "tx-event-03",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-e3:seg:{zeroBasedOrdinal}"
+      }
+    },
+    "images": {
+      "photo:e1:short-wall": {
+        "eventKey": "event-01-estimate",
+        "assetKey": "photo-event-01-short-wall"
+      },
+      "photo:e2:material-samples": {
+        "eventKey": "event-02-scope-followup",
+        "assetKey": "photo-event-02-material-samples"
+      },
+      "photo:e3:hidden-wiring": {
+        "eventKey": "event-03-preconstruction",
+        "assetKey": "photo-event-03-hidden-wiring"
+      }
+    }
+  },
+  "expectationNotes": [
+    "Event 1 establishes scope, budget, preferences, conditions, decision-maker risk, and open questions.",
+    "Event 2 contains reaffirmed facts, three material updates, a direct contradiction, and new open questions.",
+    "Event 3 resolves the structural and numeric uncertainties, records final decisions, and introduces visible wiring without inferring code, cost, or responsibility.",
+    "All names, events, statements, images, and amounts are synthetic.",
+    "This one-scenario case is a smoke/regression fixture and cannot by itself satisfy the formal concept-validation minimum."
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "notique-ground-truth.v1",
+  "dataset": "replace-with-dataset-name",
+  "split": "development",
+  "fieldGuide": {
+    "claim": {
+      "id": "gt_example",
+      "scenarioId": "scenario_example",
+      "eventId": "event_example",
+      "type": "budget",
+      "statement": "人工确认的标准事实",
+      "normalizedValue": null,
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": null,
+      "ambiguity": null,
+      "annotation": { "doubleAnnotated": false, "adjudication": null }
+    },
+    "relation": {
+      "id": "relation_example",
+      "type": "supersedes",
+      "sourceClaimId": "gt_new",
+      "targetClaimId": "gt_old",
+      "targetVersionId": "claim_version_old"
+    }
+  },
+  "claims": [],
+  "relations": []
+}

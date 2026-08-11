@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "notique-eval-predictions.v1",
+  "metadata": {
+    "commitSha": "replace-with-commit-sha",
+    "model": "replace-with-fixed-model-version",
+    "prompt": "replace-with-prompt-version",
+    "schema": "claim-extraction.v1",
+    "parameters": {},
+    "environment": "development"
+  },
+  "runs": [
+    {
+      "id": "replace-with-run-id",
+      "claims": [],
+      "relations": [],
+      "viewLeakageCount": 0,
+      "brief": {
+        "slots": [
+          { "slot": "current_status", "sourceKind": "claim", "sourceId": "replace", "sourceValid": false, "useful": false },
+          { "slot": "change_1", "sourceKind": "timeline_delta", "sourceId": "replace", "sourceValid": false, "useful": false },
+          { "slot": "change_2", "sourceKind": "timeline_delta", "sourceId": "replace", "sourceValid": false, "useful": false },
+          { "slot": "question_1", "sourceKind": "agenda_item", "sourceId": "replace", "sourceValid": false, "useful": false },
+          { "slot": "question_2", "sourceKind": "agenda_item", "sourceId": "replace", "sourceValid": false, "useful": false },
+          { "slot": "risk", "sourceKind": "claim", "sourceId": "replace", "sourceValid": false, "useful": false }
+        ]
+      },
+      "usage": { "inputTokens": 0, "outputTokens": 0, "costUsd": 0, "latencyMs": 0 }
+    }
+  ]
+}

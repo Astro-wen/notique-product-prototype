@@ -1,0 +1,952 @@
+import type {
+  BatchClaimVerdictRequest,
+  AssetInitRequest,
+  AssetResponse,
+  ApiSuccess,
+  ClaimRecord,
+  ClaimEvidenceReviewAttestationResponse,
+  ClaimVerdictRequest,
+  ClaimVerdictResponse,
+  CreateEventRequest,
+  CreateEventResponse,
+  CreateExtractionRunResponse,
+  CreateProjectRequest,
+  CreateProjectResponse,
+  CreateTranscriptImportRequest,
+  CreateTranscriptImportResponse,
+  FinalizeTranscriptImportRequest,
+  FinalizeTranscriptImportResponse,
+  GetEventResponse,
+  GetExtractionRunResponse,
+  GetProjectResponse,
+  GetRunClaimsResponse,
+  GetVerifiedViewResponse,
+  GlossaryCategory,
+  GlossaryEntryRecord,
+  GlossaryEntryResponse,
+  ListEventsResponse,
+  ListGlossaryEntriesResponse,
+  ListProjectsResponse,
+  OccurrenceCandidateRecord,
+  OccurrenceConversionClaimInput,
+  OccurrenceVerdictResponse,
+  ScenarioVerdictRequest,
+  ScenarioVerdictResponse,
+  WithdrawClaimRequest,
+} from "../lib/shared/api-types";
+
+export type Id = string;
+
+export type OccurrenceCandidate = OccurrenceCandidateRecord;
+export type OccurrenceNewClaim = OccurrenceConversionClaimInput;
+export type GlossaryEntry = GlossaryEntryRecord;
+export type GlossaryEntryCategory = GlossaryCategory;
+
+export type RunReview = {
+  claims: Claim[];
+  occurrenceCandidates: OccurrenceCandidate[];
+};
+
+export type RunDebug = {
+  requestId: string;
+  data: Record<string, unknown>;
+};
+
+export type ApiIssue = {
+  code: string;
+  message: string;
+  requestId?: string;
+  status: number;
+  details?: unknown;
+};
+
+export class ApiClientError extends Error implements ApiIssue {
+  code: string;
+  requestId?: string;
+  status: number;
+  details?: unknown;
+
+  constructor(issue: ApiIssue) {
+    super(issue.message);
+    this.name = "ApiClientError";
+    this.code = issue.code;
+    this.requestId = issue.requestId;
+    this.status = issue.status;
+    this.details = issue.details;
+  }
+}
+
+export type ScenarioCandidate = {
+  key: string;
+  label: string;
+  confidence?: number;
+  description?: string;
+};
+
+export type Project = {
+  id: Id;
+  name: string;
+  description?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  eventCount?: number;
+  pendingCount?: number;
+  pendingClaimCount: number;
+  pendingOccurrenceCount: number;
+  scenarioStatus?: "unassessed" | "assessing" | "pending_confirmation" | "confirmed";
+  scenarioVersion?: number;
+  scenario?: { key: string; label: string };
+  scenarioCandidates?: ScenarioCandidate[];
+};
+
+export type Asset = {
+  id: Id;
+  versionId?: Id;
+  filename: string;
+  kind?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  status?: string;
+};
+
+export type ExtractionRun = {
+  id: Id;
+  eventId?: Id;
+  status: string;
+  warningCount?: number;
+  claimCount?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt?: string;
+  completedAt?: string;
+};
+
+export type Event = {
+  id: Id;
+  projectId?: Id;
+  title: string;
+  eventType?: string;
+  occurredAt?: string;
+  createdAt?: string;
+  status?: string;
+  pendingClaimCount: number;
+  pendingOccurrenceCount: number;
+  assets: Asset[];
+  latestRun?: ExtractionRun;
+  latestRunId?: Id;
+};
+
+export type EvidenceRef = {
+  id: Id;
+  kind: string;
+  role?: string;
+  quote?: string;
+  speaker?: string;
+  timestampStart?: string | number;
+  timestampEnd?: string | number;
+  filename?: string;
+  page?: number;
+  imageUrl?: string;
+  viewUrl?: string;
+  caption?: string;
+  assetId?: Id;
+};
+
+export type Claim = {
+  id: Id;
+  versionId: Id;
+  runId?: Id;
+  eventId?: Id;
+  eventTitle?: string;
+  type: string;
+  statement: string;
+  normalizedValue: Record<string, unknown> | null;
+  uncertainty?: unknown;
+  confidence?: number;
+  reviewStatus: string;
+  lifecycle?: string;
+  evidenceCount?: number;
+  evidenceRefs: EvidenceRef[];
+  evidenceRefIds: Id[];
+  relationsForReview: ClaimRelationForReview[];
+  batchReviewAttested: boolean;
+  createdAt?: string;
+};
+
+export type ClaimRelationForReview = {
+  id: Id;
+  type: "supersedes" | "contradicts" | "resolves" | "informed_by";
+  status: "proposed" | "active";
+  targetClaimId: Id;
+  targetClaimVersionId: Id;
+  targetStatement: string;
+  reason?: string;
+  confidence?: number;
+};
+
+export type ClaimEditSubmission = {
+  statement: string;
+  type: string;
+  normalizedValue: Record<string, unknown> | null;
+  uncertainty: {
+    reason: string;
+    alternatives: string[];
+    question: string;
+  } | null;
+  retainRelationIds: string[];
+  evidenceRefIds: string[];
+  secondaryEvidenceNote?: string;
+};
+
+export type ImportItem = {
+  id: Id;
+  uploadUrl?: string;
+};
+
+export type ImportSession = {
+  id: Id;
+  items: ImportItem[];
+};
+
+export type ProjectViewName =
+  | "folder-summary"
+  | "timeline"
+  | "decisions"
+  | "preferences"
+  | "open-questions"
+  | "risks"
+  | "gap-check"
+  | "next-meeting-agenda"
+  | "brief-card";
+
+type BatchClaimVerdictResponse = ApiSuccess<{
+  verdicts: Array<{ claim: ClaimRecord; verdict_id: string }>;
+}>;
+
+type WithdrawClaimResponse = ApiSuccess<{
+  claim: ClaimRecord;
+  verdict_id: string;
+}>;
+
+type RelationVerdictResponse = ApiSuccess<{
+  relation_verdict: {
+    relation_id: string;
+    verdict_id: string;
+    status: "resolved";
+  };
+}>;
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function pick<T>(object: JsonRecord, keys: string[], fallback?: T): T | undefined {
+  for (const key of keys) {
+    const value = object[key];
+    if (value !== undefined && value !== null) return value as T;
+  }
+  return fallback;
+}
+
+function unwrap(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  if (value.data !== undefined) return value.data;
+  return value;
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : value == null ? fallback : String(value);
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeScenarioCandidate(value: unknown): ScenarioCandidate | null {
+  if (!isRecord(value)) return null;
+  const key = asString(pick(value, ["key", "scenario", "scenario_key", "slug", "id"]));
+  if (!key) return null;
+  return {
+    key,
+    label: asString(pick(value, ["label", "name", "scenario_label"]), key.replaceAll("_", " ")),
+    confidence: asNumber(pick(value, ["confidence", "score"])),
+    description: asString(pick(value, ["description", "reason"]), undefined as unknown as string) || undefined,
+  };
+}
+
+export function normalizeProject(value: unknown): Project {
+  const source = isRecord(unwrap(value)) ? (unwrap(value) as JsonRecord) : {};
+  const scenarioValue = pick<unknown>(source, ["scenario", "confirmed_scenario"]);
+  const scenario = isRecord(scenarioValue)
+    ? {
+        key: asString(pick(scenarioValue, ["key", "scenario", "slug", "id"])),
+        label: asString(pick(scenarioValue, ["label", "name"])),
+      }
+    : typeof scenarioValue === "string"
+      ? { key: scenarioValue, label: scenarioValue.replaceAll("_", " ") }
+      : undefined;
+  const rawCandidates = pick<unknown[]>(source, ["scenario_candidates", "scenarioCandidates", "candidates"], []) ?? [];
+  const pendingClaimCount = asNumber(pick(source, ["pending_claim_count", "pendingClaimCount"])) ?? 0;
+  const pendingOccurrenceCount = asNumber(pick(source, ["pending_occurrence_count", "pendingOccurrenceCount"])) ?? 0;
+  return {
+    id: asString(pick(source, ["id", "project_id", "projectId"])),
+    name: asString(pick(source, ["name", "title"]), "Untitled project"),
+    description: asString(pick(source, ["description"]), undefined as unknown as string) || undefined,
+    createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
+    updatedAt: asString(pick(source, ["updated_at", "updatedAt"]), undefined as unknown as string) || undefined,
+    eventCount: asNumber(pick(source, ["event_count", "eventCount", "events_count"])),
+    pendingCount: pendingClaimCount + pendingOccurrenceCount,
+    pendingClaimCount,
+    pendingOccurrenceCount,
+    scenarioStatus: pick(source, ["scenario_status", "scenarioStatus"]),
+    scenarioVersion: asNumber(pick(source, ["scenario_version", "scenarioVersion"])),
+    scenario: scenario?.key ? { key: scenario.key, label: scenario.label || scenario.key } : undefined,
+    scenarioCandidates: rawCandidates.map(normalizeScenarioCandidate).filter((item): item is ScenarioCandidate => Boolean(item)),
+  };
+}
+
+function normalizeAsset(value: unknown): Asset | null {
+  if (!isRecord(value)) return null;
+  const rawVersion = pick<unknown>(value, ["version", "current_version"]);
+  const version = isRecord(rawVersion) ? rawVersion : value;
+  const id = asString(pick(value, ["id", "asset_id", "assetId"]));
+  if (!id) return null;
+  return {
+    id,
+    versionId: asString(pick(value, ["current_version_id", "version_id", "asset_version_id", "versionId"]), undefined as unknown as string) || asString(pick(version, ["id"]), undefined as unknown as string) || undefined,
+    filename: asString(pick(value, ["filename", "name"]), "Untitled file"),
+    kind: asString(pick(value, ["kind", "asset_kind", "type"]), undefined as unknown as string) || undefined,
+    contentType: asString(pick(value, ["content_type", "mime_type", "contentType"]), undefined as unknown as string) || asString(pick(version, ["mime_type"]), undefined as unknown as string) || undefined,
+    sizeBytes: asNumber(pick(value, ["size_bytes", "sizeBytes", "size"])) ?? asNumber(pick(version, ["size_bytes"])),
+    status: asString(pick(value, ["status", "processing_status"]), undefined as unknown as string) || undefined,
+  };
+}
+
+export function normalizeRun(value: unknown): ExtractionRun {
+  const source = isRecord(unwrap(value)) ? (unwrap(value) as JsonRecord) : {};
+  return {
+    id: asString(pick(source, ["id", "run_id", "runId"])),
+    eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
+    status: asString(pick(source, ["status"]), "unknown").toLowerCase(),
+    warningCount: asNumber(pick(source, ["warning_count", "warningCount"])),
+    claimCount: asNumber(pick(source, ["claim_count", "claimCount"])),
+    errorCode: asString(pick(source, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
+    errorMessage: asString(pick(source, ["error_message", "errorMessage"]), undefined as unknown as string) || undefined,
+    createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
+    completedAt: asString(pick(source, ["completed_at", "completedAt"]), undefined as unknown as string) || undefined,
+  };
+}
+
+export function normalizeEvent(value: unknown): Event {
+  const source = isRecord(unwrap(value)) ? (unwrap(value) as JsonRecord) : {};
+  const rawAssets = pick<unknown[]>(source, ["assets", "sources"], []) ?? [];
+  const runValue = pick<unknown>(source, ["latest_run", "latestRun", "extraction_run"]);
+  return {
+    id: asString(pick(source, ["id", "event_id", "eventId"])),
+    projectId: asString(pick(source, ["project_id", "projectId"]), undefined as unknown as string) || undefined,
+    title: asString(pick(source, ["title", "name"]), "Untitled event"),
+    eventType: asString(pick(source, ["event_type", "eventType", "type"]), undefined as unknown as string) || undefined,
+    occurredAt: asString(pick(source, ["occurred_at", "occurredAt", "event_time"]), undefined as unknown as string) || undefined,
+    createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
+    status: asString(pick(source, ["status", "material_status", "materialStatus", "processing_status"]), undefined as unknown as string) || undefined,
+    pendingClaimCount: asNumber(pick(source, ["pending_claim_count", "pendingClaimCount"])) ?? 0,
+    pendingOccurrenceCount: asNumber(pick(source, ["pending_occurrence_count", "pendingOccurrenceCount"])) ?? 0,
+    assets: rawAssets.map(normalizeAsset).filter((item): item is Asset => Boolean(item)),
+    latestRun: runValue ? normalizeRun(runValue) : undefined,
+    latestRunId: asString(pick(source, ["active_run_id", "latest_run_id", "latestRunId", "extraction_run_id"]), undefined as unknown as string) || undefined,
+  };
+}
+
+function normalizeEvidence(value: unknown): EvidenceRef | null {
+  if (!isRecord(value)) return null;
+  const id = asString(pick(value, ["id", "evidence_ref_id", "evidenceRefId"]));
+  if (!id) return null;
+  const rawStart = pick<unknown>(value, ["timestamp_start", "timestampStart", "start_time", "start_ms"]);
+  const rawEnd = pick<unknown>(value, ["timestamp_end", "timestampEnd", "end_time", "end_ms"]);
+  const normalizeTime = (time: unknown, fromMilliseconds: boolean): string | number | undefined => {
+    if (typeof time === "number" && Number.isFinite(time)) return fromMilliseconds ? time / 1000 : time;
+    return typeof time === "string" && time ? time : undefined;
+  };
+  const viewUrl = asString(pick(value, ["asset_view_url", "view_url"]), undefined as unknown as string) || undefined;
+  const kind = asString(pick(value, ["kind", "evidence_kind", "type"]), "unknown");
+  return {
+    id,
+    kind,
+    role: asString(pick(value, ["role", "support_role", "evidence_role"]), undefined as unknown as string) || undefined,
+    quote: asString(pick(value, ["quote", "exact_quote", "quote_raw", "text"]), undefined as unknown as string) || undefined,
+    speaker: asString(pick(value, ["speaker"]), undefined as unknown as string) || undefined,
+    timestampStart: normalizeTime(rawStart, value.start_ms !== undefined),
+    timestampEnd: normalizeTime(rawEnd, value.end_ms !== undefined),
+    filename: asString(pick(value, ["filename", "file_name"]), undefined as unknown as string) || undefined,
+    page: asNumber(pick(value, ["page", "page_number"])),
+    imageUrl: asString(pick(value, ["image_url", "imageUrl", "url"]), undefined as unknown as string) || (kind === "photo" ? viewUrl : undefined),
+    viewUrl,
+    caption: asString(pick(value, ["caption", "description", "observation"]), undefined as unknown as string) || undefined,
+    assetId: asString(pick(value, ["asset_id", "assetId"]), undefined as unknown as string) || undefined,
+  };
+}
+
+export function normalizeClaim(value: unknown): Claim {
+  const source = isRecord(unwrap(value)) ? (unwrap(value) as JsonRecord) : {};
+  const versionValue = pick<unknown>(source, ["current_version", "version", "claim_version"]);
+  const version = isRecord(versionValue) ? versionValue : source;
+  const rawEvidence = pick<unknown[]>(source, ["evidence_refs", "evidenceRefs", "evidence"], []) ?? [];
+  const rawIds = pick<unknown[]>(source, ["evidence_ref_ids", "evidenceRefIds"], []) ?? [];
+  const refs = rawEvidence.map(normalizeEvidence).filter((item): item is EvidenceRef => Boolean(item));
+  const rawRelations = pick<unknown[]>(source, ["relations_for_review", "relationsForReview"], []) ?? [];
+  const relationsForReview = rawRelations.flatMap((item): ClaimRelationForReview[] => {
+    if (!isRecord(item)) return [];
+    const id = asString(pick(item, ["id", "relation_id"]));
+    const relationType = asString(pick(item, ["type"]));
+    const status = asString(pick(item, ["status"]));
+    const targetClaimId = asString(pick(item, ["target_claim_id", "targetClaimId"]));
+    const targetClaimVersionId = asString(pick(item, ["target_claim_version_id", "targetClaimVersionId"]));
+    if (
+      !id ||
+      !["supersedes", "contradicts", "resolves", "informed_by"].includes(relationType) ||
+      !["proposed", "active"].includes(status) ||
+      !targetClaimId ||
+      !targetClaimVersionId
+    ) return [];
+    return [{
+      id,
+      type: relationType as ClaimRelationForReview["type"],
+      status: status as ClaimRelationForReview["status"],
+      targetClaimId,
+      targetClaimVersionId,
+      targetStatement: asString(pick(item, ["target_statement", "targetStatement"]), "原记录"),
+      reason: asString(pick(item, ["reason"]), undefined as unknown as string) || undefined,
+      confidence: asNumber(pick(item, ["confidence"])) ?? undefined,
+    }];
+  });
+  const normalizedValue = pick(version, ["normalized_value", "normalizedValue"]);
+  return {
+    id: asString(pick(source, ["id", "claim_id", "claimId"])),
+    versionId: asString(pick(version, ["id", "version_id", "claim_version_id", "versionId"])),
+    runId: asString(pick(source, ["run_id", "runId", "extraction_run_id"]), undefined as unknown as string) || undefined,
+    eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
+    eventTitle: asString(pick(source, ["event_title", "eventTitle"]), undefined as unknown as string) || undefined,
+    type: asString(pick(source, ["type", "claim_type", "claimType"]), "fact"),
+    statement: asString(pick(version, ["statement", "text", "value"]), ""),
+    normalizedValue: isRecord(normalizedValue) ? normalizedValue : null,
+    uncertainty: pick(version, ["uncertainty", "ambiguity", "needs_more_evidence"]),
+    confidence: asNumber(pick(source, ["confidence", "score"])) ?? (() => {
+      const basisPoints = asNumber(pick(source, ["confidenceBp", "confidence_bp"]));
+      return basisPoints == null ? undefined : basisPoints / 10_000;
+    })(),
+    reviewStatus: asString(pick(source, ["review_status", "reviewStatus", "status"]), "pending").toLowerCase(),
+    lifecycle: asString(pick(source, ["lifecycle", "lifecycle_status", "lifecycleStatus"]), undefined as unknown as string) || undefined,
+    evidenceCount: asNumber(pick(source, ["evidence_count", "evidenceCount"])),
+    evidenceRefs: refs,
+    evidenceRefIds: (rawIds.length ? rawIds : pick<unknown[]>(version, ["evidenceRefIds", "evidence_ref_ids"], []) ?? []).map((item) => asString(item)).filter(Boolean),
+    relationsForReview,
+    batchReviewAttested: Boolean(pick(source, ["batch_review_attested", "batchReviewAttested"])),
+    createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
+  };
+}
+
+function requestIdFrom(headers: Headers, body: unknown): string | undefined {
+  const header = headers.get("x-request-id");
+  if (header) return header;
+  if (isRecord(body)) return asString(pick(body, ["request_id", "requestId"]), undefined as unknown as string) || undefined;
+  return undefined;
+}
+
+function issueFrom(status: number, headers: Headers, body: unknown): ApiIssue {
+  const error = isRecord(body) && isRecord(body.error) ? body.error : isRecord(body) ? body : {};
+  return {
+    status,
+    code: asString(pick(error, ["code", "error_code", "type"]), status === 404 ? "NOT_FOUND" : status === 503 ? "SERVICE_UNAVAILABLE" : "REQUEST_FAILED"),
+    message: asString(pick(error, ["message", "error", "detail"]), status === 404 ? "The requested record was not found." : status === 503 ? "The service is not configured or temporarily unavailable." : `Request failed (${status}).`),
+    requestId: requestIdFrom(headers, body),
+    details: pick(error, ["details", "meta"]),
+  };
+}
+
+function invalidContract(message: string): never {
+  throw new ApiClientError({
+    status: 502,
+    code: "INVALID_API_RESPONSE",
+    message,
+  });
+}
+
+function requireId<T extends { id: string }>(value: T, label: string): T {
+  if (!value.id) invalidContract(`The server returned an invalid ${label} response.`);
+  return value;
+}
+
+function dataValue(body: unknown, keys: string[]): unknown {
+  const data = unwrap(body);
+  if (!isRecord(data)) invalidContract("The server returned an invalid success envelope.");
+  for (const key of keys) {
+    if (data[key] !== undefined && data[key] !== null) return data[key];
+  }
+  invalidContract(`The server response is missing ${keys[0]}.`);
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !(init.body instanceof Blob) && !(init.body instanceof ArrayBuffer) && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  headers.set("accept", "application/json");
+  const response = await fetch(path, { ...init, headers });
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text().catch(() => "");
+  if (!response.ok) throw new ApiClientError(issueFrom(response.status, response.headers, body));
+  return body as T;
+}
+
+function jsonBody(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+export const api = {
+  async listProjects(): Promise<Project[]> {
+    const body = await request<ListProjectsResponse>("/api/v1/projects", { cache: "no-store" });
+    return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
+  },
+
+  async createProject(input: { name: string; description?: string }, idempotencyKey: string): Promise<Project> {
+    const payload: CreateProjectRequest = { name: input.name };
+    const body = await request<CreateProjectResponse>("/api/v1/projects", { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: jsonBody(payload) });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async getProject(projectId: Id): Promise<Project> {
+    const body = await request<GetProjectResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}`, { cache: "no-store" });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async listGlossary(projectId: Id): Promise<GlossaryEntry[]> {
+    const body = await request<ListGlossaryEntriesResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/glossary`,
+      { cache: "no-store" },
+    );
+    if (!Array.isArray(body.data.glossary_entries)) {
+      invalidContract("The server returned an invalid glossary list.");
+    }
+    return body.data.glossary_entries;
+  },
+
+  async createGlossary(
+    projectId: Id,
+    input: { canonicalValue: string; variants: string[]; category: GlossaryCategory },
+    idempotencyKey: string,
+  ): Promise<GlossaryEntry> {
+    const body = await request<GlossaryEntryResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/glossary`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({
+          canonical_value: input.canonicalValue,
+          variants: input.variants,
+          category: input.category,
+        }),
+      },
+    );
+    return body.data.glossary_entry;
+  },
+
+  async updateGlossary(
+    entry: GlossaryEntry,
+    input: {
+      canonicalValue: string;
+      variants: string[];
+      category: GlossaryCategory;
+      isActive: boolean;
+    },
+    idempotencyKey: string,
+  ): Promise<GlossaryEntry> {
+    const body = await request<GlossaryEntryResponse>(
+      `/api/v1/glossary/${encodeURIComponent(entry.id)}`,
+      {
+        method: "PUT",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({
+          base_version: entry.version,
+          canonical_value: input.canonicalValue,
+          variants: input.variants,
+          category: input.category,
+          is_active: input.isActive,
+        }),
+      },
+    );
+    return body.data.glossary_entry;
+  },
+
+  async deleteGlossary(entry: GlossaryEntry, idempotencyKey: string): Promise<void> {
+    const body = await request<GlossaryEntryResponse>(
+      `/api/v1/glossary/${encodeURIComponent(entry.id)}`,
+      {
+        method: "DELETE",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ base_version: entry.version }),
+      },
+    );
+    if (body.data.glossary_entry.id !== entry.id) {
+      invalidContract("The server returned an invalid deleted glossary entry.");
+    }
+  },
+
+  async listEvents(projectId: Id): Promise<Event[]> {
+    const body = await request<ListEventsResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/events`, { cache: "no-store" });
+    return body.data.events.map((item) => requireId(normalizeEvent(item), "event"));
+  },
+
+  async createEvent(projectId: Id, input: { title: string; event_type: string; occurred_at?: string }, idempotencyKey: string): Promise<Event> {
+    const payload: CreateEventRequest = {
+      title: input.title,
+      event_type: input.event_type as CreateEventRequest["event_type"],
+      occurred_at: input.occurred_at || new Date().toISOString(),
+    };
+    const body = await request<CreateEventResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/events`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: jsonBody(payload) });
+    return requireId(normalizeEvent(body.data.event), "event");
+  },
+
+  async getEvent(eventId: Id): Promise<Event> {
+    const body = await request<GetEventResponse>(`/api/v1/events/${encodeURIComponent(eventId)}`, { cache: "no-store" });
+    const event = requireId(normalizeEvent(body.data.event), "event");
+    event.assets = body.data.assets.map(normalizeAsset).filter((item): item is Asset => Boolean(item));
+    return event;
+  },
+
+  async beginTranscriptImport(projectId: Id, files: File[], idempotencyKey: string): Promise<ImportSession> {
+    const payload: CreateTranscriptImportRequest = {
+      files: files.map((file) => ({ filename: file.name, mime_type: file.type || "text/plain", size_bytes: file.size })),
+    };
+    const body = await request<CreateTranscriptImportResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/transcript-imports`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(payload),
+    });
+    const transcriptImport = body.data.transcript_import;
+    return {
+      id: transcriptImport.id,
+      items: transcriptImport.items.map((item) => ({ id: item.id, uploadUrl: item.content_url })),
+    };
+  },
+
+  async uploadTranscriptItem(session: ImportSession, item: ImportItem, file: File): Promise<void> {
+    const url = item.uploadUrl || `/api/v1/transcript-imports/${encodeURIComponent(session.id)}/items/${encodeURIComponent(item.id)}/content`;
+    await request<unknown>(url, { method: "PUT", headers: { "content-type": file.type || "text/plain" }, body: file });
+  },
+
+  async finalizeTranscriptImport(sessionId: Id, orderedItems: Array<{ item_id: Id; title: string; occurred_at?: string; event_type: string }>): Promise<Event[]> {
+    const payload: FinalizeTranscriptImportRequest = {
+      ordered_items: orderedItems.map((item) => ({
+        item_id: item.item_id,
+        title: item.title,
+        occurred_at: item.occurred_at || new Date().toISOString(),
+        event_type: item.event_type as CreateEventRequest["event_type"],
+      })),
+    };
+    const body = await request<FinalizeTranscriptImportResponse>(`/api/v1/transcript-imports/${encodeURIComponent(sessionId)}/finalize`, {
+      method: "POST",
+      body: jsonBody(payload),
+    });
+    return body.data.events.map((item) => requireId(normalizeEvent(item), "event"));
+  },
+
+  async initAsset(eventId: Id, input: { kind: string; filename: string; content_type: string; size_bytes: number }, idempotencyKey: string): Promise<{ assetId: Id; uploadUrl?: string }> {
+    const payload: AssetInitRequest = {
+      kind: input.kind as AssetInitRequest["kind"],
+      filename: input.filename,
+      mime_type: input.content_type,
+      size_bytes: input.size_bytes,
+    };
+    const body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(payload),
+    });
+    const source = body.data.asset;
+    const result = {
+      assetId: source.id,
+      uploadUrl: body.data.content_url,
+    };
+    if (!result.assetId) invalidContract("The server response is missing asset_id.");
+    return result;
+  },
+
+  async uploadAsset(assetId: Id, uploadUrl: string | undefined, body: Blob, contentType: string): Promise<void> {
+    await request<unknown>(uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`, { method: "PUT", headers: { "content-type": contentType }, body });
+  },
+
+  async finalizeAsset(assetId: Id): Promise<Asset> {
+    const body = await request<unknown>(`/api/v1/assets/${encodeURIComponent(assetId)}/finalize`, { method: "POST", body: jsonBody({}) });
+    const result = normalizeAsset(dataValue(body, ["asset"]));
+    if (!result?.id) invalidContract("The server returned an invalid finalized asset.");
+    return result;
+  },
+
+  async startExtraction(eventId: Id, assetVersionIds: Id[], idempotencyKey: string): Promise<ExtractionRun> {
+    const body = await request<CreateExtractionRunResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/extraction-runs`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody({ asset_version_ids: assetVersionIds }),
+    });
+    return requireId(normalizeRun(body.data.run), "extraction run");
+  },
+
+  async kickLocalDispatcher(): Promise<void> {
+    await request<unknown>("/api/v1/local/jobs/dispatch", {
+      method: "POST",
+      body: "{}",
+    });
+  },
+
+  async getRun(runId: Id): Promise<ExtractionRun> {
+    const body = await request<GetExtractionRunResponse>(`/api/v1/extraction-runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
+    return requireId(normalizeRun(body.data.run), "extraction run");
+  },
+
+  async getRunDebug(runId: Id): Promise<RunDebug> {
+    const body = await request<ApiSuccess<{ debug: Record<string, unknown> }>>(
+      `/api/v1/extraction-runs/${encodeURIComponent(runId)}/debug`,
+      { cache: "no-store" },
+    );
+    if (!isRecord(body.data.debug) || !body.request_id) {
+      invalidContract("The server returned an invalid run debug response.");
+    }
+    return { requestId: body.request_id, data: body.data.debug };
+  },
+
+  async getRunClaims(runId: Id): Promise<Claim[]> {
+    const body = await request<GetRunClaimsResponse>(`/api/v1/extraction-runs/${encodeURIComponent(runId)}/claims`, { cache: "no-store" });
+    return body.data.claims.map((item) => requireId(normalizeClaim(item), "claim"));
+  },
+
+  async getRunReview(runId: Id): Promise<RunReview> {
+    const body = await request<GetRunClaimsResponse>(`/api/v1/extraction-runs/${encodeURIComponent(runId)}/claims`, { cache: "no-store" });
+    if (!Array.isArray(body.data.claims) || !Array.isArray(body.data.occurrence_candidates)) {
+      invalidContract("The server returned an invalid run review response.");
+    }
+    const occurrenceCandidates = body.data.occurrence_candidates;
+    for (const candidate of occurrenceCandidates) {
+      if (
+        !candidate.id ||
+        !candidate.target_claim_id ||
+        !candidate.target_claim_version_id ||
+        !candidate.base_version_id ||
+        !Array.isArray(candidate.evidence)
+      ) {
+        invalidContract("The server returned an invalid occurrence candidate.");
+      }
+    }
+    return {
+      claims: body.data.claims.map((item) => requireId(normalizeClaim(item), "claim")),
+      occurrenceCandidates,
+    };
+  },
+
+  async getClaimHistory(claimId: Id): Promise<unknown> {
+    return unwrap(await request<unknown>(`/api/v1/claims/${encodeURIComponent(claimId)}/history`, { cache: "no-store" }));
+  },
+
+  async getEvidence(refId: Id): Promise<EvidenceRef> {
+    const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store" });
+    const result = normalizeEvidence(dataValue(body, ["evidence_ref", "evidence"]));
+    if (!result) throw new ApiClientError({ status: 502, code: "INVALID_EVIDENCE_RESPONSE", message: "The server returned an invalid evidence record." });
+    return result;
+  },
+
+  async saveVerdict(claim: Claim, action: "confirm" | "reject" | "edit", input: { idempotencyKey: string; reason?: string; edit?: ClaimEditSubmission }): Promise<Claim> {
+    if (action === "edit" && !input.edit) {
+      throw new ApiClientError({
+        status: 400,
+        code: "INVALID_EDIT_REQUEST",
+        message: "An edit must explicitly review its structured value, uncertainty, relations, and evidence.",
+      });
+    }
+    const edit = input.edit;
+    const payload: ClaimVerdictRequest = {
+      action,
+      base_version_id: claim.versionId,
+      explanation: input?.reason || undefined,
+      ...(action === "edit" ? {
+        edit: {
+          statement: edit!.statement,
+          type: edit!.type,
+          normalized_value: edit!.normalizedValue,
+          uncertainty: edit!.uncertainty,
+          retain_relation_ids: edit!.retainRelationIds,
+          evidence_ref_ids: edit!.evidenceRefIds,
+          retain_existing_evidence: false,
+          secondary_evidence_note: edit!.secondaryEvidenceNote || undefined,
+        },
+      } : {}),
+    };
+    const body = await request<ClaimVerdictResponse>(`/api/v1/claims/${encodeURIComponent(claim.id)}/verdicts`, {
+      method: "POST",
+      headers: { "idempotency-key": input.idempotencyKey },
+      body: jsonBody(payload),
+    });
+    return requireId(normalizeClaim(body.data.claim), "claim verdict");
+  },
+
+  async attestEvidenceReview(claim: Claim, idempotencyKey: string): Promise<Claim> {
+    const body = await request<ClaimEvidenceReviewAttestationResponse>(
+      `/api/v1/claims/${encodeURIComponent(claim.id)}/evidence-review-attestations`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ base_version_id: claim.versionId }),
+      },
+    );
+    return requireId(normalizeClaim(body.data.claim), "Claim evidence review attestation");
+  },
+
+  async batchConfirm(claims: Claim[], idempotencyKey: string): Promise<Claim[]> {
+    const payload: BatchClaimVerdictRequest = {
+      verdicts: claims.map((claim) => ({ claim_id: claim.id, action: "confirm", base_version_id: claim.versionId })),
+    };
+    const body = await request<BatchClaimVerdictResponse>("/api/v1/claims/batch-verdicts", {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(payload),
+    });
+    if (!Array.isArray(body.data.verdicts) || body.data.verdicts.length !== claims.length) {
+      invalidContract("The server returned an incomplete batch verdict response.");
+    }
+    return body.data.verdicts.map((item) => requireId(normalizeClaim(item.claim), "batch claim verdict"));
+  },
+
+  async withdrawClaim(claim: Claim, idempotencyKey: string, reason?: string): Promise<Claim> {
+    const payload: WithdrawClaimRequest = { base_version_id: claim.versionId, explanation: reason };
+    const body = await request<WithdrawClaimResponse>(`/api/v1/claims/${encodeURIComponent(claim.id)}/withdraw`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(payload),
+    });
+    return requireId(normalizeClaim(body.data.claim), "withdrawn claim");
+  },
+
+  async saveOccurrenceVerdict(
+    candidate: OccurrenceCandidate,
+    action: "confirm" | "reject",
+    idempotencyKey: string,
+  ): Promise<void> {
+    const body = await request<OccurrenceVerdictResponse>(
+      `/api/v1/occurrence-candidates/${encodeURIComponent(candidate.id)}/verdicts`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({
+          action,
+          target_base_version_id: candidate.base_version_id,
+        }),
+      },
+    );
+    const result = body.data.occurrence_verdict;
+    if (
+      !result ||
+      result.candidate_id !== candidate.id ||
+      result.status !== action ||
+      !result.verdict_id ||
+      !Array.isArray(result.converted_claims)
+    ) {
+      invalidContract("The server returned an invalid occurrence verdict response.");
+    }
+  },
+
+  async convertOccurrenceToClaims(
+    candidate: OccurrenceCandidate,
+    newClaims: OccurrenceConversionClaimInput[],
+    idempotencyKey: string,
+  ): Promise<Claim[]> {
+    const body = await request<OccurrenceVerdictResponse>(
+      `/api/v1/occurrence-candidates/${encodeURIComponent(candidate.id)}/verdicts`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({
+          action: "convert_to_new_claim",
+          target_base_version_id: candidate.base_version_id,
+          new_claims: newClaims,
+        }),
+      },
+    );
+    const result = body.data.occurrence_verdict;
+    if (
+      !result ||
+      result.candidate_id !== candidate.id ||
+      result.status !== "converted" ||
+      !result.verdict_id ||
+      !Array.isArray(result.converted_claims) ||
+      result.converted_claims.length !== newClaims.length
+    ) {
+      invalidContract("The server returned an invalid occurrence conversion response.");
+    }
+    return result.converted_claims.map((claim) =>
+      requireId(normalizeClaim(claim), "converted occurrence claim"),
+    );
+  },
+
+  async resolveContradiction(
+    input: {
+      relationId: string;
+      sourceClaimVersionId: string;
+      targetClaimVersionId: string;
+      winningClaimVersionId: string;
+      explanation: string;
+    },
+    idempotencyKey: string,
+  ): Promise<void> {
+    const body = await request<RelationVerdictResponse>(
+      `/api/v1/claim-relations/${encodeURIComponent(input.relationId)}/resolve`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({
+          base_relation_status: "active",
+          source_claim_version_id: input.sourceClaimVersionId,
+          target_claim_version_id: input.targetClaimVersionId,
+          winning_claim_version_id: input.winningClaimVersionId,
+          explanation: input.explanation,
+        }),
+      },
+    );
+    const result = body.data.relation_verdict;
+    if (
+      !result ||
+      result.relation_id !== input.relationId ||
+      result.status !== "resolved" ||
+      !result.verdict_id
+    ) {
+      invalidContract("The server returned an invalid contradiction verdict response.");
+    }
+  },
+
+  async confirmScenario(project: Project, scenarioKey: string, idempotencyKey: string, customLabel?: string): Promise<Project> {
+    const payload: ScenarioVerdictRequest = {
+      scenario_version: project.scenarioVersion ?? 0,
+      scenario: customLabel?.trim() || scenarioKey,
+      source: customLabel?.trim() ? "manual" : "candidate",
+    };
+    const body = await request<ScenarioVerdictResponse>(`/api/v1/projects/${encodeURIComponent(project.id)}/scenario-verdict`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: jsonBody(payload),
+    });
+    return requireId(normalizeProject(body.data.project), "scenario verdict");
+  },
+
+  async getView(projectId: Id, view: ProjectViewName): Promise<unknown> {
+    const path = view.startsWith("folder-") || ["timeline", "decisions", "preferences", "open-questions", "risks"].includes(view)
+      ? `/api/v1/projects/${encodeURIComponent(projectId)}/views/${view}`
+      : `/api/v1/projects/${encodeURIComponent(projectId)}/${view}`;
+    const body = await request<GetVerifiedViewResponse | unknown>(path, { cache: "no-store" });
+    return dataValue(body, ["view", "gap_check", "agenda", "brief_card"]);
+  },
+};
+
+export function toIssue(error: unknown): ApiIssue {
+  if (error instanceof ApiClientError) return error;
+  if (error instanceof Error) return { code: "NETWORK_ERROR", message: error.message || "Unable to reach the server.", status: 0 };
+  return { code: "UNKNOWN_ERROR", message: "Something went wrong.", status: 0 };
+}
