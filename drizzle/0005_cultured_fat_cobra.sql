@@ -1,0 +1,1 @@
+ALTER TABLE `extraction_runs` ADD `validated_output_json` text;

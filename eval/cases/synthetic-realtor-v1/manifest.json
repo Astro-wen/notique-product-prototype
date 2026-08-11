@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "notique-synthetic-case.v1",
+  "id": "synthetic-realtor-v1",
+  "synthetic": true,
+  "usage": "development-evaluation-and-regression-only",
+  "scenario": {
+    "expected": "real_estate_buyer_journey",
+    "candidates": [
+      "real_estate_buyer_journey",
+      "general_sales_account_memory",
+      "property_inspection"
+    ]
+  },
+  "project": {
+    "key": "morgan-family-home-search",
+    "name": "Morgan Family Home Search",
+    "locale": "en-US"
+  },
+  "events": [
+    {
+      "key": "event-01-buyer-consultation",
+      "type": "meeting",
+      "title": "Initial buyer consultation",
+      "occurredAt": "2026-09-02T17:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-01",
+        "path": "transcripts/event-01-buyer-consultation.txt",
+        "filename": "event-01-buyer-consultation.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-02-redwood-showing",
+      "type": "showing",
+      "title": "Redwood Avenue showing",
+      "occurredAt": "2026-09-05T18:00:00.000Z",
+      "transcript": {
+        "key": "tx-event-02",
+        "path": "transcripts/event-02-redwood-showing.txt",
+        "filename": "event-02-redwood-showing.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-03-harbor-showing",
+      "type": "showing",
+      "title": "Harbor Court showing",
+      "occurredAt": "2026-09-08T18:30:00.000Z",
+      "transcript": {
+        "key": "tx-event-03",
+        "path": "transcripts/event-03-harbor-showing.txt",
+        "filename": "event-03-harbor-showing.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    },
+    {
+      "key": "event-04-offer-strategy",
+      "type": "meeting",
+      "title": "Offer strategy and criteria alignment",
+      "occurredAt": "2026-09-10T17:30:00.000Z",
+      "transcript": {
+        "key": "tx-event-04",
+        "path": "transcripts/event-04-offer-strategy.txt",
+        "filename": "event-04-offer-strategy.txt",
+        "format": "txt",
+        "mimeType": "text/plain"
+      },
+      "assets": []
+    }
+  ],
+  "evidenceAliases": {
+    "transcript": {
+      "tx-r1": {
+        "eventKey": "event-01-buyer-consultation",
+        "transcriptKey": "tx-event-01",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-r1:seg:{zeroBasedOrdinal}"
+      },
+      "tx-r2": {
+        "eventKey": "event-02-redwood-showing",
+        "transcriptKey": "tx-event-02",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-r2:seg:{zeroBasedOrdinal}"
+      },
+      "tx-r3": {
+        "eventKey": "event-03-harbor-showing",
+        "transcriptKey": "tx-event-03",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-r3:seg:{zeroBasedOrdinal}"
+      },
+      "tx-r4": {
+        "eventKey": "event-04-offer-strategy",
+        "transcriptKey": "tx-event-04",
+        "ordinalBase": 0,
+        "referenceFormat": "tx-r4:seg:{zeroBasedOrdinal}"
+      }
+    },
+    "images": {}
+  },
+  "expectationNotes": [
+    "Event 1 establishes buyer requirements, shared decision authority, a critical 1.15M-versus-1.5M ambiguity, and an unresolved school-district choice.",
+    "Event 2 corrects the buyer's ADU terminology, resolves the initial budget ambiguity, records a reasoned property rejection, changes the home-age preference, and repeats unchanged criteria without creating duplicate current facts.",
+    "Event 3 introduces a cross-file HOA contradiction, a decision-maker alignment risk, a proposed but unapproved budget increase, a second reasoned property decision, and repeated unresolved questions.",
+    "Event 4 records the jointly approved budget and HOA limits, resolves the school and decision-maker issues, and supersedes the prior Harbor Court preference with a reasoned rejection.",
+    "All names, properties, statements, amounts, and dates are synthetic. This is a single-author development fixture, not a blind set or real-user dataset."
+  ]
+}

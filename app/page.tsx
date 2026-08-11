@@ -1,965 +1,2272 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isHeifLike,
+  MAX_IMAGE_BYTES,
+  MODEL_IMAGE_FILE_ACCEPT,
+  MODEL_IMAGE_MIME_TYPES,
+  modelImageMimeFor,
+  normalizeMimeType,
+} from "@/lib/domain/asset-policy";
+import {
+  ApiIssue,
+  Claim,
+  ClaimEditSubmission,
+  Event,
+  EvidenceRef,
+  ExtractionRun,
+  GlossaryEntry,
+  GlossaryEntryCategory,
+  ImportSession,
+  OccurrenceCandidate,
+  OccurrenceNewClaim,
+  Project,
+  ProjectViewName,
+  RunDebug,
+  api,
+  normalizeClaim,
+  toIssue,
+} from "./api-client";
 
-type View =
-  | "projects"
-  | "recordings"
-  | "inbox"
-  | "trash"
-  | "folder"
-  | "item"
-  | "agent"
-  | "workspace"
-  | "event"
-  | "review"
-  | "claim"
-  | "compare"
-  | "deliverables"
-  | "templates";
+type Screen = "simple" | "projects" | "project" | "event" | "review" | "claim" | "results" | "run-debug";
+type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
+type ResultTab = ProjectViewName;
 
-type Modal =
-  | "import"
-  | "newProject"
-  | "rename"
-  | "search"
-  | "transcript"
-  | "share"
-  | "newDeliverable"
-  | "upgrade"
-  | "deleteFolder"
-  | "evidence"
-  | "newEvent"
-  | "deliverableShare"
-  | "notifications"
-  | "profile"
-  | "workspaceSettings"
-  | "moveAsset"
-  | null;
+type ContradictionResolutionInput = {
+  relationId: string;
+  sourceClaimVersionId: string;
+  targetClaimVersionId: string;
+  winningClaimVersionId: string;
+  explanation: string;
+};
 
-type AssetType = "audio" | "image" | "document" | "note";
-type ProjectKind = "general" | "contractor";
-type ClaimState = "pending" | "confirmed" | "edited" | "rejected";
-type ReviewFilter = "pending" | "reviewed" | "all";
+type BriefDisplayData = Record<string, unknown> & {
+  stateItem?: Record<string, unknown>;
+  deltaItems?: Record<string, unknown>[];
+  agendaItems?: Record<string, unknown>[];
+  riskItem?: Record<string, unknown>;
+};
 
-type Activity = {
-  id: string;
+type ImportRow = {
+  key: string;
+  file: File;
   title: string;
-  detail: string;
-  time: string;
-  projectId?: string;
+  occurredAt: string;
+  eventType: "meeting" | "showing" | "estimate" | "walkthrough";
 };
 
-type Folder = {
-  id: string;
-  name: string;
-  description: string;
-  color: string;
-  updated: string;
-  kind: ProjectKind;
-};
-
-type Asset = {
-  id: string;
-  name: string;
-  type: AssetType;
-  meta: string;
-  added: string;
-  summary: string;
-  folderId?: string;
-};
-
-type Suggestion = {
-  folderId: string;
-  confidence: number;
-  reasons: string[];
-};
-
-type Claim = {
-  id: string;
-  category: string;
-  field: string;
-  proposed: string;
-  previous: string;
-  reason: string;
-  quote: string;
-  againstQuote?: string;
-  time: string;
-  impact: string;
-  risk: "high" | "medium" | "low";
-  state: ClaimState;
-  editedReason?: string;
-};
-
-const initialFolders: Folder[] = [
-  { id: "product", name: "New Product Discovery", description: "Research, interviews and product decisions", color: "blue", updated: "Today", kind: "general" },
-  { id: "weekly", name: "Weekly Team Sync", description: "Team meetings, plans and follow-ups", color: "purple", updated: "Yesterday", kind: "general" },
-  { id: "interviews", name: "Customer Interviews", description: "Customer calls and research notes", color: "green", updated: "Jul 30", kind: "general" },
-  { id: "oak", name: "Oak Street Renovation", description: "Site visits, estimates and project files", color: "amber", updated: "Jul 25", kind: "contractor" },
-  { id: "course", name: "Psychology Course Notes", description: "Lectures, readings and study notes", color: "rose", updated: "Jul 24", kind: "general" },
-  { id: "report", name: "New Report Interview", description: "Interviews and report source material", color: "slate", updated: "Jul 22", kind: "general" },
+const resultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
+  { key: "folder-summary", label: "事项概况", short: "概况" },
+  { key: "timeline", label: "时间线", short: "时间线" },
+  { key: "decisions", label: "决定", short: "决定" },
+  { key: "preferences", label: "偏好", short: "偏好" },
+  { key: "open-questions", label: "待确认问题", short: "问题" },
+  { key: "risks", label: "风险与矛盾", short: "风险" },
+  { key: "gap-check", label: "资料缺口", short: "缺口" },
+  { key: "next-meeting-agenda", label: "下次沟通清单", short: "清单" },
+  { key: "brief-card", label: "会前速览", short: "速览" },
 ];
 
-const initialAssets: Asset[] = [
-  { id: "p1", name: "Customer Interview · Round 3.m4a", type: "audio", meta: "31 min · Transcript ready", added: "Today, 10:42 AM", summary: "Customer feedback about cross-meeting context and reviewable project briefs.", folderId: "product" },
-  { id: "p2", name: "Product direction notes.pdf", type: "document", meta: "PDF · 4 pages", added: "Jul 30", summary: "Working product direction and questions for the next prototype.", folderId: "product" },
-  { id: "p3", name: "Research debrief.m4a", type: "audio", meta: "22 min · Transcript ready", added: "Jul 29", summary: "Team debrief after the second round of interviews.", folderId: "product" },
-  { id: "p4", name: "Interview screenshots", type: "image", meta: "4 images", added: "Jul 29", summary: "Screenshots referenced during the customer interviews.", folderId: "product" },
-  { id: "w1", name: "Weekly Product Review.m4a", type: "audio", meta: "46 min · Transcript ready", added: "Yesterday", summary: "Weekly team decisions, blockers and owners.", folderId: "weekly" },
-  { id: "i1", name: "Interview · Sarah Chen.m4a", type: "audio", meta: "28 min · Transcript ready", added: "Jul 28", summary: "Customer interview about meeting notes and deliverables.", folderId: "interviews" },
-  { id: "o1", name: "Site Walkthrough 02.m4a", type: "audio", meta: "24 min · Transcript ready", added: "Jul 25", summary: "Kitchen wall removal, electrical scope and working budget.", folderId: "oak" },
-  { id: "o2", name: "Kitchen estimate.pdf", type: "document", meta: "PDF · 6 pages", added: "Jul 24", summary: "Estimate for wall removal and drywall repair.", folderId: "oak" },
-  { id: "o3", name: "Site photo 03.jpg", type: "image", meta: "JPG · 4.1 MB", added: "Jul 25", summary: "Kitchen wall, outlet and possible hidden wiring captured during the walkthrough.", folderId: "oak" },
-  { id: "c1", name: "Lecture 08.m4a", type: "audio", meta: "58 min · Transcript ready", added: "Jul 24", summary: "Lecture recording and study notes.", folderId: "course" },
-  { id: "r1", name: "Eric interview.m4a", type: "audio", meta: "37 min · Transcript ready", added: "Jul 22", summary: "Interview source for the new report.", folderId: "report" },
-];
+const runInProgress = new Set(["queued", "processing", "extracting"]);
+const runComplete = new Set(["succeeded", "completed", "completed_with_warnings"]);
+const acceptedTranscriptTypes = [".txt", ".vtt", ".srt", ".json"];
 
-const initialInbox: Asset[] = [
-  { id: "inbox-1", name: "Team planning notes.pdf", type: "document", meta: "PDF · 3 pages", added: "Today, 9:18 AM", summary: "Planning notes mentioning the weekly team agenda, owners and next Friday." },
-  { id: "inbox-2", name: "IMG_1842.jpg", type: "image", meta: "JPG · 3.8 MB", added: "Yesterday", summary: "A site photo showing the kitchen wall and electrical outlet." },
-];
-
-const samples: Asset[] = [
-  { id: "sample-audio", name: "Customer Interview · Round 4.m4a", type: "audio", meta: "34 min · Sample file", added: "Just now", summary: "Interview about project memory, product workflow and user testing." },
-  { id: "sample-photo", name: "Oak Street site photo 04.jpg", type: "image", meta: "JPG · Sample file", added: "Just now", summary: "Kitchen wall, electrical outlet and drywall captured during a site visit." },
-  { id: "sample-doc", name: "Friday team planning.docx", type: "document", meta: "DOCX · Sample file", added: "Just now", summary: "Weekly planning notes with owners, blockers and next steps." },
-];
-
-const claimSeeds: Record<ProjectKind, Claim[]> = {
-  general: [
-    {
-      id: "audience",
-      category: "Audience",
-      field: "Primary audience",
-      proposed: "Consultants and project teams managing work across several meetings",
-      previous: "Contractors were the first research group",
-      reason: "The latest interview broadened the audience beyond one profession.",
-      quote: "The project view is useful because my decisions are spread across several conversations.",
-      time: "12:18",
-      impact: "Updates the Project Brief and test recruiting criteria.",
-      risk: "medium",
-      state: "pending",
-    },
-    {
-      id: "deliverable",
-      category: "Output",
-      field: "First deliverable",
-      proposed: "A source-linked project brief that can be reviewed and shared",
-      previous: "A meeting summary",
-      reason: "The user described the final document, not the transcript, as the work product.",
-      quote: "I need something I can send, but I still need to know where every important point came from.",
-      time: "18:42",
-      impact: "Changes the default deliverable for this project.",
-      risk: "high",
-      state: "pending",
-    },
-    {
-      id: "pilot",
-      category: "Schedule",
-      field: "Next test",
-      proposed: "Test the clickable project flow with five existing users in August",
-      previous: "No test date recorded",
-      reason: "A concrete next step and timing were stated in the latest discussion.",
-      quote: "Let us put the current flow in front of five users next month.",
-      time: "27:06",
-      impact: "Adds a dated task to the Action Checklist.",
-      risk: "low",
-      state: "pending",
-    },
-    {
-      id: "owner",
-      category: "Responsibility",
-      field: "Prototype owner",
-      proposed: "Aaron owns the first clickable prototype; Kevin supplies the latest UI reference",
-      previous: "Owner not recorded",
-      reason: "The latest meeting assigned the work and clarified the dependency.",
-      quote: "Aaron can build the flow while Kevin sends over the current UI screens.",
-      time: "29:14",
-      impact: "Adds owners to the Action Checklist.",
-      risk: "low",
-      state: "confirmed",
-    },
-  ],
-  contractor: [
-    {
-      id: "electrical",
-      category: "Scope",
-      field: "Electrical scope",
-      proposed: "Hidden-line rewiring is not included in the original estimate",
-      previous: "Client believed electrical work was included",
-      reason: "Two conversations conflict and the difference affects price and approval.",
-      quote: "The electrical behind that wall was not part of the original number.",
-      againstQuote: "When we first spoke, I understood that the electrical was included.",
-      time: "16:21",
-      impact: "Blocks the Change Order and Scope Checklist until reviewed.",
-      risk: "high",
-      state: "pending",
-    },
-    {
-      id: "price",
-      category: "Money",
-      field: "Working price",
-      proposed: "$3,400",
-      previous: "$2,850",
-      reason: "The new amount differs by $550 and is still waiting for written confirmation.",
-      quote: "With the extra electrical work, the revised total is thirty-four hundred.",
-      time: "18:42",
-      impact: "Updates the Change Order total after confirmation.",
-      risk: "high",
-      state: "pending",
-    },
-    {
-      id: "approval",
-      category: "Approval",
-      field: "Start condition",
-      proposed: "Do not begin work until the client signs the Change Order",
-      previous: "General written approval before work",
-      reason: "The latest walkthrough made the Change Order a specific start condition.",
-      quote: "We should not open the wall until the change order is signed.",
-      time: "20:06",
-      impact: "Creates a required checklist item.",
-      risk: "medium",
-      state: "pending",
-    },
-    {
-      id: "photos",
-      category: "Evidence",
-      field: "Photo requirement",
-      proposed: "Attach before and after photos to the Change Order record",
-      previous: "Only completion photos were requested",
-      reason: "The new evidence requirement can be made an executable checklist field.",
-      quote: "Please take a picture before you open it and another one when it is done.",
-      time: "21:14",
-      impact: "Adds two evidence requirements to the Scope Checklist.",
-      risk: "low",
-      state: "confirmed",
-    },
-    {
-      id: "owner",
-      category: "Responsibility",
-      field: "Document owner",
-      proposed: "Maria prepares the Change Order by Jul 28",
-      previous: "Maria was generally supporting the project",
-      reason: "The latest event assigned a clear document owner and date.",
-      quote: "Maria will prepare the change order by Tuesday.",
-      time: "22:30",
-      impact: "Adds an owner and due date to the Change Order.",
-      risk: "low",
-      state: "confirmed",
-    },
-  ],
-};
-
-const generalChecklist = [
-  "Confirm the primary audience for the next test",
-  "Review the source-linked Project Brief structure",
-  "Prepare the clickable prototype",
-  "Recruit five existing users",
-  "Record completion time, errors and comments",
-];
-
-const contractorChecklist = [
-  "Obtain the signed client Change Order",
-  "Confirm the revised amount and electrical exclusion",
-  "Record Maria as owner and Jul 28 as the target date",
-  "Protect the adjacent kitchen and dining area",
-  "Remove the short wall and repair drywall",
-  "Confirm whether hidden-line rewiring is included",
-  "Attach before and after photos",
-];
-
-const initialActivity: Activity[] = [
-  { id: "a1", title: "Site Walkthrough 02 processed", detail: "3 changes need review · transcript and photos linked", time: "Today, 10:42 AM", projectId: "oak" },
-  { id: "a2", title: "Product interview added", detail: "Filed in New Product Discovery", time: "Today, 9:18 AM", projectId: "product" },
-  { id: "a3", title: "Scope Checklist saved", detail: "7 checklist items generated from reviewed project information", time: "Yesterday", projectId: "oak" },
-];
-
-function typeIcon(type: AssetType) {
-  return { audio: "♪", image: "▧", document: "▤", note: "✎" }[type];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function suggestionsFor(asset: Asset): Suggestion[] {
-  const text = `${asset.name} ${asset.summary}`.toLowerCase();
-  if (text.includes("oak") || text.includes("site") || text.includes("kitchen") || text.includes("wall")) {
-    return [
-      { folderId: "oak", confidence: 94, reasons: ["The file refers to Oak Street or a site visit", "The content matches the kitchen and wall-removal context"] },
-      { folderId: "interviews", confidence: 42, reasons: ["It may also be supporting material from a customer conversation"] },
-    ];
-  }
-  if (text.includes("weekly") || text.includes("friday") || text.includes("team") || text.includes("planning")) {
-    return [
-      { folderId: "weekly", confidence: 91, reasons: ["The document matches the weekly planning agenda", "Owners and follow-ups overlap with recent team meetings"] },
-      { folderId: "product", confidence: 68, reasons: ["Several notes also refer to the current product work"] },
-    ];
-  }
-  return [
-    { folderId: "product", confidence: 89, reasons: ["The transcript discusses product workflow and user testing", "Two recent recordings in this project mention the same topics"] },
-    { folderId: "interviews", confidence: 76, reasons: ["The item is a customer interview", "The speaker and format match this research collection"] },
-  ];
+function stringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
 }
 
-function Status({ state }: { state: ClaimState }) {
-  const label = { pending: "Needs review", confirmed: "Confirmed", edited: "Edited", rejected: "Not added" }[state];
-  return <span className={`status status-${state}`}>{label}</span>;
+function firstString(object: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringValue(object[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function formatDate(value?: string, includeTime = false): string {
+  if (!value) return "时间未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", includeTime
+    ? { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
+    : { year: "numeric", month: "short", day: "numeric" }).format(date);
+}
+
+function formatBytes(value?: number): string {
+  if (value == null) return "大小未知";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function photoUploadIssue(
+  filename: string,
+  mimeType: string,
+  sizeBytes: number,
+): ApiIssue | null {
+  const normalizedMime = normalizeMimeType(mimeType);
+  const imageMime = modelImageMimeFor(filename, normalizedMime);
+  const looksLikePhoto =
+    normalizedMime.startsWith("image/") ||
+    /\.(?:jpe?g|png|webp|heic|heif|hif)$/i.test(filename);
+  if (!looksLikePhoto) return null;
+  if (isHeifLike(filename, normalizedMime) || !imageMime) {
+    return {
+      code: "ASSET_UNSUPPORTED_FORMAT",
+      message: "照片只支持 JPG、PNG 或 WebP。当前测试版不会转换 HEIC/HEIF。",
+      status: 415,
+      details: {
+        kind: "photo",
+        filename,
+        mime_type: normalizedMime,
+        accepted_mime_types: [...MODEL_IMAGE_MIME_TYPES],
+      },
+    };
+  }
+  if (sizeBytes > MAX_IMAGE_BYTES) {
+    return {
+      code: "ASSET_TOO_LARGE",
+      message: "单张照片超过 15 MB，尚未上传。",
+      status: 413,
+      details: {
+        kind: "photo",
+        filename,
+        max_size_bytes: MAX_IMAGE_BYTES,
+        size_bytes: sizeBytes,
+      },
+    };
+  }
+  return null;
+}
+
+function formatTimestamp(value?: string | number): string {
+  if (value == null || value === "") return "无法定位具体时间";
+  if (typeof value === "string" && value.includes(":")) return value;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return String(value);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
+}
+
+function confidenceText(value?: number): string {
+  if (value == null) return "未提供排序分";
+  const normalized = value <= 1 ? value * 100 : value;
+  return `模型排序分 ${Math.round(normalized)}`;
+}
+
+function isCompleteEvidenceSet(
+  expectedIds: string[],
+  evidenceRefs: EvidenceRef[],
+  everyFetchSucceeded: boolean,
+): boolean {
+  if (!everyFetchSucceeded || expectedIds.length === 0 || evidenceRefs.length !== expectedIds.length) {
+    return false;
+  }
+  const expected = new Set(expectedIds);
+  const received = new Set(evidenceRefs.map((item) => item.id));
+  return expected.size === expectedIds.length &&
+    received.size === evidenceRefs.length &&
+    expectedIds.every((id) => received.has(id));
+}
+
+function uncertaintyParts(value: unknown): {
+  reason?: string;
+  alternatives: string[];
+  question?: string;
+} | null {
+  if (typeof value === "string" && value.trim()) {
+    return { reason: value.trim(), alternatives: [] };
+  }
+  if (!isRecord(value)) return null;
+  const reason = stringValue(value.reason);
+  const question = stringValue(value.question);
+  const alternatives = Array.isArray(value.alternatives)
+    ? value.alternatives.flatMap((item) => {
+        const text = stringValue(item);
+        return text ? [text] : [];
+      })
+    : [];
+  if (!reason && !question && !alternatives.length) return null;
+  return { reason, alternatives, question };
+}
+
+function UncertaintyNotice({ value, compact = false }: { value: unknown; compact?: boolean }) {
+  const details = uncertaintyParts(value);
+  if (!details) return null;
+  if (compact) {
+    const summary = details.question || details.reason || details.alternatives.join(" / ");
+    return <p className="uncertainty">需要留意：{summary}</p>;
+  }
+  return <div className="uncertainty">
+    <strong>这条记录还需要确认</strong>
+    {details.reason && <p>{details.reason}</p>}
+    {details.alternatives.length > 0 && <p>目前有两种可能：{details.alternatives.join(" / ")}</p>}
+    {details.question && <p><b>建议追问：</b>{details.question}</p>}
+  </div>;
+}
+
+function typeLabel(value?: string): string {
+  const labels: Record<string, string> = {
+    fact: "事实",
+    preference: "偏好",
+    commitment: "承诺",
+    decision: "决定",
+    risk: "风险",
+    open_question: "待确认问题",
+    question: "待确认问题",
+    requirement: "要求",
+    constraint: "限制",
+    direct: "直接证据",
+    corroborating: "佐证材料",
+    contextual: "背景参考",
+  };
+  return labels[(value ?? "").toLowerCase()] ?? (value || "记录").replaceAll("_", " ");
+}
+
+function statusLabel(value?: string): string {
+  const labels: Record<string, string> = {
+    draft: "等待材料",
+    ready: "材料已就绪",
+    uploading: "正在上传",
+    parsing: "正在读取",
+    queued: "已进入队列",
+    processing: "正在提取",
+    extracting: "正在提取",
+    succeeded: "处理完成",
+    completed: "处理完成",
+    completed_with_warnings: "完成，有部分提醒",
+    failed: "处理失败",
+    cancelled: "已取消",
+    pending: "待审核",
+    verified: "已确认",
+    rejected: "未采纳",
+    active: "当前有效",
+    withdrawn: "已撤回",
+    superseded: "已被更新",
+    resolved: "已解决",
+    unassessed: "等待判断使用场景",
+    assessing: "正在判断使用场景",
+    pending_confirmation: "等待确认使用场景",
+    confirmed: "使用场景已确认",
+  };
+  return labels[(value ?? "").toLowerCase()] ?? value ?? "状态未知";
+}
+
+function issueTitle(issue: ApiIssue): string {
+  if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "模型服务尚未配置";
+  if (issue.code === "QUEUE_NOT_CONFIGURED") return "处理队列尚未配置";
+  if (issue.code === "DATABASE_UNAVAILABLE") return "数据库暂时不可用";
+  if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "请先确认使用场景";
+  if (issue.status === 404) return "没有找到这项数据";
+  if (issue.status === 503 || issue.status === 0) return "暂时无法连接服务";
+  if (issue.status >= 500) return "服务器暂时无法完成请求";
+  return "这一步没有完成";
+}
+
+function issueMessage(issue: ApiIssue): string {
+  if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "服务端还没有配置模型 Provider 和 API Key。本次没有生成任何候选记录，配置完成后可以安全重试。";
+  if (issue.code === "QUEUE_NOT_CONFIGURED") return "后台处理队列还没有配置。本次任务没有开始，也没有写入半成品。";
+  if (issue.code === "DATABASE_UNAVAILABLE") return "当前无法读取数据库中的真实记录，请稍后重试。";
+  if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "第一份材料的使用场景还没有确认。确认后，后续沟通才会开始提取。";
+  if (issue.code === "CLAIM_VERSION_CONFLICT" || issue.code === "SCENARIO_VERSION_CONFLICT") return "这项内容已经被其他操作更新。重新读取最新版本后再继续。";
+  if (issue.code === "ASSET_TOO_LARGE") {
+    const details = isRecord(issue.details) ? issue.details : {};
+    const total = typeof details.total_image_bytes === "number" ? details.total_image_bytes : undefined;
+    const maxTotal = typeof details.max_total_image_bytes === "number" ? details.max_total_image_bytes : undefined;
+    const size = typeof details.size_bytes === "number" ? details.size_bytes : undefined;
+    const max = typeof details.max_size_bytes === "number" ? details.max_size_bytes : undefined;
+    if (maxTotal !== undefined) {
+      return `本次分析的图片合计 ${formatBytes(total)}，超过 ${formatBytes(maxTotal)} 的上限。请减少图片或压缩后重试。`;
+    }
+    if (max !== undefined) {
+      return `这份文件为 ${formatBytes(size)}，超过 ${formatBytes(max)} 的单文件上限，尚未上传。`;
+    }
+    return "文件超过当前允许的大小。页面没有上传或保存这份文件。";
+  }
+  if (issue.code === "ASSET_UNSUPPORTED_FORMAT") {
+    const details = isRecord(issue.details) ? issue.details : {};
+    if (details.kind === "photo") {
+      return "照片只支持 JPG、PNG 或 WebP。当前测试版不会转换 HEIC/HEIF，请先在手机或电脑上转成支持的格式。";
+    }
+    return "当前文件格式暂不支持。页面没有上传或保存这份文件。";
+  }
+  if (issue.code === "EVENT_NOT_READY") return "这次沟通还没有准备好可处理的材料。请等文件状态变为“材料已就绪”。";
+  if (issue.code === "NOT_FOUND" || issue.status === 404) return "请求的内容不存在。后端接口可能尚未完成，或这条数据已经被删除。";
+  if (issue.code === "NETWORK_ERROR" || issue.status === 0) return "无法连接后端服务，请确认本地服务正在运行。";
+  if (issue.status >= 500) return "服务端没有完成这次请求。本次没有写入假数据或半成品，请保留 Request ID 供排查。";
+  return issue.message;
+}
+
+function ErrorNotice({ issue, onRetry, compact = false }: { issue: ApiIssue; onRetry?: () => void; compact?: boolean }) {
+  return (
+    <section className={`notice notice-error ${compact ? "notice-compact" : ""}`} role="alert">
+      <span className="notice-mark">!</span>
+      <div>
+        <strong>{issueTitle(issue)}</strong>
+        <p>{issueMessage(issue)}</p>
+        {issue.requestId && <small>Request ID: {issue.requestId}</small>}
+      </div>
+      {onRetry && <button className="button secondary" onClick={onRetry}>重试</button>}
+    </section>
+  );
+}
+
+function EmptyState({ title, body, action }: { title: string; body: string; action?: ReactNode }) {
+  return (
+    <div className="empty-state">
+      <span className="empty-symbol">○</span>
+      <h2>{title}</h2>
+      <p>{body}</p>
+      {action}
+    </div>
+  );
+}
+
+function LoadingBlock({ label = "正在读取…" }: { label?: string }) {
+  return <div className="loading-block" role="status"><span /><span /><span /><small>{label}</small></div>;
+}
+
+function StatusBadge({ value }: { value?: string }) {
+  const tone = ["failed", "rejected", "withdrawn"].includes(value ?? "")
+    ? "danger"
+    : ["pending", "queued", "processing", "extracting", "pending_confirmation", "completed_with_warnings"].includes(value ?? "")
+      ? "warning"
+      : ["verified", "succeeded", "completed", "ready", "confirmed", "active"].includes(value ?? "")
+        ? "success"
+        : "neutral";
+  return <span className={`status-badge ${tone}`}>{statusLabel(value)}</span>;
+}
+
+function Modal({ title, description, onClose, children, wide = false }: { title: string; description?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+        <header className="modal-header">
+          <div><h2>{title}</h2>{description && <p>{description}</p>}</div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭">×</button>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(stringValue).filter((item): item is string => Boolean(item))
+    : [];
+}
+
+function objectItems(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter(isRecord);
+  if (!isRecord(value)) return [];
+  return recordArray(value.items ?? value.events);
+}
+
+function redactDebugValue(value: unknown, key = ""): unknown {
+  if (/(api.?key|secret|password|authorization|cookie|credential|idempotency_key|r2_.*_key)/i.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((item) => redactDebugValue(item));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redactDebugValue(childValue, childKey)]));
+}
+
+function claimViewItem(value: Record<string, unknown>): Record<string, unknown> {
+  const version = isRecord(value.version) ? value.version : {};
+  return {
+    ...value,
+    claim_id: firstString(value, ["claimId", "claim_id"]) || (Object.keys(version).length ? firstString(value, ["id"]) : undefined),
+    claim_version_id: firstString(value, ["claimVersionId", "claim_version_id"]) || firstString(version, ["id"]),
+    statement: firstString(value, ["statement"]) || firstString(version, ["statement"]),
+    evidence_ref_ids: Array.isArray(value.evidenceRefIds) ? value.evidenceRefIds : Array.isArray(version.evidenceRefIds) ? version.evidenceRefIds : [],
+    lifecycle_status: firstString(value, ["lifecycleStatus", "lifecycle_status"]),
+    updated_at: firstString(value, ["updatedAt", "updated_at"]),
+  };
+}
+
+function findItemById(
+  items: Record<string, unknown>[],
+  id: string,
+  keys: string[],
+): Record<string, unknown> | undefined {
+  return items.find((item) => firstString(item, keys) === id);
+}
+
+async function loadBriefDisplayData(projectId: string): Promise<BriefDisplayData> {
+  const [briefValue, summaryValue, agendaValue] = await Promise.all([
+    api.getView(projectId, "brief-card"),
+    api.getView(projectId, "folder-summary"),
+    api.getView(projectId, "next-meeting-agenda"),
+  ]);
+  if (!isRecord(briefValue)) return {};
+
+  const summary = isRecord(summaryValue) ? summaryValue : {};
+  const currentClaims = recordArray(summary.currentClaims ?? summary.current_claims).map(claimViewItem);
+  const recentDeltas = recordArray(summary.recentDeltas ?? summary.recent_deltas);
+  const agendaItems = objectItems(agendaValue);
+  const stateClaimId = firstString(briefValue, ["stateClaimId", "state_claim_id"]);
+  const riskClaimId = firstString(briefValue, ["riskClaimId", "risk_claim_id"]);
+  const deltaItemIds = stringValues(briefValue.deltaItemIds ?? briefValue.delta_item_ids);
+  const agendaItemIds = stringValues(briefValue.agendaItemIds ?? briefValue.agenda_item_ids);
+
+  return {
+    ...briefValue,
+    stateItem: stateClaimId
+      ? findItemById(currentClaims, stateClaimId, ["claim_id", "claimId", "id"])
+        ?? { claim_id: stateClaimId, source_missing: true }
+      : undefined,
+    deltaItems: deltaItemIds
+      .map((id) => findItemById(recentDeltas, id, ["id", "delta_item_id", "deltaItemId"])
+        ?? { id, source_missing: true }),
+    agendaItems: agendaItemIds
+      .map((id) => findItemById(agendaItems, id, ["id", "agenda_item_id", "agendaItemId"])
+        ?? { id, source_missing: true }),
+    riskItem: riskClaimId
+      ? findItemById(currentClaims, riskClaimId, ["claim_id", "claimId", "id"])
+        ?? { claim_id: riskClaimId, source_missing: true }
+      : undefined,
+  };
+}
+
+function claimsFromVerifiedView(value: unknown): Claim[] {
+  const raw: Record<string, unknown>[] = [];
+  if (Array.isArray(value)) {
+    for (const group of recordArray(value)) raw.push(...recordArray(group.claims));
+  } else if (isRecord(value)) {
+    raw.push(...recordArray(value.currentClaims ?? value.current_claims), ...recordArray(value.claims));
+  }
+  return raw.map(normalizeClaim).filter((claim) => Boolean(claim.id && claim.versionId));
+}
+
+function viewEmptyReason(value: unknown): string | undefined {
+  return isRecord(value) ? stringValue(value.empty_reason) : undefined;
+}
+
+function ViewItem({ item, onOpenClaim }: { item: Record<string, unknown>; onOpenClaim: (id: string) => void }) {
+  const title = firstString(item, ["statement", "displayText", "display_text", "summary", "title", "question", "label", "text", "slot", "delta_text", "current_value"]) ?? "已确认记录";
+  const description = firstString(item, ["description", "reason", "detail", "answer", "change", "previous_value"]);
+  const type = firstString(item, ["type", "claim_type", "sourceKind", "source_kind", "delta_type", "status", "materiality"]);
+  const date = firstString(item, ["occurredAt", "occurred_at", "event_date", "openedAt", "opened_at", "updatedAt", "updated_at", "createdAt", "created_at"]);
+  const claimId = firstString(item, ["claim_id", "claimId"]);
+  const versionId = firstString(item, ["claim_version_id", "claimVersionId", "version_id"]);
+  const rejected = item.rejectedOptions ?? item.rejected_options;
+  const selected = stringValue(item.selectedOption ?? item.selected_option);
+  const reason = stringValue(item.reason);
+  const openDays = typeof (item.openDays ?? item.open_days) === "number" ? Number(item.openDays ?? item.open_days) : undefined;
+  const repeatCount = typeof (item.repeatCount ?? item.repeat_count) === "number" ? Number(item.repeatCount ?? item.repeat_count) : undefined;
+  const evidenceIds = Array.isArray(item.evidence_ref_ids) ? item.evidence_ref_ids.map(stringValue).filter(Boolean) : [];
+  return (
+    <article className="view-card">
+      <div className="view-card-top">
+        <div>{type && <span className="eyebrow">{typeLabel(type)}</span>}<h3>{title}</h3></div>
+        {date && <time>{formatDate(date)}</time>}
+      </div>
+      {description && description !== title && <p>{description}</p>}
+      {selected && <p><b>已选择：</b>{selected}</p>}
+      {Array.isArray(rejected) && <p><b>未选择：</b>{rejected.map(stringValue).filter(Boolean).join("、") || "尚未记录"}</p>}
+      {reason && reason !== description && <p><b>原因：</b>{reason}</p>}
+      {(openDays !== undefined || repeatCount !== undefined) && <p>{openDays !== undefined ? `已开放 ${openDays} 天` : ""}{openDays !== undefined && repeatCount !== undefined ? " · " : ""}{repeatCount !== undefined ? `在 ${repeatCount} 次后续沟通中再次出现` : ""}</p>}
+      {evidenceIds.length > 0 && <p>{evidenceIds.length} 条原始证据</p>}
+      {(claimId || versionId) && <button className="text-button" onClick={() => onOpenClaim(claimId || versionId!)}>查看记录与证据</button>}
+    </article>
+  );
+}
+
+function ContradictionCard({
+  item,
+  onOpenClaim,
+  onResolve,
+  busy,
+}: {
+  item: Record<string, unknown>;
+  onOpenClaim: (id: string) => void;
+  onResolve: (input: ContradictionResolutionInput) => void;
+  busy: boolean;
+}) {
+  const relationId = firstString(item, ["relationId", "relation_id"]) ?? "";
+  const sourceClaimId = firstString(item, ["sourceClaimId", "source_claim_id"]);
+  const targetClaimId = firstString(item, ["targetClaimId", "target_claim_id"]);
+  const sourceVersionId = firstString(item, ["sourceClaimVersionId", "source_claim_version_id"]) ?? "";
+  const targetVersionId = firstString(item, ["targetClaimVersionId", "target_claim_version_id"]) ?? "";
+  const sourceStatement = firstString(item, ["sourceStatement", "source_statement"]) ?? "服务器没有返回这条记录的原文";
+  const targetStatement = firstString(item, ["targetStatement", "target_statement"]) ?? "服务器没有返回这条记录的原文";
+  const sourceEvidenceIds = stringValues(item.sourceEvidenceRefIds ?? item.source_evidence_ref_ids);
+  const targetEvidenceIds = stringValues(item.targetEvidenceRefIds ?? item.target_evidence_ref_ids);
+  const [winner, setWinner] = useState("");
+  const [explanation, setExplanation] = useState("");
+  const contractReady = Boolean(relationId && sourceVersionId && targetVersionId);
+  return (
+    <article className="contradiction-card">
+      <header>
+        <span className="eyebrow">尚未解决的矛盾</span>
+        <h3>选择目前仍然有效的一条记录</h3>
+        <p>另一条会退出当前结果，但仍保留在历史记录中。</p>
+      </header>
+      <div className="contradiction-options">
+        {[
+          { key: "source", claimId: sourceClaimId, versionId: sourceVersionId, statement: sourceStatement, evidenceIds: sourceEvidenceIds },
+          { key: "target", claimId: targetClaimId, versionId: targetVersionId, statement: targetStatement, evidenceIds: targetEvidenceIds },
+        ].map((option, index) => (
+          <label className={winner === option.versionId ? "selected" : ""} key={option.key}>
+            <input type="radio" name={`winner-${relationId}`} checked={winner === option.versionId} onChange={() => setWinner(option.versionId)} />
+            <span className="contradiction-option-body">
+              <small>记录 {index + 1}</small>
+              <strong>{option.statement}</strong>
+              <span className="evidence-id-list"><b>Evidence IDs</b>{option.evidenceIds.length ? option.evidenceIds.map((id) => <code key={id}>{id}</code>) : <em>服务器没有返回 Evidence ID</em>}</span>
+              {option.claimId && <button type="button" className="text-button" onClick={(event) => { event.preventDefault(); onOpenClaim(option.claimId!); }}>查看这条记录和原始证据</button>}
+            </span>
+          </label>
+        ))}
+      </div>
+      <label className="field contradiction-reason"><span>为什么保留这一条</span><textarea value={explanation} onChange={(event) => setExplanation(event.target.value)} placeholder="写下判断依据，方便以后回看。" /></label>
+      {!contractReady && <p className="uncertainty">服务器返回的矛盾记录缺少 Relation 或 Version ID，目前不能提交。</p>}
+      <button
+        className="button primary"
+        disabled={!contractReady || !winner || !explanation.trim() || busy}
+        onClick={() => onResolve({ relationId, sourceClaimVersionId: sourceVersionId, targetClaimVersionId: targetVersionId, winningClaimVersionId: winner, explanation: explanation.trim() })}
+      >{busy ? "正在保存…" : "保留所选记录并解决矛盾"}</button>
+    </article>
+  );
+}
+
+function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveContradiction, busyAction }: { tab: ResultTab; data: unknown; events: Event[]; onOpenClaim: (id: string) => void; onSelect: (tab: ResultTab) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; busyAction: string | null }) {
+  const emptyReason = viewEmptyReason(data);
+  if (tab === "folder-summary" && isRecord(data)) {
+    const scenario = firstString(data, ["scenario", "scenario_label"]);
+    const claims = recordArray(data.currentClaims ?? data.current_claims).map(claimViewItem);
+    const deltas = recordArray(data.recentDeltas ?? data.recent_deltas);
+    if (!scenario && !claims.length && !deltas.length) return <EmptyState title="还没有事项概况" body={emptyReason || firstString(data, ["emptyReason"]) || "先完成材料处理并确认有用的记录。待审核内容不会出现在这里。"} />;
+    return (
+      <div className="summary-view">
+        {scenario && <span className="scenario-chip">使用场景：{scenario.replaceAll("_", " ")}</span>}
+        <ResultSection title="当前情况" empty="还没有已确认且仍有效的记录。" hasContent={claims.length > 0}><div className="view-grid">{claims.map((item, index) => <ViewItem key={firstString(item, ["claim_id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>
+        <ResultSection title="最近变化" empty="还没有已确认的变化。" hasContent={deltas.length > 0}><div className="view-grid">{deltas.map((item, index) => <ViewItem key={firstString(item, ["id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>
+      </div>
+    );
+  }
+  if (tab === "timeline") {
+    const groups = recordArray(data);
+    if (!groups.length) return <EmptyState title="时间线还没有内容" body={emptyReason || "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"} />;
+    return <div className="timeline-groups">{groups.map((group, index) => {
+      const event = isRecord(group.event) ? group.event : {};
+      const eventId = firstString(event, ["id"]);
+      const eventRecord = events.find((item) => item.id === eventId);
+      const pendingReviewCount = (eventRecord?.pendingClaimCount ?? 0) + (eventRecord?.pendingOccurrenceCount ?? 0);
+      const claims = recordArray(group.claims).map(claimViewItem);
+      const deltas = recordArray(group.deltas);
+      return <section className="timeline-group" key={eventId || index}><header><div><span className="section-kicker">第 {index + 1} 次沟通</span><h3>{firstString(event, ["title"]) || "未命名沟通"}</h3></div><time>{formatDate(firstString(event, ["occurredAt", "occurred_at"]))}</time></header>{pendingReviewCount > 0 && <p className="pending-review-note compact">还有 {pendingReviewCount} 条待核对，尚未进入本页结果。</p>}<p>{firstString(group, ["summary"])}</p>{claims.length > 0 && <ResultSection title="已确认记录"><div className="view-grid">{claims.map((item, claimIndex) => <ViewItem key={firstString(item, ["claim_id"]) || claimIndex} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>}{deltas.length > 0 && <ResultSection title="本次变化"><div className="view-grid">{deltas.map((item, deltaIndex) => <ViewItem key={firstString(item, ["id"]) || deltaIndex} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>}</section>;
+    })}</div>;
+  }
+  if (tab === "risks" && isRecord(data)) {
+    const claims = recordArray(data.claims).map(claimViewItem);
+    const contradictions = recordArray(data.contradictions);
+    if (!claims.length && !contradictions.length) return <EmptyState title="目前没有已确认的风险或未解决矛盾" body="这不代表没有风险，只代表现有已确认记录中没有。" />;
+    return <div className="summary-view"><ResultSection title="风险记录" empty="目前没有单独标记的风险。" hasContent={claims.length > 0}><div className="view-grid">{claims.map((item, index) => <ViewItem key={firstString(item, ["claim_id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection><ResultSection title="尚未解决的矛盾" empty="目前没有尚未解决的矛盾。" hasContent={contradictions.length > 0}><div className="contradiction-list">{contradictions.map((item, index) => { const relationId = firstString(item, ["relationId", "relation_id"]) || String(index); return <ContradictionCard key={relationId} item={item} onOpenClaim={onOpenClaim} onResolve={onResolveContradiction} busy={busyAction === `relation:${relationId}`} />; })}</div></ResultSection></div>;
+  }
+  if (tab === "gap-check" && isRecord(data)) {
+    const applicable = data.applicable === true;
+    const missing = stringValues(data.missingSlots ?? data.missing_slots);
+    const satisfied = isRecord(data.satisfied) ? data.satisfied : {};
+    if (!applicable) return <EmptyState title="当前场景没有配置资料缺口检查" body={`已确认场景：${firstString(data, ["scenario"]) || "未确认"}。目前只有已配置检查规则的场景会生成缺口。`} />;
+    return <div className="summary-view"><ResultSection title="还需要补齐" empty="当前检查规则要求的资料已经齐全。" hasContent={missing.length > 0}><div className="slot-grid">{missing.map((slot) => <article className="view-card" key={slot}><span className="eyebrow">缺少资料</span><h3>{slotLabel(slot)}</h3></article>)}</div></ResultSection><ResultSection title="已有依据" empty="还没有满足任何检查项。" hasContent={Object.keys(satisfied).length > 0}><div className="slot-grid">{Object.entries(satisfied).map(([slot, ids]) => <article className="view-card" key={slot}><span className="eyebrow">已有资料</span><h3>{slotLabel(slot)}</h3>{Array.isArray(ids) && ids.map((id) => stringValue(id)).filter(Boolean).map((id) => <button className="text-button" key={id} onClick={() => onOpenClaim(id!)}>查看对应记录</button>)}</article>)}</div></ResultSection></div>;
+  }
+  if (tab === "next-meeting-agenda") {
+    const rows = objectItems(data);
+    if (!rows.length) return <EmptyState title="目前没有下次必须确认的内容" body="资料缺口、开放问题和未解决矛盾会汇总到这里。" />;
+    return <div className="agenda-list">{rows.map((item, index) => {
+      const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
+      if (sourceKind === "contradiction") {
+        const relationId = firstString(item, ["relationId", "relation_id"]) || String(index);
+        return <ContradictionCard key={relationId} item={item} onOpenClaim={onOpenClaim} onResolve={onResolveContradiction} busy={busyAction === `relation:${relationId}`} />;
+      }
+      const adapted = sourceKind === "gap" ? { ...item, title: `补齐：${slotLabel(firstString(item, ["slot"]) || "资料")}`, type: "资料缺口" } : { ...item, type: "待确认问题", claim_version_id: firstString(item, ["claimVersionId"]) };
+      return <ViewItem key={firstString(item, ["id"]) || index} item={adapted} onOpenClaim={onOpenClaim} />;
+    })}</div>;
+  }
+  if (tab === "brief-card" && isRecord(data)) {
+    const stateItem = isRecord(data.stateItem) ? data.stateItem : undefined;
+    const riskItem = isRecord(data.riskItem) ? data.riskItem : undefined;
+    const deltaItems = recordArray(data.deltaItems);
+    const agendaItems = recordArray(data.agendaItems);
+    const missing = Number(data.missingSlotCount ?? data.missing_slot_count ?? 0);
+    if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="会前速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
+    return <div className="brief-grid">
+      <BriefGroup title="当前最重要的情况" items={stateItem ? [stateItem] : []} kind="state" empty="还没有可用记录" onOpenClaim={onOpenClaim} onSelect={onSelect} />
+      <BriefGroup title="最近变化" items={deltaItems} kind="delta" empty="还没有变化" onOpenClaim={onOpenClaim} onSelect={onSelect} />
+      <BriefGroup title="下次要问" items={agendaItems} kind="agenda" empty="还没有待确认事项" onOpenClaim={onOpenClaim} onSelect={onSelect} />
+      <BriefGroup title="需要留意的风险" items={riskItem ? [riskItem] : []} kind="risk" empty="还没有风险记录" onOpenClaim={onOpenClaim} onSelect={onSelect} warning />
+      {missing > 0 && <article className="view-card brief-warning"><span className="eyebrow">信息完整度</span><h3>还有 {missing} 个位置没有足够依据</h3><p>这些位置保持空白，没有用推测补齐。</p></article>}
+    </div>;
+  }
+  const rows = objectItems(data).map((item) => tab === "decisions" || tab === "preferences" || tab === "open-questions" ? claimViewItem(item) : item);
+  if (!rows.length) {
+    const copy: Record<ResultTab, [string, string]> = {
+      "folder-summary": ["还没有事项概况", "先完成材料处理并确认有用的记录。"],
+      timeline: ["时间线还没有内容", "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"],
+      decisions: ["目前没有已确认的决定", "待审核的决定不会提前出现在这里。"],
+      preferences: ["目前没有已确认的偏好", "确认偏好后，这里会保留当前内容和变化过程。"],
+      "open-questions": ["目前没有待确认问题", "新问题经过审核后会显示首次出现、重提次数和开放天数。"],
+      risks: ["目前没有已确认的风险或未解决矛盾", "这不代表没有风险，只代表现有已确认记录中没有。"],
+      "gap-check": ["还不能运行资料缺口检查", "先确认使用场景。只有已配置检查规则的场景才会生成缺口。"],
+      "next-meeting-agenda": ["目前没有下次必须确认的内容", "资料缺口、开放问题和未解决矛盾会汇总到这里。"],
+      "brief-card": ["会前速览的信息还不够", "系统不会为了填满六项而编造内容。"],
+    };
+    return <EmptyState title={copy[tab][0]} body={emptyReason || copy[tab][1]} />;
+  }
+  return <div className={tab === "brief-card" ? "brief-grid" : "view-grid"}>{rows.map((item, index) => <ViewItem key={firstString(item, ["id", "claim_id", "delta_item_id", "agenda_item_id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div>;
+}
+
+function ResultSection({ title, empty, hasContent = true, children }: { title: string; empty?: string; hasContent?: boolean; children: ReactNode }) {
+  return <section className="result-section"><h2>{title}</h2>{hasContent ? children : empty ? <p className="muted">{empty}</p> : null}</section>;
+}
+
+function slotLabel(value: string): string {
+  const labels: Record<string, string> = { budget: "预算", financing: "资金或贷款", timeline: "时间计划", decision_makers: "谁参与决定", must_haves: "必须满足的条件" };
+  return labels[value] || value.replaceAll("_", " ");
+}
+
+type BriefItemKind = "state" | "delta" | "agenda" | "risk";
+
+function briefItemText(item: Record<string, unknown>, kind: BriefItemKind): string {
+  if (item.source_missing === true) return "这条内容刚刚发生变化，请打开来源页查看最新记录。";
+  if (kind === "delta") return firstString(item, ["displayText", "display_text"]) || "变化内容暂时无法显示。";
+  if (kind === "agenda") {
+    const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
+    if (sourceKind === "gap") return `还需要补齐：${slotLabel(firstString(item, ["slot"]) || "资料")}`;
+    if (sourceKind === "contradiction") {
+      const source = firstString(item, ["sourceStatement", "source_statement"]) || "第一条记录";
+      const target = firstString(item, ["targetStatement", "target_statement"]) || "第二条记录";
+      return `需要确认哪条记录仍然有效：“${source}”与“${target}”`;
+    }
+  }
+  return firstString(item, ["statement", "displayText", "display_text", "title", "question"]) || "内容暂时无法显示。";
+}
+
+function briefSourceId(item: Record<string, unknown>, kind: BriefItemKind): string | undefined {
+  if (kind === "state" || kind === "risk") return firstString(item, ["claim_id", "claimId", "id"]);
+  if (kind === "delta") return firstString(item, ["afterClaimVersionId", "after_claim_version_id", "claimVersionId", "claim_version_id"]);
+  const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
+  if (sourceKind === "gap" || sourceKind === "contradiction") return undefined;
+  return firstString(item, ["claimVersionId", "claim_version_id"]);
+}
+
+function BriefGroup({ title, items, kind, empty, onOpenClaim, onSelect, warning = false }: { title: string; items: Record<string, unknown>[]; kind: BriefItemKind; empty: string; onOpenClaim: (id: string) => void; onSelect: (tab: ResultTab) => void; warning?: boolean }) {
+  return <article className={`view-card brief-group ${warning ? "brief-warning" : ""}`}>
+    <span className="eyebrow">会前速览</span>
+    <h3>{title}</h3>
+    {items.length ? <ol className="brief-item-list">{items.map((item, index) => {
+      const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
+      const sourceId = briefSourceId(item, kind);
+      const sourceTab: ResultTab = kind === "delta"
+        ? "timeline"
+        : sourceKind === "gap"
+          ? "gap-check"
+          : kind === "agenda"
+            ? "next-meeting-agenda"
+            : kind === "risk"
+              ? "risks"
+              : "folder-summary";
+      const sourceLabel = sourceId
+        ? "查看记录与原始证据"
+        : sourceKind === "gap"
+          ? "查看资料缺口"
+          : sourceKind === "contradiction"
+            ? "查看矛盾与双方来源"
+            : "查看来源";
+      return <li key={firstString(item, ["id", "claim_id", "claimId", "claimVersionId", "claim_version_id"]) || `${kind}-${index}`}>
+        {items.length > 1 && <small>{index + 1}</small>}
+        <strong>{briefItemText(item, kind)}</strong>
+        <button className="text-button" onClick={() => sourceId ? onOpenClaim(sourceId) : onSelect(sourceTab)}>{sourceLabel}</button>
+      </li>;
+    })}</ol> : <p>{empty}</p>}
+  </article>;
 }
 
 export default function Home() {
-  const [view, setView] = useState<View>("projects");
-  const [language, setLanguage] = useState<"en" | "zh">("en");
-  const [modal, setModal] = useState<Modal>(null);
-  const [folders, setFolders] = useState(initialFolders);
-  const [assets, setAssets] = useState(initialAssets);
-  const [inbox, setInbox] = useState(initialInbox);
-  const [trash, setTrash] = useState<Asset[]>([]);
-  const [claimsByKind, setClaimsByKind] = useState<Record<ProjectKind, Claim[]>>({
-    general: claimSeeds.general.map((claim) => ({ ...claim })),
-    contractor: claimSeeds.contractor.map((claim) => ({ ...claim })),
-  });
-  const [selectedFolderId, setSelectedFolderId] = useState("product");
-  const [selectedAssetId, setSelectedAssetId] = useState("p1");
-  const [selectedClaimId, setSelectedClaimId] = useState("audience");
-  const [projectKind, setProjectKind] = useState<ProjectKind>("general");
-  const [stagedAsset, setStagedAsset] = useState<Asset | null>(null);
-  const [selectedSuggestion, setSelectedSuggestion] = useState("product");
-  const [agentReady, setAgentReady] = useState(true);
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("pending");
-  const [showRename, setShowRename] = useState(false);
-  const [renameKind, setRenameKind] = useState<"folder" | "asset">("asset");
-  const [renameValue, setRenameValue] = useState("");
-  const [newProjectName, setNewProjectName] = useState("");
-  const [menuId, setMenuId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>("simple");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsState, setProjectsState] = useState<AsyncState>("loading");
+  const [projectsIssue, setProjectsIssue] = useState<ApiIssue | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [projectState, setProjectState] = useState<AsyncState>("idle");
+  const [projectIssue, setProjectIssue] = useState<ApiIssue | null>(null);
+  const [event, setEvent] = useState<Event | null>(null);
+  const [eventState, setEventState] = useState<AsyncState>("idle");
+  const [eventIssue, setEventIssue] = useState<ApiIssue | null>(null);
+  const [run, setRun] = useState<ExtractionRun | null>(null);
+  const [claims, setClaims] = useState<Claim[]>([]);
+  const [occurrenceCandidates, setOccurrenceCandidates] = useState<OccurrenceCandidate[]>([]);
+  const [claimsState, setClaimsState] = useState<AsyncState>("idle");
+  const [claimsIssue, setClaimsIssue] = useState<ApiIssue | null>(null);
+  const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceRef[]>([]);
+  const [evidenceState, setEvidenceState] = useState<AsyncState>("idle");
+  const [viewTab, setViewTab] = useState<ResultTab>("folder-summary");
+  const [viewData, setViewData] = useState<unknown>(null);
+  const [viewState, setViewState] = useState<AsyncState>("idle");
+  const [viewIssue, setViewIssue] = useState<ApiIssue | null>(null);
+  const [runDebug, setRunDebug] = useState<RunDebug | null>(null);
+  const [runDebugState, setRunDebugState] = useState<AsyncState>("idle");
+  const [runDebugIssue, setRunDebugIssue] = useState<ApiIssue | null>(null);
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [showNewEvent, setShowNewEvent] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [simpleFlow, setSimpleFlow] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
-  const [lastFiledId, setLastFiledId] = useState<string | null>(null);
-  const [sortNewest, setSortNewest] = useState(true);
-  const [editMode, setEditMode] = useState(false);
-  const [editText, setEditText] = useState("");
-  const [editReason, setEditReason] = useState("");
-  const [askOpen, setAskOpen] = useState(false);
-  const [askText, setAskText] = useState("");
-  const [askAnswer, setAskAnswer] = useState("");
-  const [activeDeliverable, setActiveDeliverable] = useState(1);
-  const [savedDeliverables, setSavedDeliverables] = useState<number[]>([]);
-  const [checklistDone, setChecklistDone] = useState<Record<number, boolean>>({ 0: true });
-  const [checklistEvidence, setChecklistEvidence] = useState<Record<number, boolean>>({});
-  const [evidenceTask, setEvidenceTask] = useState(0);
-  const [templateMode, setTemplateMode] = useState("Templates");
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [processingStep, setProcessingStep] = useState(0);
-  const [activity, setActivity] = useState<Activity[]>(initialActivity);
-  const [newEventTitle, setNewEventTitle] = useState("");
-  const [newEventType, setNewEventType] = useState("Meeting");
-  const [shareEmail, setShareEmail] = useState("");
-  const [shareAccess, setShareAccess] = useState("Can view");
-  const [moveTarget, setMoveTarget] = useState("product");
-  const [dataReady, setDataReady] = useState(false);
-  const [currentEventName, setCurrentEventName] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [selectedClaimIds, setSelectedClaimIds] = useState<Set<string>>(new Set());
+  const pollAttempts = useRef(0);
+  const extractionKeys = useRef(new Map<string, string>());
+  const mutationKeys = useRef(new Map<string, string>());
+  const localDispatchRuns = useRef(new Set<string>());
 
-  const t = (english: string, traditional: string) => language === "zh" ? traditional : english;
+  const flash = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 2600);
+  }, []);
 
-  useEffect(() => {
+  const loadProjects = useCallback(async () => {
+    setProjectsState("loading");
+    setProjectsIssue(null);
     try {
-      const saved = window.localStorage.getItem("notique-demo-state-v2");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.folders) setFolders(parsed.folders);
-        if (parsed.assets) setAssets(parsed.assets);
-        if (parsed.inbox) setInbox(parsed.inbox);
-        if (parsed.trash) setTrash(parsed.trash);
-        if (parsed.claimsByKind) setClaimsByKind(parsed.claimsByKind);
-        if (parsed.savedDeliverables) setSavedDeliverables(parsed.savedDeliverables);
-        if (parsed.checklistDone) setChecklistDone(parsed.checklistDone);
-        if (parsed.checklistEvidence) setChecklistEvidence(parsed.checklistEvidence);
-        if (parsed.activity) setActivity(parsed.activity);
-        if (parsed.language) setLanguage(parsed.language);
-      }
-    } catch {
-      window.localStorage.removeItem("notique-demo-state-v2");
+      const result = await api.listProjects();
+      setProjects(result);
+      setProjectsState(result.length ? "ready" : "empty");
+    } catch (error) {
+      setProjectsIssue(toIssue(error));
+      setProjectsState("error");
     }
-    setDataReady(true);
   }, []);
 
   useEffect(() => {
-    if (!dataReady) return;
-    window.localStorage.setItem("notique-demo-state-v2", JSON.stringify({ folders, assets, inbox, trash, claimsByKind, savedDeliverables, checklistDone, checklistEvidence, activity, language }));
-  }, [dataReady, folders, assets, inbox, trash, claimsByKind, savedDeliverables, checklistDone, checklistEvidence, activity, language]);
+    const timer = window.setTimeout(() => void loadProjects(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadProjects]);
 
-  const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || folders[0];
-  const selectedAsset = [...assets, ...inbox, ...trash].find((asset) => asset.id === selectedAssetId) || assets[0];
-  const folderAssets = assets.filter((asset) => asset.folderId === selectedFolder.id);
-  const suggestions = stagedAsset ? suggestionsFor(stagedAsset) : [];
-  const allRecordings = assets.filter((asset) => asset.type === "audio");
-  const claims = claimsByKind[projectKind];
-  const selectedClaim = claims.find((claim) => claim.id === selectedClaimId) || claims[0];
-  const pendingCount = claims.filter((claim) => claim.state === "pending").length;
-  const globalPendingCount = claimsByKind.general.filter((claim) => claim.state === "pending").length + claimsByKind.contractor.filter((claim) => claim.state === "pending").length;
-  const checklist = projectKind === "contractor" ? contractorChecklist : generalChecklist;
-  const folderCounts = useMemo(
-    () => Object.fromEntries(folders.map((folder) => [folder.id, assets.filter((asset) => asset.folderId === folder.id).length])),
-    [folders, assets],
-  );
+  const loadProject = useCallback(async (projectId: string, nextScreen: Screen = "project") => {
+    setProjectState("loading");
+    setProjectIssue(null);
+    setScreen(nextScreen);
+    try {
+      const [nextProject, nextEvents] = await Promise.all([api.getProject(projectId), api.listEvents(projectId)]);
+      setProject(nextProject);
+      setEvents(nextEvents);
+      setProjectState("ready");
+    } catch (error) {
+      const issue = toIssue(error);
+      setProjectIssue(issue);
+      setProjectState("error");
+      if (issue.status === 404) setProject(null);
+    }
+  }, []);
 
-  const profile = projectKind === "contractor"
-    ? {
-        title: selectedFolder.name,
-        meta: "100 Main Street · 4 events · 5 files",
-        event: "Site Walkthrough 02",
-        eventMeta: "Jul 25, 2026 · 24 min · Aaron, client and Maria",
-        goal: "Complete the wall removal with an approved scope, price and evidence record",
+  const loadClaimsForRun = useCallback(async (runId: string) => {
+    setClaimsState("loading");
+    setClaimsIssue(null);
+    try {
+      const result = await api.getRunClaims(runId);
+      setClaims(result);
+      setClaimsState(result.length ? "ready" : "empty");
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+      setClaimsState("error");
+    }
+  }, []);
+
+  const loadSimpleProject = useCallback(async (projectId: string, preferredEventId?: string) => {
+    setScreen("simple");
+    setProjectState("loading");
+    setProjectIssue(null);
+    setEvent(null);
+    setEventState("idle");
+    setEventIssue(null);
+    setRun(null);
+    setClaims([]);
+    setClaimsState("idle");
+    try {
+      const [nextProject, nextEvents] = await Promise.all([api.getProject(projectId), api.listEvents(projectId)]);
+      setProject(nextProject);
+      setEvents(nextEvents);
+      setProjectState("ready");
+      const target = nextEvents.find((item) => item.id === preferredEventId) ?? nextEvents[0] ?? null;
+      if (!target) {
+        setEvent(null);
+        setRun(null);
+        setClaims([]);
+        setClaimsState("idle");
+        return;
       }
-    : {
-        title: selectedFolder.name,
-        meta: `${folderCounts[selectedFolder.id] || 0} items · 4 events · updated ${selectedFolder.updated.toLowerCase()}`,
-        event: "Customer Interview · Round 3",
-        eventMeta: "Jul 31, 2026 · 31 min · Aaron and customer",
-        goal: "Turn research across several conversations into a reviewable product decision",
-      };
+      setEventState("loading");
+      const nextEvent = await api.getEvent(target.id);
+      setEvent(nextEvent);
+      setEventState("ready");
+      const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
+      if (!runId) {
+        setRun(null);
+        setClaims([]);
+        setClaimsState("idle");
+        return;
+      }
+      const nextRun = await api.getRun(runId);
+      setRun(nextRun);
+      if (runComplete.has(nextRun.status)) await loadClaimsForRun(nextRun.id);
+    } catch (error) {
+      const issue = toIssue(error);
+      setProjectIssue(issue);
+      setProjectState("error");
+      setEventIssue(issue);
+      setEventState("error");
+    }
+  }, [loadClaimsForRun]);
 
-  const overview = projectKind === "contractor"
-    ? [
-        { label: "Scope", value: "Remove the short wall and repair affected drywall", claimId: "electrical" },
-        { label: "Working price", value: claims.find((claim) => claim.id === "price")?.state === "pending" ? "$2,850 recorded · $3,400 needs review" : claims.find((claim) => claim.id === "price")?.proposed || "$3,400", claimId: "price" },
-        { label: "Approval", value: "Signed Change Order required before work begins", claimId: "approval" },
-        { label: "Owner", value: "Maria prepares the Change Order by Jul 28", claimId: "owner" },
-      ]
-    : [
-        { label: "Goal", value: profile.goal },
-        { label: "Audience", value: claims.find((claim) => claim.id === "audience")?.state === "pending" ? "Audience update needs review" : claims.find((claim) => claim.id === "audience")?.proposed || "Project teams", claimId: "audience" },
-        { label: "Output", value: claims.find((claim) => claim.id === "deliverable")?.state === "pending" ? "Source-linked Project Brief needs review" : claims.find((claim) => claim.id === "deliverable")?.proposed || "Project Brief", claimId: "deliverable" },
-        { label: "Next step", value: claims.find((claim) => claim.id === "pilot")?.state === "pending" ? "August user test needs review" : claims.find((claim) => claim.id === "pilot")?.proposed || "User test", claimId: "pilot" },
-      ];
+  useEffect(() => {
+    if (screen !== "simple" || project || projectsState !== "ready") return;
+    const sample = projects.find((item) => item.name.startsWith("[SYNTHETIC]"));
+    if (!sample) return;
+    const timer = window.setTimeout(() => void loadSimpleProject(sample.id), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSimpleProject, project, projects, projectsState, screen]);
 
-  function flash(message: string) {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 2200);
-  }
+  const loadEvent = useCallback(async (eventId: string) => {
+    setEventState("loading");
+    setEventIssue(null);
+    setScreen("event");
+    try {
+      const nextEvent = await api.getEvent(eventId);
+      setEvent(nextEvent);
+      setEventState("ready");
+      const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
+      if (runId) {
+        const nextRun = await api.getRun(runId);
+        setRun(nextRun);
+        if (runComplete.has(nextRun.status)) await loadClaimsForRun(nextRun.id);
+      } else {
+        setRun(null);
+        setClaims([]);
+        setClaimsState("idle");
+      }
+    } catch (error) {
+      setEventIssue(toIssue(error));
+      setEventState("error");
+    }
+  }, [loadClaimsForRun]);
 
-  function addActivity(title: string, detail: string, projectId = selectedFolderId) {
-    setActivity((items) => [{ id: `activity-${Date.now()}`, title, detail, time: t("Just now", "剛剛"), projectId }, ...items].slice(0, 20));
-  }
-
-  function openFolder(id: string) {
-    const folder = folders.find((item) => item.id === id) || selectedFolder;
-    setSelectedFolderId(folder.id);
-    setProjectKind(folder.kind);
-    setMenuId(null);
-    setView("folder");
-  }
-
-  function openWorkspace(id = selectedFolderId) {
-    const folder = folders.find((item) => item.id === id) || selectedFolder;
-    setSelectedFolderId(folder.id);
-    setProjectKind(folder.kind);
-    setSelectedClaimId(claimSeeds[folder.kind][0].id);
-    setReviewFilter("pending");
-    setCurrentEventName("");
-    setView("workspace");
-  }
-
-  function openItem(id: string) {
-    setSelectedAssetId(id);
-    setView("item");
-  }
-
-  function openClaim(id: string) {
-    setSelectedClaimId(id);
-    setEditMode(false);
-    setAskOpen(false);
-    setAskAnswer("");
-    setView("claim");
-  }
-
-  function startAgent(asset: Asset) {
-    const copy = { ...asset, id: asset.id.startsWith("sample") ? `new-${Date.now()}` : asset.id };
-    const next = suggestionsFor(copy);
-    setStagedAsset(copy);
-    setSelectedSuggestion(next[0].folderId);
-    setAgentReady(false);
-    setProcessingStep(0);
-    setModal(null);
-    setView("agent");
-    window.setTimeout(() => setProcessingStep(1), 450);
-    window.setTimeout(() => setProcessingStep(2), 900);
-    window.setTimeout(() => setProcessingStep(3), 1350);
-    window.setTimeout(() => setAgentReady(true), 1750);
-  }
-
-  function handleFile(file: File) {
-    const type: AssetType = file.type.startsWith("audio") ? "audio" : file.type.startsWith("image") ? "image" : "document";
-    startAgent({
-      id: `upload-${Date.now()}`,
-      name: file.name,
-      type,
-      meta: `${Math.max(1, Math.round(file.size / 1024))} KB · Uploaded file`,
-      added: "Just now",
-        summary: "The title, available text, transcript cues and recent project context are ready to review.",
+  useEffect(() => {
+    if (!run || run.status !== "queued" || localDispatchRuns.current.has(run.id)) return;
+    localDispatchRuns.current.add(run.id);
+    void api.kickLocalDispatcher().catch(() => {
+      // Production relies on its scheduled dispatcher. In local development,
+      // Run polling will surface a real processing failure if dispatch fails.
     });
-  }
+  }, [run]);
 
-  function allowFiling() {
-    if (!stagedAsset) return;
-    const filed = { ...stagedAsset, folderId: selectedSuggestion, added: "Just now" };
-    setAssets((items) => [...items.filter((item) => item.id !== filed.id), filed]);
-    setInbox((items) => items.filter((item) => item.id !== filed.id));
-    setLastFiledId(filed.id);
-    setSelectedFolderId(selectedSuggestion);
-    setProjectKind(folders.find((folder) => folder.id === selectedSuggestion)?.kind || "general");
-    setSelectedAssetId(filed.id);
-    setStagedAsset(null);
-    setView("folder");
-    addActivity(t("Item filed", "內容已歸檔"), `${filed.name} · ${folders.find((folder) => folder.id === selectedSuggestion)?.name}`, selectedSuggestion);
-    flash(`Filed in ${folders.find((folder) => folder.id === selectedSuggestion)?.name}`);
-  }
+  useEffect(() => {
+    if (!run || !runInProgress.has(run.status)) return;
+    pollAttempts.current = 0;
+    const timer = window.setInterval(async () => {
+      // Luna Max may legitimately spend several minutes reasoning before it
+      // returns structured output. Keep the simple test screen live for up to
+      // 15 minutes; the server remains the source of truth if the page closes.
+      if (pollAttempts.current >= 360) {
+        window.clearInterval(timer);
+        return;
+      }
+      pollAttempts.current += 1;
+      try {
+        const latest = await api.getRun(run.id);
+        setRun(latest);
+        if (!runInProgress.has(latest.status)) {
+          window.clearInterval(timer);
+          if (runComplete.has(latest.status)) {
+            await loadClaimsForRun(latest.id);
+            const refreshes: Promise<unknown>[] = [];
+            if (project?.id) {
+              refreshes.push(api.getProject(project.id).then((latestProject) => setProject(latestProject)));
+            }
+            if (event?.id) {
+              refreshes.push(api.getEvent(event.id).then((latestEvent) => setEvent(latestEvent)));
+            }
+            await Promise.all(refreshes);
+          }
+        }
+      } catch (error) {
+        const issue = toIssue(error);
+        if (issue.status >= 500 || issue.status === 0) return;
+        window.clearInterval(timer);
+        setClaimsIssue(issue);
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [event?.id, loadClaimsForRun, project?.id, run]);
 
-  function keepInInbox() {
-    if (stagedAsset && !inbox.some((item) => item.id === stagedAsset.id)) {
-      setInbox((items) => [{ ...stagedAsset, folderId: undefined }, ...items]);
+  const loadReviewQueue = useCallback(async () => {
+    if (!project) return;
+    setScreen("review");
+    setClaimsState("loading");
+    setClaimsIssue(null);
+    try {
+      const [latestProject, latestEvents] = await Promise.all([
+        api.getProject(project.id),
+        api.listEvents(project.id),
+      ]);
+      setProject(latestProject);
+      setEvents(latestEvents);
+      const runIds = [...new Set(latestEvents.map((item) => item.latestRun?.id || item.latestRunId).filter((value): value is string => Boolean(value)))];
+      if (!runIds.length) {
+        setClaims([]);
+        setOccurrenceCandidates([]);
+        setClaimsState("empty");
+        return;
+      }
+      const results = await Promise.allSettled(runIds.map((runId) => api.getRunReview(runId)));
+      const failed = results.find((item): item is PromiseRejectedResult => item.status === "rejected");
+      const foundClaims = results.flatMap((item) => item.status === "fulfilled" ? item.value.claims : []);
+      const foundOccurrences = results.flatMap((item) => item.status === "fulfilled" ? item.value.occurrenceCandidates : []);
+      if (failed && !foundClaims.length && !foundOccurrences.length) throw failed.reason;
+      const uniqueClaims = [...new Map(foundClaims.map((item) => [item.id, item])).values()];
+      const uniqueOccurrences = [...new Map(foundOccurrences.map((item) => [item.id, item])).values()];
+      setClaims(uniqueClaims);
+      setOccurrenceCandidates(uniqueOccurrences);
+      setClaimsState(uniqueClaims.length || uniqueOccurrences.length ? "ready" : "empty");
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+      setClaimsState("error");
     }
-    setStagedAsset(null);
-    setView("inbox");
-    if (stagedAsset) addActivity(t("Item kept in Inbox", "內容保留在收件匣"), stagedAsset.name, undefined);
-    flash("Kept in Inbox");
-  }
+  }, [project]);
 
-  function moveToTrash(asset: Asset) {
-    setAssets((items) => items.filter((item) => item.id !== asset.id));
-    setInbox((items) => items.filter((item) => item.id !== asset.id));
-    setTrash((items) => [{ ...asset }, ...items]);
-    setMenuId(null);
-    addActivity(t("Item moved to Trash", "內容移到垃圾桶"), asset.name, asset.folderId);
-    flash("Moved to Trash");
-  }
-
-  function restoreAsset(asset: Asset) {
-    setTrash((items) => items.filter((item) => item.id !== asset.id));
-    if (asset.folderId && folders.some((folder) => folder.id === asset.folderId)) setAssets((items) => [...items, asset]);
-    else setInbox((items) => [...items, { ...asset, folderId: undefined }]);
-    addActivity(t("Item restored", "內容已還原"), asset.name, asset.folderId);
-    flash("Item restored");
-  }
-
-  function openRename(kind: "folder" | "asset", value: string, id: string) {
-    setRenameKind(kind);
-    setRenameValue(value);
-    if (kind === "folder") setSelectedFolderId(id);
-    else setSelectedAssetId(id);
-    setMenuId(null);
-    setShowRename(true);
-    setModal("rename");
-  }
-
-  function saveRename() {
-    const value = renameValue.trim();
-    if (!value) return;
-    if (renameKind === "folder") setFolders((items) => items.map((item) => item.id === selectedFolderId ? { ...item, name: value } : item));
-    else {
-      setAssets((items) => items.map((item) => item.id === selectedAssetId ? { ...item, name: value } : item));
-      setInbox((items) => items.map((item) => item.id === selectedAssetId ? { ...item, name: value } : item));
+  const loadView = useCallback(async (tab: ResultTab) => {
+    if (!project) return;
+    setViewTab(tab);
+    setScreen("results");
+    setViewState("loading");
+    setViewIssue(null);
+    try {
+      const [result, nextProject, nextEvents] = await Promise.all([
+        tab === "brief-card"
+          ? loadBriefDisplayData(project.id)
+          : api.getView(project.id, tab),
+        api.getProject(project.id),
+        api.listEvents(project.id),
+      ]);
+      setProject(nextProject);
+      setEvents(nextEvents);
+      setViewData(result);
+      const briefReady = tab === "brief-card" && isRecord(result) && Boolean(
+        result.stateItem ||
+        result.riskItem ||
+        recordArray(result.deltaItems).length ||
+        recordArray(result.agendaItems).length,
+      );
+      setViewState(
+        objectItems(result).length ||
+        (isRecord(result) && (result.summary || result.folder_summary)) ||
+        briefReady
+          ? "ready"
+          : "empty",
+      );
+    } catch (error) {
+      const issue = toIssue(error);
+      setViewIssue(issue);
+      setViewState(issue.status === 404 ? "empty" : "error");
+      setViewData(null);
     }
-    setShowRename(false);
-    setModal(null);
-    flash("Name updated");
+  }, [project]);
+
+  const openRunDebug = useCallback(async (runId: string) => {
+    setScreen("run-debug");
+    setRunDebugState("loading");
+    setRunDebugIssue(null);
+    setRunDebug(null);
+    try {
+      const result = await api.getRunDebug(runId);
+      setRunDebug(result);
+      setRunDebugState("ready");
+    } catch (error) {
+      setRunDebugIssue(toIssue(error));
+      setRunDebugState("error");
+    }
+  }, []);
+
+  async function openClaim(claimOrVersionId: string) {
+    let listClaim = claims.find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
+    let nextClaim: Claim | null = null;
+    setBusyAction("open-claim");
+    try {
+      let lookupId = listClaim?.id ?? claimOrVersionId;
+      let history: unknown;
+      try {
+        history = await api.getClaimHistory(lookupId);
+      } catch (error) {
+        const issue = toIssue(error);
+        if (!project || issue.status !== 404) throw error;
+        const [summaryView, timelineView] = await Promise.all([
+          api.getView(project.id, "folder-summary"),
+          api.getView(project.id, "timeline"),
+        ]);
+        listClaim = [...claimsFromVerifiedView(summaryView), ...claimsFromVerifiedView(timelineView)]
+          .find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
+        if (!listClaim) throw error;
+        lookupId = listClaim.id;
+        history = await api.getClaimHistory(lookupId);
+      }
+      if (isRecord(history)) {
+        const detailed = normalizeClaim(history.current_claim ?? history.claim ?? history);
+        nextClaim = {
+          ...detailed,
+          eventTitle: detailed.eventTitle ?? listClaim?.eventTitle,
+          evidenceRefs: detailed.evidenceRefs.length ? detailed.evidenceRefs : listClaim?.evidenceRefs ?? [],
+        };
+      }
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+    if (!nextClaim?.id) return;
+    setSelectedClaim(nextClaim);
+    setScreen("claim");
+    setEvidence([]);
+    setEvidenceState("loading");
+    try {
+      const embedded = nextClaim.evidenceRefs;
+      const missingIds = nextClaim.evidenceRefIds.filter((id) => !embedded.some((item) => item.id === id));
+      const fetched = await Promise.allSettled(missingIds.map((id) => api.getEvidence(id)));
+      const refs = [...embedded, ...fetched.flatMap((item) => item.status === "fulfilled" ? [item.value] : [])];
+      setEvidence(refs);
+      const everyFetchSucceeded = fetched.every((item) => item.status === "fulfilled");
+      setEvidenceState(
+        isCompleteEvidenceSet(nextClaim.evidenceRefIds, refs, everyFetchSucceeded)
+          ? "ready"
+          : nextClaim.evidenceRefIds.length === 0
+            ? "empty"
+            : "error",
+      );
+    } catch {
+      setEvidenceState("error");
+    }
   }
 
-  function deleteFolder() {
-    const id = selectedFolderId;
-    const moved = assets.filter((asset) => asset.folderId === id).map((asset) => ({ ...asset, folderId: undefined }));
-    setAssets((items) => items.filter((asset) => asset.folderId !== id));
-    setInbox((items) => [...moved, ...items]);
-    setFolders((items) => items.filter((folder) => folder.id !== id));
-    setModal(null);
-    setView("projects");
-    flash("Project deleted; its items were moved to Inbox");
+  const pendingClaims = useMemo(() => claims.filter((item) => item.reviewStatus === "pending"), [claims]);
+  const selectedBatch = useMemo(() => pendingClaims.filter((item) => selectedClaimIds.has(item.id)), [pendingClaims, selectedClaimIds]);
+
+  async function runVerdict(
+    action: "confirm" | "reject" | "edit",
+    reason?: string,
+    edit?: ClaimEditSubmission,
+  ) {
+    if (!selectedClaim) return;
+    if ((action === "confirm" || action === "edit") && evidenceState !== "ready") {
+      flash("证据尚未完整加载，暂时不能确认或修改这条记录");
+      return;
+    }
+    setBusyAction(action);
+    try {
+      const fingerprint = [
+        "verdict",
+        selectedClaim.id,
+        selectedClaim.versionId,
+        action,
+        reason || "",
+        edit ? JSON.stringify({
+          ...edit,
+          evidenceRefIds: [...edit.evidenceRefIds].sort(),
+          retainRelationIds: [...edit.retainRelationIds].sort(),
+        }) : "",
+      ].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.saveVerdict(selectedClaim, action, { idempotencyKey, reason, edit });
+      mutationKeys.current.delete(fingerprint);
+      setSelectedClaim(updated);
+      setClaims((items) => items.map((item) => item.id === selectedClaim.id ? updated : item));
+      if (project) {
+        const [latestProject, latestEvents] = await Promise.all([
+          api.getProject(project.id),
+          api.listEvents(project.id),
+        ]);
+        setProject(latestProject);
+        setEvents(latestEvents);
+      }
+      flash(action === "reject" ? "已记录为不采纳" : action === "edit" ? "修改已保存并确认" : "记录已确认");
+      if (action === "edit") await openClaim(updated.id);
+    } catch (error) {
+      const issue = toIssue(error);
+      setClaimsIssue(issue);
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("这条记录已被其他操作修改，请刷新后再决定");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function updateClaim(state: ClaimState, value?: string) {
-    setClaimsByKind((current) => ({
-      ...current,
-      [projectKind]: current[projectKind].map((claim) => claim.id === selectedClaim.id
-        ? { ...claim, state, proposed: value?.trim() || claim.proposed, editedReason: state === "edited" ? editReason.trim() || "Clarified by the project owner" : claim.editedReason }
-        : claim),
-    }));
-    setEditMode(false);
-    setEditReason("");
-    addActivity(
-      state === "confirmed" ? t("Update confirmed", "更新已確認") : state === "edited" ? t("Update edited", "更新已修改") : state === "rejected" ? t("Update declined", "更新未採用") : t("Update left for later", "更新留待稍後處理"),
-      `${selectedClaim.field} · ${value?.trim() || selectedClaim.proposed}`,
-    );
-    flash(state === "confirmed" ? "Added to project record" : state === "edited" ? "Edited value and source history saved" : state === "rejected" ? "Not added; original suggestion kept in history" : "Kept for later review");
+  async function attestSelectedClaimForBatch() {
+    if (!selectedClaim) return;
+    if (evidenceState !== "ready") {
+      flash("证据尚未完整加载，暂时不能记录为已核对");
+      return;
+    }
+    setBusyAction("evidence-review-attestation");
+    setClaimsIssue(null);
+    try {
+      const fingerprint = [
+        "evidence-review-attestation",
+        selectedClaim.id,
+        selectedClaim.versionId,
+      ].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.attestEvidenceReview(selectedClaim, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      setSelectedClaim(updated);
+      setClaims((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setScreen("review");
+      flash("已记录本次证据核对，可以在列表中选择批量确认");
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function batchConfirmLowRisk() {
-    setClaimsByKind((current) => ({
-      ...current,
-      [projectKind]: current[projectKind].map((claim) => claim.state === "pending" && claim.risk === "low" ? { ...claim, state: "confirmed" } : claim),
-    }));
-    addActivity(t("Low-risk updates confirmed", "低風險更新已確認"), t("The project record and connected drafts were refreshed.", "專案記錄與相關草稿已更新。"));
-    flash("Low-risk updates confirmed");
+  async function withdrawClaim(reason: string) {
+    if (!selectedClaim) return;
+    setBusyAction("withdraw");
+    try {
+      const fingerprint = ["withdraw", selectedClaim.id, selectedClaim.versionId, reason].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.withdrawClaim(selectedClaim, idempotencyKey, reason);
+      mutationKeys.current.delete(fingerprint);
+      setSelectedClaim(updated);
+      setClaims((items) => items.map((item) => item.id === selectedClaim.id ? updated : item));
+      flash("这条记录已撤回，仍会保留在历史时间线中");
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function askAI() {
-    if (!askText.trim()) return;
-    const against = selectedClaim.againstQuote ? ` A conflicting statement is also recorded: “${selectedClaim.againstQuote}”` : " No conflicting evidence is currently attached.";
-    setAskAnswer(`This suggestion is based on the transcript at ${selectedClaim.time}: “${selectedClaim.quote}”.${against}`);
+  async function batchConfirm() {
+    if (!selectedBatch.length) return;
+    setBusyAction("batch");
+    try {
+      const fingerprint = `batch:${selectedBatch.map((item) => `${item.id}:${item.versionId}`).sort().join(",")}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.batchConfirm(selectedBatch, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      const byId = new Map(updated.map((item) => [item.id, item]));
+      setClaims((items) => items.map((item) => byId.get(item.id) ?? item));
+      setSelectedClaimIds(new Set());
+      if (project) {
+        const [latestProject, latestEvents] = await Promise.all([
+          api.getProject(project.id),
+          api.listEvents(project.id),
+        ]);
+        setProject(latestProject);
+        setEvents(latestEvents);
+      }
+      flash(`已确认 ${selectedBatch.length} 条记录`);
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function openTemplate(mode: string) {
-    setTemplateMode(mode);
-    setView("templates");
+  async function runOccurrenceVerdict(candidate: OccurrenceCandidate, action: "confirm" | "reject") {
+    setBusyAction(`occurrence:${candidate.id}`);
+    setClaimsIssue(null);
+    try {
+      const fingerprint = ["occurrence", candidate.id, candidate.base_version_id, action].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      await api.saveOccurrenceVerdict(candidate, action, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      flash(action === "confirm" ? "已确认这次再次出现，并保存新的原始证据" : "这次再次出现未被采纳");
+      await loadReviewQueue();
+    } catch (error) {
+      const issue = toIssue(error);
+      setClaimsIssue(issue);
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新审核区后重新决定");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function moveSelectedAsset() {
-    const folder = folders.find((item) => item.id === moveTarget);
-    if (!folder) return;
-    setAssets((items) => items.some((item) => item.id === selectedAsset.id)
-      ? items.map((item) => item.id === selectedAsset.id ? { ...item, folderId: folder.id } : item)
-      : [{ ...selectedAsset, folderId: folder.id }, ...items]);
-    setInbox((items) => items.filter((item) => item.id !== selectedAsset.id));
-    setSelectedFolderId(folder.id);
-    setProjectKind(folder.kind);
-    setModal(null);
-    addActivity(t("Item moved", "內容已移動"), `${selectedAsset.name} · ${folder.name}`, folder.id);
-    flash(t(`Moved to ${folder.name}`, `已移動到 ${folder.name}`));
+  async function runOccurrenceConversion(
+    candidate: OccurrenceCandidate,
+    newClaims: OccurrenceNewClaim[],
+  ) {
+    setBusyAction(`occurrence:${candidate.id}`);
+    setClaimsIssue(null);
+    try {
+      const fingerprint = [
+        "occurrence",
+        candidate.id,
+        candidate.base_version_id,
+        "convert_to_new_claim",
+        JSON.stringify(newClaims),
+      ].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const converted = await api.convertOccurrenceToClaims(candidate, newClaims, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      flash(`已生成 ${converted.length} 条待审核记录，原记录没有改动`);
+      await loadReviewQueue();
+    } catch (error) {
+      const issue = toIssue(error);
+      setClaimsIssue(issue);
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新审核区后重新决定");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function createMockEvent() {
-    const name = newEventTitle.trim() || `${newEventType} · ${t("Today", "今天")}`;
-    const asset: Asset = {
-      id: `event-${Date.now()}`,
-      name: `${name}.m4a`,
-      type: "audio",
-      meta: `18 min · ${t("Transcript ready", "逐字稿已完成")}`,
-      added: t("Just now", "剛剛"),
-      summary: t("A newly captured event with transcript, timeline and linked project context.", "新的活動已整理成逐字稿、時間線與專案背景。"),
-      folderId: selectedFolder.id,
-    };
-    setAssets((items) => [asset, ...items]);
-    setSelectedAssetId(asset.id);
-    setCurrentEventName(name);
-    setNewEventTitle("");
-    setModal(null);
-    addActivity(t("New event processed", "新活動已處理"), `${name} · ${t("2 suggestions ready for review", "2 項建議等待審閱")}`);
-    setView("event");
-    flash(t("Transcript, timeline and evidence are ready", "逐字稿、時間線與證據已準備"));
+  async function runContradictionResolution(input: {
+    relationId: string;
+    sourceClaimVersionId: string;
+    targetClaimVersionId: string;
+    winningClaimVersionId: string;
+    explanation: string;
+  }) {
+    setBusyAction(`relation:${input.relationId}`);
+    setViewIssue(null);
+    try {
+      const fingerprint = [
+        "relation",
+        input.relationId,
+        input.sourceClaimVersionId,
+        input.targetClaimVersionId,
+        input.winningClaimVersionId,
+        input.explanation,
+      ].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      await api.resolveContradiction(input, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      flash("矛盾已解决，正式结果已按服务器记录刷新");
+      await loadView(viewTab);
+    } catch (error) {
+      const issue = toIssue(error);
+      setViewIssue(issue);
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("这组矛盾已经变化，请刷新后重新选择");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function resetDemo() {
-    window.localStorage.removeItem("notique-demo-state-v2");
-    setFolders(initialFolders);
-    setAssets(initialAssets);
-    setInbox(initialInbox);
-    setTrash([]);
-    setClaimsByKind({ general: claimSeeds.general.map((claim) => ({ ...claim })), contractor: claimSeeds.contractor.map((claim) => ({ ...claim })) });
-    setSavedDeliverables([]);
-    setChecklistDone({ 0: true });
-    setChecklistEvidence({});
-    setActivity(initialActivity);
-    setSelectedFolderId("product");
-    setProjectKind("general");
-    setModal(null);
-    setView("projects");
-    flash(t("Demo data reset", "Demo 資料已重設"));
+  async function startExtractionForEvent(targetEvent: Event) {
+    const ids = targetEvent.assets
+      .filter((asset) => asset.status === "ready")
+      .map((asset) => asset.versionId)
+      .filter((id): id is string => Boolean(id));
+    if (!ids.length) {
+      setEventIssue({ code: "EVENT_NOT_READY", message: "当前材料还没有可用于分析的已完成版本。", status: 409 });
+      return;
+    }
+    setBusyAction("extraction");
+    setEventIssue(null);
+    try {
+      const fingerprint = `${targetEvent.id}:${[...ids].sort().join(",")}`;
+      let key = extractionKeys.current.get(fingerprint);
+      if (!key) {
+        key = crypto.randomUUID();
+        extractionKeys.current.set(fingerprint, key);
+      }
+      const nextRun = await api.startExtraction(targetEvent.id, ids, key);
+      extractionKeys.current.delete(fingerprint);
+      setRun(nextRun);
+      setClaims([]);
+      setClaimsState("idle");
+      flash("分析已经开始，可以稍后回来查看");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function Sidebar() {
-    const projectArea = ["folder", "item", "workspace", "event", "claim", "compare"].includes(view);
-    return (
-      <aside className="sidebar">
-        <button className="logo" onClick={() => setView("projects")}><span>⌁</span>Notique</button>
-        <div className="sidebar-top-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={language === "en" ? "Switch to Traditional Chinese" : "切換到英文"}>{language === "en" ? "繁中" : "EN"}</button></div>
-        <button className="account account-button" onClick={() => setAccountOpen((open) => !open)}>
-          <span className="avatar">A</span><span><strong>Aaron</strong><small>aaron@notiqueai.com</small></span><b>⌄</b>
-        </button>
-        {accountOpen && <div className="account-menu"><button onClick={() => { setAccountOpen(false); setModal("profile") }}>{t("Profile", "個人資料")}</button><button onClick={() => { setAccountOpen(false); setModal("workspaceSettings") }}>{t("Workspace settings", "工作區設定")}</button></div>}
-        <button className="search-button" onClick={() => setModal("search")}>⌕ <span>{t("Search", "搜尋")}</span></button>
-        <p className="nav-label">{t("WORKSPACE", "工作區")}</p>
-        <nav>
-          <button className={view === "projects" || projectArea ? "nav-item active" : "nav-item"} onClick={() => setView("projects")}><span>▣</span>{t("Projects", "專案")}<b>{folders.length}</b></button>
-          <button className={["inbox", "agent"].includes(view) ? "nav-item active" : "nav-item"} onClick={() => setView("inbox")}><span>▤</span>{t("Inbox", "收件匣")}<b className={inbox.length ? "blue-count" : ""}>{inbox.length}</b></button>
-          <button className={view === "recordings" ? "nav-item active" : "nav-item"} onClick={() => setView("recordings")}><span>♪</span>{t("Recordings", "錄音")}<b>{allRecordings.length}</b></button>
-          <button className={view === "review" ? "nav-item active" : "nav-item"} onClick={() => { setProjectKind(selectedFolder.kind); setReviewFilter("pending"); setView("review") }}><span>✦</span>{t("Review Queue", "審閱佇列")}<b className={globalPendingCount ? "blue-count" : ""}>{globalPendingCount}</b></button>
-          <button className={view === "deliverables" ? "nav-item active" : "nav-item"} onClick={() => { setProjectKind(selectedFolder.kind); setView("deliverables") }}><span>▦</span>{t("Deliverables", "交付文件")}<b>3</b></button>
-          <button className={view === "trash" ? "nav-item active" : "nav-item"} onClick={() => setView("trash")}><span>♲</span>{t("Trash", "垃圾桶")}<b>{trash.length}</b></button>
-        </nav>
-        <p className="nav-label resources">{t("RESOURCES", "資源")}</p>
-        <nav>
-          <button className={view === "templates" && templateMode === "Templates" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("Templates")}><span>▤</span><span>{t("Templates", "範本")}</span></button>
-          <button className={view === "templates" && templateMode === "My templates" ? "nav-item active" : "nav-item"} onClick={() => openTemplate("My templates")}><span>▧</span><span>{t("My templates", "我的範本")}</span></button>
-          <button className="nav-item" onClick={() => flash(t("Help center opened", "幫助中心已開啟"))}><span>?</span><span>{t("Help & support", "幫助與支援")}</span></button>
-        </nav>
-        <div className="spacer" />
-        <button className="upgrade" onClick={() => setModal("upgrade")}>{t("Upgrade plan", "升級方案")}</button>
-      </aside>
-    );
+  async function beginSimpleTest() {
+    setSimpleFlow(true);
+    setBusyAction("simple-start");
+    setProjectsIssue(null);
+    try {
+      const now = new Date();
+      const name = `测试记录 ${new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(now)}`;
+      const fingerprint = `simple-project:${name}`;
+      const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, key);
+      const created = await api.createProject({ name }, key);
+      mutationKeys.current.delete(fingerprint);
+      setProject(created);
+      setEvents([]);
+      setEvent(null);
+      setRun(null);
+      setClaims([]);
+      setProjectState("ready");
+      setShowImport(true);
+    } catch (error) {
+      setProjectsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function Toolbar({ title, count, action }: { title: string; count?: number; action?: "project" | "import" }) {
-    return (
-      <header className="toolbar">
-        <h1>{t(title, title === "Projects" ? "專案" : title === "Recordings" ? "錄音" : title === "Inbox" ? "收件匣" : title === "Trash" ? "垃圾桶" : title)}{typeof count === "number" && <span> ({count})</span>}</h1>
-        <div>
-          <button className="notification-button" onClick={() => setModal("notifications")} aria-label={t("Open notifications", "開啟通知")}>♢<span>{globalPendingCount + inbox.length}</span></button>
-          <button className="sort" onClick={() => { setSortNewest((value) => !value); flash(sortNewest ? t("Showing oldest first", "顯示最早項目") : t("Showing newest first", "顯示最新項目")) }}>{sortNewest ? t("Newest first⌄", "最新項目⌄") : t("Oldest first⌃", "最早項目⌃")}</button>
-          {action === "project" && <button className="primary" onClick={() => setModal("newProject")}>{t("New project", "新增專案")}</button>}
-          {action === "import" && <button className="primary" onClick={() => setModal("import")}>{t("Import", "匯入")}</button>}
-        </div>
-      </header>
-    );
+  async function attachSimpleFile(file: File) {
+    if (!event) return;
+    const localIssue = photoUploadIssue(file.name, file.type, file.size);
+    if (localIssue) {
+      setEventIssue(localIssue);
+      return;
+    }
+    setBusyAction("asset");
+    setEventIssue(null);
+    try {
+      const imageMime = modelImageMimeFor(file.name, file.type);
+      const kind = imageMime ? "photo" : file.type === "application/pdf" ? "pdf" : "text";
+      const contentType = imageMime || file.type || "text/plain";
+      const fingerprint = ["asset-init", event.id, kind, file.name, contentType, file.size].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const init = await api.initAsset(event.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size }, idempotencyKey);
+      await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
+      await api.finalizeAsset(init.assetId);
+      mutationKeys.current.delete(fingerprint);
+      flash("材料已加入");
+      if (project) await loadSimpleProject(project.id, event.id);
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
-  function ProjectsView() {
-    const ordered = sortNewest ? folders : [...folders].reverse();
-    return (
-      <div className="page">
-        <Toolbar title="Projects" count={folders.length} action="project" />
-        <section className="home-summary"><div><span className="home-summary-icon">✓</span><span><strong>{t("Pick up where you left off", "繼續上次的工作")}</strong><small>{t("Review important changes before creating a final document.", "先審閱重要變更，再建立最終文件。")}</small></span></div><div className="home-summary-stats"><button onClick={() => { setSelectedFolderId("oak"); setProjectKind("contractor"); setView("review") }}><strong>{globalPendingCount}</strong><small>{t("changes to review", "項變更待審閱")}</small></button><button onClick={() => setView("inbox")}><strong>{inbox.length}</strong><small>{t("items in Inbox", "項內容在收件匣")}</small></button><button onClick={() => setModal("notifications")}><strong>{activity.length}</strong><small>{t("recent actions", "筆最近操作")}</small></button></div><button className="primary" onClick={() => { setSelectedFolderId("oak"); setProjectKind("contractor"); setView("workspace") }}>{t("Open Oak Street", "開啟 Oak Street")}</button></section>
-        <div className="folder-grid">
-          {ordered.map((folder) => (
-            <article className="folder-card" key={folder.id} role="button" tabIndex={0} onClick={() => openWorkspace(folder.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") openWorkspace(folder.id) }}>
-              <span className={`folder-tab ${folder.color}`} />
-              <button className="more" aria-label={`More options for ${folder.name}`} onClick={(event) => { event.stopPropagation(); setSelectedFolderId(folder.id); setMenuId(menuId === folder.id ? null : folder.id) }}>•••</button>
-              <strong>{folder.name}</strong>
-              <small>{folder.description}</small>
-              <span className="folder-meta">{folderCounts[folder.id] || 0} items · {folder.updated}</span>
-              {folder.id === "product" || folder.id === "oak" ? <span className="update-badge">{folder.kind === "contractor" ? 3 : 3} {t("changes", "項變更")}</span> : null}
-              {menuId === folder.id && <span className="menu" onClick={(event) => event.stopPropagation()}><button onClick={() => openRename("folder", folder.name, folder.id)}>{t("Rename", "重新命名")}</button><button className="danger" onClick={() => { setSelectedFolderId(folder.id); setModal("deleteFolder"); setMenuId(null) }}>{t("Delete", "刪除")}</button></span>}
-            </article>
-          ))}
-        </div>
-      </div>
-    );
+  function goSimple() {
+    setSimpleFlow(true);
+    if (project) {
+      const preferredEventId = event?.projectId === project.id ? event.id : undefined;
+      void loadSimpleProject(project.id, preferredEventId);
+      return;
+    }
+    setScreen("simple");
   }
 
-  function RecordingsView() {
-    const ordered = sortNewest ? allRecordings : [...allRecordings].reverse();
-    return (
-      <div className="page">
-        <Toolbar title="Recordings" count={ordered.length} action="import" />
-        <div className="recording-grid">
-          {ordered.map((asset) => (
-            <article className="recording-card" key={asset.id}>
-              <button className="play" onClick={() => openItem(asset.id)}>▶</button>
-              <button className="recording-copy" onClick={() => openItem(asset.id)}><strong>{asset.name}</strong><small>{folders.find((folder) => folder.id === asset.folderId)?.name}</small><b>{asset.meta}</b></button>
-              <button className="more" onClick={() => setMenuId(menuId === asset.id ? null : asset.id)}>•••</button>
-              {menuId === asset.id && <div className="menu card-menu"><button onClick={() => openRename("asset", asset.name, asset.id)}>Rename</button><button className="danger" onClick={() => moveToTrash(asset)}>Move to Trash</button></div>}
-            </article>
-          ))}
-        </div>
-      </div>
-    );
+  function goProjects() {
+    setSimpleFlow(false);
+    setScreen("projects");
+    setProject(null);
+    setEvent(null);
+    setSelectedClaim(null);
+    void loadProjects();
   }
 
-  function InboxView() {
-    return (
-      <div className="page">
-        <Toolbar title="Inbox" count={inbox.length} action="import" />
-        <div className="inbox-intro"><span className="sparkle">＋</span><span><strong>{t("New items", "新內容")}</strong><small>{t("Review items that are not assigned to a project yet.", "查看尚未歸入專案的內容。")}</small></span><button className="secondary" onClick={() => setModal("import")}>{t("Add item", "加入項目")}</button></div>
-        {inbox.length ? <div className="content-table"><div className="table-head"><span>{t("Name", "名稱")}</span><span>{t("Added", "新增時間")}</span><span>{t("Status", "狀態")}</span><span /></div>{inbox.map((asset) => <div className="table-row" key={asset.id}><button className="name-cell" onClick={() => openItem(asset.id)}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button><span>{asset.added}</span><span className="unfiled">{t("Not filed", "尚未歸檔")}</span><button className="agent-button" onClick={() => startAgent(asset)}>{t("Choose a project", "選擇專案")}</button></div>)}</div> : <div className="empty"><span>✓</span><h2>{t("Inbox is clear", "收件匣已清空")}</h2><p>{t("New imports that need a project will appear here.", "需要分類的新內容會出現在這裡。")}</p><button className="primary" onClick={() => setModal("import")}>{t("Import something", "匯入內容")}</button></div>}
-      </div>
-    );
+  async function confirmCurrentScenario(scenario: string, custom?: string) {
+    if (!project) return;
+    setBusyAction("scenario");
+    setProjectIssue(null);
+    try {
+      const fingerprint = ["scenario", project.id, project.scenarioVersion ?? 0, scenario, custom || ""].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.confirmScenario(project, scenario, idempotencyKey, custom);
+      mutationKeys.current.delete(fingerprint);
+      setProject(updated);
+      flash("使用场景已确认，后续沟通会沿用这个设置");
+      if (screen === "simple") await loadSimpleProject(project.id, event?.id);
+      else await loadProject(project.id);
+    } catch (error) {
+      setProjectIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
   }
-
-  function TrashView() {
-    return (
-      <div className="page">
-        <Toolbar title="Trash" count={trash.length} />
-        {trash.length ? <div className="content-table"><div className="table-head"><span>{t("Name", "名稱")}</span><span>{t("Deleted", "刪除時間")}</span><span>{t("Original project", "原專案")}</span><span /></div>{trash.map((asset) => <div className="table-row" key={asset.id}><button className="name-cell" onClick={() => openItem(asset.id)}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button><span>{t("Just now", "剛剛")}</span><span>{folders.find((folder) => folder.id === asset.folderId)?.name || t("Inbox", "收件匣")}</span><button className="secondary" onClick={() => restoreAsset(asset)}>{t("Restore", "還原")}</button></div>)}</div> : <div className="empty"><span>♲</span><h2>{t("Trash is empty", "垃圾桶是空的")}</h2><p>{t("Deleted items stay here for 30 days.", "刪除的項目會在這裡保留 30 天。")}</p><button className="secondary" onClick={() => setView("projects")}>{t("Back to Projects", "返回專案")}</button></div>}
-      </div>
-    );
-  }
-
-  function FolderView() {
-    const ordered = sortNewest ? folderAssets : [...folderAssets].reverse();
-    return (
-      <div className="product-page">
-        <ProjectHeader active="files" />
-        <div className="folder-section-heading"><div><h2>{t("Files and recordings", "檔案與錄音")}</h2><p>{t("Everything saved to this project, in one place.", "這個專案裡的所有內容，都放在這裡。")}</p></div><button className="sort" onClick={() => setSortNewest((value) => !value)}>{sortNewest ? t("Newest first⌄", "最新項目⌄") : t("Oldest first⌃", "最早項目⌃")}</button></div>
-        <div className="folder-summary"><span><strong>{folderAssets.length}</strong><small>{t("Items", "項目")}</small></span><span><strong>{folderAssets.filter((item) => item.type === "audio").length}</strong><small>{t("Recordings", "錄音")}</small></span><span><strong>{folderAssets.filter((item) => item.type !== "audio").length}</strong><small>{t("Files and notes", "檔案與筆記")}</small></span></div>
-        <div className="content-table folder-table"><div className="table-head"><span>{t("Name", "名稱")}</span><span>{t("Type", "類型")}</span><span>{t("Added", "新增時間")}</span><span /></div>{ordered.map((asset) => <div className={asset.id === lastFiledId ? "table-row newly-filed" : "table-row"} key={asset.id}><button className="name-cell" onClick={() => openItem(asset.id)}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{asset.summary}</small></span></button><span className="type-label">{asset.type}</span><span>{asset.added}</span><div className="row-actions">{asset.id === lastFiledId && <span className="filed-badge">{t("Filed automatically", "已自動歸檔")}</span>}<button className="more inline" onClick={() => setMenuId(menuId === asset.id ? null : asset.id)}>•••</button>{menuId === asset.id && <div className="menu card-menu"><button onClick={() => openRename("asset", asset.name, asset.id)}>{t("Rename", "重新命名")}</button><button className="danger" onClick={() => moveToTrash(asset)}>{t("Move to Trash", "移到垃圾桶")}</button></div>}</div></div>)}</div>
-      </div>
-    );
-  }
-
-  function AgentView() {
-    const selected = suggestions.find((suggestion) => suggestion.folderId === selectedSuggestion) || suggestions[0];
-    return (
-      <div className="agent-page">
-        <button className="back" onClick={keepInInbox}>‹ {t("Back to Inbox", "返回收件匣")}</button>
-        <div className="agent-title"><span className="agent-mark">＋</span><div><h1>{t("Choose a project", "選擇專案")}</h1><p>{t("Pick the project that best fits this item. You can move it later.", "選擇最適合這項內容的專案，之後仍可移動。")}</p></div></div>
-        {stagedAsset && <article className="asset-preview"><b className={`type-icon large ${stagedAsset.type}`}>{typeIcon(stagedAsset.type)}</b><span><strong>{stagedAsset.name}</strong><small>{stagedAsset.meta}</small></span><button onClick={() => { setSelectedAssetId(stagedAsset.id); setModal("transcript") }}>{t("Preview", "預覽")}</button></article>}
-        {!agentReady ? <section className="analyzing"><span className="spinner" /><h2>{t("Preparing this item", "正在準備內容")}</h2><p>{t("Notique is reading the file and checking it against recent project activity.", "Notique 正在讀取檔案，並與最近的專案活動核對。")}</p><div className="processing-steps">{[
-          t("Upload received", "已收到檔案"),
-          stagedAsset?.type === "audio" ? t("Transcript created", "逐字稿已完成") : t("Text and metadata read", "文字與資料已讀取"),
-          t("Project context checked", "專案背景已核對"),
-          t("Suggestions prepared", "歸檔建議已準備"),
-        ].map((label, index) => <span className={index <= processingStep ? "done" : ""} key={label}><i>{index < processingStep ? "✓" : index === processingStep ? "•" : ""}</i>{label}</span>)}</div></section> : <><section className="suggestion-section"><header><div><h2>{t("Suggested projects", "建議專案")}</h2><p>{t("Choose one. Nothing moves until you confirm.", "選擇一個專案，確認後內容才會移動。")}</p></div><span>{t("Based on recent activity", "根據最近活動")}</span></header><div className="suggestions">{suggestions.map((suggestion, index) => { const folder = folders.find((item) => item.id === suggestion.folderId)!; const active = selectedSuggestion === suggestion.folderId; return <button className={active ? "suggestion active" : "suggestion"} key={suggestion.folderId} onClick={() => setSelectedSuggestion(suggestion.folderId)}><span className="radio">{active ? "●" : ""}</span><span className={`mini-folder ${folder.color}`}>▰</span><span className="suggestion-copy"><span><b>{index === 0 ? t("LIKELY", "較符合") : t("ANOTHER OPTION", "另一個選項")}</b><em>{suggestion.confidence}% {t("match", "符合")}</em></span><strong>{folder.name}</strong><small>{folder.description}</small><ul>{suggestion.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></span></button> })}</div></section><section className="agent-confirm"><span><strong>{t("File in", "歸檔到")} {folders.find((folder) => folder.id === selected?.folderId)?.name}</strong><small>{t("You can move or rename it later.", "之後仍可移動或重新命名。")}</small></span><button className="text-button" onClick={keepInInbox}>{t("Keep in Inbox", "保留在收件匣")}</button><button className="primary allow" onClick={allowFiling}>{t("File here", "歸檔到這裡")}</button></section></>}
-      </div>
-    );
-  }
-
-  function ItemView() {
-    const parent = folders.find((folder) => folder.id === selectedAsset.folderId);
-    return (
-      <div className="page item-page">
-        <button className="back" onClick={() => parent ? openFolder(parent.id) : setView(selectedAsset.folderId ? "folder" : "inbox")}>‹ {parent?.name || t("Inbox", "收件匣")}</button>
-        <header className="item-header"><span className={`type-icon hero ${selectedAsset.type}`}>{typeIcon(selectedAsset.type)}</span><div><h1>{selectedAsset.name}</h1><p>{selectedAsset.meta} · {selectedAsset.added}</p></div><span className="item-header-actions"><button className="secondary" onClick={() => { setMoveTarget(parent?.id || "product"); setModal("moveAsset") }}>{t("Move", "移動")}</button><button className="secondary" onClick={() => openRename("asset", selectedAsset.name, selectedAsset.id)}>{t("Rename", "重新命名")}</button></span></header>
-        <div className="item-layout"><article className="item-main"><h2>{t("Summary", "摘要")}</h2><p>{selectedAsset.summary}</p>{selectedAsset.type === "audio" && <><h2>{t("Transcript preview", "逐字稿預覽")}</h2><blockquote>“The project view matters because the details build up over more than one conversation. I still want to approve where things go.”</blockquote><button className="secondary" onClick={() => setModal("transcript")}>{t("Open full transcript", "開啟完整逐字稿")}</button></>}{selectedAsset.type === "image" && <button className="evidence-image-button" onClick={() => setModal("evidence")}><span className="photo-placeholder">PHOTO</span><span><strong>{t("Open image evidence", "開啟圖片證據")}</strong><small>{t("Captured with time and project metadata", "包含時間與專案資料")}</small></span></button>}</article><aside><h3>{t("Project", "專案")}</h3><button onClick={() => parent ? openFolder(parent.id) : startAgent(selectedAsset)}><span className={`mini-folder ${parent?.color || "slate"}`}>▰</span><span><strong>{parent?.name || t("Not filed", "尚未歸檔")}</strong><small>{parent ? t("Filed in this project", "已歸檔到此專案") : t("Choose a project", "選擇專案")}</small></span></button><h3>{t("Details", "詳細資料")}</h3><p>{t("Type", "類型")} <b>{selectedAsset.type}</b></p><p>{t("Added", "新增時間")} <b>{selectedAsset.added}</b></p><button className="detail-action" onClick={() => moveToTrash(selectedAsset)}>{t("Move to Trash", "移到垃圾桶")}</button></aside></div>
-      </div>
-    );
-  }
-
-  function ProjectHeader({ active = "overview" }: { active?: "overview" | "files" | "events" | "review" | "compare" | "deliverables" }) {
-    return (
-      <>
-        <button className="back-button" onClick={() => setView("projects")}>‹ {t("Projects", "專案")}</button>
-        <div className="project-header"><div><h1>{profile.title}</h1><p>{profile.meta}</p></div><div><button className="secondary" onClick={() => setModal("share")}>{t("Share", "分享")}</button><button className="secondary" onClick={() => { setNewEventType(projectKind === "contractor" ? "Site visit" : "Meeting"); setModal("newEvent") }}>{t("Record event", "記錄活動")}</button><button className="primary" onClick={() => setModal("import")}>{t("Add file", "加入檔案")}</button><button className="icon-button" onClick={() => setMenuId(menuId === "project-more" ? null : "project-more")}>•••</button>{menuId === "project-more" && <div className="menu project-menu"><button onClick={() => openRename("folder", selectedFolder.name, selectedFolder.id)}>{t("Rename project", "重新命名專案")}</button><button onClick={() => { setMenuId(null); setModal("deleteFolder") }} className="danger">{t("Delete project", "刪除專案")}</button></div>}</div></div>
-        <div className="tabs"><button className={active === "overview" ? "active" : ""} onClick={() => setView("workspace")}>{t("Overview", "概覽")}</button><button className={active === "files" ? "active" : ""} onClick={() => setView("folder")}>{t("Files", "檔案")} <span>{folderAssets.length}</span></button><button className={active === "events" ? "active" : ""} onClick={() => setView("event")}>{t("Events", "事件")} <span>4</span></button><button className={active === "review" ? "active" : ""} onClick={() => setView("review")}>{t("Review", "審閱")} <span>{pendingCount}</span></button><button className={active === "compare" ? "active" : ""} onClick={() => setView("compare")}>{t("Changes", "變更")}</button><button className={active === "deliverables" ? "active" : ""} onClick={() => setView("deliverables")}>{t("Deliverables", "交付文件")} <span>3</span></button></div>
-      </>
-    );
-  }
-
-  function WorkspaceView() {
-    return (
-      <div className="product-page">
-        <ProjectHeader />
-        {pendingCount > 0 ? <section className="review-notice"><span className="notice-icon">!</span><span><strong>{pendingCount} {t("changes need your review", "項變更需要審閱")}</strong><small>{t("Conflicts, approvals and other details are waiting here.", "衝突、審批和其他細節都在這裡等待處理。")}</small></span><button className="primary" onClick={() => setView("review")}>{t("Review changes", "審閱變更")}</button></section> : <section className="review-notice complete"><span className="notice-icon">✓</span><span><strong>{t("Project record is up to date", "專案記錄已更新")}</strong><small>{t("All recent changes have been reviewed.", "最近的變更都已審閱。")}</small></span><button className="secondary" onClick={() => setView("deliverables")}>{t("Open deliverables", "開啟交付文件")}</button></section>}
-        <div className="project-columns"><section className="project-main"><div className="section-title"><h2>{t("Project record", "專案記錄")}</h2><span>{t("Updated from four events", "來自四個事件的更新")}</span></div><div className="summary-grid">{overview.map((item, index) => <article className={index === 0 ? "summary-card wide" : "summary-card"} key={item.label}><small>{item.label}</small><strong>{item.value}</strong>{item.claimId && <button onClick={() => openClaim(item.claimId!)}>{claims.find((claim) => claim.id === item.claimId)?.state === "pending" ? t("Review evidence", "審閱證據") : t("View source", "查看來源")}</button>}</article>)}</div><div className="section-title"><h2>{t("Recent events", "最近事件")}</h2><button onClick={() => setView("event")}>{t("View latest", "查看最新")}</button></div><div className="activity-list"><button onClick={() => setView("event")}><span className="activity-icon">♪</span><span><strong>{profile.event}</strong><small>{profile.eventMeta}</small></span><Status state={pendingCount ? "pending" : "confirmed"} /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">▤</span><span><strong>{projectKind === "contractor" ? "Scope Follow-up Call" : "Research Debrief"}</strong><small>{t("Previous event · compared with latest", "上一個事件 · 與最新事件比較")}</small></span><Status state="confirmed" /><b>›</b></button><button onClick={() => setView("compare")}><span className="activity-icon">♪</span><span><strong>{projectKind === "contractor" ? "Site Walkthrough 01" : "Customer Interview · Round 2"}</strong><small>{t("Original project context", "原始專案背景")}</small></span><Status state="confirmed" /><b>›</b></button></div><div className="section-title"><h2>{t("Recent activity", "最近操作")}</h2><span>{t("Saved on this device", "已保存在此裝置")}</span></div><div className="audit-list">{activity.filter((item) => !item.projectId || item.projectId === selectedFolder.id).slice(0, 5).map((item) => <article key={item.id}><span>✓</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></article>)}</div></section><aside className="project-aside"><section className="side-card"><h3>{t("Project files", "專案檔案")}</h3>{folderAssets.slice(0, 2).map((asset) => <button key={asset.id} onClick={() => openItem(asset.id)}><span>{typeIcon(asset.type)}</span><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button>)}<button className="plain-link" onClick={() => openFolder(selectedFolder.id)}>{t("View all files", "查看所有檔案")}</button></section><section className="side-card"><h3>{t("People", "人員")}</h3><button className="person-button" onClick={() => flash("Aaron Wen · Project owner")}><span className="avatar">A</span><span><strong>Aaron Wen</strong><small>{t("Owner", "負責人")}</small></span></button><button className="person-button" onClick={() => flash(projectKind === "contractor" ? "Maria · Change Order owner" : "Kevin · Design collaborator")}><span className="avatar purple">{projectKind === "contractor" ? "M" : "K"}</span><span><strong>{projectKind === "contractor" ? "Maria" : "Kevin"}</strong><small>{t("Collaborator", "協作者")}</small></span></button></section><section className="side-card"><h3>{t("Deliverables", "交付文件")}</h3><p>{projectKind === "contractor" ? "Change Order, Scope Checklist and Site Report" : "Project Brief, Action Checklist and Decision Log"}</p><button className="secondary wide-button" onClick={() => setView("deliverables")}>{t("Open deliverables", "開啟交付文件")}</button></section></aside></div>
-      </div>
-    );
-  }
-
-  function EventView() {
-    const eventName = currentEventName || profile.event;
-    return (
-      <div className="product-page">
-        <ProjectHeader active="events" />
-        <div className="event-header"><div><button className="back-button" onClick={() => setView("workspace")}>‹ {t("Overview", "概覽")}</button><h2>{eventName}</h2><p>{currentEventName ? t("Today · 18 min · transcript and timeline ready", "今天 · 18 分鐘 · 逐字稿與時間線已完成") : profile.eventMeta}</p></div><div><button className="secondary" onClick={() => setModal("transcript")}>{t("Open transcript", "開啟逐字稿")}</button><button className="primary" onClick={() => setView("review")}>{t("Review", "審閱")} {pendingCount} {t("updates", "項更新")}</button></div></div>
-        <div className="event-stats"><span><strong>{projectKind === "contractor" ? "24:18" : "31:08"}</strong><small>{t("Duration", "時長")}</small></span><span><strong>{projectKind === "contractor" ? 3 : 2}</strong><small>{t("People", "人員")}</small></span><span><strong>{projectKind === "contractor" ? 3 : 2}</strong><small>{t("Files", "檔案")}</small></span><span><strong>{pendingCount}</strong><small>{t("Updates", "更新")}</small></span></div>
-        <div className="event-layout"><section className="event-content"><h2>{t("Context Page", "背景頁")}</h2><article className="note-card"><h3>{projectKind === "contractor" ? t("Walkthrough result", "現場查看結果") : t("Interview result", "訪談結果")}</h3><p>{projectKind === "contractor" ? "The latest walkthrough changed the working price, introduced a conflict around electrical scope and made the signed Change Order a start condition. Photos are attached directly to the related scope and evidence requirements." : "The customer described work that spans several meetings and asked for a source-linked Project Brief. The conversation also produced a test plan, a broader user definition and clear ownership for the next prototype."}</p></article><h2>{t("Claims from this event", "此事件的內容")}</h2><div className="update-list">{claims.map((claim) => <button key={claim.id} onClick={() => openClaim(claim.id)}><span><small>{claim.category} · {claim.field}</small><strong>{claim.proposed}</strong></span><Status state={claim.state} /><b>›</b></button>)}</div></section><aside className="event-sources"><h2>{t("Sources", "來源")}</h2><button onClick={() => setModal("transcript")}><span className="source-icon">♪</span><span><strong>{t("Recording and transcript", "錄音與逐字稿")}</strong><small>{t("Timestamped · full context available", "含時間點 · 可查看完整背景")}</small></span></button>{folderAssets.filter((asset) => asset.type !== "audio").slice(0, 2).map((asset) => <button key={asset.id} onClick={() => openItem(asset.id)}><span className="source-icon">{typeIcon(asset.type)}</span><span><strong>{asset.name}</strong><small>{asset.meta}</small></span></button>)}{projectKind === "contractor" && <button className="context-photo" onClick={() => setModal("evidence")}><img src="evidence-room-capture.jpg" alt="Site wall evidence" /><span>{t("Open site photo evidence", "開啟現場照片證據")}</span></button>}</aside></div>
-      </div>
-    );
-  }
-
-  function ReviewView() {
-    const visible = claims.filter((claim) => reviewFilter === "all" || (reviewFilter === "pending" ? claim.state === "pending" : claim.state !== "pending"));
-    return (
-      <div className="product-page">
-        <ProjectHeader active="review" />
-        <div className="review-header"><div><h1>{t("Review Queue", "審閱佇列")}</h1><p>{t("Changes and conflicts from", "來自")} {profile.title} {t("that need your judgment.", "需要你的判斷。")}</p></div><span>{pendingCount} {t("remaining", "項待處理")}</span></div>
-        <div className="review-tools"><div className="review-filters"><button className={reviewFilter === "pending" ? "active" : ""} onClick={() => setReviewFilter("pending")}>{t("Needs review", "需要審閱")}</button><button className={reviewFilter === "reviewed" ? "active" : ""} onClick={() => setReviewFilter("reviewed")}>{t("Reviewed", "已審閱")}</button><button className={reviewFilter === "all" ? "active" : ""} onClick={() => setReviewFilter("all")}>{t("All updates", "所有更新")}</button></div><button className="secondary" onClick={batchConfirmLowRisk}>{t("Confirm low-risk updates", "確認低風險更新")}</button></div>
-        {visible.length ? <div className="review-list">{visible.map((claim) => <button key={claim.id} onClick={() => openClaim(claim.id)}><div><span className={`risk risk-${claim.risk}`}>{claim.risk} {t("risk", "風險")}</span><small>{claim.category} · {claim.field}</small><h2>{claim.proposed}</h2><p>{claim.reason}</p></div><div className="review-change"><span><small>{t("Previous", "先前")}</small>{claim.previous}</span><b>›</b><span><small>{t("Latest", "最新")}</small>{claim.proposed}</span></div><span className="review-link">{t("Review evidence", "審閱證據")} ›</span></button>)}</div> : <div className="empty-review"><span>✓</span><h2>{t("Nothing in this view", "這個檢視沒有內容")}</h2><p>{t("Choose another filter or return to the project.", "請選擇其他篩選條件或返回專案。")}</p><button className="primary" onClick={() => setView("workspace")}>{t("Return to project", "返回專案")}</button></div>}
-      </div>
-    );
-  }
-
-  function ClaimView() {
-    const original = claimSeeds[projectKind].find((claim) => claim.id === selectedClaim.id)?.proposed || selectedClaim.proposed;
-    return (
-      <div className="product-page narrow-page">
-        <button className="back-button" onClick={() => setView("review")}>‹ {t("Review Queue", "審閱佇列")}</button>
-        <div className="claim-header"><div><small>{selectedClaim.category} · {selectedClaim.field}</small><h1>{selectedClaim.proposed}</h1><p>{selectedClaim.reason}</p></div><Status state={selectedClaim.state} /></div>
-        <div className="claim-layout"><section className="evidence-column"><h2>{t("Supporting evidence", "支持證據")}</h2><article className="transcript-evidence"><div><span className="avatar">C</span><span><strong>{projectKind === "contractor" ? "Contractor" : "Customer"}</strong><small>{profile.event}</small></span><button onClick={() => setModal("transcript")}>{selectedClaim.time} ▶</button></div><blockquote>“{selectedClaim.quote}”</blockquote><p>{t("Transcript · open to see the surrounding conversation", "逐字稿 · 開啟查看前後對話")}</p></article>{projectKind === "contractor" && <button className="file-evidence clickable-evidence" onClick={() => setModal("evidence")}><img src="evidence-room-capture.jpg" alt="Site evidence" /><span><strong>{t("Site photo 03", "現場照片 03")}</strong><small>Jul 25 · kitchen wall and outlet</small></span></button>}{selectedClaim.againstQuote && <><h2>{t("Conflicting evidence", "衝突證據")}</h2><article className="transcript-evidence conflict-evidence"><div><span className="avatar purple">C</span><span><strong>Client</strong><small>Scope Follow-up Call · Jul 23</small></span><button onClick={() => setModal("transcript")}>08:42 ▶</button></div><blockquote>“{selectedClaim.againstQuote}”</blockquote><p>{t("The system keeps both statements instead of choosing one.", "系統保留兩段陳述，不替使用者選擇。")}</p></article></>}<h2>{t("Project history", "專案歷史")}</h2><button className="history-card clickable-history" onClick={() => setView("compare")}><small>{t("Previous value", "先前值")}</small><strong>{selectedClaim.previous}</strong><p>{t("Open the event comparison and original evidence.", "開啟事件比較與原始證據。")}</p></button>{selectedClaim.state === "edited" && <article className="audit-card"><small>Original suggestion</small><strong>{original}</strong><small>User final wording</small><strong>{selectedClaim.proposed}</strong><p>Reason: {selectedClaim.editedReason}</p></article>}</section><aside className="decision-card"><h2>{t("Review this update", "審閱這項更新")}</h2><div className="value-comparison"><span><small>{t("Previous", "先前")}</small>{selectedClaim.previous}</span><span><small>{t("Suggested", "建議")}</small>{selectedClaim.proposed}</span></div>{editMode ? <div className="edit-panel"><label htmlFor="edit-value">{t("Final wording", "最後文字")}</label><textarea id="edit-value" value={editText} onChange={(event) => setEditText(event.target.value)} /><label htmlFor="edit-reason">{t("Reason for the change", "修改原因")}</label><input id="edit-reason" value={editReason} onChange={(event) => setEditReason(event.target.value)} placeholder={t("What did you correct?", "你修正了什麼？")} /><div><button className="secondary" onClick={() => setEditMode(false)}>{t("Cancel", "取消")}</button><button className="primary" onClick={() => updateClaim("edited", editText)}>{t("Save edit", "儲存修改")}</button></div></div> : <div className="decision-actions"><button className="primary wide-button" onClick={() => updateClaim("confirmed")}>{t("Confirm and add", "確認並加入")}</button><button className="secondary wide-button" onClick={() => { setEditText(selectedClaim.proposed); setEditMode(true) }}>{t("Edit before adding", "加入前修改")}</button><button className="text-action" onClick={() => updateClaim("rejected")}>{t("Do not add", "不要加入")}</button><button className="text-action" onClick={() => updateClaim("pending")}>{t("Keep for later", "稍後處理")}</button></div>}<p className="decision-note">{t("This updates the project record and connected deliverables. Original evidence remains unchanged.", "這會更新專案記錄與相關交付文件，原始證據不會改變。")}</p><button className="ask-toggle" onClick={() => setAskOpen((open) => !open)}>{t("Ask about this update", "詢問這項更新")}</button>{askOpen && <div className="ask-panel"><textarea value={askText} onChange={(event) => setAskText(event.target.value)} placeholder={t("Why do you think this is true?", "為什麼你認為這是真的？")} /><button className="primary" onClick={askAI}>{t("Ask", "詢問")}</button>{askAnswer && <p>{askAnswer}</p>}</div>}</aside></div>
-      </div>
-    );
-  }
-
-  function CompareView() {
-    return (
-      <div className="product-page">
-        <ProjectHeader active="compare" />
-        <div className="section-title page-section-title"><div><h2>{t("Compare events", "比較事件")}</h2><p>{t("Changes are grouped by the same project fact, so you do not need to compare two summaries.", "變更會按同一項專案內容整理，不必逐一比較兩份摘要。")}</p></div><button className="secondary" onClick={() => setModal("transcript")}>{t("Open source events", "開啟來源事件")}</button></div>
-        <div className="compare-banner"><span>{t("Original event", "原始事件")}<br /><strong>{projectKind === "contractor" ? "Site Walkthrough 01 · Jul 18" : "Customer Interview · Round 2 · Jul 24"}</strong></span><b>{t("compared with", "比較")}</b><span>{t("Latest event", "最新事件")}<br /><strong>{profile.event} · {projectKind === "contractor" ? "Jul 25" : "Jul 31"}</strong></span></div>
-        <div className="history-table"><div className="history-head"><span>{t("Field", "欄位")}</span><span>{t("Original record", "原始記錄")}</span><span>{t("Latest record", "最新記錄")}</span><span>{t("Result", "結果")}</span></div>{claims.map((claim) => <button key={claim.id} onClick={() => openClaim(claim.id)}><strong>{claim.field}</strong><span>{claim.previous}</span><span>{claim.proposed}</span><span className="latest-cell">{claim.state === "pending" ? t("Needs review", "需要審閱") : claim.state === "rejected" ? t("Not added", "未加入") : t("Current value", "目前值")}</span></button>)}</div>
-      </div>
-    );
-  }
-
-  function DeliverablesView() {
-    const titles = projectKind === "contractor" ? ["Change Order", "Scope Checklist", "Site Report"] : ["Project Brief", "Action Checklist", "Decision Log"];
-    const isChecklist = activeDeliverable === 1;
-    return (
-      <div className="product-page">
-        <ProjectHeader active="deliverables" />
-        <div className="deliverable-header"><div><h2>{t("Deliverables", "交付文件")}</h2><p>{t("Create client-ready or team-ready work from reviewed project information.", "把審閱過的專案資訊整理成可交付給客戶或團隊的文件。")}</p></div><button className="primary" onClick={() => setModal("newDeliverable")}>{t("New deliverable", "新增交付文件")}</button></div>
-        {pendingCount > 0 && <div className="deliverable-warning"><span>!</span><p><strong>{pendingCount} {t("updates are not included yet.", "項更新尚未加入。")}</strong> {t("Review them before sending a final document.", "請在發送最終文件前先審閱。")}</p><button onClick={() => setView("review")}>{t("Review now", "立即審閱")}</button></div>}
-        <div className="deliverable-layout"><aside>{titles.map((title, index) => <button className={activeDeliverable === index ? "active" : ""} key={title} onClick={() => setActiveDeliverable(index)}><span className="file-icon">{index === 1 ? "✓" : "▤"}</span><span><strong>{title}</strong><small>{savedDeliverables.includes(index) ? t("Saved to project", "已儲存到專案") : index === 1 ? t("Working checklist", "工作清單") : t("Draft ready", "草稿已準備")}</small></span><b>›</b></button>)}</aside><section className="document-preview"><div className="document-bar"><span><small>{savedDeliverables.includes(activeDeliverable) ? "SAVED" : "DRAFT"}</small><strong>{titles[activeDeliverable]}</strong></span><span><button className="secondary" onClick={() => setModal("deliverableShare")}>{t("Send", "傳送")}</button><button className="secondary" onClick={() => { window.print(); addActivity(t("PDF export opened", "已開啟 PDF 匯出"), titles[activeDeliverable]); flash(t("Print dialog opened for PDF export", "已開啟列印視窗以匯出 PDF")) }}>{t("Export PDF", "匯出 PDF")}</button><button className="primary" onClick={() => { setSavedDeliverables((items) => items.includes(activeDeliverable) ? items : [...items, activeDeliverable]); addActivity(t("Deliverable saved", "交付文件已儲存"), titles[activeDeliverable]); flash(t("Deliverable saved to the project", "交付文件已儲存到專案")) }}>{savedDeliverables.includes(activeDeliverable) ? t("Saved ✓", "已儲存 ✓") : t("Save to project", "儲存到專案")}</button></span></div>{isChecklist ? <article className="document-sheet checklist-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from confirmed project information. Each item can require a person, evidence or approval.", "根據已確認的專案資訊整理，每一項都可以指定人員、證據或審批。")}</p><div className="check-progress"><strong>{Object.values(checklistDone).filter(Boolean).length}/{checklist.length} {t("complete", "已完成")}</strong><span><i style={{ width: `${Object.values(checklistDone).filter(Boolean).length / checklist.length * 100}%` }} /></span></div><h2>{t("Checklist", "清單")}</h2>{checklist.map((item, index) => <div className="smart-check-row" key={item}><button className={checklistDone[index] ? "check-toggle checked" : "check-toggle"} onClick={() => { setChecklistDone((current) => ({ ...current, [index]: !current[index] })); addActivity(checklistDone[index] ? t("Checklist item reopened", "清單項目重新開啟") : t("Checklist item completed", "清單項目已完成"), item) }}>{checklistDone[index] ? "✓" : ""}</button><span><strong>{item}</strong><small>{index === 0 ? t("Owner: Aaron · approval required", "負責人：Aaron · 需要審批") : index === checklist.length - 1 ? t("Evidence required", "需要證據") : t("Owner: Unassigned", "負責人：未指派")}</small></span>{checklistEvidence[index] && <em>{t("Photo attached", "已附照片")}</em>}<button className="row-source" onClick={() => openClaim(claims[Math.min(index, claims.length - 1)].id)}>{t("Source", "來源")}</button><button className="row-photo" onClick={() => { setEvidenceTask(index); setModal("evidence") }}>＋ {t("Evidence", "證據")}</button></div>)}</article> : <article className="document-sheet"><div className="doc-brand">⌁ Notique</div><small>{profile.title.toUpperCase()}</small><h1>{titles[activeDeliverable]}</h1><p className="doc-intro">{t("Prepared from reviewed project information. Key statements stay linked to their sources.", "根據審閱過的專案資訊準備，重要內容都保留來源連結。")}</p><div className="doc-meta"><span><small>{t("Owner", "負責人")}</small>Aaron Wen</span><span><small>{t("Updated", "更新時間")}</small>{t("Today", "今天")}</span><span><small>{t("Status", "狀態")}</small>{pendingCount ? `${pendingCount} ${t("updates pending", "項更新待處理")}` : t("Ready", "已準備")}</span></div><h2>{projectKind === "contractor" ? t("Scope and changes", "範圍與變更") : t("Current decisions", "目前決策")}</h2>{claims.filter((claim) => claim.state !== "rejected").slice(0, 4).map((claim) => <div className="deliverable-claim" key={claim.id}><span><strong>{claim.field}</strong><small>{claim.state === "pending" ? t("Pending review · excluded from final export", "待審閱 · 不會納入最終匯出") : claim.proposed}</small></span><button onClick={() => openClaim(claim.id)}>{t("View source", "查看來源")}</button></div>)}</article>}</section></div>
-      </div>
-    );
-  }
-
-  function TemplatesView() {
-    const cards = [
-      { name: "Project Brief", text: "Decisions, open questions and evidence from several events", icon: "▤" },
-      { name: "Action Checklist", text: "Confirmed commitments turned into assigned, evidence-ready tasks", icon: "✓" },
-      { name: "Change Order", text: "Scope, price, approvals and linked site evidence", icon: "$" },
-      { name: "Buyer Journey", text: "Preferences and decisions accumulated across showings", icon: "⌂" },
-      { name: "Claim Assessment", text: "Damage, cause, customer statement and photo evidence", icon: "◈" },
-      { name: "Decision Log", text: "A source-linked record of how project decisions changed", icon: "≋" },
-    ];
-    return (
-      <div className="page templates-page"><Toolbar title={templateMode} count={cards.length} /><div className="template-hero"><span>✦</span><div><h2>{t("Start from a deliverable, then connect it to a Project", "先選擇交付文件，再連接到專案")}</h2><p>{t("Templates use the same recordings, photos, files and reviewed claims already in Notique.", "範本會使用 Notique 裡已有的錄音、照片、檔案與已審閱內容。")}</p></div></div><div className="template-grid">{cards.map((card, index) => <button key={card.name} onClick={() => { setSelectedFolderId(index === 2 ? "oak" : "product"); setProjectKind(index === 2 ? "contractor" : "general"); setActiveDeliverable(index === 1 ? 1 : index === 2 ? 0 : 0); setView("deliverables") }}><span>{card.icon}</span><strong>{card.name}</strong><small>{card.text}</small><b>{t("Use template ›", "使用範本 ›")}</b></button>)}</div></div>
-    );
-  }
-
-  function Content() {
-    if (view === "projects") return <ProjectsView />;
-    if (view === "recordings") return <RecordingsView />;
-    if (view === "inbox") return <InboxView />;
-    if (view === "trash") return <TrashView />;
-    if (view === "folder") return <FolderView />;
-    if (view === "agent") return <AgentView />;
-    if (view === "item") return <ItemView />;
-    if (view === "workspace") return <WorkspaceView />;
-    if (view === "event") return <EventView />;
-    if (view === "review") return <ReviewView />;
-    if (view === "claim") return <ClaimView />;
-    if (view === "compare") return <CompareView />;
-    if (view === "deliverables") return <DeliverablesView />;
-    return <TemplatesView />;
-  }
-
-  const searchResults = folders.filter((folder) => folder.name.toLowerCase().includes(renameValue.toLowerCase()));
-  const assetSearchResults = [...assets, ...inbox].filter((asset) => `${asset.name} ${asset.summary}`.toLowerCase().includes(renameValue.toLowerCase())).slice(0, 6);
 
   return (
     <div className="app-shell">
-      <Sidebar />
-      <header className="mobile-header"><button onClick={() => setView("projects")}>⌁ Notique</button><span className="mobile-header-actions"><button className="language-toggle" onClick={() => setLanguage(language === "en" ? "zh" : "en")} aria-label={language === "en" ? "Switch to Traditional Chinese" : "切換到英文"}>{language === "en" ? "繁中" : "EN"}</button><button onClick={() => setModal("import")}>＋</button></span></header>
-      <main><Content /></main>
-      <nav className="mobile-nav"><button onClick={() => setView("projects")}>▣<small>{t("Projects", "專案")}</small></button><button onClick={() => setView("inbox")}>▤<small>{t("Inbox", "收件匣")}</small></button><button onClick={() => { setProjectKind(selectedFolder.kind); setView("review") }}>✦<small>{t("Review", "審閱")}</small></button><button onClick={() => setModal("import")}>＋<small>{t("Import", "匯入")}</small></button></nav>
-
-      {modal === "import" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal import-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Add to Notique", "加入 Notique")}</h2><p>{t("Drop in a recording, photo or document.", "放入錄音、照片或文件。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files?.[0]; if (file) handleFile(file) }}><input type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) handleFile(file) }} /><span className="upload-icon">↥</span><strong>{t("Drop a file here", "將檔案放在這裡")}</strong><small>{t("or click to choose from your computer", "或點擊從電腦選擇")}</small></label><p className="sample-label">{t("TRY THE COMPLETE FLOW", "體驗完整流程")}</p><div className="sample-list">{samples.map((sample) => <button key={sample.id} onClick={() => startAgent(sample)}><b className={`type-icon ${sample.type}`}>{typeIcon(sample.type)}</b><span><strong>{sample.name}</strong><small>{sample.meta}</small></span><em>{t("Use sample", "使用範例")}</em></button>)}</div></section></div>}
-
-      {modal === "newProject" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("New project", "新增專案")}</h2><p>{t("Keep related recordings, files and notes together.", "將相關錄音、檔案與筆記放在一起。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Project name", "專案名稱")}</label><input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder={t("Untitled project", "未命名專案")} /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" onClick={() => { const name = newProjectName.trim(); if (!name) return; const id = `folder-${Date.now()}`; setFolders((items) => [...items, { id, name, description: t("Recordings, files and notes", "錄音、檔案與筆記"), color: "slate", updated: t("Just now", "剛剛"), kind: "general" }]); setSelectedFolderId(id); setNewProjectName(""); setModal(null); setView("folder"); addActivity(t("Project created", "專案已建立"), name, id); flash(t("Project created", "專案已建立")) }}>{t("Create project", "建立專案")}</button></div></section></div>}
-
-      {modal === "rename" && showRename && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Rename {renameKind}</h2></div><button onClick={() => setModal(null)}>×</button></header><label>Name</label><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary" onClick={saveRename}>Save</button></div></section></div>}
-
-      {modal === "search" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Search Notique", "搜尋 Notique")}</h2><p>{t("Find projects, recordings and files.", "尋找專案、錄音與檔案。")}</p></div><button onClick={() => setModal(null)}>×</button></header><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder={t("Search everything", "搜尋所有內容")} />{searchResults.length > 0 && <><p className="search-group-label">{t("PROJECTS", "專案")}</p><div className="search-results">{searchResults.map((folder) => <button key={folder.id} onClick={() => { setModal(null); openFolder(folder.id) }}><span className={`mini-folder ${folder.color}`}>▰</span><span><strong>{folder.name}</strong><small>{folder.description}</small></span><b>›</b></button>)}</div></>}{assetSearchResults.length > 0 && <><p className="search-group-label">{t("FILES AND RECORDINGS", "檔案與錄音")}</p><div className="search-results">{assetSearchResults.map((asset) => <button key={asset.id} onClick={() => { setModal(null); openItem(asset.id) }}><b className={`type-icon ${asset.type}`}>{typeIcon(asset.type)}</b><span><strong>{asset.name}</strong><small>{folders.find((folder) => folder.id === asset.folderId)?.name || t("Inbox", "收件匣")}</small></span><b>›</b></button>)}</div></>}{!searchResults.length && !assetSearchResults.length && <div className="search-empty">{t("No matching projects or files", "找不到相符的專案或檔案")}</div>}</section></div>}
-
-      {modal === "transcript" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal transcript-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{stagedAsset?.name || profile.event}</h2><p>Transcript with original timestamps</p></div><button onClick={() => setModal(null)}>×</button></header><div className="transcript-body"><button onClick={() => flash("Audio jumped to 12:18")}><b>12:18</b><span><strong>Customer</strong><p>The project view is useful because my decisions are spread across several conversations.</p></span></button><button onClick={() => flash(`Audio jumped to ${selectedClaim.time}`)}><b>{selectedClaim.time}</b><span><strong>{projectKind === "contractor" ? "Contractor" : "Customer"}</strong><p>{selectedClaim.quote}</p></span></button>{selectedClaim.againstQuote && <button onClick={() => flash("Audio jumped to 08:42")}><b>08:42</b><span><strong>Client</strong><p>{selectedClaim.againstQuote}</p></span></button>}</div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Close</button><button className="primary" onClick={() => { setModal(null); flash("Playing from selected evidence") }}>Play recording</button></div></section></div>}
-
-      {modal === "share" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal share-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Share project", "分享專案")}</h2><p>{t("Invite someone or copy a view-only link to the latest reviewed version.", "邀請協作者，或複製最新審閱版本的唯讀連結。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="share-form"><label>{t("Invite by email", "以電子郵件邀請")}</label><div><input value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} placeholder="name@company.com" /><select value={shareAccess} onChange={(event) => setShareAccess(event.target.value)}><option>Can view</option><option>Can comment</option><option>Can edit</option></select><button className="primary" disabled={!shareEmail.includes("@")} onClick={() => { addActivity(t("Project invitation sent", "專案邀請已傳送"), `${shareEmail} · ${shareAccess}`); setShareEmail(""); flash(t("Invitation sent", "邀請已傳送")) }}>{t("Invite", "邀請")}</button></div></div><div className="people-access"><h3>{t("People with access", "可存取的人員")}</h3><span><i className="avatar">A</i><b>Aaron Wen<small>{t("Owner", "擁有者")}</small></b></span><span><i className="avatar purple">{projectKind === "contractor" ? "M" : "K"}</i><b>{projectKind === "contractor" ? "Maria" : "Kevin"}<small>{t("Can edit", "可編輯")}</small></b></span></div><label>{t("Share link", "分享連結")}</label><div className="copy-link"><input readOnly value={`https://app.notique.ai/project/${selectedFolder.id}`} /><button className="secondary" onClick={() => { navigator.clipboard?.writeText(`https://app.notique.ai/project/${selectedFolder.id}`); addActivity(t("Share link copied", "分享連結已複製"), t("View-only project link", "專案唯讀連結")); flash(t("Share link copied", "分享連結已複製")) }}>{t("Copy link", "複製連結")}</button></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Done", "完成")}</button></div></section></div>}
-
-      {modal === "newDeliverable" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>New deliverable</h2><p>Choose what this project should produce.</p></div><button onClick={() => setModal(null)}>×</button></header><div className="new-deliverable-list"><button onClick={() => { setActiveDeliverable(0); setModal(null) }}><span>▤</span><strong>{projectKind === "contractor" ? "Change Order" : "Project Brief"}</strong><small>Document with source-linked project facts</small></button><button onClick={() => { setActiveDeliverable(1); setModal(null) }}><span>✓</span><strong>{projectKind === "contractor" ? "Scope Checklist" : "Action Checklist"}</strong><small>Executable fields, owners and evidence requirements</small></button><button onClick={() => { setActiveDeliverable(2); setModal(null) }}><span>≋</span><strong>{projectKind === "contractor" ? "Site Report" : "Decision Log"}</strong><small>A durable record of reviewed project changes</small></button></div></section></div>}
-
-      {modal === "upgrade" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Notique Pro</h2><p>Unlimited projects, advanced deliverables and team review.</p></div><button onClick={() => setModal(null)}>×</button></header><div className="plan-card"><strong>$19</strong><small>per member / month</small><p>Everything in this product mock is available in the Pro workspace.</p></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Not now</button><button className="primary" onClick={() => { setModal(null); flash("Upgrade checkout opened") }}>Continue</button></div></section></div>}
-
-      {modal === "deleteFolder" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>Delete {selectedFolder.name}?</h2><p>Its files will move to Inbox so nothing is lost.</p></div><button onClick={() => setModal(null)}>×</button></header><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>Cancel</button><button className="primary destructive" onClick={deleteFolder}>Delete project</button></div></section></div>}
-
-      {modal === "newEvent" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal event-capture-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Record a new event", "記錄新活動")}</h2><p>{t("This mock simulates capture, transcription and project analysis.", "這個 Mock 會模擬記錄、轉錄與專案分析。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="capture-meter"><span /><span /><span /><span /><span /><span /><span /><span /><span /><span /><b>00:18:42</b></div><label>{t("Event type", "活動類型")}</label><div className="event-type-options">{[projectKind === "contractor" ? "Site visit" : "Meeting", "Call", "Walkthrough"].map((type) => <button className={newEventType === type ? "active" : ""} onClick={() => setNewEventType(type)} key={type}>{type}</button>)}</div><label>{t("Event name", "活動名稱")}</label><input value={newEventTitle} onChange={(event) => setNewEventTitle(event.target.value)} placeholder={projectKind === "contractor" ? "Kitchen walkthrough" : "Customer interview"} /><div className="capture-options"><span>✓ {t("Record audio", "錄製音訊")}</span><span>✓ {t("Create transcript", "建立逐字稿")}</span><span>✓ {t("Link photos by time", "依時間連接照片")}</span><span>✓ {t("Compare with project", "與專案內容比較")}</span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary recording-action" onClick={createMockEvent}>■ {t("Finish and process", "完成並處理")}</button></div></section></div>}
-
-      {modal === "moveAsset" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Move item", "移動內容")}</h2><p>{selectedAsset.name}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Project", "專案")}</label><select className="full-select" value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" onClick={moveSelectedAsset}>{t("Move", "移動")}</button></div></section></div>}
-
-      {modal === "deliverableShare" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Send this document", "傳送這份文件")}</h2><p>{pendingCount ? t(`${pendingCount} updates are still excluded from the final version.`, `${pendingCount} 項更新仍未納入最終版本。`) : t("The document is ready to send.", "文件已可傳送。")}</p></div><button onClick={() => setModal(null)}>×</button></header><label>{t("Recipient", "收件人")}</label><input value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} placeholder="client@company.com" /><label>{t("Access", "權限")}</label><select className="full-select" value={shareAccess} onChange={(event) => setShareAccess(event.target.value)}><option>Can view</option><option>Can comment</option></select><div className="delivery-summary"><span>▤</span><span><strong>{projectKind === "contractor" ? ["Change Order", "Scope Checklist", "Site Report"][activeDeliverable] : ["Project Brief", "Action Checklist", "Decision Log"][activeDeliverable]}</strong><small>{t("Sources remain available to the project team.", "專案團隊仍可查看來源。")}</small></span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Cancel", "取消")}</button><button className="primary" disabled={!shareEmail.includes("@")} onClick={() => { const title = projectKind === "contractor" ? ["Change Order", "Scope Checklist", "Site Report"][activeDeliverable] : ["Project Brief", "Action Checklist", "Decision Log"][activeDeliverable]; setSavedDeliverables((items) => items.includes(activeDeliverable) ? items : [...items, activeDeliverable]); addActivity(t("Deliverable sent", "交付文件已傳送"), `${title} · ${shareEmail}`); setShareEmail(""); setModal(null); flash(t("Document sent", "文件已傳送")) }}>{t("Send", "傳送")}</button></div></section></div>}
-
-      {modal === "notifications" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal notifications-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Notifications", "通知")}</h2><p>{t("Recent work across your projects.", "最近的專案操作。")}</p></div><button onClick={() => setModal(null)}>×</button></header><div className="notification-list">{activity.slice(0, 8).map((item) => <button key={item.id} onClick={() => { if (item.projectId) openWorkspace(item.projectId); setModal(null) }}><span>✓</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><time>{item.time}</time></button>)}</div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Done", "完成")}</button></div></section></div>}
-
-      {modal === "profile" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal small-modal profile-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Profile", "個人資料")}</h2><p>{t("The identity used on project records and exports.", "專案記錄與匯出文件使用的身分。")}</p></div><button onClick={() => setModal(null)}>×</button></header><span className="profile-avatar">A</span><label>{t("Name", "姓名")}</label><input defaultValue="Aaron Wen" /><label>{t("Email", "電子郵件")}</label><input defaultValue="aaron@notiqueai.com" /><div className="modal-actions"><button className="primary" onClick={() => { setModal(null); flash(t("Profile saved", "個人資料已儲存")) }}>{t("Save", "儲存")}</button></div></section></div>}
-
-      {modal === "workspaceSettings" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{t("Workspace settings", "工作區設定")}</h2><p>Notique AI</p></div><button onClick={() => setModal(null)}>×</button></header><div className="settings-row"><span><strong>{t("Default language", "預設語言")}</strong><small>{t("Used for navigation and new documents.", "用於導覽與新文件。")}</small></span><select value={language} onChange={(event) => setLanguage(event.target.value as "en" | "zh")}><option value="en">English</option><option value="zh">繁體中文</option></select></div><div className="settings-row"><span><strong>{t("Require review for high-impact updates", "重要更新必須審閱")}</strong><small>{t("Money, scope, approvals and conflicting statements.", "金額、範圍、批准與互相衝突的說法。")}</small></span><input type="checkbox" defaultChecked /></div><div className="settings-row"><span><strong>{t("Keep source evidence on exports", "匯出時保留證據")}</strong><small>{t("Recipients can see where key statements came from.", "收件人可以查看重要內容的來源。")}</small></span><input type="checkbox" defaultChecked /></div><div className="settings-danger"><span><strong>{t("Reset demo data", "重設 Demo 資料")}</strong><small>{t("Restore every project, review item and checklist to the original state.", "將所有專案、審閱項目與清單還原。")}</small></span><button className="secondary" onClick={resetDemo}>{t("Reset", "重設")}</button></div><div className="modal-actions"><button className="primary" onClick={() => { setModal(null); flash(t("Workspace settings saved", "工作區設定已儲存")) }}>{t("Done", "完成")}</button></div></section></div>}
-
-      {modal === "evidence" && <div className="modal-backdrop" onMouseDown={() => setModal(null)}><section className="modal evidence-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>{view === "deliverables" ? t("Add checklist evidence", "加入清單證據") : t("Photo evidence", "照片證據")}</h2><p>{t("Evidence stays connected to its original event and project.", "證據會保留原始活動、時間與專案。")}</p></div><button onClick={() => setModal(null)}>×</button></header><img src="evidence-room-capture.jpg" alt="Room and site evidence" /><div className="evidence-meta"><span><small>{t("Captured", "拍攝時間")}</small>Jul 25, 7:36 PM</span><span><small>{t("Event", "活動")}</small>{profile.event}</span><span><small>{t("Project", "專案")}</small>{profile.title}</span></div><div className="modal-actions"><button className="secondary" onClick={() => setModal(null)}>{t("Close", "關閉")}</button>{view === "deliverables" && <button className="primary" onClick={() => { setChecklistEvidence((current) => ({ ...current, [evidenceTask]: true })); addActivity(t("Checklist evidence attached", "清單證據已加入"), checklist[evidenceTask]); setModal(null); flash(t("Evidence attached to checklist item", "證據已加入清單項目")) }}>{t("Attach evidence", "加入證據")}</button>}</div></section></div>}
-
-      {toast && <div className="toast">✓ {toast}</div>}
+      <aside className="sidebar">
+        <button className="brand" onClick={goSimple}><span>⌁</span> Notique AI</button>
+        <div className="account"><span className="avatar">N</span><span><strong>Notique</strong><small>Workspace</small></span></div>
+        <nav aria-label="主要导航">
+          <button className={screen === "simple" ? "active" : ""} onClick={goSimple}><span>◎</span>核心测试</button>
+          <button className={screen === "projects" ? "active" : ""} onClick={goProjects}><span>▣</span>高级工具</button>
+          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => setScreen("project")}><span>◫</span>{project.name}</button>}
+        </nav>
+        <div className="sidebar-note"><strong>核心测试版</strong><p>按四个大按钮完成一次测试。高级工具不影响这条主流程。</p></div>
+      </aside>
+      <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
+      <main>
+        {screen === "simple" && <SimpleTestScreen
+          key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`}
+          projects={projects}
+          projectsState={projectsState}
+          projectsIssue={projectsIssue}
+          project={project}
+          projectState={projectState}
+          projectIssue={projectIssue}
+          events={events}
+          event={event}
+          eventState={eventState}
+          eventIssue={eventIssue}
+          run={run}
+          claims={claims}
+          busy={busyAction}
+          onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
+          onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
+          onStartOwn={() => void beginSimpleTest()}
+          onAddTranscript={() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(); }}
+          onAddFile={(file) => void attachSimpleFile(file)}
+          onAnalyze={() => { if (event) void startExtractionForEvent(event); }}
+          onConfirmScenario={confirmCurrentScenario}
+          onReview={() => void loadReviewQueue()}
+          onResult={() => void loadView("folder-summary")}
+        />}
+        {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
+        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={goProjects} onRetry={() => project && void loadProject(project.id)} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
+        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={() => project ? void loadProject(project.id) : goProjects()} onRetry={() => event && void loadEvent(event.id)} onDebug={() => run && void openRunDebug(run.id)} onStart={async () => {
+          if (event) await startExtractionForEvent(event);
+        }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id)} onAttach={async (input) => {
+          if (!event) return;
+          const localIssue = photoUploadIssue(input.filename, input.contentType, input.blob.size);
+          if (localIssue) {
+            setEventIssue(localIssue);
+            return;
+          }
+          const imageMime = modelImageMimeFor(input.filename, input.contentType);
+          const preparedInput = imageMime
+            ? { ...input, kind: "photo", contentType: imageMime }
+            : input;
+          setBusyAction("asset");
+          setEventIssue(null);
+          try {
+            const fingerprint = ["asset-init", event.id, preparedInput.kind, preparedInput.filename, preparedInput.contentType, preparedInput.blob.size].join(":");
+            const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+            mutationKeys.current.set(fingerprint, idempotencyKey);
+            const init = await api.initAsset(event.id, { kind: preparedInput.kind, filename: preparedInput.filename, content_type: preparedInput.contentType, size_bytes: preparedInput.blob.size }, idempotencyKey);
+            await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType);
+            await api.finalizeAsset(init.assetId);
+            mutationKeys.current.delete(fingerprint);
+            flash("材料已加入这次沟通");
+            await loadEvent(event.id);
+          } catch (error) { setEventIssue(toIssue(error)); } finally { setBusyAction(null); }
+        }} busy={busyAction} />}
+        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
+        {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
+      </main>
+      {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
+        setBusyAction("new-project");
+        try {
+          const fingerprint = `create-project:${name}`;
+          const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+          mutationKeys.current.set(fingerprint, idempotencyKey);
+          const created = await api.createProject({ name }, idempotencyKey);
+          mutationKeys.current.delete(fingerprint);
+          setShowNewProject(false);
+          await loadProjects();
+          await loadProject(created.id);
+        } catch (error) { setProjectsIssue(toIssue(error)); } finally { setBusyAction(null); }
+      }} busy={busyAction === "new-project"} />}
+      {showNewEvent && project && <NewEventModal onClose={() => setShowNewEvent(false)} onCreate={async (input) => {
+        setBusyAction("new-event");
+        try {
+          const fingerprint = ["create-event", project.id, input.event_type, input.title, input.occurred_at].join(":");
+          const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+          mutationKeys.current.set(fingerprint, idempotencyKey);
+          const created = await api.createEvent(project.id, input, idempotencyKey);
+          mutationKeys.current.delete(fingerprint);
+          setShowNewEvent(false);
+          await loadProject(project.id);
+          await loadEvent(created.id);
+        } catch (error) { setProjectIssue(toIssue(error)); } finally { setBusyAction(null); }
+      }} busy={busyAction === "new-event"} />}
+      {showImport && project && <ImportModal project={project} onClose={() => setShowImport(false)} onImported={async (created) => {
+        setShowImport(false);
+        flash(`已建立 ${created.length} 次沟通`);
+        if (simpleFlow) {
+          await loadSimpleProject(project.id, created[0]?.id);
+        } else {
+          await loadProject(project.id);
+          if (created[0]) await loadEvent(created[0].id);
+        }
+      }} />}
+      {toast && <div className="toast" role="status">✓ {toast}</div>}
     </div>
   );
+}
+
+type SimpleTestScreenProps = {
+  projects: Project[];
+  projectsState: AsyncState;
+  projectsIssue: ApiIssue | null;
+  project: Project | null;
+  projectState: AsyncState;
+  projectIssue: ApiIssue | null;
+  events: Event[];
+  event: Event | null;
+  eventState: AsyncState;
+  eventIssue: ApiIssue | null;
+  run: ExtractionRun | null;
+  claims: Claim[];
+  busy: string | null;
+  onUseProject: (id: string) => void;
+  onUseEvent: (id: string) => void;
+  onStartOwn: () => void;
+  onAddTranscript: () => void;
+  onAddFile: (file: File) => void;
+  onAnalyze: () => void;
+  onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
+  onReview: () => void;
+  onResult: () => void;
+};
+
+function SimpleTestScreen({
+  projects,
+  projectsState,
+  projectsIssue,
+  project,
+  projectState,
+  projectIssue,
+  events,
+  event,
+  eventState,
+  eventIssue,
+  run,
+  claims,
+  busy,
+  onUseProject,
+  onUseEvent,
+  onStartOwn,
+  onAddTranscript,
+  onAddFile,
+  onAnalyze,
+  onConfirmScenario,
+  onReview,
+  onResult,
+}: SimpleTestScreenProps) {
+  const [showImportChoices, setShowImportChoices] = useState(false);
+  const [scenario, setScenario] = useState(project?.scenarioCandidates?.[0]?.key ?? "");
+  const [customScenario, setCustomScenario] = useState("");
+  const sortedProjects = [...projects].sort((left, right) => {
+    const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
+    const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
+    return leftSample - rightSample || left.name.localeCompare(right.name, "zh-CN");
+  });
+  const readyAssets = event?.assets.filter((asset) => asset.status === "ready") ?? [];
+  const materialsReady = readyAssets.length > 0;
+  const analysisRunning = Boolean(run && runInProgress.has(run.status));
+  const analysisDone = Boolean(run && runComplete.has(run.status));
+  const pendingCount = event
+    ? event.pendingClaimCount + event.pendingOccurrenceCount
+    : project
+      ? project.pendingClaimCount + project.pendingOccurrenceCount
+      : 0;
+  const verifiedCount = claims.filter((claim) => claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn").length;
+  const loadingSelection = projectState === "loading" || eventState === "loading";
+  const issue = eventIssue ?? projectIssue ?? projectsIssue;
+  const needsScenario = project?.scenarioStatus === "pending_confirmation"
+    || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
+
+  function chooseSupportingFile(change: ChangeEvent<HTMLInputElement>) {
+    const file = change.target.files?.[0];
+    change.target.value = "";
+    if (file) onAddFile(file);
+  }
+
+  return (
+    <div className="page simple-page">
+      <header className="simple-header">
+        <span className="eyebrow">核心流程测试</span>
+        <h1>用真实材料走完一次</h1>
+        <p>选一组现成材料，或者上传自己的 Transcript 和照片。页面只显示服务器中的真实数据，服务没有配置好时会直接说明原因。</p>
+      </header>
+
+      <section className="simple-session" aria-label="测试材料">
+        <div className="simple-session-copy">
+          <strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "先选择测试材料"}</strong>
+          <small>{event ? event.title : project ? "请选择其中一次记录" : "可以使用现成案例，也可以上传自己的材料"}</small>
+        </div>
+        <label>
+          <span>整组材料</span>
+          <select
+            aria-label="选择整组测试材料"
+            value={project?.id ?? ""}
+            disabled={projectsState === "loading" || Boolean(busy)}
+            onChange={(change) => onUseProject(change.target.value)}
+          >
+            <option value="" disabled>{projectsState === "loading" ? "正在读取…" : "请选择"}</option>
+            {sortedProjects.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name.startsWith("[SYNTHETIC]") ? `现成案例：${item.name.replace(/^\[SYNTHETIC\]\s*/, "")}` : item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {events.length > 0 && (
+          <label>
+            <span>这次要分析的记录</span>
+            <select aria-label="选择要分析的记录" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => onUseEvent(change.target.value)}>
+              {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+            </select>
+          </label>
+        )}
+      </section>
+
+      <section className="simple-steps" aria-label="四步测试流程">
+        <button className={`simple-step-button ${materialsReady ? "complete" : ""}`} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>
+          <span className="simple-step-number">1</span>
+          <span className="simple-step-copy"><strong>导入材料</strong><small>{materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript 或照片"}</small></span>
+          <span className="simple-step-state">{materialsReady ? "已就绪" : "开始"}</span>
+        </button>
+        <button className={`simple-step-button ${analysisDone ? "complete" : ""}`} disabled={!materialsReady || analysisRunning || Boolean(busy)} onClick={onAnalyze}>
+          <span className="simple-step-number">2</span>
+          <span className="simple-step-copy"><strong>开始分析</strong><small>{analysisRunning ? "正在读取材料并整理内容" : analysisDone ? "分析已完成，可以重新运行" : "从材料中提取陈述和对应证据"}</small></span>
+          <span className="simple-step-state">{analysisRunning ? "处理中" : analysisDone ? "已完成" : "运行"}</span>
+        </button>
+        <button className={`simple-step-button ${verifiedCount > 0 ? "complete" : ""}`} disabled={!analysisDone || Boolean(busy)} onClick={onReview}>
+          <span className="simple-step-number">3</span>
+          <span className="simple-step-copy"><strong>核对证据</strong><small>{pendingCount > 0 ? `${pendingCount} 条内容等你确认` : analysisDone ? "逐条查看原文或照片依据" : "分析完成后可以核对"}</small></span>
+          <span className="simple-step-state">{verifiedCount > 0 ? `已确认 ${verifiedCount}` : "核对"}</span>
+        </button>
+        <button className="simple-step-button" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>
+          <span className="simple-step-number">4</span>
+          <span className="simple-step-copy"><strong>查看报告</strong><small>{verifiedCount > 0 ? "查看已经确认的内容" : analysisDone ? "未确认的内容不会进入报告" : "完成前三步后查看结果"}</small></span>
+          <span className="simple-step-state">查看</span>
+        </button>
+      </section>
+
+      {needsScenario && (
+        <section className="simple-scenario-panel" aria-label="确认使用场景">
+          <div>
+            <span className="section-kicker">分析后的第一次确认</span>
+            <h2>这组材料属于哪种工作场景？</h2>
+            <p>只需要确认一次。后续记录会沿用这个场景，系统才能正确比较前后变化。</p>
+          </div>
+          <div className="scenario-options">
+            {project?.scenarioCandidates?.map((item) => (
+              <label className={scenario === item.key ? "selected" : ""} key={item.key}>
+                <input type="radio" name="simple-scenario" value={item.key} checked={scenario === item.key} onChange={() => setScenario(item.key)} />
+                <span><strong>{item.label}</strong><small>{confidenceText(item.confidence)}{item.description ? ` · ${item.description}` : ""}</small></span>
+              </label>
+            ))}
+          </div>
+          <label className="field"><span>需要时可改成更合适的名称</span><input value={customScenario} onChange={(change) => setCustomScenario(change.target.value)} placeholder="例如：房屋翻修项目" /></label>
+          <button className="button primary" disabled={busy === "scenario" || (!scenario && !customScenario.trim())} onClick={() => void onConfirmScenario(scenario || "custom", customScenario.trim() || undefined)}>{busy === "scenario" ? "正在保存…" : "确认后继续"}</button>
+        </section>
+      )}
+
+      {showImportChoices && (
+        <section className="simple-import-panel" aria-label="添加材料">
+          <div>
+            <h2>添加自己的材料</h2>
+            <p>{project ? "Transcript 会建立一条新的记录。照片会加到当前选中的记录中。" : "新建一次测试后，先上传 Transcript。"}</p>
+          </div>
+          <div className="simple-import-actions">
+            <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span>TXT</span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></button>
+            <label className={`simple-import-action ${!event || busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : "先选择一条记录"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={!event || Boolean(busy)} onChange={chooseSupportingFile} /></label>
+            <button className="simple-import-action quiet-choice" disabled={Boolean(busy)} onClick={onStartOwn}><span>NEW</span><strong>新建一次测试</strong><small>使用一组新的材料</small></button>
+          </div>
+          {event && event.assets.length > 0 && (
+            <div className="simple-material-list">
+              {event.assets.map((asset) => <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={asset.status} /></span>)}
+            </div>
+          )}
+        </section>
+      )}
+
+      {loadingSelection && <LoadingBlock label="正在读取材料…" />}
+      {issue && <ErrorNotice issue={issue} onRetry={materialsReady ? onAnalyze : undefined} />}
+      {!project && projectsState === "empty" && <p className="simple-footnote">还没有可选材料。点击“导入材料”后再选择“新建一次测试”。</p>}
+      {run && !analysisRunning && !analysisDone && <p className="simple-footnote">最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "可以重新开始分析。"}</p>}
+    </div>
+  );
+}
+
+function PageHeader({ eyebrow, title, body, back, actions }: { eyebrow?: string; title: string; body?: string; back?: () => void; actions?: ReactNode }) {
+  return (
+    <header className="page-header">
+      <div className="page-title-row">
+        {back && <button className="back-button" onClick={back} aria-label="返回">‹</button>}
+        <div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{body && <p>{body}</p>}</div>
+      </div>
+      {actions && <div className="header-actions">{actions}</div>}
+    </header>
+  );
+}
+
+function ProjectsScreen({ state, issue, projects, onRetry, onOpen, onCreate }: { state: AsyncState; issue: ApiIssue | null; projects: Project[]; onRetry: () => void; onOpen: (id: string) => void; onCreate: () => void }) {
+  return (
+    <div className="page list-page">
+      <PageHeader title="Projects" body="把同一件事的多次沟通和材料放在一起。" actions={<button className="button primary" onClick={onCreate}>新建 Project</button>} />
+      {state === "loading" && <LoadingBlock label="正在读取 Projects…" />}
+      {state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
+      {state === "empty" && <EmptyState title="还没有 Project" body="先建立一件要持续跟进的事。它可以是客户项目、研究、课程或任何跨多次沟通的工作。" action={<button className="button primary" onClick={onCreate}>建立第一个 Project</button>} />}
+      {state === "ready" && <div className="project-grid">{projects.map((item) => (
+        <button className="project-card" key={item.id} onClick={() => onOpen(item.id)}>
+          <span className="project-accent" />
+          <div className="project-card-top"><span className="folder-icon">▰</span>{item.pendingCount ? <span className="count-pill">还有 {item.pendingCount} 条待核对</span> : null}</div>
+          <h2>{item.name}</h2>
+          <p>{item.scenario?.label ? `使用场景：${item.scenario.label}` : "使用场景会在第一份材料处理后由你确认"}</p>
+          <div className="project-card-meta"><span>{item.eventCount == null ? "沟通数量待读取" : `${item.eventCount} 次沟通`}</span><span>{formatDate(item.updatedAt)}</span></div>
+        </button>
+      ))}</div>}
+    </div>
+  );
+}
+
+function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenEvent, onNewEvent, onImport, onReview, onResults, onConfirmScenario, busy }: { state: AsyncState; issue: ApiIssue | null; project: Project | null; events: Event[]; onBack: () => void; onRetry: () => void; onOpenEvent: (id: string) => void; onNewEvent: () => void; onImport: () => void; onReview: () => void; onResults: (tab: ResultTab) => void; onConfirmScenario: (scenario: string, custom?: string) => Promise<void>; busy: boolean }) {
+  const [scenario, setScenario] = useState(project?.scenarioCandidates?.[0]?.key ?? "");
+  const [custom, setCustom] = useState("");
+  if (state === "loading") return <div className="page"><LoadingBlock label="正在读取 Project…" /></div>;
+  if (state === "error" || !project) return <div className="page"><PageHeader title="Project" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
+  const pendingReviewCount = project.pendingClaimCount + project.pendingOccurrenceCount;
+  const needsScenario = project.scenarioStatus === "pending_confirmation" || Boolean(project.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
+  return (
+    <div className="page">
+      <PageHeader eyebrow="Project" title={project.name} body={`${events.length} 次沟通 · ${statusLabel(project.scenarioStatus)}`} back={onBack} actions={<><button className="button secondary" onClick={onNewEvent}>新增沟通</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
+      {issue && <ErrorNotice issue={issue} onRetry={onRetry} compact />}
+      {needsScenario && <section className="scenario-panel">
+        <div><span className="section-kicker">需要你确认</span><h2>这组材料属于哪种工作场景？</h2><p>场景只在第一份材料后确认一次。后续沟通会沿用，不会重复猜。</p></div>
+        <div className="scenario-options">{project.scenarioCandidates?.map((item) => <label className={scenario === item.key ? "selected" : ""} key={item.key}><input type="radio" name="scenario" value={item.key} checked={scenario === item.key} onChange={() => setScenario(item.key)} /><span><strong>{item.label}</strong><small>{confidenceText(item.confidence)}{item.description ? ` · ${item.description}` : ""}</small></span></label>)}</div>
+        <label className="field"><span>需要时可改成更合适的名称</span><input value={custom} onChange={(event) => setCustom(event.target.value)} placeholder="例如：顾问项目跟进" /></label>
+        <button className="button primary" disabled={busy || (!scenario && !custom.trim())} onClick={() => void onConfirmScenario(scenario || "custom", custom.trim() || undefined)}>{busy ? "正在保存…" : "确认使用场景"}</button>
+      </section>}
+      {project.scenarioStatus === "confirmed" && <section className="project-status-row"><div><span className="section-kicker">已确认使用场景</span><strong>{project.scenario?.label || project.scenario?.key || "已确认"}</strong></div><button className="button secondary" onClick={() => onResults("folder-summary")}>打开当前结果</button></section>}
+      <div className="project-overview-grid">
+        <section className="panel event-panel">
+          <div className="section-heading"><div><h2>沟通记录</h2><p>每份 Transcript 对应一次真实发生的沟通。</p></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
+          {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><b>›</b></button>)}</div>}
+        </section>
+        <aside className="project-rail">
+          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待核对` : "待核对记录"}</h2><p>AI 提取的内容先留在审核区。只有你确认的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开审核区</button></section>
+          <section className="panel action-panel"><h2>已确认结果</h2><p>事项概况、变化、决定、偏好、问题和风险都只读取已确认记录。</p><button className="button secondary full" onClick={() => onResults("folder-summary")}>查看全部结果</button></section>
+        </aside>
+      </div>
+      <GlossaryPanel projectId={project.id} />
+      <section className="result-shortcuts"><div className="section-heading"><div><h2>会前查看</h2><p>从当前记录快速准备下一次沟通。</p></div></div><div>{resultTabs.slice(1).map((tab) => <button key={tab.key} onClick={() => onResults(tab.key)}><span>{tab.short.slice(0, 1)}</span><strong>{tab.label}</strong><b>›</b></button>)}</div></section>
+    </div>
+  );
+}
+
+const glossaryCategories: Array<{ value: GlossaryEntryCategory; label: string }> = [
+  { value: "general", label: "通用" },
+  { value: "person", label: "人名" },
+  { value: "company", label: "公司" },
+  { value: "industry_term", label: "行业术语" },
+  { value: "material", label: "材料" },
+  { value: "property", label: "地点或项目" },
+];
+
+function glossaryCategoryLabel(category: GlossaryEntryCategory): string {
+  return glossaryCategories.find((item) => item.value === category)?.label ?? category;
+}
+
+function parseGlossaryVariants(value: string): string[] {
+  return value
+    .split(/[，,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function GlossaryPanel({ projectId }: { projectId: string }) {
+  const [entries, setEntries] = useState<GlossaryEntry[]>([]);
+  const [state, setState] = useState<AsyncState>("loading");
+  const [issue, setIssue] = useState<ApiIssue | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [canonicalValue, setCanonicalValue] = useState("");
+  const [variants, setVariants] = useState("");
+  const [category, setCategory] = useState<GlossaryEntryCategory>("general");
+
+  const load = useCallback(async () => {
+    setState("loading");
+    setIssue(null);
+    try {
+      const result = await api.listGlossary(projectId);
+      setEntries(result);
+      setState(result.length ? "ready" : "empty");
+    } catch (error) {
+      setIssue(toIssue(error));
+      setState("error");
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  function clearForm() {
+    setEditingId(null);
+    setCanonicalValue("");
+    setVariants("");
+    setCategory("general");
+  }
+
+  function beginEdit(entry: GlossaryEntry) {
+    setEditingId(entry.id);
+    setCanonicalValue(entry.canonical_value);
+    setVariants(entry.variants.join("，"));
+    setCategory(entry.category);
+    setDeleteId(null);
+  }
+
+  async function save() {
+    if (!canonicalValue.trim()) return;
+    const current = editingId ? entries.find((entry) => entry.id === editingId) : null;
+    setBusy(editingId || "create");
+    setIssue(null);
+    try {
+      const input = {
+        canonicalValue: canonicalValue.trim(),
+        variants: parseGlossaryVariants(variants),
+        category,
+      };
+      if (current) {
+        await api.updateGlossary(current, { ...input, isActive: current.is_active }, crypto.randomUUID());
+      } else {
+        await api.createGlossary(projectId, input, crypto.randomUUID());
+      }
+      clearForm();
+      await load();
+    } catch (error) {
+      setIssue(toIssue(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggle(entry: GlossaryEntry) {
+    setBusy(entry.id);
+    setIssue(null);
+    try {
+      await api.updateGlossary(
+        entry,
+        {
+          canonicalValue: entry.canonical_value,
+          variants: entry.variants,
+          category: entry.category,
+          isActive: !entry.is_active,
+        },
+        crypto.randomUUID(),
+      );
+      if (editingId === entry.id) clearForm();
+      await load();
+    } catch (error) {
+      setIssue(toIssue(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(entry: GlossaryEntry) {
+    setBusy(entry.id);
+    setIssue(null);
+    try {
+      await api.deleteGlossary(entry, crypto.randomUUID());
+      if (editingId === entry.id) clearForm();
+      setDeleteId(null);
+      await load();
+    } catch (error) {
+      setIssue(toIssue(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="panel glossary-panel">
+      <div className="section-heading">
+        <div>
+          <span className="section-kicker">项目设置</span>
+          <h2>词汇表</h2>
+          <p>记录正确写法和常见变体。启用的人工词条会用于后续材料分析。</p>
+        </div>
+      </div>
+      {issue && <ErrorNotice issue={issue} onRetry={load} compact />}
+      <div className="glossary-layout">
+        <div className="glossary-form">
+          <label className="field"><span>正确写法</span><input value={canonicalValue} maxLength={120} onChange={(event) => setCanonicalValue(event.target.value)} placeholder="例如：Nina Patel" /></label>
+          <label className="field"><span>常见变体</span><textarea value={variants} onChange={(event) => setVariants(event.target.value)} placeholder="例如：Nena Patel，Nina P.&#10;用逗号或换行分开" /></label>
+          <label className="field"><span>分类</span><select value={category} onChange={(event) => setCategory(event.target.value as GlossaryEntryCategory)}>{glossaryCategories.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+          <div className="button-row">
+            {editingId && <button className="button secondary" type="button" onClick={clearForm}>取消</button>}
+            <button className="button primary" type="button" disabled={!canonicalValue.trim() || Boolean(busy)} onClick={() => void save()}>{busy === (editingId || "create") ? "正在保存…" : editingId ? "保存修改" : "添加词条"}</button>
+          </div>
+        </div>
+        <div className="glossary-list">
+          {state === "loading" && <LoadingBlock label="正在读取词汇表…" />}
+          {state === "empty" && <EmptyState title="还没有词条" body="先添加容易写错的人名、公司名或行业术语。" />}
+          {entries.map((entry) => <article className={!entry.is_active ? "inactive" : ""} key={entry.id}>
+            <div className="glossary-entry-main"><div><strong>{entry.canonical_value}</strong><span>{glossaryCategoryLabel(entry.category)} · {entry.source_type === "manual" ? "人工维护" : entry.source_label || "来自已确认记录"}</span></div>{!entry.is_active && <span className="status-badge neutral">已停用</span>}</div>
+            <p>{entry.variants.length ? `常见变体：${entry.variants.join("、")}` : "没有记录变体"}</p>
+            <div className="glossary-actions">
+              <button className="text-button" disabled={Boolean(busy)} onClick={() => beginEdit(entry)}>编辑</button>
+              <button className="text-button" disabled={Boolean(busy)} onClick={() => void toggle(entry)}>{entry.is_active ? "停用" : "启用"}</button>
+              {deleteId === entry.id ? <><button className="text-button danger-text" disabled={Boolean(busy)} onClick={() => void remove(entry)}>{busy === entry.id ? "正在删除…" : "确认删除"}</button><button className="text-button" disabled={Boolean(busy)} onClick={() => setDeleteId(null)}>取消</button></> : <button className="text-button danger-text" disabled={Boolean(busy)} onClick={() => setDeleteId(entry.id)}>删除</button>}
+            </div>
+          </article>)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function EventScreen({ state, issue, event, run, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; busy: string | null }) {
+  const [paste, setPaste] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  if (state === "loading") return <div className="page"><LoadingBlock label="正在读取这次沟通…" /></div>;
+  if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
+  const readyAssets = event.assets.filter((item) => item.status === "ready" && item.versionId);
+  const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
+  return (
+    <div className="page">
+      <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
+      {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
+      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{statusLabel(run.status)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? "你可以离开这个页面，处理会在后台继续。" : run.status === "completed_with_warnings" ? "部分候选没有通过证据校验，合格内容仍可审核。" : "打开审核区查看通过程序校验的候选记录。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></section>}
+      <div className="event-workspace">
+        <section className="panel source-panel">
+          <div className="section-heading"><div><h2>本次材料</h2><p>提取只会分析下列已完成版本。</p></div><button className="button secondary small" onClick={() => fileRef.current?.click()}>上传文件</button></div>
+          <input ref={fileRef} className="visually-hidden" type="file" accept={`.txt,.vtt,.srt,.json,${MODEL_IMAGE_FILE_ACCEPT}`} onChange={(change) => {
+            const file = change.target.files?.[0];
+            if (!file) return;
+            const imageMime = modelImageMimeFor(file.name, file.type);
+            const kind = imageMime ? "photo" : "transcript";
+            void onAttach({ kind, filename: file.name, contentType: imageMime || file.type || "text/plain", blob: file });
+            change.target.value = "";
+          }} />
+          {!event.assets.length ? <EmptyState title="还没有材料" body="上传 Transcript 或照片，也可以在下面粘贴一段文字。" /> : <div className="asset-list">{event.assets.map((asset) => <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small></span><StatusBadge value={asset.status} /></article>)}</div>}
+          <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={async () => { const blob = new Blob([paste], { type: "text/plain" }); await onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }); setPaste(""); }}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
+        </section>
+        <aside className="event-rail">
+          <section className="panel extraction-card"><h2>准备提取</h2><p>{readyAssets.length ? `${readyAssets.length} 份材料已就绪。` : "至少需要一份状态为“材料已就绪”的内容。"}</p><button className="button primary full" disabled={!canStart || busy === "extraction"} onClick={onStart}>{run ? "重新提取" : "开始提取"}</button>{!run && <small>系统会提取候选记录，并附上可以核对的原始证据。</small>}</section>
+        </aside>
+      </div>
+      {claimsIssue && <ErrorNotice issue={claimsIssue} compact />}
+      {claimsState === "loading" && <LoadingBlock label="正在读取候选记录…" />}
+      {claims.length > 0 && <section className="inline-claims"><div className="section-heading"><div><h2>本次候选记录</h2><p>{claims.filter((item) => item.reviewStatus === "pending").length} 条仍待审核</p></div><button className="button secondary" onClick={onReview}>进入完整审核</button></div><div>{claims.slice(0, 5).map((claim) => <button key={claim.id} onClick={() => onOpenClaim(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /><b>›</b></button>)}</div></section>}
+    </div>
+  );
+}
+
+function DebugField({ label, value, mono = false }: { label: string; value: unknown; mono?: boolean }) {
+  const shown = stringValue(value) ?? "未记录";
+  return <div className="debug-field"><span>{label}</span><strong className={mono ? "mono" : ""}>{shown}</strong></div>;
+}
+
+function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: AsyncState; issue: ApiIssue | null; debug: RunDebug | null; onBack: () => void; onRetry: () => void }) {
+  if (state === "loading") return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} /><LoadingBlock label="正在读取服务器中的运行记录…" /></div>;
+  if (state === "error" || !debug) return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} />{issue ? <ErrorNotice issue={issue} onRetry={onRetry} /> : <EmptyState title="没有运行详情" body="服务器没有返回这次运行的数据。" />}</div>;
+  const data = debug.data;
+  const manifest = recordArray(data.input_manifest);
+  const modelParams = isRecord(data.model_params) ? data.model_params : {};
+  const reasoningEffort = stringValue(modelParams.reasoning_effort);
+  const maxOutputTokens = stringValue(modelParams.max_output_tokens);
+  const timeoutMs = firstString(modelParams, ["timeout_ms", "request_timeout_ms"]);
+  const missingFrozenParameters = [
+    !reasoningEffort && "reasoning effort",
+    !maxOutputTokens && "max output tokens",
+    !timeoutMs && "timeout",
+  ].filter((value): value is string => Boolean(value));
+  const errorDetails = isRecord(data.error_details) ? data.error_details : null;
+  const warnings = errorDetails ? recordArray(errorDetails.warnings) : [];
+  const validatedOutput = data.validated_output;
+  const hasValidatedOutput = validatedOutput !== null && validatedOutput !== undefined;
+  const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
+  return (
+    <div className="page debug-page">
+      <PageHeader eyebrow="内部页" title="本次运行详情" body="用于核对模型、输入、验证结果和成本。这里不影响正式结果。" back={onBack} actions={<StatusBadge value={stringValue(data.status)} />} />
+      <section className="debug-request"><span>本次页面请求 ID</span><code>{debug.requestId}</code></section>
+      <div className="debug-grid">
+        <section className="panel debug-section"><div className="section-heading"><div><h2>模型与执行参数</h2><p>这些值从本次 Run 保存的配置读取，不使用当前环境变量补齐。</p></div></div><div className="debug-fields"><DebugField label="Provider" value={data.provider} /><DebugField label="Model" value={data.model} /><DebugField label="Reasoning effort" value={reasoningEffort ?? "未冻结"} mono /><DebugField label="最大输出 token" value={maxOutputTokens ? `${maxOutputTokens} tokens` : "未冻结"} /><DebugField label="请求超时" value={timeoutMs ? `${timeoutMs} ms` : "未冻结"} /><DebugField label="Prompt" value={data.prompt_version} mono /><DebugField label="Schema" value={data.schema_version} mono /><DebugField label="Parser" value={data.parser_version} mono /><DebugField label="Provider Request ID" value={data.provider_request_id} mono /></div>{missingFrozenParameters.length > 0 && <p className="debug-config-warning" role="alert">这次 Run 没有完整冻结执行参数：{missingFrozenParameters.join("、")}。调试时不能用当前环境配置代替这次运行的实际值。</p>}</section>
+        <section className="panel debug-section"><div className="section-heading"><div><h2>用量</h2><p>没有返回的用量保持空白。</p></div></div><div className="debug-fields"><DebugField label="Input tokens" value={data.input_tokens} /><DebugField label="Output tokens" value={data.output_tokens} /><DebugField label="Cached tokens" value={data.cached_tokens} /><DebugField label="Image units" value={data.image_units} /><DebugField label="Estimated cost USD" value={data.estimated_cost_usd} /><DebugField label="Attempt" value={data.attempt_no} /></div></section>
+      </div>
+      <section className="panel debug-section"><div className="section-heading"><div><h2>Input manifest</h2><p>这次提交给处理任务的材料版本。</p></div></div>{manifest.length ? <div className="manifest-list">{manifest.map((item, index) => <article key={firstString(item, ["asset_version_id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{firstString(item, ["kind"]) || "未知类型"}</strong><code>{firstString(item, ["asset_version_id"]) || "缺少 Asset Version ID"}</code><small>Parser: {firstString(item, ["parser_version"]) || "未记录"}</small><small>SHA-256: {firstString(item, ["sha256"]) || "未记录"}</small></div></article>)}</div> : <EmptyState title="没有 Input manifest" body="服务器没有为这次运行返回任何输入材料。" />}</section>
+      <section className="panel debug-section"><div className="section-heading"><div><h2>验证提醒与错误</h2><p>程序验证没有通过的内容会在这里留下原因。</p></div></div>{warnings.length ? <div className="warning-list">{warnings.map((warning, index) => <article key={`${firstString(warning, ["code"]) || "warning"}:${index}`}><strong>{firstString(warning, ["code"]) || "未命名提醒"}</strong><pre>{JSON.stringify(redactDebugValue(warning), null, 2)}</pre></article>)}</div> : <p className="muted">服务器没有记录 validation warning。</p>}<div className="debug-error-row"><DebugField label="Error code" value={data.error_code} mono /><DebugField label="Outbox error" value={data.outbox_error_code} mono /><DebugField label="Outbox status" value={data.outbox_status} /></div>{errorDetails && !warnings.length && <pre className="debug-json small">{JSON.stringify(redactDebugValue(errorDetails), null, 2)}</pre>}</section>
+      <section className="panel debug-section debug-output"><div className="section-heading"><div><h2>validated_output</h2><p>这是通过服务器 Schema 校验后保留下来的模型 JSON，仅供内部排查。</p></div></div>{hasValidatedOutput ? <pre className="debug-json">{JSON.stringify(redactDebugValue(validatedOutput), null, 2)}</pre> : <p className="muted">本次没有模型输出。</p>}</section>
+      <section className="panel debug-section"><div className="section-heading"><div><h2>时间</h2><p>每个阶段都直接读取服务器时间。</p></div></div><div className="debug-fields"><DebugField label="Created" value={data.created_at} /><DebugField label="Queued" value={data.queued_at} /><DebugField label="Started" value={data.started_at} /><DebugField label="Finished" value={data.finished_at} /><DebugField label="Updated" value={data.updated_at} /><DebugField label="Next queue attempt" value={data.next_attempt_at} /></div></section>
+      <details className="panel debug-raw"><summary>查看脱敏后的原始 JSON</summary><p>API Key、授权信息、Cookie、存储 Key 和 Idempotency Key 会被隐藏。</p><pre className="debug-json">{rawJson}</pre></details>
+    </div>
+  );
+}
+
+function OccurrenceEvidenceCard({ evidence }: { evidence: OccurrenceCandidate["evidence"][number] }) {
+  return (
+    <article className="occurrence-evidence-card">
+      <div className="evidence-card-head"><span className="file-kind">{evidence.kind === "photo" ? "IMG" : evidence.kind === "document" ? "PDF" : "TXT"}</span><span><strong>{typeLabel(evidence.kind)} · {typeLabel(evidence.evidence_role)}</strong><small>Asset Version {evidence.asset_version_id}</small></span></div>
+      {evidence.quote_raw && <blockquote>“{evidence.quote_raw}”</blockquote>}
+      {evidence.observation && <p>{evidence.observation}</p>}
+      <div className="evidence-coordinates">
+        {(evidence.start_ms !== null || evidence.end_ms !== null) && <span>{formatTimestamp(evidence.start_ms == null ? undefined : evidence.start_ms / 1000)} 至 {formatTimestamp(evidence.end_ms == null ? undefined : evidence.end_ms / 1000)}</span>}
+        {evidence.page_number && <span>第 {evidence.page_number} 页</span>}
+        {evidence.segment_ids.length > 0 && <span>Segments: {evidence.segment_ids.join("、")}</span>}
+      </div>
+      {evidence.asset_view_url && <a className="evidence-open" href={evidence.asset_view_url} target="_blank" rel="noreferrer">打开原始材料</a>}
+    </article>
+  );
+}
+
+const occurrenceClaimTypeOptions: Array<{ value: OccurrenceNewClaim["type"]; label: string }> = [
+  { value: "decision", label: "决定" },
+  { value: "requirement", label: "要求" },
+  { value: "budget", label: "预算" },
+  { value: "timing", label: "时间计划" },
+  { value: "preference", label: "偏好" },
+  { value: "person_role", label: "人员与职责" },
+  { value: "material", label: "材料" },
+  { value: "measurement", label: "尺寸" },
+  { value: "property_fact", label: "现场事实" },
+  { value: "risk", label: "风险" },
+  { value: "concern", label: "顾虑" },
+  { value: "open_question", label: "待确认问题" },
+  { value: "other", label: "其他" },
+];
+
+function canonicalOccurrenceType(value: string | null | undefined): OccurrenceNewClaim["type"] {
+  return occurrenceClaimTypeOptions.some((option) => option.value === value)
+    ? value as OccurrenceNewClaim["type"]
+    : "other";
+}
+
+function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }: {
+  candidate: OccurrenceCandidate;
+  busy: string | null;
+  onOpen: (id: string) => void;
+  onVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void;
+  onConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void;
+}) {
+  const [showConversion, setShowConversion] = useState(false);
+  const [conversionText, setConversionText] = useState(
+    candidate.proposed_statement || candidate.target_statement,
+  );
+  const defaultConversionType = canonicalOccurrenceType(
+    candidate.proposed_type || candidate.target_type,
+  );
+  const [conversionTypes, setConversionTypes] = useState<Record<string, OccurrenceNewClaim["type"]>>({});
+  const statements = [...new Set(
+    conversionText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+  )];
+  const tooMany = statements.length > 10;
+  const candidateBusy = busy === `occurrence:${candidate.id}`;
+  const pending = candidate.status === "pending";
+  return (
+    <article className="occurrence-card">
+      <header><div><span className="eyebrow">{typeLabel(candidate.target_type)}</span><h3>{candidate.target_statement}</h3></div><span className={`status-badge ${candidate.status === "rejected" ? "danger" : pending ? "warning" : "success"}`}>{candidate.status === "confirmed" ? "已确认再次出现" : candidate.status === "rejected" ? "未采纳" : candidate.status === "converted" ? "已转为新记录" : "待审核"}</span></header>
+      {candidate.proposed_statement && candidate.proposed_statement !== candidate.target_statement && <p className="proposed-occurrence"><b>这次的说法：</b>{candidate.proposed_statement}</p>}
+      <div className="occurrence-evidence-list">{candidate.evidence.length ? candidate.evidence.map((item, index) => <OccurrenceEvidenceCard key={`${item.asset_version_id}:${index}`} evidence={item} />) : <p className="uncertainty">服务器没有返回可核对的新证据，不能确认。</p>}</div>
+      {showConversion && pending && <form className="occurrence-conversion" onSubmit={(event) => {
+        event.preventDefault();
+        if (!statements.length || tooMany) return;
+        onConvert(candidate, statements.map((statement) => ({
+          statement,
+          type: conversionTypes[statement] || defaultConversionType,
+        })));
+      }}>
+        <div><strong>把新变化单独留下</strong><p>每行写一条记录。生成后还要逐条核对，原记录不会被修改。</p></div>
+        <label><span>要新增的记录</span><textarea value={conversionText} onChange={(event) => setConversionText(event.target.value)} rows={Math.max(3, Math.min(7, statements.length + 1))} maxLength={10000} autoFocus /></label>
+        {statements.length > 0 && <div className="occurrence-conversion-rows"><span>必要时修改每条记录的类别</span>{statements.slice(0, 10).map((statement, index) => <label key={statement}><strong>{index + 1}. {statement}</strong><select aria-label={`第 ${index + 1} 条记录的类别`} value={conversionTypes[statement] || defaultConversionType} onChange={(event) => setConversionTypes((current) => ({ ...current, [statement]: event.target.value as OccurrenceNewClaim["type"] }))}>{occurrenceClaimTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>)}</div>}
+        {tooMany && <p className="uncertainty">一次最多生成 10 条，请删掉或合并几行。</p>}
+        <div className="occurrence-conversion-actions"><button className="button primary" type="submit" disabled={Boolean(busy) || !candidate.evidence.length || !statements.length || tooMany}>{candidateBusy ? "正在生成…" : `生成 ${statements.length || 0} 条待审核记录`}</button><button className="button quiet" type="button" disabled={Boolean(busy)} onClick={() => setShowConversion(false)}>取消</button></div>
+      </form>}
+      <div className="occurrence-actions"><button className="button primary" disabled={Boolean(busy) || !candidate.evidence.length || !pending} onClick={() => onVerdict(candidate, "confirm")}>{candidateBusy && !showConversion ? "正在保存…" : "确认只是再次提到"}</button>{pending && <button className="button quiet" disabled={Boolean(busy) || !candidate.evidence.length} onClick={() => setShowConversion((value) => !value)}>{showConversion ? "收起新增记录" : "这次有新变化"}</button>}<button className="button quiet danger-text" disabled={Boolean(busy) || !pending} onClick={() => onVerdict(candidate, "reject")}>不采纳这次记录</button><button className="text-button" onClick={() => onOpen(candidate.target_claim_id)}>查看原记录与旧证据</button></div>
+    </article>
+  );
+}
+
+function ReviewScreen({ state, issue, claims, occurrenceCandidates, selected, onBack, onRetry, onOpen, onToggle, onBatch, onOccurrenceVerdict, onOccurrenceConvert, batchCount, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; selected: Set<string>; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onToggle: (id: string) => void; onBatch: () => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; batchCount: number; busy: string | null }) {
+  const [filter, setFilter] = useState<"pending" | "reviewed" | "all">("pending");
+  const visible = claims.filter((item) => filter === "pending" ? item.reviewStatus === "pending" : filter === "reviewed" ? item.reviewStatus !== "pending" : true);
+  const visibleOccurrences = occurrenceCandidates.filter((item) => filter === "pending" ? item.status === "pending" : filter === "reviewed" ? item.status !== "pending" : true);
+  return (
+    <div className="page narrow-page">
+      <PageHeader eyebrow="Review Queue" title="审核候选记录" body="逐条核对陈述和证据。打开一条记录并明确标记已核对后，才能把它加入批量确认。" back={onBack} actions={batchCount > 0 && <button className="button primary" disabled={Boolean(busy)} onClick={onBatch}>{busy === "batch" ? "正在确认…" : `确认所选 ${batchCount} 条`}</button>} />
+      {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
+      <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
+      {state === "loading" && <LoadingBlock label="正在整理审核队列…" />}
+      {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待审核记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
+      {visible.length > 0 && <div className="review-list">{visible.map((claim) => <article key={claim.id} className="review-card"><label className="claim-select" title={claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={claim.reviewStatus !== "pending" || !claim.batchReviewAttested} checked={selected.has(claim.id)} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span></div><UncertaintyNotice value={claim.uncertainty} compact /><span className="review-evidence-link">{claim.reviewStatus === "pending" && claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : claim.reviewStatus === "pending" ? "打开并核对证据后才能批量选择 ›" : "查看证据和处理记录 ›"}</span></button></article>)}</div>}
+      {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新证据附到原记录。如果里面有新变化，可以拆成新的待审核记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
+    </div>
+  );
+}
+
+function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
+  return (
+    <article className="evidence-card">
+      <div className="evidence-card-head"><span className="file-kind">{evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${evidence.role} evidence · ` : ""}{formatTimestamp(evidence.timestampStart)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
+      {/* Evidence URLs can be short-lived signed URLs and cannot use the build-time image loader. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {evidence.imageUrl && <img src={evidence.imageUrl} alt={evidence.caption || "原始图片证据"} />}
+      {evidence.viewUrl && !evidence.imageUrl && <a className="evidence-open" href={evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
+      {evidence.quote && <blockquote>“{evidence.quote}”</blockquote>}
+      {evidence.caption && evidence.caption !== evidence.quote && <p>{evidence.caption}</p>}
+      {!evidence.quote && !evidence.imageUrl && !evidence.caption && <p className="muted">这条证据已记录，但服务器没有返回可在页面预览的内容。</p>}
+    </article>
+  );
+}
+
+function uncertaintyForEdit(value: unknown): ClaimEditSubmission["uncertainty"] {
+  if (!isRecord(value)) return null;
+  const alternatives = Array.isArray(value.alternatives)
+    ? value.alternatives.filter((item): item is string => typeof item === "string")
+    : [];
+  if (typeof value.reason !== "string" || typeof value.question !== "string") return null;
+  return { reason: value.reason, question: value.question, alternatives };
+}
+
+function relationReviewLabel(type: string): string {
+  if (type === "supersedes") return "取代原记录";
+  if (type === "resolves") return "解决原问题";
+  if (type === "contradicts") return "与原记录冲突";
+  return "参考原记录";
+}
+
+function ClaimScreen({ claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw }: { claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void }) {
+  const [edit, setEdit] = useState(false);
+  const [statement, setStatement] = useState(claim?.statement ?? "");
+  const [claimType, setClaimType] = useState(claim?.type ?? "other");
+  const [reason, setReason] = useState("");
+  const [editEvidenceIds, setEditEvidenceIds] = useState<Set<string>>(new Set());
+  const [secondaryEvidenceNote, setSecondaryEvidenceNote] = useState("");
+  const [normalizedDecision, setNormalizedDecision] = useState<"retain" | "clear" | "">(
+    claim?.normalizedValue ? "" : "clear",
+  );
+  const originalUncertainty = uncertaintyForEdit(claim?.uncertainty);
+  const [uncertaintyDecision, setUncertaintyDecision] = useState<"retain" | "clear" | "">(
+    originalUncertainty ? "" : "clear",
+  );
+  const [retainedRelationIds, setRetainedRelationIds] = useState<Set<string>>(new Set());
+  if (!claim) return <div className="page narrow-page"><PageHeader title="记录" back={onBack} /><EmptyState title="没有找到这条记录" body="它可能已经更新。返回审核区重新打开。" /></div>;
+  const pending = claim.reviewStatus === "pending";
+  const verified = claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn";
+  const evidenceReady = evidenceState === "ready";
+  const editHasSupportingEvidence = evidence.some(
+    (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
+  );
+  const canSaveEdit = Boolean(
+    evidenceReady &&
+    statement.trim() &&
+    claimType.trim() &&
+    normalizedDecision &&
+    uncertaintyDecision &&
+    (editHasSupportingEvidence || secondaryEvidenceNote.trim()),
+  );
+  const submitEdit = () => onVerdict("edit", reason.trim(), {
+    statement: statement.trim(),
+    type: claimType.trim(),
+    normalizedValue: normalizedDecision === "retain" ? claim.normalizedValue : null,
+    uncertainty: uncertaintyDecision === "retain" ? originalUncertainty : null,
+    retainRelationIds: [...retainedRelationIds],
+    evidenceRefIds: [...editEvidenceIds],
+    secondaryEvidenceNote: secondaryEvidenceNote.trim() || undefined,
+  });
+  return (
+    <div className="page narrow-page">
+      <PageHeader eyebrow={typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${confidenceText(claim.confidence)}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
+      {issue && <ErrorNotice issue={issue} compact />}
+      <div className="claim-layout">
+        <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>确认前，请检查原文是否真的支持这条陈述。</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
+        <aside className="panel verdict-panel"><h2>{edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} />{(pending || (verified && edit)) && <>
+          {edit ? <div className="edit-form">
+            <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
+            <label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
+            <fieldset className="edit-review-choice"><legend>结构化值</legend>{claim.normalizedValue ? <><pre>{JSON.stringify(claim.normalizedValue, null, 2)}</pre><label><input type="radio" name="normalized-decision" checked={normalizedDecision === "retain"} onChange={() => setNormalizedDecision("retain")} />我已核对，修改后仍适用</label><label><input type="radio" name="normalized-decision" checked={normalizedDecision === "clear"} onChange={() => setNormalizedDecision("clear")} />清除，之后重新提取</label></> : <p>原记录没有结构化值，本次继续留空。</p>}</fieldset>
+            <fieldset className="edit-review-choice"><legend>不确定性</legend>{originalUncertainty ? <><UncertaintyNotice value={originalUncertainty} compact /><label><input type="radio" name="uncertainty-decision" checked={uncertaintyDecision === "retain"} onChange={() => setUncertaintyDecision("retain")} />我已核对，修改后仍需保留</label><label><input type="radio" name="uncertainty-decision" checked={uncertaintyDecision === "clear"} onChange={() => setUncertaintyDecision("clear")} />问题已经消失，清除提醒</label></> : <p>原记录没有不确定性，本次继续留空。</p>}</fieldset>
+            {claim.relationsForReview.length > 0 && <fieldset className="edit-review-choice"><legend>这条记录与旧记录的关系</legend><p>只勾选修改后仍然成立的关系。系统会为新版本建立新关系，未勾选的关系不会生效。</p>{claim.relationsForReview.map((relation) => <label key={relation.id}><input type="checkbox" checked={retainedRelationIds.has(relation.id)} onChange={() => setRetainedRelationIds((current) => { const next = new Set(current); if (next.has(relation.id)) next.delete(relation.id); else next.add(relation.id); return next; })} /><span><b>{relationReviewLabel(relation.type)}</b><small>{relation.targetStatement}</small>{relation.reason && <small>{relation.reason}</small>}</span></label>)}</fieldset>}
+            <div className="edit-evidence"><strong>重新选择支持修改后陈述的证据</strong><p>系统不会自动沿用旧证据。至少勾选一条直接或佐证材料；只有背景参考时，请补充人工依据。</p>{evidence.map((item) => <label key={item.id}><input type="checkbox" disabled={!evidenceReady} checked={editEvidenceIds.has(item.id)} onChange={() => setEditEvidenceIds((current) => { const next = new Set(current); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next; })} /><span><b>{typeLabel(item.role)}</b> · {item.quote || item.caption || item.filename || typeLabel(item.kind)}</span></label>)}</div>
+            <label className="field"><span>补充证据说明</span><textarea value={secondaryEvidenceNote} onChange={(event) => setSecondaryEvidenceNote(event.target.value)} placeholder="没有可勾选的证据时，请说明你依据了什么补充信息。" /></label>
+            <label className="field"><span>修改原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+            <div className="button-row"><button className="button secondary" onClick={() => setEdit(false)}>取消</button><button className="button primary" disabled={busy === "edit" || !canSaveEdit} onClick={submitEdit}>{busy === "edit" ? "正在保存…" : "保存并确认"}</button></div>
+          </div> : <div className="verdict-actions"><button className="button primary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => onVerdict("confirm", reason.trim())}>确认并加入正式结果</button><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改后确认</button><div className="batch-review-attestation"><strong>需要一次批量处理多条？</strong><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</div><label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button></div>}
+        </>}{verified && !edit && <div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
+      </div>
+    </div>
+  );
+}
+
+function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack, onSelect, onRetry, onOpenClaim, onResolveContradiction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void }) {
+  const current = resultTabs.find((item) => item.key === tab)!;
+  const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
+  const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
+  return (
+    <div className="page results-page">
+      <PageHeader eyebrow={project?.name} title="已确认结果" body="这些页面只读取已确认且仍有效的记录。撤回内容只保留在历史时间线。" back={onBack} />
+      {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
+      <div className="result-layout"><aside className="result-nav">{resultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</aside><section className="result-content"><div className="section-heading"><div><span className="section-kicker">Verified only</span><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}{state === "ready" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}</section></div>
+    </div>
+  );
+}
+
+function NewProjectModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (name: string) => Promise<void>; busy: boolean }) {
+  const [name, setName] = useState("");
+  return <Modal title="新建 Project" description="名称只用来帮助你认出这件事，使用场景会在第一份材料后确认。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) void onCreate(name.trim()); }}><label className="field"><span>Project 名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：秋季产品研究" /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!name.trim() || busy}>{busy ? "正在创建…" : "创建"}</button></div></form></Modal>;
+}
+
+function NewEventModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (input: { title: string; event_type: string; occurred_at: string }) => Promise<void>; busy: boolean }) {
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("meeting");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 16));
+  return <Modal title="新增一次沟通" description="一次会面、Showing、Estimate 或 Walkthrough 对应一个 Event。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">Meeting</option><option value="showing">Showing</option><option value="estimate">Estimate</option><option value="walkthrough">Walkthrough</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建并加入材料"}</button></div></form></Modal>;
+}
+
+function ImportModal({ project, onClose, onImported }: { project: Project; onClose: () => void; onImported: (events: Event[]) => Promise<void> }) {
+  const [rows, setRows] = useState<ImportRow[]>([]);
+  const [issue, setIssue] = useState<ApiIssue | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const importCreateKeys = useRef(new Map<string, string>());
+  const activeSession = useRef<{ fingerprint: string; session: ImportSession } | null>(null);
+  function chooseFiles(change: ChangeEvent<HTMLInputElement>) {
+    setIssue(null);
+    const files = Array.from(change.target.files ?? []);
+    if (files.length < 1 || files.length > 10) { setIssue({ code: "BAD_REQUEST", message: "一次请选择 1 至 10 份 Transcript。", status: 400 }); return; }
+    const invalid = files.find((file) => !acceptedTranscriptTypes.some((extension) => file.name.toLowerCase().endsWith(extension)));
+    if (invalid) { setIssue({ code: "ASSET_UNSUPPORTED_FORMAT", message: `${invalid.name} 暂不支持。请选择 TXT、VTT、SRT 或 JSON。`, status: 415 }); return; }
+    const start = Date.now() - (files.length - 1) * 60 * 60 * 1000;
+    setRows(files.map((file, index) => ({ key: `${file.name}-${file.lastModified}-${index}`, file, title: file.name.replace(/\.[^.]+$/, ""), occurredAt: new Date(start + index * 60 * 60 * 1000).toISOString().slice(0, 16), eventType: "meeting" })));
+  }
+  function move(index: number, direction: -1 | 1) {
+    setRows((current) => { const target = index + direction; if (target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; });
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!rows.length || rows.some((row) => !row.title.trim() || !row.occurredAt)) return;
+    setBusy(true);
+    setIssue(null);
+    try {
+      const fingerprint = ["transcript-import", project.id, ...rows.map((row) => `${row.file.name}:${row.file.type}:${row.file.size}:${row.file.lastModified}`)].join(":");
+      let session = activeSession.current?.fingerprint === fingerprint ? activeSession.current.session : null;
+      if (!session) {
+        setProgress("正在建立导入会话…");
+        const idempotencyKey = importCreateKeys.current.get(fingerprint) || crypto.randomUUID();
+        importCreateKeys.current.set(fingerprint, idempotencyKey);
+        session = await api.beginTranscriptImport(project.id, rows.map((row) => row.file), idempotencyKey);
+        importCreateKeys.current.delete(fingerprint);
+        activeSession.current = { fingerprint, session };
+      }
+      if (!session.id || session.items.length !== rows.length) throw new Error("服务器没有为全部文件建立上传位置，未创建任何 Event。");
+      for (let index = 0; index < rows.length; index += 1) {
+        setProgress(`正在上传 ${index + 1}/${rows.length}：${rows[index].file.name}`);
+        await api.uploadTranscriptItem(session, session.items[index], rows[index].file);
+      }
+      setProgress("正在按确认顺序建立 Event…");
+      const created = await api.finalizeTranscriptImport(session.id, rows.map((row, index) => ({ item_id: session.items[index].id, title: row.title.trim(), occurred_at: new Date(row.occurredAt).toISOString(), event_type: row.eventType })));
+      activeSession.current = null;
+      await onImported(created);
+    } catch (error) { setIssue(toIssue(error)); setProgress(null); } finally { setBusy(false); }
+  }
+  return <Modal title="批量导入 Transcript" description={`为 ${project.name} 建立 1 至 10 次按时间排序的沟通。Finalize 失败时不会创建半套 Event。`} onClose={busy ? () => undefined : onClose} wide><form className="modal-form" onSubmit={(event) => void submit(event)}>{issue && <ErrorNotice issue={issue} compact />}{!rows.length ? <label className="file-drop"><input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /><span className="empty-symbol">＋</span><strong>选择 1–10 份 Transcript</strong><small>支持 TXT、VTT、SRT、常见 Zoom 文本和结构化 JSON</small></label> : <><div className="import-summary"><strong>{rows.length} 份文件</strong><span>请确认顺序、标题和发生时间</span><label>重新选择<input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /></label></div><div className="import-rows">{rows.map((row, index) => <article key={row.key}><span className="event-order">{index + 1}</span><div className="import-row-main"><input aria-label="Event 标题" value={row.title} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, title: event.target.value } : item))} /><div><select aria-label="Event 类型" value={row.eventType} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, eventType: event.target.value as ImportRow["eventType"] } : item))}><option value="meeting">Meeting</option><option value="showing">Showing</option><option value="estimate">Estimate</option><option value="walkthrough">Walkthrough</option></select><input aria-label="发生时间" type="datetime-local" value={row.occurredAt} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, occurredAt: event.target.value } : item))} /></div><small>{row.file.name} · {formatBytes(row.file.size)}</small></div><div className="order-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label="上移">↑</button><button type="button" disabled={index === rows.length - 1} onClick={() => move(index, 1)} aria-label="下移">↓</button></div></article>)}</div></>}{progress && <div className="progress-line"><span className="spinner" />{progress}</div>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={!rows.length || busy || rows.some((row) => !row.title.trim() || !row.occurredAt)}>{busy ? "正在导入…" : `导入并建立 ${rows.length || ""} 次沟通`}</button></div></form></Modal>;
 }

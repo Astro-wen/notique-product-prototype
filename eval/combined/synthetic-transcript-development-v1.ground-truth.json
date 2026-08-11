@@ -1,0 +1,2721 @@
+{
+  "schemaVersion": "notique-ground-truth.v1",
+  "dataset": "synthetic-transcript-development-v1",
+  "split": "development-synthetic",
+  "status": "single-author-development-package-not-concept-validation",
+  "metadata": {
+    "synthetic": true,
+    "modality": "transcript-only",
+    "purpose": "development-evaluation-and-regression-only",
+    "sourceDatasets": [
+      {
+        "dataset": "synthetic-realtor-v1",
+        "path": "eval/cases/synthetic-realtor-v1/ground-truth.json",
+        "sha256": "405ff91bc5488b07f7cf1b05a3cb25093b069ca557b05945e5e4967f42f310ae",
+        "scenarioId": "scenario-morgan-family-home-search",
+        "eventIds": [
+          "event-01-buyer-consultation",
+          "event-02-redwood-showing",
+          "event-03-harbor-showing",
+          "event-04-offer-strategy"
+        ]
+      },
+      {
+        "dataset": "synthetic-insurance-v1",
+        "path": "eval/cases/synthetic-insurance-v1/ground-truth.json",
+        "sha256": "76acce6488685787dc500d59078efe5eadb0f9e0596bd744c3c77f6728bf7539",
+        "scenarioId": "scenario-chen-kitchen-water-claim",
+        "eventIds": [
+          "event-01-first-loss-call",
+          "event-02-adjuster-inspection",
+          "event-03-contractor-estimate",
+          "event-04-coverage-authorization"
+        ]
+      }
+    ],
+    "excludedDatasets": [
+      "synthetic-contractor-v1"
+    ],
+    "structuralCounts": {
+      "scenarioCount": 2,
+      "eventCount": 8,
+      "materialClaimCount": 77,
+      "criticalClaimCount": 58,
+      "criticalAmbiguityCount": 16,
+      "relationCount": 40,
+      "doubleAnnotatedCount": 0,
+      "independentRunCount": 0,
+      "eventMaterialClaimCounts": {
+        "event-01-buyer-consultation": 9,
+        "event-01-first-loss-call": 10,
+        "event-02-adjuster-inspection": 10,
+        "event-02-redwood-showing": 9,
+        "event-03-contractor-estimate": 9,
+        "event-03-harbor-showing": 10,
+        "event-04-coverage-authorization": 10,
+        "event-04-offer-strategy": 10
+      }
+    },
+    "eligibility": {
+      "structuralMinimumsMet": true,
+      "sampleEligible": false,
+      "blockers": [
+        "Ground Truth has not completed required double annotation and adjudication.",
+        "No three independent model runs are included in this package.",
+        "This development set is not a blind set and cannot establish product concept validation."
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "scenario-morgan-family-home-search",
+      "dataset": "synthetic-realtor-v1",
+      "eventIds": [
+        "event-01-buyer-consultation",
+        "event-02-redwood-showing",
+        "event-03-harbor-showing",
+        "event-04-offer-strategy"
+      ]
+    },
+    {
+      "id": "scenario-chen-kitchen-water-claim",
+      "dataset": "synthetic-insurance-v1",
+      "eventIds": [
+        "event-01-first-loss-call",
+        "event-02-adjuster-inspection",
+        "event-03-contractor-estimate",
+        "event-04-coverage-authorization"
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "gt-r1-bedrooms-three",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "requirement",
+      "statement": "The buyers require at least three bedrooms.",
+      "normalizedValue": {
+        "minimumBedrooms": 3
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 15000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-inlaw-unit",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "requirement",
+      "statement": "The buyers initially described needing an in-law unit because Lena's mother may live with them.",
+      "normalizedValue": {
+        "feature": "in-law unit",
+        "intendedOccupant": "Lena's mother"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 15000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-quiet-over-walkability",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "preference",
+      "statement": "Lena prefers a quiet residential street over walkability to shops.",
+      "normalizedValue": {
+        "priority": "quiet residential street",
+        "lowerPriority": "walkability to shops"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 36000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-older-character-home",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "preference",
+      "statement": "Lena initially prefers an older home with character and accepts light cosmetic work.",
+      "normalizedValue": {
+        "homeAgePreference": "older with character",
+        "acceptableWork": "light cosmetic"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 52000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-budget-ambiguous",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "budget",
+      "statement": "The initial price cap is unclear between $1.15 million and $1.5 million and must be confirmed before filtering by price.",
+      "normalizedValue": {
+        "currency": "USD",
+        "alternatives": [
+          1150000,
+          1500000
+        ],
+        "status": "unconfirmed"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:4",
+        "tx-r1:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 80000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "asr_numeric_ambiguity",
+        "alternatives": [
+          "$1.15M",
+          "$1.5M"
+        ],
+        "question": "Is the maximum purchase price $1.15 million or $1.5 million?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-joint-offer-approval",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "person_role",
+      "statement": "Lena and Evan must both approve any offer, and Lena cannot commit for both buyers.",
+      "normalizedValue": {
+        "decisionMakers": [
+          "Lena Morgan",
+          "Evan Morgan"
+        ],
+        "approvalRule": "both required"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 103000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-commute-45",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "requirement",
+      "statement": "Lena's commute to South San Francisco must remain under 45 minutes on three office days per week.",
+      "normalizedValue": {
+        "destination": "South San Francisco",
+        "maximumMinutes": 45,
+        "daysPerWeek": 3
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 122000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-school-choice-open",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "open_question",
+      "statement": "The buyers have not decided whether Mountain View Los Altos schools are acceptable or Palo Alto Unified is required.",
+      "normalizedValue": {
+        "question": "acceptable school district",
+        "status": "open",
+        "alternatives": [
+          "Mountain View Los Altos",
+          "Palo Alto Unified only"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 140000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "buyer_criteria_unknown",
+        "alternatives": [
+          "Mountain View Los Altos is acceptable",
+          "Palo Alto Unified is required"
+        ],
+        "question": "Which school district is acceptable to both buyers?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r1-preapproval-before-offer",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-01-buyer-consultation",
+      "type": "requirement",
+      "statement": "The buyers will not make an offer until the lender refreshes their preapproval letter.",
+      "normalizedValue": {
+        "offerCondition": "refreshed preapproval letter"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r1:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 163000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-bedrooms-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "requirement",
+      "statement": "The minimum requirement of three bedrooms has not changed.",
+      "normalizedValue": {
+        "minimumBedrooms": 3
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-bedrooms-three",
+      "timestampMs": 14000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-adu-correction",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "requirement",
+      "statement": "Lena clarifies that 'in-law unit' means a permitted ADU with its own entrance, not a JADU or an unpermitted converted room.",
+      "normalizedValue": {
+        "canonicalTerm": "ADU",
+        "permitRequired": true,
+        "separateEntranceRequired": true,
+        "excludedTerms": [
+          "JADU",
+          "converted room"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 39000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-redwood-rejected",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "decision",
+      "statement": "Lena rules out Redwood Avenue because steady traffic noise is unacceptable, despite the property's larger yard.",
+      "normalizedValue": {
+        "property": "Redwood Avenue",
+        "decision": "reject",
+        "rejectedAlternative": "buy for the larger yard",
+        "reason": "steady traffic noise"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 64000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-newer-home-preference",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "preference",
+      "statement": "After seeing Redwood Avenue's maintenance needs, Lena changes her preference to a home built in 2000 or later or one with major systems already renovated.",
+      "normalizedValue": {
+        "minimumBuildYear": 2000,
+        "alternative": "major systems already renovated",
+        "reason": "maintenance burden"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 88000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-budget-1150000",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "budget",
+      "statement": "Priya confirms the joint buyer price cap is $1.15 million, not $1.5 million.",
+      "normalizedValue": {
+        "amount": 1150000,
+        "currency": "USD",
+        "rejectedAlternative": 1500000
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 114000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-hoa-350",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "preference",
+      "statement": "Lena is willing to accept an HOA up to $350 per month if it covers exterior maintenance.",
+      "normalizedValue": {
+        "maximumMonthlyHoa": 350,
+        "currency": "USD",
+        "condition": "covers exterior maintenance"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 138000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-school-open-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "open_question",
+      "statement": "The choice between Palo Alto Unified and Mountain View Los Altos remains unresolved until Evan returns.",
+      "normalizedValue": {
+        "question": "acceptable school district",
+        "status": "open",
+        "alternatives": [
+          "Mountain View Los Altos",
+          "Palo Alto Unified only"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-school-choice-open",
+      "timestampMs": 159000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "buyer_criteria_unknown",
+        "alternatives": [
+          "Mountain View Los Altos is acceptable",
+          "Palo Alto Unified is required"
+        ],
+        "question": "Which school district is acceptable to both buyers?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-preapproval-complete",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "property_fact",
+      "statement": "The lender has issued the refreshed preapproval letter.",
+      "normalizedValue": {
+        "preapprovalStatus": "refreshed"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 180000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r2-commute-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-02-redwood-showing",
+      "type": "requirement",
+      "statement": "The commute must still remain under 45 minutes.",
+      "normalizedValue": {
+        "destination": "South San Francisco",
+        "maximumMinutes": 45,
+        "daysPerWeek": 3
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r2:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-commute-45",
+      "timestampMs": 196000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-bedrooms-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "requirement",
+      "statement": "The minimum requirement of three bedrooms remains unchanged.",
+      "normalizedValue": {
+        "minimumBedrooms": 3
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-bedrooms-three",
+      "timestampMs": 14000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-commute-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "requirement",
+      "statement": "The commute limit remains 45 minutes to South San Francisco.",
+      "normalizedValue": {
+        "destination": "South San Francisco",
+        "maximumMinutes": 45,
+        "daysPerWeek": 3
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-commute-45",
+      "timestampMs": 25000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-no-hoa",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "preference",
+      "statement": "Evan rejects any property with an HOA, even if the fee is small.",
+      "normalizedValue": {
+        "maximumMonthlyHoa": 0,
+        "speaker": "Evan Morgan"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 39000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-hoa-disagreement-risk",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "risk",
+      "statement": "Lena and Evan have not agreed on whether an HOA is acceptable, creating a shared-decision risk.",
+      "normalizedValue": {
+        "topic": "HOA acceptance",
+        "status": "decision makers disagree"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:3",
+        "tx-r3:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 53000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "decision_maker_conflict",
+        "alternatives": [
+          "conditional HOA is acceptable",
+          "no HOA is acceptable"
+        ],
+        "question": "What HOA rule do both buyers approve?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-harbor-first-choice",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "decision",
+      "statement": "The buyers make Harbor Court their current first choice and reject Elm Street because it lacks a separate-entry ADU and has airport noise.",
+      "normalizedValue": {
+        "selectedAlternative": "Harbor Court",
+        "rejectedAlternative": "Elm Street",
+        "reasons": [
+          "no separate-entry ADU",
+          "airport noise"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 70000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-budget-increase-open",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "open_question",
+      "statement": "Lena proposes increasing the cap to $1.28 million for Harbor Court, but Evan has not approved the increase.",
+      "normalizedValue": {
+        "proposedAmount": 1280000,
+        "currency": "USD",
+        "status": "awaiting joint buyer approval"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 99000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "unapproved_budget_change",
+        "alternatives": [
+          "retain $1.15M cap",
+          "raise cap to $1.28M"
+        ],
+        "question": "Do both buyers and the lender approve a $1.28 million maximum?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-budget-1150000-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "budget",
+      "statement": "Until both buyers agree and the lender confirms a change, the verified budget cap remains $1.15 million.",
+      "normalizedValue": {
+        "amount": 1150000,
+        "currency": "USD"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r2-budget-1150000",
+      "timestampMs": 118000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-school-open-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "open_question",
+      "statement": "The school-district choice remains unresolved pending verification of the district map.",
+      "normalizedValue": {
+        "question": "acceptable school district",
+        "status": "open",
+        "alternatives": [
+          "Mountain View Los Altos",
+          "Palo Alto Unified only"
+        ],
+        "nextStep": "verify district map"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-school-choice-open",
+      "timestampMs": 138000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "buyer_criteria_unknown",
+        "alternatives": [
+          "Mountain View Los Altos is acceptable",
+          "Palo Alto Unified is required"
+        ],
+        "question": "Which verified school district is acceptable to both buyers?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-harbor-adu-status-open",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "open_question",
+      "statement": "Harbor Court's rear-unit legal ADU status is unverified because no permit or county record has been reviewed.",
+      "normalizedValue": {
+        "property": "Harbor Court",
+        "question": "legal ADU status",
+        "status": "open",
+        "missingEvidence": [
+          "permit",
+          "county record"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 159000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "property_record_unknown",
+        "alternatives": [
+          "permitted legal ADU",
+          "not verified as a permitted legal ADU"
+        ],
+        "question": "Do official records confirm that Harbor Court's rear unit is a permitted ADU?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r3-roof-followup-open",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-03-harbor-showing",
+      "type": "open_question",
+      "statement": "The buyers need to ask whether the seller will provide a roof inspection or a credit for the 17-year-old roof.",
+      "normalizedValue": {
+        "property": "Harbor Court",
+        "roofAgeYears": 17,
+        "question": "seller roof inspection or credit",
+        "status": "open"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r3:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 182000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-budget-1280000",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "budget",
+      "statement": "The lender approves a $1.28 million cap and both buyers adopt it as their new maximum.",
+      "normalizedValue": {
+        "amount": 1280000,
+        "currency": "USD",
+        "approvedBy": [
+          "lender",
+          "Lena Morgan",
+          "Evan Morgan"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 15000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-hoa-300",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "preference",
+      "statement": "Both buyers agree to accept an HOA up to $300 per month if they review the reserves and it covers exterior maintenance.",
+      "normalizedValue": {
+        "maximumMonthlyHoa": 300,
+        "currency": "USD",
+        "conditions": [
+          "review reserves",
+          "covers exterior maintenance"
+        ],
+        "approvedBy": [
+          "Lena Morgan",
+          "Evan Morgan"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 38000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-school-pausd-required",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "decision",
+      "statement": "The buyers require Palo Alto Unified and reject Mountain View Los Altos because their child needs to remain near the current support program.",
+      "normalizedValue": {
+        "selectedAlternative": "Palo Alto Unified",
+        "rejectedAlternative": "Mountain View Los Altos",
+        "reason": "remain near child's current support program"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 61000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-harbor-rejected",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "decision",
+      "statement": "The buyers decide not to offer on Harbor Court because it is outside Palo Alto Unified, despite liking its quiet street and ADU layout.",
+      "normalizedValue": {
+        "property": "Harbor Court",
+        "decision": "reject",
+        "rejectedAlternative": "make an offer because of quiet street and ADU layout",
+        "reason": "outside Palo Alto Unified"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 89000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-quiet-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "preference",
+      "statement": "A quiet street remains required.",
+      "normalizedValue": {
+        "priority": "quiet residential street",
+        "lowerPriority": "walkability to shops"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-quiet-over-walkability",
+      "timestampMs": 114000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-adu-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "requirement",
+      "statement": "A permitted ADU with a separate entrance remains required.",
+      "normalizedValue": {
+        "canonicalTerm": "ADU",
+        "permitRequired": true,
+        "separateEntranceRequired": true,
+        "excludedTerms": [
+          "JADU",
+          "converted room"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r2-adu-correction",
+      "timestampMs": 126000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-newer-home-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "preference",
+      "statement": "The buyers still prefer a home built in 2000 or later or one with documented major-system renovations.",
+      "normalizedValue": {
+        "minimumBuildYear": 2000,
+        "alternative": "documented major-system renovations"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r2-newer-home-preference",
+      "timestampMs": 140000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-buyers-aligned",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "person_role",
+      "statement": "Lena and Evan are now aligned on the budget, HOA limit, school district, and offer decisions.",
+      "normalizedValue": {
+        "decisionMakers": [
+          "Lena Morgan",
+          "Evan Morgan"
+        ],
+        "alignmentStatus": "aligned",
+        "topics": [
+          "budget",
+          "HOA",
+          "school district",
+          "offer decisions"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 159000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-pausd-adu-listings-open",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "open_question",
+      "statement": "The next open question is which current Palo Alto Unified listings also have a documented legal ADU.",
+      "normalizedValue": {
+        "question": "Palo Alto Unified listings with documented legal ADU",
+        "status": "open"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 177000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-r4-commute-reaffirmed",
+      "scenarioId": "scenario-morgan-family-home-search",
+      "eventId": "event-04-offer-strategy",
+      "type": "requirement",
+      "statement": "The 45-minute commute limit remains unchanged.",
+      "normalizedValue": {
+        "destination": "South San Francisco",
+        "maximumMinutes": 45,
+        "daysPerWeek": 3
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-r4:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-r1-commute-45",
+      "timestampMs": 196000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-reported-cause-dishwasher",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "property_fact",
+      "statement": "Maya initially reports that the dishwasher shutoff was the water source.",
+      "normalizedValue": {
+        "reportedSource": "dishwasher shutoff",
+        "status": "initial homeowner report"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 16000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-floor-6x4",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "property_fact",
+      "statement": "Maya reports a 6-foot-by-4-foot area of curled engineered oak flooring near the dishwasher.",
+      "normalizedValue": {
+        "areaFeet": [
+          6,
+          4
+        ],
+        "material": "engineered oak",
+        "observation": "curled",
+        "location": "near dishwasher"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 36000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-basement-stain",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "property_fact",
+      "statement": "Maya reports a brown water stain on the basement ceiling below the kitchen.",
+      "normalizedValue": {
+        "observation": "brown water stain",
+        "location": "basement ceiling below kitchen"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 51000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-spot-repair-preference",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "preference",
+      "statement": "Maya initially prefers the smallest possible spot repair so the cabinets can remain and the kitchen can stay open.",
+      "normalizedValue": {
+        "repairPreference": "smallest possible spot repair",
+        "reasons": [
+          "keep cabinets",
+          "avoid closing kitchen"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 68000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-dryright-remediation-label",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "property_fact",
+      "statement": "Maya authorized DryRight to extract water and place four drying units, and she initially called that work remediation.",
+      "normalizedValue": {
+        "vendor": "DryRight",
+        "actions": [
+          "water extraction",
+          "place four drying units"
+        ],
+        "reportedTerm": "remediation"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 89000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-deductible-ambiguous",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "budget",
+      "statement": "The deductible is unclear between $2,500 and $2,050 and must be checked against the declarations page.",
+      "normalizedValue": {
+        "kind": "deductible",
+        "currency": "USD",
+        "alternatives": [
+          2500,
+          2050
+        ],
+        "status": "unconfirmed"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 114000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "asr_numeric_ambiguity",
+        "alternatives": [
+          "$2,500",
+          "$2,050"
+        ],
+        "question": "Does the declarations page show a $2,500 or $2,050 deductible?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-joint-repair-authorization",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "person_role",
+      "statement": "Maya and Noah are both named insureds and both approve permanent repair selections.",
+      "normalizedValue": {
+        "namedInsureds": [
+          "Maya Chen",
+          "Noah Chen"
+        ],
+        "approvalRule": "both approve permanent repair selections"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 138000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-noah-unavailable-risk",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "risk",
+      "statement": "Noah is unavailable, so the two named insureds cannot yet approve a permanent repair option together.",
+      "normalizedValue": {
+        "risk": "missing joint repair authorization",
+        "unavailableDecisionMaker": "Noah Chen",
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 153000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "authorization_missing",
+        "alternatives": [
+          "joint repair approval obtained",
+          "joint repair approval not obtained"
+        ],
+        "question": "When can both named insureds approve a permanent repair selection?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-cabinet-coverage-open",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "open_question",
+      "statement": "Whether damage to the lower cabinets is covered remains unresolved.",
+      "normalizedValue": {
+        "question": "lower-cabinet damage coverage",
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 172000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "coverage_unknown",
+        "alternatives": [
+          "lower-cabinet damage is covered",
+          "lower-cabinet damage is not covered"
+        ],
+        "question": "What lower-cabinet damage, if any, is covered?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i1-carrier-authorization-before-demolition",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-01-first-loss-call",
+      "type": "requirement",
+      "statement": "Emergency drying may continue, but permanent demolition requires carrier authorization unless immediate safety requires it.",
+      "normalizedValue": {
+        "emergencyDrying": "may continue",
+        "permanentDemolition": "carrier authorization required",
+        "exception": "immediate safety"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i1:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 189000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-cause-refrigerator-coupling",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "property_fact",
+      "statement": "The plumber's report identifies the refrigerator ice-maker supply coupling, not the dishwasher shutoff, as the water source.",
+      "normalizedValue": {
+        "reportedSource": "refrigerator ice-maker supply coupling",
+        "rejectedSource": "dishwasher shutoff",
+        "source": "plumber report"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 15000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-floor-9x6",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "property_fact",
+      "statement": "Moisture mapping shows a 9-foot-by-6-foot affected floor area extending under the base cabinets and across the pantry threshold.",
+      "normalizedValue": {
+        "areaFeet": [
+          9,
+          6
+        ],
+        "method": "moisture mapping",
+        "extent": [
+          "under base cabinets",
+          "across pantry threshold"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 39000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-basement-ceiling-8x5",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "property_fact",
+      "statement": "The basement ceiling drywall is soft over an area of about 8 feet by 5 feet.",
+      "normalizedValue": {
+        "areaFeet": [
+          8,
+          5
+        ],
+        "observation": "soft drywall",
+        "location": "basement ceiling"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 62000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-mitigation-glossary-correction",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "property_fact",
+      "statement": "The correct term for DryRight's work is water mitigation, meaning emergency extraction, drying, and containment; mold remediation is not established.",
+      "normalizedValue": {
+        "canonicalTerm": "water mitigation",
+        "definition": [
+          "emergency extraction",
+          "drying",
+          "containment"
+        ],
+        "rejectedTerm": "mold remediation",
+        "rejectedTermStatus": "not established"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 83000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-dryright-selected",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "decision",
+      "statement": "Maya keeps DryRight and rejects RapidRestore because RapidRestore cannot arrive until the next morning and interrupting active drying could prolong the loss.",
+      "normalizedValue": {
+        "selectedAlternative": "DryRight",
+        "rejectedAlternative": "RapidRestore",
+        "reason": "next-morning arrival and interruption could prolong active drying"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 112000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-deductible-ambiguous-reaffirmed",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "budget",
+      "statement": "The deductible remains unconfirmed between $2,500 and $2,050 pending the policy declarations.",
+      "normalizedValue": {
+        "kind": "deductible",
+        "currency": "USD",
+        "alternatives": [
+          2500,
+          2050
+        ],
+        "status": "unconfirmed"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-i1-deductible-ambiguous",
+      "timestampMs": 139000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "asr_numeric_ambiguity",
+        "alternatives": [
+          "$2,500",
+          "$2,050"
+        ],
+        "question": "Does the declarations page show a $2,500 or $2,050 deductible?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-cabinet-coverage-open-reaffirmed",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "open_question",
+      "statement": "Lower-cabinet coverage remains unresolved pending authorized inspection behind the toe-kicks.",
+      "normalizedValue": {
+        "question": "lower-cabinet damage coverage",
+        "status": "open",
+        "nextStep": "authorized toe-kick inspection"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-i1-cabinet-coverage-open",
+      "timestampMs": 158000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "coverage_unknown",
+        "alternatives": [
+          "lower-cabinet damage is covered",
+          "lower-cabinet damage is not covered"
+        ],
+        "question": "What lower-cabinet damage, if any, is covered after authorized access?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-full-cabinet-set-not-authorized",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "decision",
+      "statement": "Full replacement of all lower cabinets is not authorized because the available evidence does not support that scope.",
+      "normalizedValue": {
+        "decision": "not authorized",
+        "rejectedAlternative": "replace all lower cabinets",
+        "reason": "available evidence does not support full replacement"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 178000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-spot-repair-preference-reaffirmed",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "preference",
+      "statement": "Maya still prefers a small spot repair if it can match the existing finishes.",
+      "normalizedValue": {
+        "repairPreference": "small spot repair",
+        "condition": "matches existing finishes"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-i1-spot-repair-preference",
+      "timestampMs": 195000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i2-noah-unavailable-risk-reaffirmed",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-02-adjuster-inspection",
+      "type": "risk",
+      "statement": "Noah remains unavailable, so the joint permanent-repair approval risk is unchanged.",
+      "normalizedValue": {
+        "risk": "missing joint repair authorization",
+        "unavailableDecisionMaker": "Noah Chen",
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i2:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-i1-noah-unavailable-risk",
+      "timestampMs": 212000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "authorization_missing",
+        "alternatives": [
+          "joint repair approval obtained",
+          "joint repair approval not obtained"
+        ],
+        "question": "When can both named insureds approve a permanent repair selection?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-floor-9x12",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "property_fact",
+      "statement": "Luis measures the continuous affected flooring at 9 feet by 12 feet from the kitchen into the pantry, not 9 feet by 6 feet.",
+      "normalizedValue": {
+        "areaFeet": [
+          9,
+          12
+        ],
+        "measuredBy": "Luis Ortega",
+        "extent": "kitchen into pantry",
+        "rejectedMeasurementFeet": [
+          9,
+          6
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 16000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-two-swollen-toe-kicks",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "property_fact",
+      "statement": "After authorized access, two cabinet toe-kicks are visibly swollen.",
+      "normalizedValue": {
+        "affectedObject": "cabinet toe-kicks",
+        "count": 2,
+        "observation": "visibly swollen",
+        "access": "authorized"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 37000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-cabinet-coverage-open-reaffirmed",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "open_question",
+      "statement": "Cabinet repair or replacement coverage remains open because the carrier has not approved a cabinet scope.",
+      "normalizedValue": {
+        "question": "lower-cabinet repair or replacement coverage",
+        "status": "open",
+        "missingDecision": "carrier-approved cabinet scope"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "reaffirmed",
+      "targetVersionId": "gtv-i1-cabinet-coverage-open",
+      "timestampMs": 52000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "coverage_unknown",
+        "alternatives": [
+          "cabinet repair or replacement is covered",
+          "cabinet repair or replacement is not covered"
+        ],
+        "question": "What cabinet repair or replacement scope will the carrier approve?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-full-ceiling-recommendation",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "requirement",
+      "statement": "Luis recommends full kitchen-ceiling replacement over a small texture patch because the existing hand texture is unlikely to match.",
+      "normalizedValue": {
+        "recommendedOption": "full kitchen-ceiling replacement",
+        "alternative": "small texture patch",
+        "reason": "existing hand texture unlikely to match"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 70000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-full-ceiling-selected",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "decision",
+      "statement": "Maya selects full kitchen-ceiling replacement and rejects a spot patch because a visible texture mismatch would look unfinished.",
+      "normalizedValue": {
+        "selectedAlternative": "full kitchen-ceiling replacement",
+        "rejectedAlternative": "spot texture patch",
+        "reason": "visible texture mismatch would look unfinished"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 99000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-continuous-floor-refinish-selected",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "decision",
+      "statement": "Maya selects refinishing the connected kitchen and pantry floor and rejects replacing individual boards because the color break would be obvious.",
+      "normalizedValue": {
+        "selectedAlternative": "refinish connected kitchen and pantry floor",
+        "rejectedAlternative": "replace individual boards",
+        "reason": "obvious color break"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 123000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-estimate-total-ambiguous",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "budget",
+      "statement": "The recorded estimate total is ambiguous between $14,500 and $40,500 and must not be used until the written estimate is issued.",
+      "normalizedValue": {
+        "kind": "repair estimate total",
+        "currency": "USD",
+        "alternatives": [
+          14500,
+          40500
+        ],
+        "status": "unconfirmed"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 148000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "asr_numeric_ambiguity",
+        "alternatives": [
+          "$14,500",
+          "$40,500"
+        ],
+        "question": "What total appears on the signed written estimate?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-drying-complete",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "property_fact",
+      "statement": "DryRight reports that monitored areas reached the drying goal and all four drying units were removed.",
+      "normalizedValue": {
+        "dryingStatus": "goal reached",
+        "dryingUnitsRemoved": 4,
+        "source": "DryRight report"
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 175000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i3-permanent-repair-authorization-risk",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-03-contractor-estimate",
+      "type": "risk",
+      "statement": "Permanent repairs cannot start until the carrier approves a scope and both named insureds sign the repair selection.",
+      "normalizedValue": {
+        "risk": "permanent repair lacks complete authorization",
+        "requiredApprovals": [
+          "carrier-approved scope",
+          "both named insured signatures"
+        ],
+        "status": "open"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i3:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 194000,
+      "ambiguity": {
+        "severity": "critical",
+        "kind": "authorization_missing",
+        "alternatives": [
+          "all required authorizations obtained",
+          "one or more required authorizations missing"
+        ],
+        "question": "Have the carrier and both named insureds authorized the permanent repair scope?"
+      },
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-estimate-total-14500",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "budget",
+      "statement": "The signed written repair estimate confirms a total of $14,500, not $40,500.",
+      "normalizedValue": {
+        "kind": "repair estimate total",
+        "amount": 14500,
+        "currency": "USD",
+        "rejectedAlternative": 40500,
+        "source": "signed written estimate"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:1"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 14000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-deductible-2500",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "budget",
+      "statement": "The policy declarations confirm a $2,500 deductible, not $2,050.",
+      "normalizedValue": {
+        "kind": "deductible",
+        "amount": 2500,
+        "currency": "USD",
+        "rejectedAlternative": 2050,
+        "source": "policy declarations"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:2"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 34000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-floor-scope-9x12-approved",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The carrier accepts a 9-foot-by-12-foot continuous flooring scope.",
+      "normalizedValue": {
+        "decision": "approved",
+        "scope": "continuous flooring",
+        "areaFeet": [
+          9,
+          12
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:3"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 55000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-basement-ceiling-8x5-approved",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The carrier accepts an 8-foot-by-5-foot basement ceiling drywall scope.",
+      "normalizedValue": {
+        "decision": "approved",
+        "scope": "basement ceiling drywall",
+        "areaFeet": [
+          8,
+          5
+        ]
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:4"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 69000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-cabinet-scope-approved",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The carrier approves replacing two swollen toe-kicks and repairing two affected base-cabinet boxes, while rejecting full cabinet-set replacement because damage to the remaining cabinets is undocumented.",
+      "normalizedValue": {
+        "approved": [
+          "replace two swollen toe-kicks",
+          "repair two affected base-cabinet boxes"
+        ],
+        "rejectedAlternative": "replace full cabinet set",
+        "reason": "damage to remaining cabinets is not documented"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:5"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 85000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-joint-repair-authorized",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "Maya and Noah jointly authorize the agreed permanent repair selection.",
+      "normalizedValue": {
+        "decision": "permanent repair selection authorized",
+        "approvedBy": [
+          "Maya Chen",
+          "Noah Chen"
+        ]
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:6"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 115000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-full-ceiling-approved",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The approved scope uses full kitchen-ceiling replacement instead of a spot texture patch because the contractor documented a material matching problem.",
+      "normalizedValue": {
+        "selectedAlternative": "full kitchen-ceiling replacement",
+        "rejectedAlternative": "spot texture patch",
+        "reason": "documented material matching problem",
+        "status": "approved"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:7"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 132000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-connected-floor-refinish-approved",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The approved flooring method is refinishing the connected kitchen and pantry area instead of replacing isolated boards.",
+      "normalizedValue": {
+        "selectedAlternative": "refinish connected kitchen and pantry floor",
+        "rejectedAlternative": "replace isolated boards",
+        "status": "approved"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:8"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 153000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-cause-refrigerator-accepted",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "decision",
+      "statement": "The accepted loss cause is the refrigerator ice-maker supply coupling, and the earlier dishwasher-shutoff report is withdrawn.",
+      "normalizedValue": {
+        "acceptedCause": "refrigerator ice-maker supply coupling",
+        "withdrawnCause": "dishwasher shutoff"
+      },
+      "material": true,
+      "critical": true,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:9"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 169000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    },
+    {
+      "id": "gt-i4-depreciation-release-open",
+      "scenarioId": "scenario-chen-kitchen-water-claim",
+      "eventId": "event-04-coverage-authorization",
+      "type": "open_question",
+      "statement": "Whether recoverable depreciation will be released after submission of the final invoice and completion photos remains open.",
+      "normalizedValue": {
+        "question": "recoverable depreciation release",
+        "status": "open",
+        "plannedEvidence": [
+          "final invoice",
+          "completion photos"
+        ]
+      },
+      "material": true,
+      "critical": false,
+      "modality": "transcript",
+      "acceptableEvidenceIds": [
+        "tx-i4:seg:10"
+      ],
+      "citationSupport": "fully_supports",
+      "expectedClassification": "new",
+      "targetVersionId": null,
+      "timestampMs": 190000,
+      "ambiguity": null,
+      "annotation": {
+        "doubleAnnotated": false,
+        "adjudication": null
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel-r2-adu-supersedes-r1-inlaw",
+      "type": "supersedes",
+      "sourceClaimId": "gt-r2-adu-correction",
+      "targetClaimId": "gt-r1-inlaw-unit",
+      "targetVersionId": "gtv-r1-inlaw-unit"
+    },
+    {
+      "id": "rel-r2-redwood-informed-by-r1-quiet",
+      "type": "informed_by",
+      "sourceClaimId": "gt-r2-redwood-rejected",
+      "targetClaimId": "gt-r1-quiet-over-walkability",
+      "targetVersionId": "gtv-r1-quiet-over-walkability"
+    },
+    {
+      "id": "rel-r2-newer-supersedes-r1-older",
+      "type": "supersedes",
+      "sourceClaimId": "gt-r2-newer-home-preference",
+      "targetClaimId": "gt-r1-older-character-home",
+      "targetVersionId": "gtv-r1-older-character-home"
+    },
+    {
+      "id": "rel-r2-budget-resolves-r1-ambiguous",
+      "type": "resolves",
+      "sourceClaimId": "gt-r2-budget-1150000",
+      "targetClaimId": "gt-r1-budget-ambiguous",
+      "targetVersionId": "gtv-r1-budget-ambiguous"
+    },
+    {
+      "id": "rel-r2-preapproval-resolves-r1-condition",
+      "type": "resolves",
+      "sourceClaimId": "gt-r2-preapproval-complete",
+      "targetClaimId": "gt-r1-preapproval-before-offer",
+      "targetVersionId": "gtv-r1-preapproval-before-offer"
+    },
+    {
+      "id": "rel-r3-nohoa-contradicts-r2-hoa",
+      "type": "contradicts",
+      "sourceClaimId": "gt-r3-no-hoa",
+      "targetClaimId": "gt-r2-hoa-350",
+      "targetVersionId": "gtv-r2-hoa-350"
+    },
+    {
+      "id": "rel-r3-risk-informed-by-r2-hoa",
+      "type": "informed_by",
+      "sourceClaimId": "gt-r3-hoa-disagreement-risk",
+      "targetClaimId": "gt-r2-hoa-350",
+      "targetVersionId": "gtv-r2-hoa-350"
+    },
+    {
+      "id": "rel-r3-harbor-informed-by-r2-adu",
+      "type": "informed_by",
+      "sourceClaimId": "gt-r3-harbor-first-choice",
+      "targetClaimId": "gt-r2-adu-correction",
+      "targetVersionId": "gtv-r2-adu-correction"
+    },
+    {
+      "id": "rel-r3-budget-open-informed-by-r2-budget",
+      "type": "informed_by",
+      "sourceClaimId": "gt-r3-budget-increase-open",
+      "targetClaimId": "gt-r2-budget-1150000",
+      "targetVersionId": "gtv-r2-budget-1150000"
+    },
+    {
+      "id": "rel-r4-budget-supersedes-r2-budget",
+      "type": "supersedes",
+      "sourceClaimId": "gt-r4-budget-1280000",
+      "targetClaimId": "gt-r2-budget-1150000",
+      "targetVersionId": "gtv-r2-budget-1150000"
+    },
+    {
+      "id": "rel-r4-budget-resolves-r3-open",
+      "type": "resolves",
+      "sourceClaimId": "gt-r4-budget-1280000",
+      "targetClaimId": "gt-r3-budget-increase-open",
+      "targetVersionId": "gtv-r3-budget-increase-open"
+    },
+    {
+      "id": "rel-r4-hoa-supersedes-r2-hoa",
+      "type": "supersedes",
+      "sourceClaimId": "gt-r4-hoa-300",
+      "targetClaimId": "gt-r2-hoa-350",
+      "targetVersionId": "gtv-r2-hoa-350"
+    },
+    {
+      "id": "rel-r4-hoa-resolves-r3-nohoa",
+      "type": "resolves",
+      "sourceClaimId": "gt-r4-hoa-300",
+      "targetClaimId": "gt-r3-no-hoa",
+      "targetVersionId": "gtv-r3-no-hoa"
+    },
+    {
+      "id": "rel-r4-school-resolves-r1-open",
+      "type": "resolves",
+      "sourceClaimId": "gt-r4-school-pausd-required",
+      "targetClaimId": "gt-r1-school-choice-open",
+      "targetVersionId": "gtv-r1-school-choice-open"
+    },
+    {
+      "id": "rel-r4-harbor-rejection-supersedes-r3-first-choice",
+      "type": "supersedes",
+      "sourceClaimId": "gt-r4-harbor-rejected",
+      "targetClaimId": "gt-r3-harbor-first-choice",
+      "targetVersionId": "gtv-r3-harbor-first-choice"
+    },
+    {
+      "id": "rel-r4-alignment-resolves-r3-risk",
+      "type": "resolves",
+      "sourceClaimId": "gt-r4-buyers-aligned",
+      "targetClaimId": "gt-r3-hoa-disagreement-risk",
+      "targetVersionId": "gtv-r3-hoa-disagreement-risk"
+    },
+    {
+      "id": "rel-i2-cause-contradicts-i1",
+      "type": "contradicts",
+      "sourceClaimId": "gt-i2-cause-refrigerator-coupling",
+      "targetClaimId": "gt-i1-reported-cause-dishwasher",
+      "targetVersionId": "gtv-i1-reported-cause-dishwasher"
+    },
+    {
+      "id": "rel-i2-floor-supersedes-i1",
+      "type": "supersedes",
+      "sourceClaimId": "gt-i2-floor-9x6",
+      "targetClaimId": "gt-i1-floor-6x4",
+      "targetVersionId": "gtv-i1-floor-6x4"
+    },
+    {
+      "id": "rel-i2-basement-informed-by-i1",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i2-basement-ceiling-8x5",
+      "targetClaimId": "gt-i1-basement-stain",
+      "targetVersionId": "gtv-i1-basement-stain"
+    },
+    {
+      "id": "rel-i2-glossary-supersedes-i1-label",
+      "type": "supersedes",
+      "sourceClaimId": "gt-i2-mitigation-glossary-correction",
+      "targetClaimId": "gt-i1-dryright-remediation-label",
+      "targetVersionId": "gtv-i1-dryright-remediation-label"
+    },
+    {
+      "id": "rel-i2-dryright-informed-by-i1-action",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i2-dryright-selected",
+      "targetClaimId": "gt-i1-dryright-remediation-label",
+      "targetVersionId": "gtv-i1-dryright-remediation-label"
+    },
+    {
+      "id": "rel-i2-cabinet-decision-informed-by-i1-question",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i2-full-cabinet-set-not-authorized",
+      "targetClaimId": "gt-i1-cabinet-coverage-open",
+      "targetVersionId": "gtv-i1-cabinet-coverage-open"
+    },
+    {
+      "id": "rel-i3-floor-contradicts-i2",
+      "type": "contradicts",
+      "sourceClaimId": "gt-i3-floor-9x12",
+      "targetClaimId": "gt-i2-floor-9x6",
+      "targetVersionId": "gtv-i2-floor-9x6"
+    },
+    {
+      "id": "rel-i3-toekicks-informed-by-i1-question",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i3-two-swollen-toe-kicks",
+      "targetClaimId": "gt-i1-cabinet-coverage-open",
+      "targetVersionId": "gtv-i1-cabinet-coverage-open"
+    },
+    {
+      "id": "rel-i3-ceiling-choice-supersedes-i1-spot",
+      "type": "supersedes",
+      "sourceClaimId": "gt-i3-full-ceiling-selected",
+      "targetClaimId": "gt-i1-spot-repair-preference",
+      "targetVersionId": "gtv-i1-spot-repair-preference"
+    },
+    {
+      "id": "rel-i3-floor-choice-informed-by-i3-measurement",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i3-continuous-floor-refinish-selected",
+      "targetClaimId": "gt-i3-floor-9x12",
+      "targetVersionId": "gtv-i3-floor-9x12"
+    },
+    {
+      "id": "rel-i3-auth-risk-informed-by-i1-joint-rule",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i3-permanent-repair-authorization-risk",
+      "targetClaimId": "gt-i1-joint-repair-authorization",
+      "targetVersionId": "gtv-i1-joint-repair-authorization"
+    },
+    {
+      "id": "rel-i3-auth-risk-informed-by-i1-carrier-rule",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i3-permanent-repair-authorization-risk",
+      "targetClaimId": "gt-i1-carrier-authorization-before-demolition",
+      "targetVersionId": "gtv-i1-carrier-authorization-before-demolition"
+    },
+    {
+      "id": "rel-i4-estimate-resolves-i3-ambiguity",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-estimate-total-14500",
+      "targetClaimId": "gt-i3-estimate-total-ambiguous",
+      "targetVersionId": "gtv-i3-estimate-total-ambiguous"
+    },
+    {
+      "id": "rel-i4-deductible-resolves-i1-ambiguity",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-deductible-2500",
+      "targetClaimId": "gt-i1-deductible-ambiguous",
+      "targetVersionId": "gtv-i1-deductible-ambiguous"
+    },
+    {
+      "id": "rel-i4-floor-resolves-i2-measurement",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-floor-scope-9x12-approved",
+      "targetClaimId": "gt-i2-floor-9x6",
+      "targetVersionId": "gtv-i2-floor-9x6"
+    },
+    {
+      "id": "rel-i4-floor-resolves-i3-conflict",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-floor-scope-9x12-approved",
+      "targetClaimId": "gt-i3-floor-9x12",
+      "targetVersionId": "gtv-i3-floor-9x12"
+    },
+    {
+      "id": "rel-i4-basement-informed-by-i2-measurement",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i4-basement-ceiling-8x5-approved",
+      "targetClaimId": "gt-i2-basement-ceiling-8x5",
+      "targetVersionId": "gtv-i2-basement-ceiling-8x5"
+    },
+    {
+      "id": "rel-i4-cabinet-resolves-i1-question",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-cabinet-scope-approved",
+      "targetClaimId": "gt-i1-cabinet-coverage-open",
+      "targetVersionId": "gtv-i1-cabinet-coverage-open"
+    },
+    {
+      "id": "rel-i4-joint-authorization-resolves-i3-risk",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-joint-repair-authorized",
+      "targetClaimId": "gt-i3-permanent-repair-authorization-risk",
+      "targetVersionId": "gtv-i3-permanent-repair-authorization-risk"
+    },
+    {
+      "id": "rel-i4-joint-authorization-resolves-i1-risk",
+      "type": "resolves",
+      "sourceClaimId": "gt-i4-joint-repair-authorized",
+      "targetClaimId": "gt-i1-noah-unavailable-risk",
+      "targetVersionId": "gtv-i1-noah-unavailable-risk"
+    },
+    {
+      "id": "rel-i4-ceiling-informed-by-i3-selection",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i4-full-ceiling-approved",
+      "targetClaimId": "gt-i3-full-ceiling-selected",
+      "targetVersionId": "gtv-i3-full-ceiling-selected"
+    },
+    {
+      "id": "rel-i4-flooring-informed-by-i3-selection",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i4-connected-floor-refinish-approved",
+      "targetClaimId": "gt-i3-continuous-floor-refinish-selected",
+      "targetVersionId": "gtv-i3-continuous-floor-refinish-selected"
+    },
+    {
+      "id": "rel-i4-cause-supersedes-i1-report",
+      "type": "supersedes",
+      "sourceClaimId": "gt-i4-cause-refrigerator-accepted",
+      "targetClaimId": "gt-i1-reported-cause-dishwasher",
+      "targetVersionId": "gtv-i1-reported-cause-dishwasher"
+    },
+    {
+      "id": "rel-i4-cause-informed-by-i2-report",
+      "type": "informed_by",
+      "sourceClaimId": "gt-i4-cause-refrigerator-accepted",
+      "targetClaimId": "gt-i2-cause-refrigerator-coupling",
+      "targetVersionId": "gtv-i2-cause-refrigerator-coupling"
+    }
+  ],
+  "transcriptNegativeControls": [
+    {
+      "id": "neg-r1-bakery",
+      "evidenceId": "tx-r1:seg:10",
+      "mustNotInfer": "The bakery or coffee preference is part of the home-search criteria."
+    },
+    {
+      "id": "neg-r2-sofa",
+      "evidenceId": "tx-r2:seg:11",
+      "mustNotInfer": "The seller's sofa is included in the buyer's property decision."
+    },
+    {
+      "id": "neg-r3-weather",
+      "evidenceId": "tx-r3:seg:11",
+      "mustNotInfer": "Weather changes the buyer's criteria."
+    },
+    {
+      "id": "neg-r4-food",
+      "evidenceId": "tx-r4:seg:11",
+      "mustNotInfer": "The buyers' dinner plan is part of the buyer journey."
+    },
+    {
+      "id": "neg-i1-restaurant",
+      "evidenceId": "tx-i1:seg:11",
+      "mustNotInfer": "The restaurant recommendation is part of the covered loss."
+    },
+    {
+      "id": "neg-i2-parking",
+      "evidenceId": "tx-i2:seg:11",
+      "mustNotInfer": "The parking receipt is part of the covered water damage."
+    },
+    {
+      "id": "neg-i3-truck",
+      "evidenceId": "tx-i3:seg:10",
+      "mustNotInfer": "The contractor's truck affects coverage or repair selection."
+    },
+    {
+      "id": "neg-i4-dog",
+      "evidenceId": "tx-i4:seg:11",
+      "mustNotInfer": "The dog is part of the claim assessment."
+    }
+  ]
+}

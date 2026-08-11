@@ -1,20 +1,24 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
+const geist = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "Notique · Product Prototype",
-  description: "A clickable prototype for project records, evidence review and deliverables.",
+  title: "Notique AI · Evidence-backed project records",
+  description: "Turn transcripts and supporting materials into reviewable, evidence-linked project records.",
+  openGraph: {
+    title: "Notique AI · Evidence-backed project records",
+    description: "Review every important record against its original evidence before it becomes part of a project.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Notique AI · Evidence-backed project records",
+    description: "Review every important record against its original evidence before it becomes part of a project.",
+  },
 };
 
 export default function RootLayout({
@@ -23,12 +27,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+    <html lang="zh-CN">
+      <body className={geist.variable}>{children}</body>
     </html>
   );
 }

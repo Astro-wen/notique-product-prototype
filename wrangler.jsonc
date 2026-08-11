@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "notique-evidence-poc",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-05-22",
+  "vars": {
+    "APP_ENV": "production",
+    "AUTH_GATEWAY": "chatgpt"
+  },
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  }
+}
