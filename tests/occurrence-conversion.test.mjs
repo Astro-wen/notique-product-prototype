@@ -4,7 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   matchesFrozenOccurrenceTarget,
+  matchesRejectableOccurrenceTarget,
   OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL,
+  OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL,
 } from "../lib/domain/occurrence-conversion.ts";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -62,8 +64,8 @@ test("a frozen occurrence cannot be revived with a newer target version", async 
     repository.indexOf("export async function applyOccurrenceVerdict"),
     repository.indexOf("export async function resolveContradiction"),
   );
-  assert.match(section, /matchesFrozenOccurrenceTarget\(\{/);
-  assert.match(section, /AND \$\{OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL\}/);
+  assert.match(section, /matchesFrozenOccurrenceTarget\(occurrenceTarget,/);
+  assert.match(section, /:\s*OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL/);
   assert.match(
     section,
     /input\.targetBaseVersionId,\s*input\.targetBaseVersionId,/,
@@ -134,6 +136,100 @@ test("a frozen occurrence cannot be revived with a newer target version", async 
       Number(guard.get("candidate-1", "workspace-1", "cv-1", "cv-1").allowed),
       0,
       "the frozen version also fails after the target claim has moved on",
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("reject can close a stale occurrence without reviving its frozen target", async () => {
+  const repository = await read("lib/server/db/verdict-repository.ts");
+  const section = repository.slice(
+    repository.indexOf("export async function applyOccurrenceVerdict"),
+    repository.indexOf("export async function resolveContradiction"),
+  );
+  assert.match(
+    section,
+    /input\.action === "reject"[\s\S]{0,180}matchesRejectableOccurrenceTarget/,
+    "reject must use the pending-candidate version gate",
+  );
+  assert.match(
+    section,
+    /input\.action === "reject"[\s\S]{0,180}OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL/,
+    "the atomic D1 guard must use the same reject-only gate",
+  );
+  assert.match(
+    section,
+    /:\s*matchesFrozenOccurrenceTarget\(occurrenceTarget,[\s\S]{0,80}targetBaseVersionId\)/,
+    "confirm and conversion must retain the strict frozen-target gate",
+  );
+
+  const stale = {
+    status: "pending",
+    baseVersionId: "cv-1",
+    targetClaimVersionId: "cv-1",
+  };
+  assert.equal(matchesRejectableOccurrenceTarget(stale, "cv-1"), true);
+  assert.equal(
+    matchesRejectableOccurrenceTarget(stale, "cv-2"),
+    false,
+    "the caller cannot substitute the target's newer version",
+  );
+  assert.equal(
+    matchesRejectableOccurrenceTarget({ ...stale, targetClaimVersionId: "cv-2" }, "cv-1"),
+    false,
+    "both frozen candidate columns must match the request",
+  );
+  assert.equal(
+    matchesRejectableOccurrenceTarget({ ...stale, status: "confirmed" }, "cv-1"),
+    false,
+    "only a pending candidate can be rejected",
+  );
+
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`
+      CREATE TABLE claims (
+        id TEXT PRIMARY KEY,
+        current_version_id TEXT NOT NULL,
+        review_status TEXT NOT NULL,
+        lifecycle_status TEXT NOT NULL
+      );
+      CREATE TABLE claim_occurrence_candidates (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        target_claim_id TEXT NOT NULL,
+        base_version_id TEXT NOT NULL,
+        target_claim_version_id TEXT NOT NULL,
+        status TEXT NOT NULL
+      );
+      INSERT INTO claims VALUES ('claim-1', 'cv-2', 'verified', 'superseded');
+      INSERT INTO claim_occurrence_candidates
+        VALUES ('candidate-1', 'workspace-1', 'claim-1', 'cv-1', 'cv-1', 'pending');
+    `);
+    const rejectGuard = db.prepare(`
+      SELECT EXISTS (
+        SELECT 1 FROM claim_occurrence_candidates occ
+        JOIN claims c ON c.id = occ.target_claim_id
+        WHERE occ.id = ? AND occ.workspace_id = ?
+          AND ${OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL}
+      ) AS allowed
+    `);
+    assert.equal(
+      Number(rejectGuard.get("candidate-1", "workspace-1", "cv-1", "cv-1").allowed),
+      1,
+      "a pending candidate remains rejectable after its target was revised and superseded",
+    );
+    assert.equal(
+      Number(rejectGuard.get("candidate-1", "workspace-1", "cv-2", "cv-2").allowed),
+      0,
+      "the newer target version cannot be supplied to reject stale candidate evidence",
+    );
+    db.exec("UPDATE claim_occurrence_candidates SET status = 'confirmed'");
+    assert.equal(
+      Number(rejectGuard.get("candidate-1", "workspace-1", "cv-1", "cv-1").allowed),
+      0,
+      "the atomic guard closes after another verdict wins",
     );
   } finally {
     db.close();

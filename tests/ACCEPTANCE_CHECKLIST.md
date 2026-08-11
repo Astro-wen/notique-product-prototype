@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 160 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review 审计门槛、Evidence 完整加载门槛、Timeline、Project/Event 最新 Run 的 Pending Claim 与 Pending Occurrence 计数、服务端审核计时、音频上传和转写契约、音频任务重试与竞态、字节范围播放、三行业一键 Eric 演示、整组沟通顺序工作流、最小 UI、生产 Bundle、发布包密钥扫描和真实数据前端外壳。
+- `npm test` 通过，合计 197 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.1/v3 合同、阶段恢复与调试记录、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、三行业一键 Eric 演示、整组沟通顺序工作流、生产 Bundle 和发布包密钥扫描。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -151,17 +151,45 @@
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
 - Evidence 文件读取支持单一 Byte Range，覆盖完整响应、指定起止、开放结束、后缀范围和越界 416。浏览器音频播放可以从时间点继续读取，同时保持 Workspace 和 Project 范围校验。
 - 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。第一次会停下来让用户确认 Scenario，每次生成候选后会停下来让用户核对；待审核内容清空后才允许继续下一次，所以后续 Context 只继承已经确认的记录。已有 Run 只会继续轮询，不会重复提交。零候选、未就绪材料和旧的单条分析入口都不能绕过这条顺序。
-- `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。它只确认 manifest 中预先写明的 Scenario，遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID 和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
+- `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
 - 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
-- 当前代码已锁定 `claim-extraction-prompt.v7` 和 `claim-extraction.v2`。Schema 强制结构化歧义至少包含两个候选，并要求有歧义时 `needs_additional_evidence=true`。旧 Prompt 或旧 Schema 创建的排队任务会在调用模型前失败，避免把不同版本混进同一质量结果。这里证明的是版本和结构约束，Prompt v7 还没有完成新的付费模型质量 Run。
+- 当前代码已锁定 `claim-extraction-prompt.v8.1` 和 `claim-extraction.v3`。Agent A 最多盘点 24 条内部原子事实，Agent B 必须逐条说明 `included / merged / duplicate / unsupported / lower_priority`，最终仍最多 10 条。关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 会确定性触发 xhigh 加强复核。旧 Prompt 或旧 Schema 的排队任务会在调用模型前失败。Prompt v8 Smoke 暴露了 critical 过度标记和升级结果复合化；v8.1 已完成同一 Contractor Event 的付费复测，原子性和 Evidence 通过，但重要事实排序与 Recall 仍未达标。下方 Prompt v7 结果只作为历史对照。
 - 已确认、仍处于 Active 状态且带结构化歧义的 Claim 会进入 Agenda，并显示追问、原因和候选答案。Pending 歧义不会进入 Agenda。普通 Open Question、未解决矛盾和 Scenario Gap 仍按各自来源生成，结果页不从原始 Transcript 临时补内容。
 - 三个合成场景已确定性合并为一个 Transcript-only 开发包，共 3 个 Scenario、11 个 Event。每个 Event 固定有 5 到 10 条 material Ground Truth。原始 Contractor 压力样本每个 Event 分别有 15、15、17 条 material Ground Truth，超过十条模型输出上限，理论最高 Recall 只有 66.7%、66.7% 和 58.8%，不能直接用于正式 80% Recall 判定。合并脚本使用提交在代码中的固定 `single-author-review-priority-v1` 投影，在看到模型结果前为 Contractor 三个 Event 各选定 10 条审核重点，并记录源文件哈希和所选 ID。这个开发包仍是单人标注，`sample_eligible=false`。
 - GitHub Pages 构建现在只生成跳转页，指向完整 Sites 应用，避免把静态页面伪装成可处理上传和分析请求的全栈产品。完整 Sites 目前仍是私有访问，线上版本也尚未更新到这次代码。公开地址完成新版本部署、权限和端到端验证前，不能算可交付测试入口。
 
 ## K. 真实模型阶段的当前结论
 
-工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是 Prompt v7、Schema v2，但还没有用这两个版本完成新的固定输入三次 Run。下面的模型数字来自已保存的历史 Run，只用于判断问题在哪里，不能直接代表 Prompt v7 的质量。
+工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是双 Agent Prompt v8.1、Schema v3；Prompt v8 与 v8.1 Contractor 单 Event Smoke 均已运行，v8.1 仍未通过 Recall 与优先级硬门。三行业连续 Event 仍属于 Prompt v7 历史结果，下面用于说明新合同必须解决的真实缺口。
+
+### 双 Agent Prompt v8 / v8.1 Contractor Smoke
+
+本轮只选 Contractor Event 3，材料为 Transcript 加一张现场图。按照预先停止门，Contractor 未达标后没有继续 Realtor 或 Insurance。
+
+- 首次 Prompt v8 Run `run_a4cd85a961bb4ad0b158ca4662dfc023`：Agent A 成功输出 24 条 inventory；Agent B high 输出合法，但 xhigh 加强复核生成三个不存在于 Verified Context 的 Relation target，服务端正确拒绝，Run 以 `MODEL_OUTPUT_INVALID` 失败。这暴露了“可选升级失败不应抹掉上一份合法结果”和失败 Run 用量聚合两个工程缺口，现已修复。
+- 修复回退后的 Prompt v8 Run `run_20ab09437173442ab0dea57289f8b19e`：Run 为 `completed_with_warnings`，三阶段共 23,954 input、44,861 output、4,971 cached tokens。Agent A 把 21/24 候选标成 critical；Agent B high 为保持原子性丢弃了 11 个 critical 候选，xhigh 则把 9/10 条合成复合 Claim。两种结果都不满足硬门，因此停止扩大测试。
+- 收紧 critical 定义、升级反馈和最终采用规则后，Prompt v8.1 Run `run_7b8631a91b7844e18a6e0c9bb7c8a56f` 成功。Agent A 为 24 条 inventory 中 10 条标记 critical；Agent B high 直接生成 10 条原子 Claim，不需要第三阶段。总用量 14,657 input、25,014 output，耗时约 180 秒。
+- v8.1 的 10/10 Claim 都有逐字 Transcript Evidence，Evidence ID 有效，时间点与标准 Segment 起点误差均为 0 ms；没有不支持的图片推断。但它没有使用照片作为 Evidence，原始图片 material facts 仍为 0/3。
+- 对提交前固定的 Contractor Event 3 十条 review-priority Ground Truth，v8.1 最宽松的语义覆盖最多 7/10；moisture cause、appliance assignment、inspection slot 明确遗漏，pendant cancellation 和 labor correction 只保留部分命题。Critical 最宽松覆盖最多 6/7，严格完整匹配更低。因此 Material Recall 90%、Critical Recall 100% 和 Ground Truth Claim Precision 95% 均不能判通过。
+
+结论：双 Agent 已显著改善原子性和 Evidence 可靠性，但还没有解决十条上限下的重要事实排序。下一轮应先修 inventory priority / verifier selection，再只复测同一个 Contractor Event；它通过前不运行另外两行业或完整 11 Event。
+
+### Prompt v7 / xhigh 三行业连续 Event
+
+三组案例均从空 Project 开始，通过正式本地 API 顺序导入 Transcript、确认一次 Scenario、生成审核队列、写入 Verified Ledger，并重新读取 Folder Summary、Timeline、Decisions、Preferences、Open Questions、Risks、Agenda 和 Brief。自动确认仅用于固定合成回归，不等于真人审核。
+
+| 场景 | Event / 输出卡片 | Strict Recall | Coverage Recall | Strict Precision | 关系 Strict Recall | 精确引文 / 时间点 | 最终质量判定 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Contractor | 3 / 30 | 14/30，46.7% | 21/30，70.0% | 14/30，46.7% | 5/11，45.5% | 32/32；0 ms | 失败：偏好历史不完整，图片独立事实 0/7 |
+| Realtor | 4 / 40 | 29/38，76.3% | 33/38，86.8% | 29/40，72.5% | 7/16，43.8% | 41/41；0 ms | 失败：Risks 为空，后两场 Recall 低 |
+| Insurance | 4 / 39 | 22/39，56.4% | 32/39，82.1% | 22/39，56.4% | 5/24，20.8% | 39/39；0 ms | 失败：关系与生命周期错误，当前偏好丢失 |
+
+本轮确定性 View 修复后，三组 Brief 都具备固定六槽且 `missingSlotCount=0`。这只证明结构完整：Contractor 仍缺偏好漂移历史，Realtor 的 Risks 仍为空，Insurance 的 state 与 Agenda 受旧 lifecycle 污染。三组都不能判为 Useful Brief 通过。
+
+本轮 Run ID：Contractor `run_2a93aeae7d8741eb9b8fde21521a05bf`、`run_29f70b9976a84adeb2f54a13671e2868`、`run_017be324754c462a96799a8c57875354`；Realtor `run_76f69381d3b1482baae36d7be6b539d5`、`run_29a67a474b8942deabca66346b3be3c9`、`run_b0dba97ad8284031a210176c3e6d41e6`、`run_fd08b30337b04b7d8244d5792455a5cc`；Insurance `run_8b5bf3818ca04c639ae3736ede65437c`、`run_0a0921539e51425aac0e70aa2af9a710`、`run_aed06179008c46f38f240a084bc133ef`、`run_9f45e00077b944ff94d6a14aed3aa4f7`。
+
+三组逐字引文和时间点均通过 Eric 的硬门，Claim 原子化、重要事实取舍、Reaffirmed、关系类型与 target 选择没有通过。每个 Event 只有一次独立 v7 模型调用，尚未构成三次稳定性证据；所有审核由 synthetic harness 执行，`review_sessions=0`，两分钟真人审核也尚未证明。
 
 ### 同一输入三次稳定性
 
@@ -197,7 +225,7 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - 已保存 Run 的逐字引用和时间点准确，重要事实 Recall、Precision、关系和稳定性没有达到门槛。
 - Contractor 三次图片独立事实覆盖均为 0/4，图片理解没有通过。
 - 音频只用合成 WAV 跑过一次。现场噪音、距离、多人重叠、口音和设备差异没有测试。
-- Prompt v7 和 Schema v2 的确定性约束已经有自动测试，模型质量仍需重新跑固定样本。
+- Prompt v8.1 和 Schema v3 的双阶段合同、升级规则、阶段恢复、关系人工审核和调试记录已经有自动测试；模型质量仍需重新跑固定样本。
 - 当前成果可称为可继续测试的工程原型，不能称为已经完成 Concept Validation。
 
 ## 尚未取得证据的正式验证
@@ -210,7 +238,7 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - [ ] 建立 Ground Truth 数据集，由专业人员标注 Claim、Evidence、Scenario 和应当拒绝的结论。
 - [ ] 进行 Blind Eval，评审者不知道输出来自哪一版 Prompt 或模型，并按预先固定的指标评分。
 - [ ] 对同一合格输入完成至少三次独立 Run，并通过稳定性门。
-- [ ] 从空 Project 开始，用当前 Prompt v7、Schema v2 连续跑完 Event 1、人工审核和后续 Event，建立同版本基线。
+- [ ] 从空 Project 开始，用当前 Prompt v8.1、Schema v3 连续跑完 Event 1、人工审核和后续 Event，建立同版本基线。
 - [ ] 由第二位标注者独立标注 Realtor 和 Insurance 开发集并完成分歧裁决。
 - [ ] 真实计时验证一次人工审核可以在两分钟内完成。
 - [ ] 通过 live API 验证跨 Workspace、跨 Project 隔离，以及 Verdict、Import、Extraction 的真实并发冲突。

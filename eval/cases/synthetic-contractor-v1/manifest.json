@@ -5,6 +5,23 @@
   "usage": "development-smoke-and-regression-only",
   "scenario": {
     "expected": "contractor_renovation_estimate_and_preconstruction",
+    "semanticAcceptance": {
+      "matcher": "all_required_concepts.v1",
+      "requiredConcepts": [
+        {
+          "id": "space",
+          "phrases": ["kitchen"]
+        },
+        {
+          "id": "work",
+          "phrases": ["renovation", "remodel", "remodeling"]
+        },
+        {
+          "id": "contractor_workflow",
+          "phrases": ["contractor", "estimate", "pre-construction", "preconstruction"]
+        }
+      ]
+    },
     "candidates": [
       "contractor_renovation_estimate_and_preconstruction",
       "property_inspection",

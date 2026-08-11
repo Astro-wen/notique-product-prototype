@@ -1,8 +1,8 @@
 import type { ClaimType, EvidenceRole } from "./types";
 import type { ContextPack } from "./context-pack";
 
-export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v2" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v7" as const;
+export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v3" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.1" as const;
 
 export const MODEL_CONTRACT_LIMITS = {
   claims: 10,

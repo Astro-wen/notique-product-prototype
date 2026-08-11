@@ -35,6 +35,7 @@ test("all D1 migrations apply from an empty database", async () => {
     "asset_versions",
     "text_segments",
     "extraction_runs",
+    "extraction_model_stages",
     "queue_outbox",
     "claims",
     "claim_versions",
@@ -73,6 +74,28 @@ test("all D1 migrations apply from an empty database", async () => {
     extractionRunColumns.has("validated_output_json"),
     true,
     "Run Debug requires the validated model output column",
+  );
+
+  const extractionStageIndexes = new Set(
+    database
+      .prepare("PRAGMA index_list(extraction_model_stages)")
+      .all()
+      .map((row) => row.name),
+  );
+  assert.equal(
+    extractionStageIndexes.has("uq_extraction_model_stages_run_stage_attempt"),
+    true,
+    "model stage resume records must be unique per Run, stage, and attempt",
+  );
+  const extractionStageForeignKeys = database
+    .prepare("PRAGMA foreign_key_list(extraction_model_stages)")
+    .all();
+  assert.equal(
+    extractionStageForeignKeys.some(
+      (row) => row.table === "extraction_runs" && row.from === "run_id" && row.on_delete === "CASCADE",
+    ),
+    true,
+    "model stage records must remain scoped to their parent Run",
   );
 
   const glossaryColumns = new Set(

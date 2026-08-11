@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -187,6 +187,18 @@ function idempotencyKey(runId, suffix) {
   return `synthetic:${runId}:${suffix}`.slice(0, 200);
 }
 
+function sha256Hex(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function assertPersistedBytesMatch({ label, expectedBytes, persistedSha256, persistedSizeBytes }) {
+  invariant(
+    persistedSha256 === sha256Hex(expectedBytes) &&
+      Number(persistedSizeBytes) === expectedBytes.byteLength,
+    `${label} was already uploaded with different content. Use a new run ID for changed fixture bytes.`,
+  );
+}
+
 async function readFixtureFiles(manifest, manifestPath) {
   const fixtureDirectory = path.dirname(manifestPath);
   const events = [];
@@ -226,11 +238,22 @@ export async function importSyntheticFixture({
   fetchImpl = fetch,
   runId = randomUUID(),
   probeUnconfiguredProvider = false,
+  eventKey = null,
 }) {
   const safeBaseUrl = assertLoopbackBaseUrl(baseUrl);
   const absoluteManifestPath = path.resolve(manifestPath);
-  const manifest = validateSyntheticManifest(
+  const completeManifest = validateSyntheticManifest(
     JSON.parse(await readFile(absoluteManifestPath, "utf8")),
+  );
+  const manifest = eventKey
+    ? {
+        ...completeManifest,
+        events: completeManifest.events.filter((event) => event.key === eventKey),
+      }
+    : completeManifest;
+  invariant(
+    !eventKey || manifest.events.length === 1,
+    `Fixture event key was not found: ${eventKey}`,
   );
   const fixtureEvents = await readFixtureFiles(manifest, absoluteManifestPath);
   const projectData = await apiJson(fetchImpl, safeBaseUrl, "POST", "/api/v1/projects", {
@@ -263,16 +286,29 @@ export async function importSyntheticFixture({
   for (const [index, fixtureEvent] of fixtureEvents.entries()) {
     const filename = transcriptFilename(fixtureEvent.manifest.transcript);
     const item = oneByFilename(transcriptImport.items, filename);
-    await apiJson(
-      fetchImpl,
-      safeBaseUrl,
-      "PUT",
-      `/api/v1/transcript-imports/${encodeURIComponent(transcriptImport.id)}/items/${encodeURIComponent(item.id)}/content`,
-      {
-        bytes: fixtureEvent.transcriptBytes,
-        mimeType: inferTranscriptMime(fixtureEvent.manifest.transcript),
-      },
-    );
+    if (item.upload_status === "uploaded" || item.upload_status === "finalized") {
+      assertPersistedBytesMatch({
+        label: `Transcript ${filename}`,
+        expectedBytes: fixtureEvent.transcriptBytes,
+        persistedSha256: item.content_sha256,
+        persistedSizeBytes: item.size_bytes,
+      });
+    } else {
+      invariant(
+        item.upload_status === "pending",
+        `Transcript ${filename} cannot resume from upload status ${item.upload_status}.`,
+      );
+      await apiJson(
+        fetchImpl,
+        safeBaseUrl,
+        "PUT",
+        `/api/v1/transcript-imports/${encodeURIComponent(transcriptImport.id)}/items/${encodeURIComponent(item.id)}/content`,
+        {
+          bytes: fixtureEvent.transcriptBytes,
+          mimeType: inferTranscriptMime(fixtureEvent.manifest.transcript),
+        },
+      );
+    }
     orderedItems.push({
       item_id: item.id,
       occurred_at: safeIsoDate(fixtureEvent.manifest.occurredAt, `events[${index}].occurredAt`),
@@ -323,21 +359,34 @@ export async function importSyntheticFixture({
           },
         },
       );
-      const assetId = initialized.asset.id;
-      await apiJson(fetchImpl, safeBaseUrl, "PUT", `/api/v1/assets/${encodeURIComponent(assetId)}/content`, {
-        bytes: fixtureAsset.bytes,
-        mimeType: assetSpec.mimeType,
-      });
-      const finalized = await apiJson(
-        fetchImpl,
-        safeBaseUrl,
-        "POST",
-        `/api/v1/assets/${encodeURIComponent(assetId)}/finalize`,
-        { json: {} },
-      );
+      const initializedAsset = initialized.asset;
+      const assetId = initializedAsset.id;
+      let finalizedAsset;
+      if (initializedAsset.current_version_id) {
+        assertPersistedBytesMatch({
+          label: `Asset ${assetSpec.key}`,
+          expectedBytes: fixtureAsset.bytes,
+          persistedSha256: initializedAsset.version?.content_sha256,
+          persistedSizeBytes: initializedAsset.version?.size_bytes,
+        });
+        finalizedAsset = initializedAsset;
+      } else {
+        await apiJson(fetchImpl, safeBaseUrl, "PUT", `/api/v1/assets/${encodeURIComponent(assetId)}/content`, {
+          bytes: fixtureAsset.bytes,
+          mimeType: assetSpec.mimeType,
+        });
+        const finalized = await apiJson(
+          fetchImpl,
+          safeBaseUrl,
+          "POST",
+          `/api/v1/assets/${encodeURIComponent(assetId)}/finalize`,
+          { json: {} },
+        );
+        finalizedAsset = finalized.asset;
+      }
       uploadedAssets.push({
         key: assetSpec.key,
-        asset: finalized.asset,
+        asset: finalizedAsset,
         expectedBytes: fixtureAsset.bytes,
       });
     }
@@ -430,6 +479,7 @@ export async function importSyntheticFixture({
   return {
     schemaVersion: RESULT_SCHEMA_VERSION,
     fixture_id: manifest.id,
+    selected_event_key: eventKey,
     run_id: runId,
     base_url: safeBaseUrl,
     project: { id: project.id, name: persistedProject.name },
@@ -453,11 +503,13 @@ function parseArgs(argv) {
     outputPath: null,
     runId: randomUUID(),
     probeUnconfiguredProvider: false,
+    eventKey: null,
   };
   for (const arg of argv) {
     if (arg.startsWith("--base-url=")) options.baseUrl = arg.slice("--base-url=".length);
     else if (arg.startsWith("--output=")) options.outputPath = arg.slice("--output=".length);
     else if (arg.startsWith("--run-id=")) options.runId = arg.slice("--run-id=".length);
+    else if (arg.startsWith("--event-key=")) options.eventKey = arg.slice("--event-key=".length);
     else if (arg === "--probe-unconfigured-provider") options.probeUnconfiguredProvider = true;
     else if (!arg.startsWith("-") && options.manifestPath === null) options.manifestPath = arg;
     else throw new Error(`Unknown argument: ${arg}`);

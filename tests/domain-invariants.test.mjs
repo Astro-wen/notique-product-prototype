@@ -252,7 +252,8 @@ test("long model timeouts remain inside the Run lease and extend the Outbox leas
   assert.equal(normalizeAiTimeoutMs("540000"), 540_000);
   assert.equal(normalizeAiTimeoutMs("600000"), 540_000);
   assert.equal(normalizeAiTimeoutMs("not-a-number"), 90_000);
-  assert.equal(outboxLeaseDurationMs(540_000), EXTRACTION_RUN_LEASE_MS);
+  assert.equal(outboxLeaseDurationMs(540_000, 3), 1_680_000);
+  assert.ok(outboxLeaseDurationMs(540_000, 3) < EXTRACTION_RUN_LEASE_MS);
   assert.equal(outboxLeaseDurationMs(90_000), 150_000);
 });
 

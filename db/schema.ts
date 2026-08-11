@@ -335,6 +335,80 @@ export const extractionRuns = sqliteTable(
   ],
 );
 
+export const extractionModelStages = sqliteTable(
+  "extraction_model_stages",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    stage: text("stage", {
+      enum: ["inventory", "verify", "verify_escalated"],
+    }).notNull(),
+    attempt: integer("attempt").notNull().default(1),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    reasoningEffort: text("reasoning_effort").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    status: text("status", {
+      enum: ["processing", "succeeded", "failed"],
+    })
+      .notNull()
+      .default("processing"),
+    inputHash: text("input_hash").notNull(),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cachedTokens: integer("cached_tokens"),
+    estimatedCostUsd: real("estimated_cost_usd"),
+    providerRequestId: text("provider_request_id"),
+    validatedOutputJson: text("validated_output_json"),
+    errorCode: text("error_code"),
+    errorDetailsJson: text("error_details_json"),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+    durationMs: integer("duration_ms"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_extraction_model_stages_run_stage_attempt").on(
+      table.runId,
+      table.stage,
+      table.attempt,
+    ),
+    index("idx_extraction_model_stages_run_stage").on(table.runId, table.stage),
+    index("idx_extraction_model_stages_status").on(table.status, table.updatedAt),
+    check(
+      "ck_extraction_model_stages_stage",
+      sql`${table.stage} IN ('inventory', 'verify', 'verify_escalated')`,
+    ),
+    check(
+      "ck_extraction_model_stages_status",
+      sql`${table.status} IN ('processing', 'succeeded', 'failed')`,
+    ),
+    check("ck_extraction_model_stages_attempt", sql`${table.attempt} >= 1`),
+    check(
+      "ck_extraction_model_stages_tokens",
+      sql`(${table.inputTokens} IS NULL OR ${table.inputTokens} >= 0)
+        AND (${table.outputTokens} IS NULL OR ${table.outputTokens} >= 0)
+        AND (${table.cachedTokens} IS NULL OR ${table.cachedTokens} >= 0)`,
+    ),
+    check(
+      "ck_extraction_model_stages_duration",
+      sql`${table.durationMs} IS NULL OR ${table.durationMs} >= 0`,
+    ),
+    check(
+      "ck_extraction_model_stages_success_output",
+      sql`${table.status} <> 'succeeded' OR ${table.validatedOutputJson} IS NOT NULL`,
+    ),
+    check(
+      "ck_extraction_model_stages_failed_output",
+      sql`${table.status} <> 'failed' OR ${table.validatedOutputJson} IS NULL`,
+    ),
+  ],
+);
+
 export const queueOutbox = sqliteTable(
   "queue_outbox",
   {

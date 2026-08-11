@@ -36,14 +36,23 @@ npm run dev
 ```text
 AI_PROVIDER=openai
 AI_MODEL=<固定版本的多模态模型>
-AI_REASONING_EFFORT=max
+AI_REASONING_EFFORT=xhigh
+AI_VERIFIER_REASONING_EFFORT=high
+AI_TWO_PASS_PIPELINE=1
 AI_API_KEY=<服务端 Secret>
 INTERNAL_JOB_TOKEN=<高强度随机 Secret>
 ```
 
-OpenAI 的正式提取路径使用 Responses API。`AI_REASONING_EFFORT=max` 表示对同一个
-`gpt-5.6-luna` 模型启用最高推理强度；`max` 不是另一个模型名称。这个值会写进
-Run 的输入指纹和调试参数，改变推理强度后必须创建新的 Run，不能复用旧结果。
+OpenAI 的正式提取路径使用 Responses API。当前双阶段合同是 Prompt v8.1 / Schema v3：
+Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实，Agent B 默认用
+`AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系；确定性检查
+发现关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 时，Agent B 才升级到
+`xhigh` 再复核一次。两个 Agent 共用同一个 `AI_API_KEY`，不需要第二个密钥。
+
+`AI_TWO_PASS_PIPELINE=1` 开启双阶段；设为 `0` 可回滚到单阶段执行。每个阶段的模型、
+推理强度、输入哈希、Token、耗时、Provider Request ID、通过 Schema 的输出和升级原因
+都会单独保存，成功的 Agent A 阶段可在同一 Run 重试时复用。全部执行参数都会写入 Run
+输入指纹，参数改变后必须创建新 Run，不能混用旧结果。
 
 `AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
 
@@ -123,9 +132,13 @@ Project，导入所选案例的 Transcript 和照片，再按时间顺序发起�
 提取都等待后台任务完成，再继续下一次。最后打印事项概况、时间线、决定、偏好、
 待确认问题、风险、下次议程和 Brief。
 
-`--accept-fixture-scenario` 只允许脚本确认案例清单中写明的预期场景。模型必须把该
-场景放进两个或三个候选项里，否则命令直接失败，不会改选其他高置信度候选。正式
-用户测试仍然必须由人阅读候选项后再作选择。
+`--accept-fixture-scenario` 只用于这三套固定案例。每份 manifest 在运行前声明
+`all_required_concepts.v1` 语义验收规则，`expected` 是审计用的稳定标签。案例导入
+不会把 `scenario.expected` 或 `scenario.semanticAcceptance` 字段发给模型。模型先
+独立生成两个或三个自然语言候选，脚本随后
+检查每个候选是否覆盖清单中的全部必要概念。恰好一个候选通过时，脚本确认该候选
+的原文；没有候选通过或多个候选同时通过都会停止。置信度不参与自动选择。正式用户
+测试仍然必须由人阅读候选项后再作选择。
 
 `--confirm-reviewed-fixture` 表示你明确允许脚本为这个合成案例提交 Evidence 审阅
 确认、Claim 确认和重复事实确认。去掉该参数时，Claim 会保留在待审核状态。去掉

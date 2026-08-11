@@ -4,7 +4,10 @@ import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
   isSupportedModelImageMime,
 } from "@/lib/domain/asset-policy";
-import { EXTRACTION_RUN_LEASE_MS } from "@/lib/domain/model-config";
+import {
+  EXTRACTION_RUN_LEASE_MS,
+  normalizeVerifierReasoningEffort,
+} from "@/lib/domain/model-config";
 import {
   canonicalizeTranscriptEvidence,
   validateDocumentPage,
@@ -20,6 +23,18 @@ import {
 } from "@/lib/domain/model-contract";
 import type { ClaimWithVersion, TranscriptSegment } from "@/lib/domain/types";
 import {
+  INVENTORY_SCHEMA_VERSION,
+  TWO_STAGE_EXTRACTION_PROMPT_VERSION,
+  VERIFICATION_SCHEMA_VERSION,
+  assessVerificationEscalation,
+  selectPreferredVerificationForReview,
+  toFinalExtractClaimsOutput,
+  validateInventoryOutput,
+  validateVerificationOutput,
+  type InventoryOutput,
+  type VerificationOutput,
+} from "@/lib/domain/two-stage-extraction";
+import {
   createModelProvider,
   isModelProviderNotConfigured,
   ModelOutputInvalidError,
@@ -27,6 +42,10 @@ import {
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
 import { loadProjectLedger } from "@/lib/server/db/ledger-repository";
+import {
+  getExtractionModelStage,
+  upsertExtractionModelStage,
+} from "@/lib/server/db/extraction-stage-repository";
 import { parseJson } from "@/lib/server/http/api";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
@@ -74,6 +93,7 @@ export type ExtractionProcessResult = {
     | "lease_not_acquired"
     | "succeeded"
     | "completed_with_warnings"
+    | "deferred"
     | "failed";
   persistedClaims: number;
   occurrenceCandidates: number;
@@ -149,6 +169,12 @@ function errorCode(error: unknown): string {
   return "INTERNAL_ERROR";
 }
 
+function isTransientModelError(error: unknown): boolean {
+  if (error instanceof ModelTimeoutError) return true;
+  return error instanceof ModelProviderRequestError &&
+    (error.status === null || error.status === 408 || error.status === 429 || error.status >= 500);
+}
+
 class ProcessingFault extends Error {
   constructor(
     readonly code: string,
@@ -157,6 +183,127 @@ class ProcessingFault extends Error {
   ) {
     super(message);
     this.name = "ProcessingFault";
+  }
+}
+
+type StageName = "inventory" | "verify" | "verify_escalated";
+
+function aggregateUsage(usages: ModelUsage[]): ModelUsage {
+  const sum = (key: "inputTokens" | "outputTokens" | "cachedTokens") => {
+    const values = usages.map((usage) => usage[key]).filter((value): value is number => value !== null);
+    return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  };
+  return {
+    inputTokens: sum("inputTokens"),
+    outputTokens: sum("outputTokens"),
+    cachedTokens: sum("cachedTokens"),
+    providerRequestId: usages.at(-1)?.providerRequestId ?? null,
+  };
+}
+
+function stageUsage(row: {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  provider_request_id: string | null;
+}): ModelUsage {
+  return {
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cachedTokens: row.cached_tokens,
+    providerRequestId: row.provider_request_id,
+  };
+}
+
+async function runModelStage<T>(input: {
+  run: Row;
+  stage: StageName;
+  provider: string;
+  model: string;
+  reasoningEffort: string;
+  promptVersion: string;
+  schemaVersion: string;
+  inputHash: string;
+  details?: Record<string, unknown>;
+  validate: (value: unknown) => T | null;
+  invoke: (idempotencyKey: string) => Promise<{ output: T; usage: ModelUsage }>;
+}): Promise<{ output: T; usage: ModelUsage; reused: boolean }> {
+  const existing = await getExtractionModelStage(String(input.run.id), input.stage, 1);
+  if (existing?.status === "succeeded") {
+    const output = input.validate(existing.validated_output);
+    if (!output) {
+      throw new ProcessingFault(
+        "MODEL_OUTPUT_INVALID",
+        `Persisted ${input.stage} output no longer matches its frozen contract.`,
+      );
+    }
+    return { output, usage: stageUsage(existing), reused: true };
+  }
+  const startedAt = now();
+  await upsertExtractionModelStage({
+    runId: String(input.run.id),
+    stage: input.stage,
+    attempt: 1,
+    provider: input.provider,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    promptVersion: input.promptVersion,
+    schemaVersion: input.schemaVersion,
+    status: "processing",
+    inputHash: input.inputHash,
+    errorDetails: input.details,
+    startedAt,
+  });
+  try {
+    const result = await input.invoke(`notique:${input.run.id}:${input.stage}:1`);
+    const finishedAt = now();
+    await upsertExtractionModelStage({
+      runId: String(input.run.id),
+      stage: input.stage,
+      attempt: 1,
+      provider: input.provider,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      promptVersion: input.promptVersion,
+      schemaVersion: input.schemaVersion,
+      status: "succeeded",
+      inputHash: input.inputHash,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cachedTokens: result.usage.cachedTokens,
+      providerRequestId: result.usage.providerRequestId,
+      validatedOutput: result.output,
+      errorDetails: input.details,
+      startedAt,
+      finishedAt,
+      durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+    });
+    return { ...result, reused: false };
+  } catch (error) {
+    const finishedAt = now();
+    const usage = error instanceof ModelOutputInvalidError ? error.usage : null;
+    await upsertExtractionModelStage({
+      runId: String(input.run.id),
+      stage: input.stage,
+      attempt: 1,
+      provider: input.provider,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      promptVersion: input.promptVersion,
+      schemaVersion: input.schemaVersion,
+      status: "failed",
+      inputHash: input.inputHash,
+      inputTokens: usage?.inputTokens ?? null,
+      outputTokens: usage?.outputTokens ?? null,
+      cachedTokens: usage?.cachedTokens ?? null,
+      providerRequestId: usage?.providerRequestId ?? null,
+      errorCode: errorCode(error),
+      errorDetails: { ...input.details, ...sanitizedIssue(error) },
+      startedAt,
+      finishedAt,
+      durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+    });
+    throw error;
   }
 }
 
@@ -755,6 +902,7 @@ async function persistModelOutput(
     cachedTokens: number | null;
     providerRequestId: string | null;
   },
+  pipelineWarnings: Array<Record<string, unknown>> = [],
 ): Promise<ExtractionProcessResult> {
   const validatedOutputJson = JSON.stringify(output);
   const validatedOutputBytes = new TextEncoder().encode(validatedOutputJson).byteLength;
@@ -773,6 +921,7 @@ async function persistModelOutput(
     String(run.project_id),
   );
   const prepared = prepareCandidates(output, run, manifestRows, segments, ledger.claims);
+  prepared.warnings.unshift(...pipelineWarnings);
   const intended = output.claims.filter((claim) => claim.disposition !== "duplicate").length;
   if (intended > 0 && prepared.newClaims.length + prepared.occurrences.length === 0) {
     throw new ProcessingFault(
@@ -997,9 +1146,9 @@ async function markRunFailed(
   const code = errorCode(error);
   const timestamp = now();
   const db = getD1();
-  const usage = error instanceof ModelOutputInvalidError && error.usage
-    ? error.usage
-    : completedUsage;
+  const usage = completedUsage ?? (
+    error instanceof ModelOutputInvalidError && error.usage ? error.usage : null
+  );
   await db.batch([
     db
       .prepare(
@@ -1041,6 +1190,63 @@ async function markRunFailed(
     persistedClaims: 0,
     occurrenceCandidates: 0,
     warningCount: 0,
+    errorCode: code,
+  };
+}
+
+async function deferRunForStageRetry(
+  run: Row,
+  owner: string,
+  error: unknown,
+  completedUsage: ModelUsage | null,
+): Promise<ExtractionProcessResult> {
+  const timestamp = now();
+  const code = errorCode(error);
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                started_at = NULL, finished_at = NULL,
+                input_tokens = COALESCE(?, input_tokens),
+                output_tokens = COALESCE(?, output_tokens),
+                cached_tokens = COALESCE(?, cached_tokens),
+                provider_request_id = COALESCE(?, provider_request_id),
+                error_code = ?, error_details_json = ?, updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(
+        completedUsage?.inputTokens ?? null,
+        completedUsage?.outputTokens ?? null,
+        completedUsage?.cachedTokens ?? null,
+        completedUsage?.providerRequestId ?? null,
+        code,
+        JSON.stringify({ deferred_stage_retry: true, ...sanitizedIssue(error) }),
+        timestamp,
+        run.id,
+        owner,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE projects
+            SET scenario_lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
+            AND scenario_assessment_run_id = ?`,
+      )
+      .bind(
+        plusMilliseconds(timestamp, EXTRACTION_RUN_LEASE_MS + 5 * 60_000),
+        timestamp,
+        run.project_id,
+        run.workspace_id,
+        run.id,
+      ),
+  ]);
+  return {
+    runId: String(run.id),
+    status: "deferred",
+    persistedClaims: 0,
+    occurrenceCandidates: 0,
+    warningCount: 1,
     errorCode: code,
   };
 }
@@ -1100,35 +1306,245 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
       String(leased.model_params_json ?? "{}"),
       {},
     );
-    const provider = createModelProvider(getBindings(), {
-      provider: String(leased.provider ?? ""),
-      model: String(leased.model ?? ""),
-      reasoningEffort:
-        typeof frozenModelParams.reasoning_effort === "string"
-          ? frozenModelParams.reasoning_effort
-          : undefined,
-      maxOutputTokens:
-        typeof frozenModelParams.max_output_tokens === "number"
-          ? frozenModelParams.max_output_tokens
-          : undefined,
-      timeoutMs:
-        typeof frozenModelParams.timeout_ms === "number"
-          ? frozenModelParams.timeout_ms
-          : undefined,
-    });
-    const result = await provider.extractClaims(input.contextPack);
-    completedUsage = result.usage;
+    const providerName = String(leased.provider ?? "");
+    const modelName = String(leased.model ?? "");
+    const inventoryEffort =
+      typeof frozenModelParams.reasoning_effort === "string"
+        ? frozenModelParams.reasoning_effort
+        : "xhigh";
+    const verifierEffort = normalizeVerifierReasoningEffort(
+      typeof frozenModelParams.verifier_reasoning_effort === "string"
+        ? frozenModelParams.verifier_reasoning_effort
+        : undefined,
+    );
+    const maxOutputTokens =
+      typeof frozenModelParams.max_output_tokens === "number"
+        ? frozenModelParams.max_output_tokens
+        : undefined;
+    const timeoutMs =
+      typeof frozenModelParams.timeout_ms === "number"
+        ? frozenModelParams.timeout_ms
+        : undefined;
+    const pipelineEnabled = frozenModelParams.two_pass_pipeline === true;
+    let finalOutput: ExtractClaimsOutput;
+    let finalUsage: ModelUsage;
+    const pipelineWarnings: Array<Record<string, unknown>> = [];
+
+    if (pipelineEnabled) {
+      const inventoryProvider = createModelProvider(getBindings(), {
+        provider: providerName,
+        model: modelName,
+        reasoningEffort: inventoryEffort,
+        maxOutputTokens,
+        timeoutMs,
+      });
+      const inventoryInputHash = await hashText(JSON.stringify({
+        run_input_hash: leased.input_hash,
+        context_snapshot_hash: input.contextSnapshotHash,
+        stage: "inventory",
+        prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
+        schema: INVENTORY_SCHEMA_VERSION,
+      }));
+      const inventoryStage = await runModelStage<InventoryOutput>({
+        run: leased,
+        stage: "inventory",
+        provider: providerName,
+        model: modelName,
+        reasoningEffort: inventoryEffort,
+        promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:inventory`,
+        schemaVersion: INVENTORY_SCHEMA_VERSION,
+        inputHash: inventoryInputHash,
+        validate: (value) => validateInventoryOutput(value).output,
+        invoke: (idempotencyKey) => inventoryProvider.inventoryClaims(
+          input.contextPack,
+          { idempotencyKey },
+        ),
+      });
+      completedUsage = inventoryStage.usage;
+
+      const verifyInputHash = await hashText(JSON.stringify({
+        run_input_hash: leased.input_hash,
+        context_snapshot_hash: input.contextSnapshotHash,
+        inventory: inventoryStage.output,
+        stage: "verify",
+        prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
+        schema: VERIFICATION_SCHEMA_VERSION,
+      }));
+      const verifierProvider = createModelProvider(getBindings(), {
+        provider: providerName,
+        model: modelName,
+        reasoningEffort: verifierEffort,
+        maxOutputTokens,
+        timeoutMs,
+      });
+      let verifyStage: { output: VerificationOutput; usage: ModelUsage; reused: boolean } | null = null;
+      let verificationFailure: unknown = null;
+      try {
+        verifyStage = await runModelStage<VerificationOutput>({
+          run: leased,
+          stage: "verify",
+          provider: providerName,
+          model: modelName,
+          reasoningEffort: verifierEffort,
+          promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
+          schemaVersion: VERIFICATION_SCHEMA_VERSION,
+          inputHash: verifyInputHash,
+          validate: (value) => validateVerificationOutput(
+            value,
+            inventoryStage.output,
+            input.contextPack,
+          ).output,
+          invoke: (idempotencyKey) => verifierProvider.verifyClaims(
+            input.contextPack,
+            inventoryStage.output,
+            { idempotencyKey },
+          ),
+        });
+      } catch (error) {
+        if (!(error instanceof ModelOutputInvalidError)) throw error;
+        verificationFailure = error;
+      }
+      const usages = [
+        inventoryStage.usage,
+        ...(verifyStage ? [verifyStage.usage] : []),
+        ...(verificationFailure instanceof ModelOutputInvalidError && verificationFailure.usage
+          ? [verificationFailure.usage]
+          : []),
+      ];
+      completedUsage = aggregateUsage(usages);
+      let acceptedVerification = verifyStage?.output ?? null;
+      let assessment = assessVerificationEscalation(
+        inventoryStage.output,
+        acceptedVerification ?? {},
+        input.contextPack,
+      );
+      if (assessment.required) {
+        const escalatedProvider = createModelProvider(getBindings(), {
+          provider: providerName,
+          model: modelName,
+          reasoningEffort: "xhigh",
+          maxOutputTokens,
+          timeoutMs,
+        });
+        const escalatedInputHash = await hashText(JSON.stringify({
+          verify_input_hash: verifyInputHash,
+          prior_verification: verifyStage?.output ?? null,
+          prior_failure: verificationFailure ? sanitizedIssue(verificationFailure) : null,
+          escalation_reasons: assessment.reasons,
+          stage: "verify_escalated",
+        }));
+        try {
+          const escalatedStage = await runModelStage<VerificationOutput>({
+            run: leased,
+            stage: "verify_escalated",
+            provider: providerName,
+            model: modelName,
+            reasoningEffort: "xhigh",
+            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
+            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+          inputHash: escalatedInputHash,
+          details: { escalation_reasons: assessment.reasons },
+            validate: (value) => validateVerificationOutput(
+              value,
+              inventoryStage.output,
+              input.contextPack,
+            ).output,
+            invoke: (idempotencyKey) => escalatedProvider.verifyClaims(
+              input.contextPack,
+              inventoryStage.output,
+              {
+                idempotencyKey,
+                qualityFeedback: [
+                  ...assessment.reasons,
+                  ...(assessment.droppedCriticalInventoryKeys.length
+                    ? [`Dropped critical inventory keys: ${assessment.droppedCriticalInventoryKeys.join(", ")}`]
+                    : []),
+                  ...(assessment.lowConfidenceRelationClaimKeys.length
+                    ? [`Low-confidence relation claim keys: ${assessment.lowConfidenceRelationClaimKeys.join(", ")}`]
+                    : []),
+                  "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
+                ],
+              },
+            ),
+          });
+          usages.push(escalatedStage.usage);
+          if (acceptedVerification) {
+            const selection = selectPreferredVerificationForReview(
+              inventoryStage.output,
+              acceptedVerification,
+              escalatedStage.output,
+              input.contextPack,
+            );
+            acceptedVerification = selection.output;
+            assessment = selection.assessment;
+            if (selection.selected === "base") {
+              pipelineWarnings.push({
+                code: "MODEL_ESCALATION_NOT_IMPROVED",
+                fallback_stage: "verify",
+              });
+            }
+          } else {
+            acceptedVerification = escalatedStage.output;
+            assessment = assessVerificationEscalation(
+              inventoryStage.output,
+              acceptedVerification,
+              input.contextPack,
+            );
+          }
+        } catch (error) {
+          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error.usage) usages.push(error.usage);
+          completedUsage = aggregateUsage(usages);
+          if (!acceptedVerification) throw error;
+          pipelineWarnings.push({
+            code: "MODEL_ESCALATION_OUTPUT_INVALID",
+            details: sanitizedIssue(error),
+            fallback_stage: "verify",
+          });
+        }
+        completedUsage = aggregateUsage(usages);
+      }
+      if (!acceptedVerification) {
+        throw verificationFailure ?? new ProcessingFault(
+          "MODEL_OUTPUT_INVALID",
+          "Verification did not produce a valid final output.",
+        );
+      }
+      if (assessment.required) {
+        pipelineWarnings.push({
+          code: "MODEL_QUALITY_GATE_UNRESOLVED",
+          reasons: assessment.reasons,
+          unmapped_inventory_keys: assessment.unmappedInventoryKeys,
+          dropped_critical_inventory_keys: assessment.droppedCriticalInventoryKeys,
+          low_confidence_relation_claim_keys: assessment.lowConfidenceRelationClaimKeys,
+        });
+      }
+      finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
+      finalUsage = completedUsage ?? aggregateUsage(usages);
+    } else {
+      const provider = createModelProvider(getBindings(), {
+        provider: providerName,
+        model: modelName,
+        reasoningEffort: inventoryEffort,
+        maxOutputTokens,
+        timeoutMs,
+      });
+      const result = await provider.extractClaims(input.contextPack);
+      completedUsage = result.usage;
+      finalOutput = result.output;
+      finalUsage = result.usage;
+    }
     // Keep strict structural validation at the processor boundary. Context-sensitive target
     // drift is handled deterministically by prepareCandidates so one bad proposed relation
     // becomes a warning instead of destroying every otherwise valid Claim in the Run.
-    const validated = validateExtractClaimsOutput(result.output);
+    const validated = validateExtractClaimsOutput(finalOutput, input.contextPack);
     if (!validated.valid || !validated.output) {
-      throw new ModelOutputInvalidError(validated.issues, result.usage);
+      throw new ModelOutputInvalidError(validated.issues, finalUsage);
     }
     if (validated.output.event_id !== String(leased.event_id)) {
       throw new ModelOutputInvalidError([
         { path: "$.event_id", message: "Model event ID does not match the leased run." },
-      ], result.usage);
+      ], finalUsage);
     }
     return await persistModelOutput(
       leased,
@@ -1137,9 +1553,17 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
       input.contextPack,
       input.manifestRows,
       input.segments,
-      result.usage,
+      finalUsage,
+      pipelineWarnings,
     );
   } catch (error) {
+    const frozenModelParams = parseJson<Record<string, unknown>>(
+      String(leased.model_params_json ?? "{}"),
+      {},
+    );
+    if (frozenModelParams.two_pass_pipeline === true && isTransientModelError(error)) {
+      return deferRunForStageRetry(leased, owner, error, completedUsage);
+    }
     return markRunFailed(leased, owner, error, completedUsage);
   }
 }

@@ -20,8 +20,11 @@ import {
   buildGapCheck,
   buildNextMeetingAgenda,
   buildOpenQuestions,
+  buildPreferences,
   buildRisks,
   buildTimeline,
+  classifyScenarioSemanticKind,
+  SCENARIO_SEMANTIC_KINDS,
 } from "../../lib/domain/views.ts";
 import { buildContextPack } from "../../lib/domain/context-pack.ts";
 import {
@@ -104,9 +107,78 @@ function ledger(overrides = {}) {
   return result;
 }
 
+test("scenario semantics recognize real-estate buyer journeys without enabling unrelated domains", () => {
+  const realtorScenarios = [
+    "re_buyer_journey",
+    "real_estate_buyer_journey",
+    "RE Buyer Journey",
+    "A residential home-purchase search for Lena and Evan, with Priya facilitating property screening and pre-offer planning.",
+    "A realtor guides homebuyers through a property search, showings, and an offer.",
+    "住宅购房者的看房、筛选与出价流程",
+  ];
+  for (const scenario of realtorScenarios) {
+    assert.equal(
+      classifyScenarioSemanticKind(scenario),
+      SCENARIO_SEMANTIC_KINDS.realEstateBuyerJourney,
+      scenario,
+    );
+    const gap = buildGapCheck(ledger({
+      scenario: { status: "confirmed", value: scenario, version: 2 },
+    }));
+    assert.equal(gap.applicable, true, scenario);
+    assert.equal(gap.missingSlots.length, 5, scenario);
+    assert.equal(
+      buildNextMeetingAgenda(ledger({
+        scenario: { status: "confirmed", value: scenario, version: 2 },
+      })).filter((item) => item.sourceKind === "gap").length,
+      5,
+      scenario,
+    );
+  }
+
+  const unrelatedScenarios = [
+    "A contractor pre-construction site visit to define and price a kitchen renovation before final authorization.",
+    "Residential property-insurance first-loss handling for a kitchen water claim with resulting floor and basement-ceiling damage.",
+    "A retail buyer journey for purchasing home goods.",
+    "A buyer compares and purchases a home insurance policy.",
+    "Property inspection",
+    "",
+    null,
+  ];
+  for (const scenario of unrelatedScenarios) {
+    assert.equal(
+      classifyScenarioSemanticKind(scenario),
+      SCENARIO_SEMANTIC_KINDS.unclassified,
+      String(scenario),
+    );
+    const gap = buildGapCheck(ledger({
+      scenario: { status: "confirmed", value: scenario, version: 2 },
+    }));
+    assert.equal(gap.applicable, false, String(scenario));
+    assert.deepEqual(gap.missingSlots, [], String(scenario));
+    assert.equal(
+      buildNextMeetingAgenda(ledger({
+        scenario: { status: "confirmed", value: scenario, version: 2 },
+      })).some((item) => item.sourceKind === "gap"),
+      false,
+      String(scenario),
+    );
+  }
+
+  const pending = buildGapCheck(ledger({
+    scenario: {
+      status: "pending_confirmation",
+      value: realtorScenarios[3],
+      version: 2,
+    },
+  }));
+  assert.equal(pending.applicable, false);
+  assert.equal(pending.scenario, null);
+});
+
 function validModelOutput() {
   return {
-    schema_version: "claim-extraction.v2",
+    schema_version: "claim-extraction.v3",
     event_id: "event-1",
     scenario_assessment: null,
     claims: [{
@@ -596,6 +668,40 @@ test("Brief leaves the risk slot empty when the only current state is the same r
   assert.equal(brief.riskClaimId, null);
 });
 
+test("Preferences contains only verified preference history, including superseded versions", () => {
+  const data = ledger({
+    claims: [
+      claim({ id: "preference-old", type: "preference", lifecycleStatus: "superseded" }),
+      claim({ id: "preference-current", type: "preference" }),
+      claim({ id: "requirement-current", type: "requirement" }),
+      claim({ id: "question-current", type: "open_question" }),
+    ],
+  });
+
+  assert.deepEqual(
+    buildPreferences(data).map((item) => [item.claimId, item.lifecycleStatus]),
+    [
+      ["preference-current", "active"],
+      ["preference-old", "superseded"],
+    ],
+  );
+});
+
+test("Brief uses a verified unresolved warning when no explicit risk Claim exists", () => {
+  const state = claim({ id: "state", type: "decision" });
+  const warning = claim({
+    id: "warning",
+    type: "requirement",
+    needsAdditionalEvidence: true,
+  });
+  const data = ledger({ claims: [state, warning] });
+  const brief = buildDeterministicBrief(data);
+
+  assert.equal(brief.stateClaimId, "state");
+  assert.equal(brief.riskClaimId, "warning");
+  assert.equal(brief.missingSlotCount, 0);
+});
+
 test("risk and agenda contradictions expose both verified statements and evidence", () => {
   const source = claim({
     id: "budget-new",
@@ -695,8 +801,8 @@ test("model output contract rejects extra fields and invalid targets", () => {
   }).valid, false);
 });
 
-test("claim extraction prompt contract is v7", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v7");
+test("claim extraction prompt contract is v8", () => {
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v8.1");
 });
 
 test("model uncertainty and additional-evidence flags have one unambiguous contract", () => {

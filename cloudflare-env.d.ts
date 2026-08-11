@@ -85,6 +85,8 @@ declare namespace Cloudflare {
     AI_MODEL?: string;
     AI_PROVIDER?: string;
     AI_REASONING_EFFORT?: string;
+    AI_VERIFIER_REASONING_EFFORT?: string;
+    AI_TWO_PASS_PIPELINE?: string;
     AI_TIMEOUT_MS?: string;
     AI_MAX_OUTPUT_TOKENS?: string;
     AI_TRANSCRIPTION_MODEL?: string;

@@ -62,17 +62,20 @@ async function leaseOutbox(row: Row, owner: string, timestamp: string): Promise<
   const db = getD1();
   const guardId = id("guard");
   let frozenTimeoutMs: unknown;
+  let frozenMaxStages: unknown;
   try {
     const modelParams = JSON.parse(String(row.run_model_params_json ?? "{}")) as Record<
       string,
       unknown
     >;
     frozenTimeoutMs = modelParams.timeout_ms;
+    frozenMaxStages = modelParams.max_model_stages;
   } catch {
     frozenTimeoutMs = undefined;
+    frozenMaxStages = undefined;
   }
   const leaseExpiresAt = new Date(
-    Date.parse(timestamp) + outboxLeaseDurationMs(frozenTimeoutMs),
+    Date.parse(timestamp) + outboxLeaseDurationMs(frozenTimeoutMs, frozenMaxStages),
   ).toISOString();
   try {
     await db.batch([
@@ -126,7 +129,7 @@ async function markSent(row: Row, owner: string): Promise<void> {
     .run();
 }
 
-async function markDispatchFailure(row: Row, owner: string, code: string): Promise<void> {
+async function markDispatchFailure(row: Row, owner: string, code: string): Promise<boolean> {
   const timestamp = now();
   const attempt = Number(row.attempt);
   const terminal = attempt >= MAX_OUTBOX_ATTEMPTS;
@@ -147,6 +150,30 @@ async function markDispatchFailure(row: Row, owner: string, code: string): Promi
       owner,
     )
     .run();
+  return terminal;
+}
+
+async function failDeferredRun(runId: string, code: string): Promise<void> {
+  const timestamp = now();
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'failed', finished_at = ?, error_code = ?,
+                error_details_json = '{"reason":"stage_retry_exhausted"}', updated_at = ?
+          WHERE id = ? AND status = 'queued'`,
+      )
+      .bind(timestamp, code, timestamp, runId),
+    getD1()
+      .prepare(
+        `UPDATE projects
+            SET scenario_status = 'unassessed', scenario_assessment_run_id = NULL,
+                scenario_candidates_json = '[]', scenario_lease_expires_at = NULL,
+                updated_at = ?
+          WHERE scenario_status = 'assessing' AND scenario_assessment_run_id = ?`,
+      )
+      .bind(timestamp, runId),
+  ]);
 }
 
 export async function dispatchDueOutbox(): Promise<DispatchResult> {
@@ -199,6 +226,19 @@ export async function dispatchDueOutbox(): Promise<DispatchResult> {
         continue;
       }
       const processed = await processExtractionRun(String(leased.run_id));
+      if (processed.status === "deferred") {
+        const code = processed.errorCode ?? "MODEL_PROVIDER_REQUEST_FAILED";
+        const terminal = await markDispatchFailure(leased, owner, code);
+        if (terminal) await failDeferredRun(String(leased.run_id), code);
+        result.deferred += 1;
+        result.items.push({
+          outboxId: String(leased.id),
+          runId: String(leased.run_id),
+          outcome: processed.status,
+          errorCode: code,
+        });
+        continue;
+      }
       if (processed.status === "lease_not_acquired") {
         const runState = await first(
           `SELECT status FROM extraction_runs WHERE id = ?`,

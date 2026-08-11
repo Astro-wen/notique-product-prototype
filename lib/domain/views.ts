@@ -5,6 +5,95 @@ import type {
   WithdrawRecord,
 } from "./types";
 
+export const SCENARIO_SEMANTIC_KINDS = {
+  realEstateBuyerJourney: "real_estate_buyer_journey",
+  unclassified: "unclassified",
+} as const;
+
+export type ScenarioSemanticKind =
+  (typeof SCENARIO_SEMANTIC_KINDS)[keyof typeof SCENARIO_SEMANTIC_KINDS];
+
+function normalizeScenario(value: string) {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[_/\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const REAL_ESTATE_BUYER_ALIASES = new Set([
+  "re buyer journey",
+  "real estate buyer journey",
+  "residential buyer journey",
+]);
+
+const ENGLISH_BUYER_ROLE = [
+  /\bhome\s*buyers?\b/,
+  /\bbuyers?\b/,
+  /\b(?:home|house|property)\s+(?:purchase|purchasing)\b/,
+  /\b(?:buying|purchasing)\s+(?:(?:a|the|their|his|her|our|your)\s+(?:home|house|property)|(?:homes|houses|properties))\b/,
+];
+
+const ENGLISH_REAL_ESTATE_CONTEXT = [
+  /\breal estate\b/,
+  /\bresidential\s+(?:home|property)\b/,
+  /\b(?:home|house|property)\s+(?:search|showing|purchase|purchasing)\b/,
+  /\b(?:buying|purchasing)\s+(?:(?:a|the|their|his|her|our|your)\s+(?:home|house|property)|(?:homes|houses|properties))\b/,
+];
+
+const ENGLISH_JOURNEY_STAGE = [
+  /\bjourney\b/,
+  /\bsearch\b/,
+  /\bshowings?\b/,
+  /\b(?:pre\s+)?offers?\b/,
+  /\bpurchas(?:e|ing)\b/,
+  /\bclosing\b/,
+];
+
+const CHINESE_BUYER_ROLE = [/(?:购房者|置业者|房产买家|买房|购房|置业)/u];
+const CHINESE_REAL_ESTATE_CONTEXT = [
+  /(?:房地产|房产|住宅|房屋|楼盘).{0,8}(?:搜索|筛选|搜房|看房|购房|买房|置业|出价)/u,
+  /(?:搜索|筛选|搜房|看房|购房|买房|置业|出价).{0,8}(?:房地产|房产|住宅|房屋|楼盘)/u,
+];
+const CHINESE_JOURNEY_STAGE = [/(?:旅程|流程|搜索|筛选|搜房|看房|出价|购房|买房|置业|成交)/u];
+
+function matchesEveryConcept(value: string, concepts: readonly RegExp[][]) {
+  return concepts.every((patterns) => patterns.some((pattern) => pattern.test(value)));
+}
+
+/**
+ * Classifies only scenario semantics that have domain behavior today. Unknown
+ * user-confirmed text stays unclassified so a coincidental keyword cannot turn
+ * on a domain-specific gap check.
+ */
+export function classifyScenarioSemanticKind(
+  scenario: string | null | undefined,
+): ScenarioSemanticKind {
+  if (typeof scenario !== "string") return SCENARIO_SEMANTIC_KINDS.unclassified;
+  const normalized = normalizeScenario(scenario);
+  if (!normalized) return SCENARIO_SEMANTIC_KINDS.unclassified;
+  if (REAL_ESTATE_BUYER_ALIASES.has(normalized)) {
+    return SCENARIO_SEMANTIC_KINDS.realEstateBuyerJourney;
+  }
+
+  if (
+    matchesEveryConcept(normalized, [
+      ENGLISH_BUYER_ROLE,
+      ENGLISH_REAL_ESTATE_CONTEXT,
+      ENGLISH_JOURNEY_STAGE,
+    ]) ||
+    matchesEveryConcept(normalized, [
+      CHINESE_BUYER_ROLE,
+      CHINESE_REAL_ESTATE_CONTEXT,
+      CHINESE_JOURNEY_STAGE,
+    ])
+  ) {
+    return SCENARIO_SEMANTIC_KINDS.realEstateBuyerJourney;
+  }
+  return SCENARIO_SEMANTIC_KINDS.unclassified;
+}
+
 const MATERIALITY_ORDER = { high: 0, medium: 1, low: 2 } as const;
 
 function byImportanceThenTime(a: ClaimWithVersion, b: ClaimWithVersion) {
@@ -229,7 +318,7 @@ export function buildPreferences(ledger: ProjectLedger) {
     .filter(
       (claim) =>
         claim.lifecycleStatus !== "withdrawn" &&
-        (claim.type === "preference" || claim.type === "requirement"),
+        claim.type === "preference",
     )
     .map((claim) => ({
       claimId: claim.id,
@@ -333,7 +422,11 @@ function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot) {
 }
 
 export function buildGapCheck(ledger: ProjectLedger) {
-  if (ledger.scenario.status !== "confirmed" || ledger.scenario.value !== "re_buyer_journey") {
+  if (
+    ledger.scenario.status !== "confirmed" ||
+    classifyScenarioSemanticKind(ledger.scenario.value) !==
+      SCENARIO_SEMANTIC_KINDS.realEstateBuyerJourney
+  ) {
     return {
       applicable: false as const,
       scenario: ledger.scenario.status === "confirmed" ? ledger.scenario.value : null,
@@ -461,15 +554,23 @@ export function buildDeterministicBrief(ledger: ProjectLedger) {
   const current = currentVerifiedClaims(ledger.claims);
   const changes = buildTimeline(ledger).flatMap((event) => event.deltas).slice(-2).reverse();
   const agenda = buildNextMeetingAgenda(ledger).slice(0, 2);
-  const risk = current.find((claim) => claim.type === "risk" || claim.type === "concern") ?? null;
-  const state = current.find((claim) => claim.id !== risk?.id) ?? current[0] ?? null;
-  const uniqueRisk = risk?.id === state?.id ? null : risk;
-  const slots = [state, ...changes, ...agenda, uniqueRisk];
+  const warning =
+    current.find((claim) => claim.type === "risk" || claim.type === "concern") ??
+    current.find(
+      (claim) =>
+        claim.type === "open_question" ||
+        claim.needsAdditionalEvidence ||
+        claim.version.uncertainty !== null,
+    ) ??
+    null;
+  const state = current.find((claim) => claim.id !== warning?.id) ?? current[0] ?? null;
+  const uniqueWarning = warning?.id === state?.id ? null : warning;
+  const slots = [state, ...changes, ...agenda, uniqueWarning];
   return {
     stateClaimId: state?.id ?? null,
     deltaItemIds: changes.map((item) => item.id),
     agendaItemIds: agenda.map((item) => item.id),
-    riskClaimId: uniqueRisk?.id ?? null,
+    riskClaimId: uniqueWarning?.id ?? null,
     missingSlotCount: slots.filter((item) => item == null).length + Math.max(0, 2 - changes.length) + Math.max(0, 2 - agenda.length),
     source: "deterministic_fallback" as const,
   };

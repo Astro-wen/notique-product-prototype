@@ -5,6 +5,27 @@
   "usage": "development-evaluation-and-regression-only",
   "scenario": {
     "expected": "insurance_water_damage_claim_assessment",
+    "semanticAcceptance": {
+      "matcher": "all_required_concepts.v1",
+      "requiredConcepts": [
+        {
+          "id": "insurance_workflow",
+          "phrases": ["insurance", "claim", "adjuster", "coverage"]
+        },
+        {
+          "id": "water_loss",
+          "phrases": ["water damage", "water loss", "leak", "water"]
+        },
+        {
+          "id": "assessment",
+          "phrases": ["claim", "assessment", "loss", "damage"]
+        },
+        {
+          "id": "intake_stage",
+          "phrases": ["first-loss", "first loss", "first notice", "first notice of loss"]
+        }
+      ]
+    },
     "candidates": [
       "insurance_water_damage_claim_assessment",
       "contractor_repair_scope",

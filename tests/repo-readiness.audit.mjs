@@ -58,6 +58,7 @@ test("database schema is real and includes the deterministic P0 records", async 
     "assetVersions",
     "textSegments",
     "extractionRuns",
+    "extractionModelStages",
     "claims",
     "claimVersions",
     "evidenceRefs",
@@ -67,6 +68,55 @@ test("database schema is real and includes the deterministic P0 records", async 
   ]) {
     assert.match(schema, new RegExp(`\\b${table}\\b`), `missing ${table}`);
   }
+});
+
+test("two-pass model stages are resumable, bounded, and safely exposed", async () => {
+  const repository = await read("lib/server/db/extraction-stage-repository.ts");
+  const core = await read("lib/server/db/core-repository.ts");
+  const processor = await read("lib/server/jobs/extraction-processor.ts");
+  const provider = await read("lib/server/ai/model-provider.ts");
+  const migration = await read("drizzle/0010_extraction_model_stages.sql");
+
+  assert.match(migration, /UNIQUE INDEX `uq_extraction_model_stages_run_stage_attempt`/);
+  assert.match(migration, /FOREIGN KEY \(`run_id`\) REFERENCES `extraction_runs`\(`id`\)[\s\S]{0,100}ON DELETE cascade/i);
+  assert.match(repository, /MAX_VALIDATED_OUTPUT_BYTES\s*=\s*1024\s*\*\s*1024/);
+  assert.match(
+    repository,
+    /assertImmutableMatch[\s\S]{0,1000}reasoning_effort[\s\S]{0,500}input_hash/,
+    "stage reuse must guard all frozen model and input parameters",
+  );
+  assert.match(
+    repository,
+    /WHERE extraction_model_stages\.status <> 'succeeded'/,
+    "a paid succeeded stage must never be overwritten by a processing resume",
+  );
+  assert.match(
+    repository,
+    /SENSITIVE_DEBUG_KEYS[\s\S]{0,500}["']authorization["'][\s\S]{0,500}["']r2_original_key["']/,
+    "stage debug output must redact credentials and private object keys",
+  );
+  assert.match(core, /listExtractionModelStageDebug\(runId, scope\.workspaceId\)/);
+  assert.match(core, /stages,/);
+  assert.match(
+    processor,
+    /existing\?\.status === ["']succeeded["'][\s\S]{0,500}reused:\s*true/,
+    "a successful paid stage must be reused on the same Run",
+  );
+  assert.match(
+    processor,
+    /MODEL_ESCALATION_OUTPUT_INVALID[\s\S]{0,250}fallback_stage:\s*["']verify["']/,
+    "an invalid optional escalation must fall back to the already valid verification output",
+  );
+  assert.match(
+    processor,
+    /const usage = completedUsage \?\?[\s\S]{0,180}error instanceof ModelOutputInvalidError/,
+    "a failed later stage must retain aggregate usage from all earlier paid stages",
+  );
+  assert.match(
+    provider,
+    /relation target must copy an exact claim_id and claim_version_id[\s\S]{0,180}never invent a target ID/i,
+    "the verifier must forbid relation targets outside the frozen Context Pack",
+  );
 });
 
 test("Run Debug persists only bounded, schema-validated model output", async () => {
@@ -146,12 +196,27 @@ test("reasoning effort is frozen per Run and Run Debug exposes execution limits"
   );
   assert.match(
     processor,
-    /frozenModelParams[\s\S]{0,500}createModelProvider[\s\S]{0,500}reasoning_effort/i,
-    "the processor must use the Run's frozen reasoning effort",
+    /const\s+inventoryEffort\s*=[\s\S]{0,250}frozenModelParams\.reasoning_effort/i,
+    "the inventory stage must read the Run's frozen reasoning effort",
   );
   assert.match(
     processor,
-    /createModelProvider[\s\S]{0,800}maxOutputTokens:[\s\S]{0,200}max_output_tokens[\s\S]{0,300}timeoutMs:[\s\S]{0,200}timeout_ms/i,
+    /reasoningEffort:\s*inventoryEffort/i,
+    "the inventory provider must receive the frozen reasoning effort",
+  );
+  assert.match(
+    processor,
+    /const\s+verifierEffort\s*=\s*normalizeVerifierReasoningEffort[\s\S]{0,250}frozenModelParams\.verifier_reasoning_effort/i,
+    "the verification stage must read the Run's frozen verifier effort",
+  );
+  assert.match(
+    processor,
+    /reasoningEffort:\s*verifierEffort/i,
+    "the verification provider must receive the frozen verifier effort",
+  );
+  assert.match(
+    processor,
+    /maxOutputTokens\s*=[\s\S]{0,200}max_output_tokens[\s\S]{0,300}timeoutMs\s*=[\s\S]{0,200}timeout_ms[\s\S]{0,1200}createModelProvider/i,
     "the processor must pass the Run's frozen output and timeout limits to the provider",
   );
   assert.match(
@@ -438,8 +503,8 @@ test("database verdict paths preserve the domain state and evidence rules", asyn
   );
   assert.match(
     batchSection,
-    /target_claim[\s\S]{0,500}current_version_id[\s\S]{0,500}target_claim_version_id/i,
-    "batch confirm must atomically reject proposed relations whose target version changed",
+    /RELATION_REVIEW_REQUIRED[\s\S]{0,2200}NOT EXISTS \([\s\S]{0,300}claim_relations[\s\S]{0,240}status = 'proposed'/i,
+    "batch confirm must reject every Claim with an undecided proposed relationship",
   );
   assert.match(
     occurrenceSection,
@@ -471,14 +536,50 @@ test("batch confirmation requires an explicit server-side Evidence review attest
   assert.match(page, /我已核对证据，返回列表/);
   assert.match(
     page,
-    /disabled=\{claim\.reviewStatus !== ["']pending["'] \|\| !claim\.batchReviewAttested\}/,
-    "a list checkbox must stay disabled until the server returns the version-scoped attestation",
+    /batchEligible = claim\.reviewStatus === ["']pending["'] && claim\.batchReviewAttested && !hasProposedRelations[\s\S]{0,500}disabled=\{!batchEligible\}/,
+    "a list checkbox must stay disabled until Evidence is attested and no relationship remains undecided",
   );
   assert.doesNotMatch(
     page,
     /useState<Set<string>>\([^)]*reviewed|localStorage[\s\S]{0,300}batchReviewAttested/i,
     "batch readiness must not be simulated with browser-only state",
   );
+});
+
+test("model-proposed Claim relations require explicit human decisions", async () => {
+  const sharedTypes = await read("lib/shared/api-types.ts");
+  const repository = await read("lib/server/db/verdict-repository.ts");
+  const route = await read("app/api/v1/[...segments]/route.ts");
+  const client = await read("app/api-client.ts");
+  const page = await read("app/page.tsx");
+  const confirmSection = repository.slice(
+    repository.indexOf('if (input.action === "confirm")'),
+    repository.indexOf('} else if (input.action === "reject")'),
+  );
+  const batchSection = repository.slice(
+    repository.indexOf("export async function applyBatchVerdicts"),
+    repository.indexOf("export async function applyOccurrenceVerdict"),
+  );
+
+  assert.match(sharedTypes, /ClaimVerdictRequest[\s\S]{0,220}retain_relation_ids\?: string\[\]/);
+  assert.match(route, /action === ["']confirm["'][\s\S]{0,300}["']retain_relation_ids["'] in body[\s\S]{0,350}stringArray/);
+  assert.match(client, /action === ["']confirm["'][\s\S]{0,180}retain_relation_ids: input\.retainRelationIds/);
+  assert.match(confirmSection, /proposedRelations[\s\S]{0,900}relationDecisions/);
+  assert.match(confirmSection, /UPDATE claim_relations SET status = \?[\s\S]{0,700}INSERT INTO relation_verdicts/);
+  assert.doesNotMatch(
+    confirmSection,
+    /UPDATE claim_relations SET status = 'active'[\s\S]{0,180}source_claim_version_id = \?/,
+    "single confirmation must never activate every model-proposed relationship",
+  );
+  assert.match(batchSection, /RELATION_REVIEW_REQUIRED[\s\S]{0,2200}status = 'proposed'/);
+  assert.doesNotMatch(
+    batchSection,
+    /item\.action === ["']confirm["'][\s\S]{0,2500}UPDATE claim_relations SET status = 'active'/,
+    "batch confirmation must not activate a proposed relationship",
+  );
+  assert.match(page, /逐条核对关系[\s\S]{0,1400}接受关系[\s\S]{0,500}拒绝关系/);
+  assert.match(page, /旧记录：[\s\S]{0,900}relationReviewEffect/);
+  assert.match(page, /!relationsReviewed[\s\S]{0,500}acceptedRelationIds/);
 });
 
 test("timeline repository loads historical claim versions used by relations and withdrawals", async () => {
@@ -709,7 +810,7 @@ test("provider schema and server validator share bounded output limits", async (
   );
   assert.match(
     processor,
-    /validateExtractClaimsOutput\(result\.output\)/,
+    /validateExtractClaimsOutput\(finalOutput,\s*input\.contextPack\)/,
     "the processor must revalidate provider output structure before persistence",
   );
   assert.match(
@@ -749,8 +850,13 @@ test("provider schema and server validator share bounded output limits", async (
   );
   assert.match(
     processor,
-    /leased\.prompt_version[\s\S]{0,350}STALE_MODEL_CONTRACT[\s\S]{0,1500}provider\.extractClaims/i,
+    /leased\.prompt_version[\s\S]{0,400}STALE_MODEL_CONTRACT[\s\S]{0,500}loadContextInput/i,
     "a queued run created under an older prompt or schema must fail before it can spend a model request",
+  );
+  assert.match(
+    processor,
+    /inventoryProvider\.inventoryClaims/i,
+    "the current contract must begin with the inventory model stage",
   );
   assert.match(
     contract,
@@ -819,8 +925,8 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
 
   assert.match(
     modelConfig,
-    /EXTRACTION_RUN_LEASE_MS\s*=\s*10\s*\*\s*60_000[\s\S]{0,300}MAX_AI_TIMEOUT_MS\s*=[\s\S]{0,100}EXTRACTION_RUN_LEASE_MS\s*-\s*AI_TIMEOUT_SAFETY_MARGIN_MS/i,
-    "the configured provider timeout must leave a persistence margin inside the Run lease",
+    /EXTRACTION_RUN_LEASE_MS\s*=\s*30\s*\*\s*60_000[\s\S]{0,300}MAX_AI_TIMEOUT_MS\s*=\s*9\s*\*\s*60_000/i,
+    "the three-stage pipeline must keep each provider call bounded inside the Run lease",
   );
   assert.match(
     core,
@@ -839,7 +945,7 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   );
   assert.match(
     outbox,
-    /modelParams\.timeout_ms[\s\S]{0,300}outboxLeaseDurationMs\(frozenTimeoutMs\)/i,
+    /modelParams\.timeout_ms[\s\S]{0,180}modelParams\.max_model_stages[\s\S]{0,300}outboxLeaseDurationMs\(frozenTimeoutMs,\s*frozenMaxStages\)/i,
     "Outbox lease duration must be derived from the frozen timeout",
   );
   assert.match(
@@ -949,7 +1055,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
     "the attestation handler must reject an incomplete Evidence view");
   assert.match(claimScreen, /证据未完整加载[\s\S]*确认、核对声明和修改功能已停用/);
   assert.match(claimScreen, /const evidenceReady\s*=\s*evidenceState\s*===\s*["']ready["']/);
-  assert.match(claimScreen, /修改后确认[\s\S]{0,300}disabled=\{Boolean\(busy\)\s*\|\|\s*!evidenceReady\}/);
+  assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
   assert.match(claimScreen, /type=["']checkbox["']\s+disabled=\{!evidenceReady\}/,
     "Evidence selection for an edit must remain disabled on a partial load");
 });

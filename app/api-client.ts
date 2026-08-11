@@ -19,6 +19,7 @@ import type {
   FinalizeTranscriptImportRequest,
   FinalizeTranscriptImportResponse,
   GetEventResponse,
+  ExtractionRunDebugRecord,
   GetExtractionRunResponse,
   GetProjectResponse,
   GetReviewSessionResponse,
@@ -59,7 +60,7 @@ export type RunReview = {
 
 export type RunDebug = {
   requestId: string;
-  data: Record<string, unknown>;
+  data: ExtractionRunDebugRecord;
 };
 
 export type ApiIssue = {
@@ -163,6 +164,7 @@ export type ExtractionRun = {
   claimCount?: number;
   errorCode?: string;
   errorMessage?: string;
+  pipelineStage?: "inventory" | "verify" | "verify_escalated";
   createdAt?: string;
   completedAt?: string;
 };
@@ -462,6 +464,10 @@ export function normalizeRun(value: unknown): ExtractionRun {
     claimCount: asNumber(pick(source, ["claim_count", "claimCount"])),
     errorCode: asString(pick(source, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
     errorMessage: asString(pick(source, ["error_message", "errorMessage"]), undefined as unknown as string) || undefined,
+    pipelineStage: asString(
+      pick(source, ["pipeline_stage", "pipelineStage"]),
+      undefined as unknown as string,
+    ) as ExtractionRun["pipelineStage"],
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     completedAt: asString(pick(source, ["completed_at", "completedAt"]), undefined as unknown as string) || undefined,
   };
@@ -907,11 +913,15 @@ export const api = {
   },
 
   async getRunDebug(runId: Id): Promise<RunDebug> {
-    const body = await request<ApiSuccess<{ debug: Record<string, unknown> }>>(
+    const body = await request<ApiSuccess<{ debug: ExtractionRunDebugRecord }>>(
       `/api/v1/extraction-runs/${encodeURIComponent(runId)}/debug`,
       { cache: "no-store" },
     );
-    if (!isRecord(body.data.debug) || !body.request_id) {
+    if (
+      !isRecord(body.data.debug) ||
+      !Array.isArray(body.data.debug.stages) ||
+      !body.request_id
+    ) {
       invalidContract("The server returned an invalid run debug response.");
     }
     return { requestId: body.request_id, data: body.data.debug };
@@ -956,7 +966,7 @@ export const api = {
     return result;
   },
 
-  async saveVerdict(claim: Claim, action: "confirm" | "reject" | "edit", input: { idempotencyKey: string; reason?: string; edit?: ClaimEditSubmission }): Promise<Claim> {
+  async saveVerdict(claim: Claim, action: "confirm" | "reject" | "edit", input: { idempotencyKey: string; reason?: string; retainRelationIds?: string[]; edit?: ClaimEditSubmission }): Promise<Claim> {
     if (action === "edit" && !input.edit) {
       throw new ApiClientError({
         status: 400,
@@ -964,11 +974,19 @@ export const api = {
         message: "An edit must explicitly review its structured value, uncertainty, relations, and evidence.",
       });
     }
+    if (action === "confirm" && !Array.isArray(input.retainRelationIds)) {
+      throw new ApiClientError({
+        status: 400,
+        code: "RELATION_REVIEW_REQUIRED",
+        message: "Every proposed relationship must be accepted or rejected before confirmation.",
+      });
+    }
     const edit = input.edit;
     const payload: ClaimVerdictRequest = {
       action,
       base_version_id: claim.versionId,
       explanation: input?.reason || undefined,
+      ...(action === "confirm" ? { retain_relation_ids: input.retainRelationIds! } : {}),
       ...(action === "edit" ? {
         edit: {
           statement: edit!.statement,

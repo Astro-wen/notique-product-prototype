@@ -18,6 +18,8 @@ export type ExtractionRunStatus =
   | "completed_with_warnings"
   | "failed"
   | "cancelled";
+export type ExtractionModelStageName = "inventory" | "verify" | "verify_escalated";
+export type ExtractionModelStageStatus = "processing" | "succeeded" | "failed";
 export type TranscriptionRunStatus =
   | "queued"
   | "processing"
@@ -55,6 +57,8 @@ export type ApiErrorCode =
   | "EVIDENCE_VALIDATION_FAILED"
   | "EVIDENCE_SUPPORT_REQUIRED"
   | "EVIDENCE_REVIEW_REQUIRED"
+  | "RELATION_REVIEW_REQUIRED"
+  | "RELATION_REVIEW_INVALID"
   | "RUN_BUDGET_EXCEEDED"
   | "WORKSPACE_RUN_LIMIT"
   | "QUEUE_NOT_CONFIGURED"
@@ -262,10 +266,47 @@ export type ExtractionRunRecord = {
   prompt_version: string;
   schema_version: string;
   error_code: string | null;
+  pipeline_stage: ExtractionModelStageName | null;
   created_at: string;
   queued_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type ExtractionModelStageRecord = {
+  id: string;
+  run_id: string;
+  stage: ExtractionModelStageName;
+  attempt: number;
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  prompt_version: string;
+  schema_version: string;
+  status: ExtractionModelStageStatus;
+  input_hash: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  estimated_cost_usd: number | null;
+  provider_request_id: string | null;
+  validated_output: unknown | null;
+  error_code: string | null;
+  error_details: unknown | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExtractionModelStageDebugRecord = Omit<
+  ExtractionModelStageRecord,
+  "run_id"
+>;
+
+export type ExtractionRunDebugRecord = Record<string, unknown> & {
+  stages: ExtractionModelStageDebugRecord[];
 };
 
 export type TranscriptionSegmentRecord = {
@@ -373,6 +414,7 @@ export type ClaimVerdictRequest = {
   action: ClaimVerdictAction;
   base_version_id: string;
   explanation?: string;
+  retain_relation_ids?: string[];
   edit?: {
     statement: string;
     type: string;

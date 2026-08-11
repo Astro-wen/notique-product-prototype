@@ -5,6 +5,7 @@ import type {
   ClaimRelationForReviewRecord,
   EventRecord,
   ExtractionRunRecord,
+  ExtractionModelStageRecord,
   ProjectRecord,
   ScenarioCandidate,
   TranscriptionRunRecord,
@@ -145,10 +146,44 @@ export function extractionRunRecord(row: Row): ExtractionRunRecord {
     prompt_version: text(row, "prompt_version"),
     schema_version: text(row, "schema_version"),
     error_code: nullableText(row, "error_code"),
+    pipeline_stage: nullableText(row, "pipeline_stage") as ExtractionRunRecord["pipeline_stage"],
     created_at: text(row, "created_at"),
     queued_at: nullableText(row, "queued_at"),
     started_at: nullableText(row, "started_at"),
     finished_at: nullableText(row, "finished_at"),
+  };
+}
+
+export function extractionModelStageRecord(row: Row): ExtractionModelStageRecord {
+  const nullableInteger = (key: string): number | null =>
+    row[key] === null || row[key] === undefined ? null : integer(row, key);
+  const nullableNumber = (key: string): number | null =>
+    row[key] === null || row[key] === undefined ? null : Number(row[key]);
+  return {
+    id: text(row, "id"),
+    run_id: text(row, "run_id"),
+    stage: text(row, "stage") as ExtractionModelStageRecord["stage"],
+    attempt: integer(row, "attempt"),
+    provider: text(row, "provider"),
+    model: text(row, "model"),
+    reasoning_effort: text(row, "reasoning_effort"),
+    prompt_version: text(row, "prompt_version"),
+    schema_version: text(row, "schema_version"),
+    status: text(row, "status") as ExtractionModelStageRecord["status"],
+    input_hash: text(row, "input_hash"),
+    input_tokens: nullableInteger("input_tokens"),
+    output_tokens: nullableInteger("output_tokens"),
+    cached_tokens: nullableInteger("cached_tokens"),
+    estimated_cost_usd: nullableNumber("estimated_cost_usd"),
+    provider_request_id: nullableText(row, "provider_request_id"),
+    validated_output: parseJson<unknown>(nullableText(row, "validated_output_json"), null),
+    error_code: nullableText(row, "error_code"),
+    error_details: parseJson<unknown>(nullableText(row, "error_details_json"), null),
+    started_at: text(row, "started_at"),
+    finished_at: nullableText(row, "finished_at"),
+    duration_ms: nullableInteger("duration_ms"),
+    created_at: text(row, "created_at"),
+    updated_at: text(row, "updated_at"),
   };
 }
 

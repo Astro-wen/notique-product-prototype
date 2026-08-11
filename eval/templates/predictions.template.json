@@ -4,7 +4,7 @@
     "commitSha": "replace-with-commit-sha",
     "model": "replace-with-fixed-model-version",
     "prompt": "replace-with-prompt-version",
-    "schema": "claim-extraction.v2",
+    "schema": "claim-extraction.v3",
     "parameters": {},
     "environment": "development"
   },

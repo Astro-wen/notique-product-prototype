@@ -192,6 +192,20 @@ function parseClaimVerdict(body: JsonRecord): ClaimVerdictRequest {
   };
   const explanation = optionalString(body.explanation, "explanation", { max: 2_000 });
   if (explanation) result.explanation = explanation;
+  if (action === "confirm") {
+    if (!("retain_relation_ids" in body)) {
+      throw new ApiFault(
+        400,
+        "BAD_REQUEST",
+        "retain_relation_ids must explicitly record the reviewed relationship decisions.",
+      );
+    }
+    result.retain_relation_ids = stringArray(
+      body.retain_relation_ids,
+      "retain_relation_ids",
+      { max: 100 },
+    );
+  }
   if (action === "edit") {
     const edit = record(body.edit, "edit");
     if (!("normalized_value" in edit)) {

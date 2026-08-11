@@ -3,6 +3,8 @@ import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
   normalizeAiTimeoutMs,
   normalizeOpenAiReasoningEffort,
+  normalizeVerifierReasoningEffort,
+  twoPassPipelineEnabled,
 } from "@/lib/domain/model-config";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
@@ -45,6 +47,7 @@ import {
   findMutationReplay,
   mutationReplayStatement,
 } from "@/lib/server/db/mutation-replay";
+import { listExtractionModelStageDebug } from "@/lib/server/db/extraction-stage-repository";
 import type {
   AssetKind,
   AssetRecord,
@@ -1611,7 +1614,10 @@ export async function createExtractionRun(
     DEFAULT_AI_MAX_OUTPUT_TOKENS,
   );
   const timeoutMs = normalizeAiTimeoutMs(bindings.AI_TIMEOUT_MS);
-  const reservedModelTokens = estimatedInputTokens + maxOutputTokens;
+  const pipelineEnabled = twoPassPipelineEnabled(bindings.AI_TWO_PASS_PIPELINE);
+  const maxModelStages = pipelineEnabled ? 3 : 1;
+  const reservedModelTokens =
+    estimatedInputTokens * maxModelStages + maxOutputTokens * maxModelStages;
   const maxRunInputTokens = configuredPositiveInteger(
     bindings.MAX_RUN_INPUT_TOKENS,
     120_000,
@@ -1626,6 +1632,9 @@ export async function createExtractionRun(
   );
   const maxImageUnits = configuredPositiveInteger(bindings.MAX_RUN_IMAGE_UNITS, 12);
   const reasoningEffort = normalizeOpenAiReasoningEffort(bindings.AI_REASONING_EFFORT);
+  const verifierReasoningEffort = normalizeVerifierReasoningEffort(
+    bindings.AI_VERIFIER_REASONING_EFFORT,
+  );
   const imageUnits = manifest.filter((item) => item.kind === "photo").length;
   if (estimatedInputTokens > maxRunInputTokens) {
     throw new ApiFault(422, "RUN_BUDGET_EXCEEDED", "Run exceeds the configured input token limit.", {
@@ -1650,6 +1659,9 @@ export async function createExtractionRun(
       provider: bindings.AI_PROVIDER,
       model: bindings.AI_MODEL,
       reasoning_effort: reasoningEffort,
+      verifier_reasoning_effort: verifierReasoningEffort,
+      two_pass_pipeline: pipelineEnabled,
+      max_model_stages: maxModelStages,
       max_output_tokens: maxOutputTokens,
       timeout_ms: timeoutMs,
       prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION,
@@ -1698,7 +1710,7 @@ export async function createExtractionRun(
   const db = getD1();
   const quotaGuardId = id("guard");
   const scenarioGuardId = needsScenarioAssessment ? id("guard") : null;
-  const scenarioLeaseExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const scenarioLeaseExpiresAt = new Date(Date.now() + 35 * 60_000).toISOString();
   const dailyWindow = new Date(timestamp);
   dailyWindow.setUTCHours(0, 0, 0, 0);
   const dailyWindowStart = dailyWindow.toISOString();
@@ -1706,6 +1718,9 @@ export async function createExtractionRun(
     max_output_tokens: maxOutputTokens,
     timeout_ms: timeoutMs,
     reasoning_effort: reasoningEffort,
+    verifier_reasoning_effort: verifierReasoningEffort,
+    two_pass_pipeline: pipelineEnabled,
+    max_model_stages: maxModelStages,
     reserved_input_tokens: estimatedInputTokens,
     reserved_model_tokens: reservedModelTokens,
     token_budget_policy: "token-reservation.v1",
@@ -1900,7 +1915,16 @@ export async function getExtractionRun(
   runId: string,
 ): Promise<ExtractionRunRecord> {
   const row = await first(
-    `SELECT * FROM extraction_runs WHERE id = ? AND workspace_id = ?`,
+    `SELECT r.*,
+            (SELECT s.stage FROM extraction_model_stages s
+              WHERE s.run_id = r.id
+              ORDER BY CASE s.stage
+                WHEN 'verify_escalated' THEN 3
+                WHEN 'verify' THEN 2
+                ELSE 1 END DESC,
+                s.updated_at DESC
+              LIMIT 1) AS pipeline_stage
+       FROM extraction_runs r WHERE r.id = ? AND r.workspace_id = ?`,
     [runId, scope.workspaceId],
   );
   if (!row) {
@@ -2175,6 +2199,7 @@ export async function debugRun(scope: RequestScope, runId: string) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Extraction run was not found.");
   }
   const validatedOutputJson = row.validated_output_json;
+  const stages = await listExtractionModelStageDebug(runId, scope.workspaceId);
   const debugRow = { ...row };
   for (const key of [
     "idempotency_key",
@@ -2191,5 +2216,6 @@ export async function debugRun(scope: RequestScope, runId: string) {
     model_params: parseJson(String(row.model_params_json ?? "{}"), {}),
     validated_output: parseJson(String(validatedOutputJson ?? "null"), null),
     error_details: parseJson(String(row.error_details_json ?? "null"), null),
+    stages,
   };
 }

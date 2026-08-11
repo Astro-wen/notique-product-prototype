@@ -5,6 +5,23 @@
   "usage": "development-evaluation-and-regression-only",
   "scenario": {
     "expected": "real_estate_buyer_journey",
+    "semanticAcceptance": {
+      "matcher": "all_required_concepts.v1",
+      "requiredConcepts": [
+        {
+          "id": "client_role",
+          "phrases": ["buyer", "buyers", "homebuyer", "home buyer", "home purchase"]
+        },
+        {
+          "id": "property_search",
+          "phrases": ["real estate", "home search", "property search", "house search", "buying a home", "home purchase"]
+        },
+        {
+          "id": "journey_stage",
+          "phrases": ["journey", "search", "showing", "offer", "purchase"]
+        }
+      ]
+    },
     "candidates": [
       "real_estate_buyer_journey",
       "general_sales_account_memory",

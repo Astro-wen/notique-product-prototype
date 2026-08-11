@@ -392,6 +392,21 @@ function statusLabel(value?: string): string {
   return labels[(value ?? "").toLowerCase()] ?? value ?? "状态未知";
 }
 
+function extractionProgressLabel(run?: ExtractionRun | null): string {
+  if (!run || !runInProgress.has(run.status)) return statusLabel(run?.status);
+  if (run.pipelineStage === "inventory") return "正在识别事实";
+  if (run.pipelineStage === "verify") return "正在查漏纠错";
+  if (run.pipelineStage === "verify_escalated") return "正在加强复核";
+  return "正在准备分析";
+}
+
+function extractionProgressBody(run?: ExtractionRun | null): string {
+  if (run?.pipelineStage === "inventory") return "第一轮正在逐条盘点原子事实和证据，不会直接写入正式结果。";
+  if (run?.pipelineStage === "verify") return "第二轮正在检查遗漏、重复、原子性和跨沟通关系。";
+  if (run?.pipelineStage === "verify_escalated") return "确定性质量门发现风险，正在用更强推理重新复核。";
+  return "任务已经进入后台，页面会继续读取真实状态，不会重复提交。";
+}
+
 function issueTitle(issue: ApiIssue): string {
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "模型服务尚未配置";
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音转写服务尚未配置";
@@ -1500,12 +1515,19 @@ export default function Home() {
   }
 
   const pendingClaims = useMemo(() => claims.filter((item) => item.reviewStatus === "pending"), [claims]);
-  const selectedBatch = useMemo(() => pendingClaims.filter((item) => selectedClaimIds.has(item.id)), [pendingClaims, selectedClaimIds]);
+  const selectedBatch = useMemo(
+    () => pendingClaims.filter(
+      (item) => selectedClaimIds.has(item.id)
+        && !item.relationsForReview.some((relation) => relation.status === "proposed"),
+    ),
+    [pendingClaims, selectedClaimIds],
+  );
 
   async function runVerdict(
     action: "confirm" | "reject" | "edit",
     reason?: string,
     edit?: ClaimEditSubmission,
+    retainRelationIds?: string[],
   ) {
     if (!selectedClaim) return;
     if ((action === "confirm" || action === "edit") && evidenceState !== "ready") {
@@ -1520,6 +1542,7 @@ export default function Home() {
         selectedClaim.versionId,
         action,
         reason || "",
+        retainRelationIds ? [...retainRelationIds].sort().join(",") : "",
         edit ? JSON.stringify({
           ...edit,
           evidenceRefIds: [...edit.evidenceRefIds].sort(),
@@ -1528,7 +1551,12 @@ export default function Home() {
       ].join(":");
       const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, idempotencyKey);
-      const updated = await api.saveVerdict(selectedClaim, action, { idempotencyKey, reason, edit });
+      const updated = await api.saveVerdict(selectedClaim, action, {
+        idempotencyKey,
+        reason,
+        retainRelationIds,
+        edit,
+      });
       mutationKeys.current.delete(fingerprint);
       setSelectedClaim(updated);
       setClaims((items) => items.map((item) => item.id === selectedClaim.id ? updated : item));
@@ -2210,7 +2238,7 @@ export default function Home() {
           } finally { setBusyAction(null); }
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
       </main>
@@ -2385,8 +2413,8 @@ function SimpleTestScreen({
       body: "每次处理一条沟通。处理完成后会停下来让你核对，确认过的内容才会带入下一次。",
     },
     running: {
-      title: `正在处理第 ${workflowPosition}/${projectWorkflow.total} 次沟通`,
-      body: "页面会继续检查现有任务，不会重复提交同一份材料。",
+      title: `${extractionProgressLabel(run)} · 第 ${workflowPosition}/${projectWorkflow.total} 次沟通`,
+      body: extractionProgressBody(run),
     },
     empty_output: {
       title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通没有生成可核对的记录`,
@@ -2846,7 +2874,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
     <div className="page">
       <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
       {issue && <ErrorNotice issue={issue} onRetry={retryIssue} />}
-      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{statusLabel(run.status)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? "你可以离开这个页面，处理会在后台继续。" : run.status === "completed_with_warnings" ? "部分候选没有通过证据校验，合格内容仍可审核。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "打开审核区查看通过程序校验的候选记录。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
+      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "质量门仍有提醒，请在审核区重点核对事实与关系。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
           <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" onClick={() => fileRef.current?.click()}>上传材料</button></div>
@@ -2901,6 +2929,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
   ].filter((value): value is string => Boolean(value));
   const errorDetails = isRecord(data.error_details) ? data.error_details : null;
   const warnings = errorDetails ? recordArray(errorDetails.warnings) : [];
+  const stages = recordArray(data.stages);
   const validatedOutput = data.validated_output;
   const hasValidatedOutput = validatedOutput !== null && validatedOutput !== undefined;
   const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
@@ -2913,6 +2942,15 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
         <section className="panel debug-section"><div className="section-heading"><div><h2>用量</h2><p>没有返回的用量保持空白。</p></div></div><div className="debug-fields"><DebugField label="Input tokens" value={data.input_tokens} /><DebugField label="Output tokens" value={data.output_tokens} /><DebugField label="Cached tokens" value={data.cached_tokens} /><DebugField label="Image units" value={data.image_units} /><DebugField label="Estimated cost USD" value={data.estimated_cost_usd} /><DebugField label="Attempt" value={data.attempt_no} /></div></section>
       </div>
       <section className="panel debug-section"><div className="section-heading"><div><h2>Input manifest</h2><p>这次提交给处理任务的材料版本。</p></div></div>{manifest.length ? <div className="manifest-list">{manifest.map((item, index) => <article key={firstString(item, ["asset_version_id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{firstString(item, ["kind"]) || "未知类型"}</strong><code>{firstString(item, ["asset_version_id"]) || "缺少 Asset Version ID"}</code><small>Parser: {firstString(item, ["parser_version"]) || "未记录"}</small><small>SHA-256: {firstString(item, ["sha256"]) || "未记录"}</small></div></article>)}</div> : <EmptyState title="没有 Input manifest" body="服务器没有为这次运行返回任何输入材料。" />}</section>
+      <section className="panel debug-section"><div className="section-heading"><div><h2>双 Agent 阶段</h2><p>同一 Run 的事实盘点、查漏纠错和必要的加强复核分别记录；成功阶段可在重试时复用。</p></div></div>{stages.length ? <div className="manifest-list">{stages.map((stage, index) => {
+        const name = firstString(stage, ["stage"]);
+        const label = name === "inventory" ? "Agent A · 识别事实" : name === "verify" ? "Agent B · 查漏纠错" : "Agent B · 加强复核";
+        const stageDetails = isRecord(stage.error_details) ? stage.error_details : null;
+        const escalationReasons = stageDetails && Array.isArray(stageDetails.escalation_reasons)
+          ? stageDetails.escalation_reasons.filter((reason): reason is string => typeof reason === "string")
+          : [];
+        return <article key={firstString(stage, ["id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{label}</strong><small>{statusLabel(firstString(stage, ["status"]))} · Reasoning {firstString(stage, ["reasoning_effort"]) || "未记录"}</small><small>Input {firstString(stage, ["input_tokens"]) || "—"} · Output {firstString(stage, ["output_tokens"]) || "—"} · {firstString(stage, ["duration_ms"]) || "—"} ms</small>{escalationReasons.length > 0 && <small>升级原因：{escalationReasons.join("、")}</small>}{firstString(stage, ["error_code"]) && <code>{firstString(stage, ["error_code"])}</code>}</div></article>;
+      })}</div> : <EmptyState title="还没有阶段记录" body="任务开始调用模型后，这里会显示每一轮的真实状态。" />}</section>
       <section className="panel debug-section"><div className="section-heading"><div><h2>验证提醒与错误</h2><p>程序验证没有通过的内容会在这里留下原因。</p></div></div>{warnings.length ? <div className="warning-list">{warnings.map((warning, index) => <article key={`${firstString(warning, ["code"]) || "warning"}:${index}`}><strong>{firstString(warning, ["code"]) || "未命名提醒"}</strong><pre>{JSON.stringify(redactDebugValue(warning), null, 2)}</pre></article>)}</div> : <p className="muted">服务器没有记录 validation warning。</p>}<div className="debug-error-row"><DebugField label="Error code" value={data.error_code} mono /><DebugField label="Outbox error" value={data.outbox_error_code} mono /><DebugField label="Outbox status" value={data.outbox_status} /></div>{errorDetails && !warnings.length && <pre className="debug-json small">{JSON.stringify(redactDebugValue(errorDetails), null, 2)}</pre>}</section>
       <section className="panel debug-section debug-output"><div className="section-heading"><div><h2>validated_output</h2><p>这是通过服务器 Schema 校验后保留下来的模型 JSON，仅供内部排查。</p></div></div>{hasValidatedOutput ? <pre className="debug-json">{JSON.stringify(redactDebugValue(validatedOutput), null, 2)}</pre> : <p className="muted">本次没有模型输出。</p>}</section>
       <section className="panel debug-section"><div className="section-heading"><div><h2>时间</h2><p>每个阶段都直接读取服务器时间。</p></div></div><div className="debug-fields"><DebugField label="Created" value={data.created_at} /><DebugField label="Queued" value={data.queued_at} /><DebugField label="Started" value={data.started_at} /><DebugField label="Finished" value={data.finished_at} /><DebugField label="Updated" value={data.updated_at} /><DebugField label="Next queue attempt" value={data.next_attempt_at} /></div></section>
@@ -3025,7 +3063,11 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
       {state === "loading" && <LoadingBlock label="正在整理审核队列…" />}
       {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待审核记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
-      {visible.length > 0 && <div className="review-list">{visible.map((claim) => <article key={claim.id} className="review-card"><label className="claim-select" title={claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={claim.reviewStatus !== "pending" || !claim.batchReviewAttested} checked={selected.has(claim.id)} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span></div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus === "pending" && claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : claim.reviewStatus === "pending" ? "打开并核对证据后才能批量选择 ›" : "查看证据和处理记录 ›"}</span></button></article>)}</div>}
+      {visible.length > 0 && <div className="review-list">{visible.map((claim) => {
+        const hasProposedRelations = claim.relationsForReview.some((relation) => relation.status === "proposed");
+        const batchEligible = claim.reviewStatus === "pending" && claim.batchReviewAttested && !hasProposedRelations;
+        return <article key={claim.id} className="review-card"><label className="claim-select" title={hasProposedRelations ? "包含待核对关系，请逐条处理" : claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={!batchEligible} checked={selected.has(claim.id) && batchEligible} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待核对</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看证据和处理记录 ›" : hasProposedRelations ? "打开并逐条核对事实与关系 ›" : claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : "打开并核对证据后才能批量选择 ›"}</span></button></article>;
+      })}</div>}
       {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新证据附到原记录。如果里面有新变化，可以拆成新的待审核记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
     </div>
   );
@@ -3072,7 +3114,14 @@ function relationReviewLabel(type: string): string {
   return "参考原记录";
 }
 
-function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
+function relationReviewEffect(type: string): string {
+  if (type === "supersedes") return "接受后，旧记录会标记为已被取代。";
+  if (type === "resolves") return "接受后，旧问题或风险会标记为已解决。";
+  if (type === "contradicts") return "接受后，两条记录会作为待处理冲突同时保留。";
+  return "接受后，两条记录会保留参考关系，不改变旧记录状态。";
+}
+
+function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
   const [edit, setEdit] = useState(false);
   const [statement, setStatement] = useState(claim?.statement ?? "");
   const [claimType, setClaimType] = useState(claim?.type ?? "other");
@@ -3090,6 +3139,7 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
     originalUncertainty ? "" : "clear",
   );
   const [retainedRelationIds, setRetainedRelationIds] = useState<Set<string>>(new Set());
+  const [relationDecisions, setRelationDecisions] = useState<Record<string, "accept" | "reject">>({});
   const [relationOpen, setRelationOpen] = useState(false);
   const [relationTargets, setRelationTargets] = useState<RelationTarget[]>([]);
   const [relationTargetsState, setRelationTargetsState] = useState<AsyncState>("idle");
@@ -3101,6 +3151,11 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
   const pending = claim.reviewStatus === "pending";
   const verified = claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn";
   const activeRelations = claim.relationsForReview.filter((relation) => relation.status === "active");
+  const proposedRelations = claim.relationsForReview.filter((relation) => relation.status === "proposed");
+  const relationsReviewed = proposedRelations.every((relation) => Boolean(relationDecisions[relation.id]));
+  const acceptedRelationIds = proposedRelations
+    .filter((relation) => relationDecisions[relation.id] === "accept")
+    .map((relation) => relation.id);
   const evidenceReady = evidenceState === "ready";
   const editHasSupportingEvidence = evidence.some(
     (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
@@ -3183,7 +3238,28 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
             <label className="field"><span>补充证据说明</span><textarea value={secondaryEvidenceNote} onChange={(event) => setSecondaryEvidenceNote(event.target.value)} placeholder="没有可勾选的证据时，请说明你依据了什么补充信息。" /></label>
             <label className="field"><span>修改原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
             <div className="button-row"><button className="button secondary" onClick={() => setEdit(false)}>取消</button><button className="button primary" disabled={busy === "edit" || !canSaveEdit} onClick={submitEdit}>{busy === "edit" ? "正在保存…" : "保存并确认"}</button></div>
-          </div> : <div className="verdict-actions"><button className="button primary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => onVerdict("confirm", reason.trim())}>确认并加入正式结果</button><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改后确认</button><div className="batch-review-attestation"><strong>需要一次批量处理多条？</strong><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</div><label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button></div>}
+          </div> : <div className="verdict-actions">
+            {proposedRelations.length > 0 && <fieldset className="relation-review-gate">
+              <legend>逐条核对关系</legend>
+              <p>当前记录：{claim.statement}</p>
+              {proposedRelations.map((relation) => <article key={relation.id}>
+                <header><b>{relationReviewLabel(relation.type)}</b><span>{relation.type}</span></header>
+                <p><strong>旧记录：</strong>{relation.targetStatement}</p>
+                {relation.reason && <small><strong>模型依据：</strong>{relation.reason}</small>}
+                <small className="relation-effect">{relationReviewEffect(relation.type)}</small>
+                <div role="group" aria-label={`${relationReviewLabel(relation.type)}：${relation.targetStatement}`}>
+                  <label><input type="radio" name={`relation-${relation.id}`} checked={relationDecisions[relation.id] === "accept"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "accept" }))} />接受关系</label>
+                  <label><input type="radio" name={`relation-${relation.id}`} checked={relationDecisions[relation.id] === "reject"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "reject" }))} />拒绝关系</label>
+                </div>
+              </article>)}
+              {!relationsReviewed && <p className="uncertainty">每条关系都必须选择接受或拒绝，才能确认记录。</p>}
+            </fieldset>}
+            <button className="button primary full" disabled={Boolean(busy) || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", reason.trim(), undefined, acceptedRelationIds)}>确认并加入正式结果</button>
+            <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改后确认</button>
+            <div className="batch-review-attestation"><strong>需要一次批量处理多条？</strong>{proposedRelations.length > 0 ? <p>这条记录包含关系判断，不能批量确认。请在上方逐条接受或拒绝。</p> : <><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</>}</div>
+            <label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+            <button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button>
+          </div>}
         </>}{verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或风险</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
       </div>
     </div>

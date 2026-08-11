@@ -21,6 +21,20 @@ export function matchesFrozenOccurrenceTarget(
   );
 }
 
+export function matchesRejectableOccurrenceTarget(
+  candidate: Pick<
+    FrozenOccurrenceTarget,
+    "status" | "baseVersionId" | "targetClaimVersionId"
+  >,
+  requestedTargetVersionId: string,
+): boolean {
+  return (
+    String(candidate.status) === "pending" &&
+    String(candidate.baseVersionId) === requestedTargetVersionId &&
+    String(candidate.targetClaimVersionId) === requestedTargetVersionId
+  );
+}
+
 export const OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL = `
   occ.status = 'pending'
   AND occ.base_version_id = ?
@@ -28,4 +42,10 @@ export const OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL = `
   AND c.current_version_id = occ.target_claim_version_id
   AND c.review_status = 'verified'
   AND c.lifecycle_status = 'active'
+`;
+
+export const OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL = `
+  occ.status = 'pending'
+  AND occ.base_version_id = ?
+  AND occ.target_claim_version_id = ?
 `;

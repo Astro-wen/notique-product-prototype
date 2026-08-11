@@ -2,7 +2,9 @@ import { getD1 } from "@/db";
 import { validatePhotoBbox } from "@/lib/domain/evidence";
 import {
   matchesFrozenOccurrenceTarget,
+  matchesRejectableOccurrenceTarget,
   OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL,
+  OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL,
 } from "@/lib/domain/occurrence-conversion";
 import {
   DomainConflictError,
@@ -334,6 +336,42 @@ export async function applyClaimVerdict(
         "A claim needs valid direct or corroborating evidence before confirmation.",
       );
     }
+    if (!Array.isArray(input.retain_relation_ids)) {
+      throw new ApiFault(
+        400,
+        "BAD_REQUEST",
+        "Relationship decisions must be supplied explicitly before confirmation.",
+      );
+    }
+    if (new Set(input.retain_relation_ids).size !== input.retain_relation_ids.length) {
+      throw new ApiFault(400, "BAD_REQUEST", "A relationship can be retained only once.");
+    }
+    const proposedRelations = await all(
+      `SELECT r.id
+         FROM claim_relations r
+        WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
+          AND r.status = 'proposed'
+        ORDER BY r.created_at, r.id`,
+      [scope.workspaceId, input.base_version_id],
+    );
+    const proposedRelationIds = new Set(proposedRelations.map((row) => String(row.id)));
+    const unknownRetainedId = input.retain_relation_ids.find(
+      (relationId) => !proposedRelationIds.has(relationId),
+    );
+    if (unknownRetainedId) {
+      throw new ApiFault(
+        422,
+        "RELATION_REVIEW_INVALID",
+        "A retained relationship is no longer proposed for this Claim version.",
+        { relation_id: unknownRetainedId },
+      );
+    }
+    const retainedRelationIds = new Set(input.retain_relation_ids);
+    const relationDecisions = proposedRelations.map((row) => ({
+      id: String(row.id),
+      verdictId: id("rvdt"),
+      action: retainedRelationIds.has(String(row.id)) ? "confirm" as const : "reject" as const,
+    }));
     const targetConflict = await first(
       `SELECT r.id FROM claim_relations r
         JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
@@ -365,13 +403,21 @@ export async function applyClaimVerdict(
              JOIN claims target_claim ON target_claim.id = target_version.claim_id
               WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
                 AND target_claim.current_version_id <> r.target_claim_version_id
-           )`,
+           ) AND (
+             SELECT COUNT(*) FROM claim_relations r
+              WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
+                AND r.status = 'proposed'
+           ) = ?
+           `,
           [
             claimId,
             scope.workspaceId,
             input.base_version_id,
             input.base_version_id,
             input.base_version_id,
+            scope.workspaceId,
+            input.base_version_id,
+            proposedRelations.length,
           ],
           timestamp,
         ),
@@ -399,12 +445,33 @@ export async function applyClaimVerdict(
             input.explanation ?? null,
             timestamp,
           ),
-        db
-          .prepare(
-            `UPDATE claim_relations SET status = 'active'
-              WHERE source_claim_version_id = ? AND status = 'proposed'`,
-          )
-          .bind(input.base_version_id),
+        ...relationDecisions.flatMap((decision) => [
+          db
+            .prepare(
+              `UPDATE claim_relations SET status = ?
+                WHERE id = ? AND workspace_id = ?
+                  AND source_claim_version_id = ? AND status = 'proposed'`,
+            )
+            .bind(
+              decision.action === "confirm" ? "active" : "rejected",
+              decision.id,
+              scope.workspaceId,
+              input.base_version_id,
+            ),
+          db
+            .prepare(
+              `INSERT INTO relation_verdicts
+               (id, relation_id, action, base_relation_status, user_id, created_at)
+               VALUES (?, ?, ?, 'proposed', ?, ?)`,
+            )
+            .bind(
+              decision.verdictId,
+              decision.id,
+              decision.action,
+              scope.actorId,
+              timestamp,
+            ),
+        ]),
         ...lifecycleRecalculationStatements(String(existing.project_id), timestamp),
         db
           .prepare(
@@ -1092,16 +1159,21 @@ export async function applyBatchVerdicts(
         { claim_id: item.claim_id },
       );
     }
-    const staleTarget = await first(
+    const undecidedRelation = await first(
       `SELECT r.id FROM claim_relations r
-        JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
-        JOIN claims target_claim ON target_claim.id = target_version.claim_id
-       WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-         AND target_claim.current_version_id <> r.target_claim_version_id
-       LIMIT 1`,
-      [item.base_version_id],
+        WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
+          AND r.status = 'proposed'
+        LIMIT 1`,
+      [scope.workspaceId, item.base_version_id],
     );
-    if (staleTarget) throw conflict();
+    if (undecidedRelation) {
+      throw new ApiFault(
+        422,
+        "RELATION_REVIEW_REQUIRED",
+        "Open this Claim and accept or reject every proposed relationship before confirmation.",
+        { claim_id: item.claim_id },
+      );
+    }
   }
   const timestamp = now();
   const db = getD1();
@@ -1124,10 +1196,8 @@ export async function applyBatchVerdicts(
            AND claim_id = ? AND claim_version_id = ?
       ) AND NOT EXISTS (
         SELECT 1 FROM claim_relations r
-        JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
-        JOIN claims target_claim ON target_claim.id = target_version.claim_id
-        WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-          AND target_claim.current_version_id <> r.target_claim_version_id
+        WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
+          AND r.status = 'proposed'
       )`;
       guardBindings.push(
         item.base_version_id,
@@ -1135,6 +1205,7 @@ export async function applyBatchVerdicts(
         scope.actorId,
         item.claim_id,
         item.base_version_id,
+        scope.workspaceId,
         item.base_version_id,
       );
     }
@@ -1153,12 +1224,17 @@ export async function applyBatchVerdicts(
         ...(item.action === "confirm"
           ? [acceptReviewedEvidenceStatement(item.base_version_id)]
           : []),
-        db
-          .prepare(
-            `UPDATE claim_relations SET status = ?
-              WHERE source_claim_version_id = ? AND status = 'proposed'`,
-          )
-          .bind(item.action === "confirm" ? "active" : "rejected", item.base_version_id),
+        ...(item.action === "reject"
+          ? [
+              db
+                .prepare(
+                  `UPDATE claim_relations SET status = 'rejected'
+                    WHERE workspace_id = ? AND source_claim_version_id = ?
+                      AND status = 'proposed'`,
+                )
+                .bind(scope.workspaceId, item.base_version_id),
+            ]
+          : []),
         db
           .prepare(
             `INSERT INTO verdicts
@@ -1303,14 +1379,18 @@ export async function applyOccurrenceVerdict(
   if (!candidate) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Occurrence candidate was not found.");
   }
-  if (!matchesFrozenOccurrenceTarget({
+  const occurrenceTarget = {
     status: candidate.status,
     baseVersionId: candidate.base_version_id,
     targetClaimVersionId: candidate.target_claim_version_id,
     currentVersionId: candidate.current_version_id,
     reviewStatus: candidate.review_status,
     lifecycleStatus: candidate.lifecycle_status,
-  }, input.targetBaseVersionId)) {
+  };
+  const targetMatches = input.action === "reject"
+    ? matchesRejectableOccurrenceTarget(occurrenceTarget, input.targetBaseVersionId)
+    : matchesFrozenOccurrenceTarget(occurrenceTarget, input.targetBaseVersionId);
+  if (!targetMatches) {
     throw conflict();
   }
   const verdictId = id("ovdt");
@@ -1412,11 +1492,14 @@ export async function applyOccurrenceVerdict(
     evidenceIds: candidateEvidence.map(() => id("evr")),
     clientClaimKey: `occurrence-conversion:${candidateId}:${index + 1}`,
   }));
+  const occurrenceTargetPredicate = input.action === "reject"
+    ? OCCURRENCE_REJECTABLE_TARGET_PREDICATE_SQL
+    : OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL;
   let guardPredicate = `EXISTS (
     SELECT 1 FROM claim_occurrence_candidates occ
     JOIN claims c ON c.id = occ.target_claim_id
     WHERE occ.id = ? AND occ.workspace_id = ?
-      AND ${OCCURRENCE_FROZEN_TARGET_PREDICATE_SQL}
+      AND ${occurrenceTargetPredicate}
   )`;
   const guardBindings: unknown[] = [
     candidateId,
