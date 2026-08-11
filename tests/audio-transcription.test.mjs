@@ -77,3 +77,12 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(envExample, /^AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize$/m);
   assert.match(envExample, /^MAX_AUDIO_BYTES=26214400$/m);
 });
+
+test("audio smoke test uses the production Event response envelope and stays on loopback", async () => {
+  const smoke = await readFile(path.join(root, "scripts/run-audio-transcription-smoke.mjs"), "utf8");
+  assert.match(smoke, /Audio smoke test is restricted to localhost/);
+  assert.match(smoke, /const persistedEvent = await request\(baseUrl, "GET", `\/api\/v1\/events\//);
+  assert.match(smoke, /Array\.isArray\(persistedEvent\.assets\)/);
+  assert.match(smoke, /item\.processing_status === "ready"/);
+  assert.doesNotMatch(smoke, /request\([^\n]+events[^\n]+\)\)\.event;/);
+});

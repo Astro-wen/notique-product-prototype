@@ -21,6 +21,7 @@
     "eval:export-run": "node scripts/export-production-run.mjs",
     "eval:merge:synthetic-transcripts": "node scripts/merge-synthetic-transcript-ground-truth.mjs",
     "fixture:import": "node scripts/import-synthetic-fixture.mjs",
+    "audio:smoke": "node scripts/run-audio-transcription-smoke.mjs",
     "smoke:openai-multimodal": "node scripts/smoke-openai-multimodal.mjs"
   },
   "dependencies": {
