@@ -14,14 +14,16 @@ export async function resolveSimpleImportTarget<
 >(input: {
   project: Project | null;
   event: Event | null;
-  createTest: () => Promise<{ project: Project; event: Event } | null>;
+  createTest: () => Promise<{ project: Project; event?: Event | null } | null>;
   createEvent: (project: Project) => Promise<Event>;
 }): Promise<SimpleImportTarget<Project, Event> | null> {
   if (!input.project) {
     const created = await input.createTest();
     if (!created) return null;
+    const createdEvent = created.event ?? await input.createEvent(created.project);
     return {
-      ...created,
+      project: created.project,
+      event: createdEvent,
       createdProject: true,
       createdEvent: true,
     };

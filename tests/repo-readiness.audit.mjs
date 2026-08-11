@@ -1197,6 +1197,8 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   const productionConfig = JSON.parse(await read("wrangler.jsonc"));
   const context = await read("lib/server/http/context.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
+  const worker = await read("worker/index.ts");
+  const client = await read("app/api-client.ts");
 
   assert.ok(
     Array.isArray(productionConfig.triggers?.crons) &&
@@ -1213,6 +1215,13 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
     /if\s*\(getBindings\(\)\.APP_ENV\s*===\s*["']local["']\)\s*return;[\s\S]*?State changes require a same-origin browser request/i,
     "missing or misspelled APP_ENV must retain production write-origin checks",
   );
+  assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
+  assert.match(worker, /oai-authenticated-user-id/);
+  assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
+  assert.match(worker, /await dispatchAllDueOutbox\(\)/);
+  assert.match(client, /async kickDispatcher\(\)/);
+  assert.match(client, /["']\/api\/v1\/jobs\/dispatch["']/);
+  assert.doesNotMatch(client, /kickLocalDispatcher/);
 });
 
 test("image budget defaults stay aligned from admission through processing", async () => {

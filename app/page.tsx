@@ -1119,7 +1119,7 @@ export default function Home() {
     const projectId = project.id;
     const runId = projectWorkflow.currentRunId;
     if (run?.id === runId && runInProgress.has(run.status)) return;
-    void api.kickLocalDispatcher().catch(() => undefined);
+    void api.kickDispatcher().catch(() => undefined);
     let attempts = 0;
     const timer = window.setInterval(async () => {
       if (attempts >= 360) {
@@ -1189,18 +1189,18 @@ export default function Home() {
   useEffect(() => {
     if (!run || run.status !== "queued" || localDispatchRuns.current.has(run.id)) return;
     localDispatchRuns.current.add(run.id);
-    void api.kickLocalDispatcher().catch(() => {
-      // Production relies on its scheduled dispatcher. In local development,
-      // Run polling will surface a real processing failure if dispatch fails.
+    void api.kickDispatcher().catch(() => {
+      // The durable Run remains queued when an explicit dispatch request fails,
+      // so polling and the scheduled sweeper can recover without duplicating it.
     });
   }, [run]);
 
   useEffect(() => {
     if (!transcriptionRun || transcriptionRun.status !== "queued" || localDispatchTranscriptionRuns.current.has(transcriptionRun.id)) return;
     localDispatchTranscriptionRuns.current.add(transcriptionRun.id);
-    void api.kickLocalDispatcher().catch(() => {
-      // Production uses the scheduled dispatcher. Polling below surfaces the
-      // durable server status when local dispatch is unavailable.
+    void api.kickDispatcher().catch(() => {
+      // The durable transcription Run remains recoverable by the same endpoint
+      // or the scheduled sweeper.
     });
   }, [transcriptionRun]);
 
@@ -1830,7 +1830,7 @@ export default function Home() {
         }
       }
       if (current && runInProgress.has(current.status)) {
-        await api.kickLocalDispatcher().catch(() => undefined);
+        await api.kickDispatcher().catch(() => undefined);
         const latest = await api.getTranscriptionRun(current.id);
         if (runInProgress.has(latest.status)) {
           setTranscriptionRun(latest);
@@ -1859,7 +1859,7 @@ export default function Home() {
     setBusyAction("run-status");
     setEventIssue(null);
     try {
-      await api.kickLocalDispatcher().catch(() => undefined);
+      await api.kickDispatcher().catch(() => undefined);
       const latest = await api.getRun(run.id);
       setRun(latest);
       if (runInProgress.has(latest.status)) {
@@ -1982,7 +1982,7 @@ export default function Home() {
       await loadTranscriptionForEvent(current.event);
 
       if (snapshot.plan.phase === "running" && current.run) {
-        await api.kickLocalDispatcher().catch(() => undefined);
+        await api.kickDispatcher().catch(() => undefined);
         setRunPollCycle((value) => value + 1);
         flash(`继续等待第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通的处理结果`);
         return;
@@ -2008,7 +2008,7 @@ export default function Home() {
 
   async function beginSimpleTest(
     openTranscriptAfterCreate = false,
-  ): Promise<{ project: Project; event: Event } | null> {
+  ): Promise<{ project: Project; event: Event | null } | null> {
     setSimpleFlow(true);
     setBusyAction("simple-start");
     setProjectsIssue(null);
@@ -2026,20 +2026,11 @@ export default function Home() {
       setRun(null);
       setClaims([]);
       setProjectState("ready");
-      const eventFingerprint = `simple-event:${created.id}`;
-      const eventKey = mutationKeys.current.get(eventFingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(eventFingerprint, eventKey);
-      const createdEvent = await api.createEvent(
-        created.id,
-        { title: "第一次沟通", event_type: "meeting", occurred_at: now.toISOString() },
-        eventKey,
-      );
-      mutationKeys.current.delete(eventFingerprint);
       await loadProjects();
-      await loadSimpleProject(created.id, createdEvent.id);
+      await loadSimpleProject(created.id);
       if (openTranscriptAfterCreate) setShowImport(true);
-      flash("空白测试已经建立，可以直接上传录音、Transcript 或照片");
-      return { project: created, event: createdEvent };
+      flash("空白测试已经建立。Transcript 会成为第一条沟通，录音或照片会自动建立第一条沟通。");
+      return { project: created, event: null };
     } catch (error) {
       setProjectsIssue(toIssue(error));
       return null;

@@ -65,6 +65,25 @@ test("blank upload intent creates its Project and Event before preserving the se
     createdEvent: true,
   });
 
+  const projectOnlyTarget = await resolveSimpleImportTarget({
+    project: null,
+    event: null,
+    createTest: async () => {
+      calls.push("create-project-only");
+      return { project: { id: "prj_project_only" }, event: null };
+    },
+    createEvent: async (project) => {
+      calls.push(`create-event-for-${project.id}`);
+      return { id: "evt_project_only" };
+    },
+  });
+  assert.deepEqual(calls.slice(-2), [
+    "create-project-only",
+    "create-event-for-prj_project_only",
+  ]);
+  assert.equal(projectOnlyTarget.project.id, "prj_project_only");
+  assert.equal(projectOnlyTarget.event.id, "evt_project_only");
+
   const existingProjectTarget = await resolveSimpleImportTarget({
     project: { id: "prj_existing" },
     event: null,
@@ -332,12 +351,14 @@ test("simple flow supports audio-first setup and preserves a transcription start
     page.indexOf("async function attachSimpleFile"),
   );
   assert.match(beginSimple, /api\.createProject/);
-  assert.match(beginSimple, /api\.createEvent/);
-  assert.match(beginSimple, /await loadSimpleProject\(created\.id, createdEvent\.id\)/);
+  assert.doesNotMatch(beginSimple, /api\.createEvent/);
+  assert.match(beginSimple, /await loadSimpleProject\(created\.id\)/);
+  assert.match(beginSimple, /return \{ project: created, event: null \}/);
   assert.match(beginSimple, /async function beginSimpleTest\(/);
   assert.match(beginSimple, /if \(openTranscriptAfterCreate\) setShowImport\(true\)/);
   assert.match(page, /onStartOwn=\{\(\) => void beginSimpleTest\(\)\}/);
   assert.match(page, /else void beginSimpleTest\(true\)/);
+  assert.match(page, /Transcript 会成为第一条沟通/);
 
   const attachSimple = page.slice(
     page.indexOf("async function attachSimpleFile"),
@@ -360,7 +381,7 @@ test("audio and extraction recovery remain actionable without duplicating an in-
     page.indexOf("async function retryRunStatus"),
   );
   assert.match(retryAudio, /runInProgress\.has\(current\.status\)/);
-  assert.match(retryAudio, /api\.kickLocalDispatcher/);
+  assert.match(retryAudio, /api\.kickDispatcher/);
   assert.match(retryAudio, /api\.getTranscriptionRun\(current\.id\)/);
   assert.match(retryAudio, /launchTranscription\(audioAssetId, event\.id, current\?\.id/);
   assert.match(page, /重新转写/);

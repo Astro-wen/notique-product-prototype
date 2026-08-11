@@ -900,8 +900,8 @@ export const api = {
     return requireId(normalizeRun(body.data.run), "extraction run");
   },
 
-  async kickLocalDispatcher(): Promise<void> {
-    await request<unknown>("/api/v1/local/jobs/dispatch", {
+  async kickDispatcher(): Promise<void> {
+    await request<unknown>("/api/v1/jobs/dispatch", {
       method: "POST",
       body: "{}",
     });
