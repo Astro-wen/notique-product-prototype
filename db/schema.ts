@@ -137,7 +137,9 @@ export const assets = sqliteTable(
     eventId: text("event_id")
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["transcript", "photo", "pdf", "text"] }).notNull(),
+    kind: text("kind", {
+      enum: ["transcript", "photo", "pdf", "text", "audio"],
+    }).notNull(),
     filename: text("filename").notNull(),
     currentVersionId: text("current_version_id"),
     capturedAt: text("captured_at"),
@@ -357,6 +359,100 @@ export const queueOutbox = sqliteTable(
   (table) => [
     uniqueIndex("uq_queue_outbox_run").on(table.runId),
     index("idx_queue_outbox_dispatch").on(
+      table.status,
+      table.nextAttemptAt,
+      table.leaseExpiresAt,
+    ),
+  ],
+);
+
+export const transcriptionRuns = sqliteTable(
+  "transcription_runs",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    audioAssetId: text("audio_asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    audioAssetVersionId: text("audio_asset_version_id")
+      .notNull()
+      .references(() => assetVersions.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["queued", "processing", "succeeded", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("queued"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    inputHash: text("input_hash").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    responseFormat: text("response_format").notNull().default("diarized_json"),
+    requestTimeoutMs: integer("request_timeout_ms").notNull(),
+    stagedResultR2Key: text("staged_result_r2_key"),
+    stagedResultSha256: text("staged_result_sha256"),
+    derivedTranscriptAssetId: text("derived_transcript_asset_id"),
+    derivedTranscriptAssetVersionId: text("derived_transcript_asset_version_id"),
+    segmentCount: integer("segment_count"),
+    durationMs: integer("duration_ms"),
+    providerRequestId: text("provider_request_id"),
+    attemptNo: integer("attempt_no").notNull().default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    errorCode: text("error_code"),
+    errorDetailsJson: text("error_details_json"),
+    queuedAt: text("queued_at"),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_transcription_runs_audio_idempotency").on(
+      table.audioAssetVersionId,
+      table.idempotencyKey,
+    ),
+    index("idx_transcription_runs_workspace_status").on(
+      table.workspaceId,
+      table.status,
+    ),
+    index("idx_transcription_runs_event_created").on(
+      table.eventId,
+      table.createdAt,
+    ),
+    index("idx_transcription_runs_lease").on(table.status, table.leaseExpiresAt),
+  ],
+);
+
+export const transcriptionQueueOutbox = sqliteTable(
+  "transcription_queue_outbox",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => transcriptionRuns.id, { onDelete: "cascade" }),
+    payloadHash: text("payload_hash").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    status: text("status", { enum: ["pending", "sending", "sent", "failed"] })
+      .notNull()
+      .default("pending"),
+    attempt: integer("attempt").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    lastErrorCode: text("last_error_code"),
+    sentAt: text("sent_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_transcription_queue_outbox_run").on(table.runId),
+    index("idx_transcription_queue_outbox_dispatch").on(
       table.status,
       table.nextAttemptAt,
       table.leaseExpiresAt,

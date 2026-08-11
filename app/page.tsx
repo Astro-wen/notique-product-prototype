@@ -10,6 +10,11 @@ import {
   normalizeMimeType,
 } from "@/lib/domain/asset-policy";
 import {
+  AUDIO_FILE_ACCEPT,
+  MAX_AUDIO_BYTES,
+  audioMimeFor,
+} from "@/lib/domain/audio-transcription";
+import {
   ApiIssue,
   Claim,
   ClaimEditSubmission,
@@ -24,6 +29,7 @@ import {
   Project,
   ProjectViewName,
   RunDebug,
+  TranscriptionRun,
   api,
   normalizeClaim,
   toIssue,
@@ -146,6 +152,44 @@ function photoUploadIssue(
   return null;
 }
 
+function audioUploadIssue(filename: string, mimeType: string, sizeBytes: number): ApiIssue | null {
+  const normalizedMime = normalizeMimeType(mimeType);
+  const looksLikeAudio = normalizedMime.startsWith("audio/") || normalizedMime === "video/mp4" ||
+    /\.(?:mp3|mp4|mpeg|mpga|m4a|wav|webm)$/i.test(filename);
+  if (!looksLikeAudio) return null;
+  const acceptedMime = audioMimeFor(filename, normalizedMime);
+  if (!acceptedMime) {
+    return {
+      code: "ASSET_UNSUPPORTED_FORMAT",
+      message: "录音支持 MP3、M4A、WAV、WebM、MP4、MPEG 或 MPGA。",
+      status: 415,
+      details: { kind: "audio", filename, mime_type: normalizedMime },
+    };
+  }
+  if (sizeBytes > MAX_AUDIO_BYTES) {
+    return {
+      code: "ASSET_TOO_LARGE",
+      message: "录音超过 25 MB，尚未上传。",
+      status: 413,
+      details: { kind: "audio", filename, size_bytes: sizeBytes, max_size_bytes: MAX_AUDIO_BYTES },
+    };
+  }
+  return null;
+}
+
+function transcriptionRunIdFromEvent(value: Event): string | undefined {
+  for (const asset of [...value.assets].reverse()) {
+    if (asset.kind !== "audio") continue;
+    const runId = stringValue(asset.metadata.transcription_run_id);
+    if (runId) return runId;
+  }
+  return undefined;
+}
+
+function assetIsAnalyzable(asset: Event["assets"][number]): boolean {
+  return asset.status === "ready" && Boolean(asset.versionId) && asset.kind !== "audio";
+}
+
 function formatTimestamp(value?: string | number): string {
   if (value == null || value === "") return "无法定位具体时间";
   if (typeof value === "string" && value.includes(":")) return value;
@@ -261,6 +305,9 @@ function statusLabel(value?: string): string {
 
 function issueTitle(issue: ApiIssue): string {
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "模型服务尚未配置";
+  if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音转写服务尚未配置";
+  if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音转写超时";
+  if (issue.code === "TRANSCRIPTION_OUTPUT_INVALID") return "转写结果无法使用";
   if (issue.code === "QUEUE_NOT_CONFIGURED") return "处理队列尚未配置";
   if (issue.code === "DATABASE_UNAVAILABLE") return "数据库暂时不可用";
   if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "请先确认使用场景";
@@ -272,6 +319,10 @@ function issueTitle(issue: ApiIssue): string {
 
 function issueMessage(issue: ApiIssue): string {
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "服务端还没有配置模型 Provider 和 API Key。本次没有生成任何候选记录，配置完成后可以安全重试。";
+  if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音已经安全保存，但服务端还没有配置 OpenAI 转写模型。本次没有生成逐字稿，配置完成后可以重新提交。";
+  if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音已经保存，但本次转写在时限内没有完成。可以安全重试，不需要重新上传。";
+  if (issue.code === "TRANSCRIPTION_OUTPUT_INVALID") return "模型返回的逐字稿缺少可核对的说话人或时间点，系统没有把它写进正式材料。";
+  if (issue.code === "AUDIO_TRANSCRIPTION_FAILED") return "录音已经保存，但转写没有完成。请保留 Request ID，稍后重新提交转写。";
   if (issue.code === "QUEUE_NOT_CONFIGURED") return "后台处理队列还没有配置。本次任务没有开始，也没有写入半成品。";
   if (issue.code === "DATABASE_UNAVAILABLE") return "当前无法读取数据库中的真实记录，请稍后重试。";
   if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "第一份材料的使用场景还没有确认。确认后，后续沟通才会开始提取。";
@@ -292,6 +343,9 @@ function issueMessage(issue: ApiIssue): string {
   }
   if (issue.code === "ASSET_UNSUPPORTED_FORMAT") {
     const details = isRecord(issue.details) ? issue.details : {};
+    if (details.kind === "audio") {
+      return "录音支持 MP3、M4A、WAV、WebM、MP4、MPEG 或 MPGA。页面没有上传这份不支持的文件。";
+    }
     if (details.kind === "photo") {
       return "照片只支持 JPG、PNG 或 WebP。当前测试版不会转换 HEIC/HEIF，请先在手机或电脑上转成支持的格式。";
     }
@@ -705,6 +759,7 @@ export default function Home() {
   const [eventState, setEventState] = useState<AsyncState>("idle");
   const [eventIssue, setEventIssue] = useState<ApiIssue | null>(null);
   const [run, setRun] = useState<ExtractionRun | null>(null);
+  const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [occurrenceCandidates, setOccurrenceCandidates] = useState<OccurrenceCandidate[]>([]);
   const [claimsState, setClaimsState] = useState<AsyncState>("idle");
@@ -727,9 +782,12 @@ export default function Home() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedClaimIds, setSelectedClaimIds] = useState<Set<string>>(new Set());
   const pollAttempts = useRef(0);
+  const transcriptionPollAttempts = useRef(0);
   const extractionKeys = useRef(new Map<string, string>());
+  const transcriptionKeys = useRef(new Map<string, string>());
   const mutationKeys = useRef(new Map<string, string>());
   const localDispatchRuns = useRef(new Set<string>());
+  const localDispatchTranscriptionRuns = useRef(new Set<string>());
 
   const flash = useCallback((message: string) => {
     setToast(message);
@@ -784,6 +842,24 @@ export default function Home() {
     }
   }, []);
 
+  const loadTranscriptionForEvent = useCallback(async (nextEvent: Event) => {
+    const transcriptionRunId = transcriptionRunIdFromEvent(nextEvent);
+    if (!transcriptionRunId) {
+      setTranscriptionRun(null);
+      return;
+    }
+    try {
+      setTranscriptionRun(await api.getTranscriptionRun(transcriptionRunId));
+    } catch (error) {
+      const issue = toIssue(error);
+      if (issue.status === 404) {
+        setTranscriptionRun(null);
+        return;
+      }
+      throw error;
+    }
+  }, []);
+
   const loadSimpleProject = useCallback(async (projectId: string, preferredEventId?: string) => {
     setScreen("simple");
     setProjectState("loading");
@@ -792,6 +868,7 @@ export default function Home() {
     setEventState("idle");
     setEventIssue(null);
     setRun(null);
+    setTranscriptionRun(null);
     setClaims([]);
     setClaimsState("idle");
     try {
@@ -811,6 +888,7 @@ export default function Home() {
       const nextEvent = await api.getEvent(target.id);
       setEvent(nextEvent);
       setEventState("ready");
+      await loadTranscriptionForEvent(nextEvent);
       const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
       if (!runId) {
         setRun(null);
@@ -828,7 +906,7 @@ export default function Home() {
       setEventIssue(issue);
       setEventState("error");
     }
-  }, [loadClaimsForRun]);
+  }, [loadClaimsForRun, loadTranscriptionForEvent]);
 
   useEffect(() => {
     if (screen !== "simple" || project || projectsState !== "ready") return;
@@ -846,6 +924,7 @@ export default function Home() {
       const nextEvent = await api.getEvent(eventId);
       setEvent(nextEvent);
       setEventState("ready");
+      await loadTranscriptionForEvent(nextEvent);
       const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
       if (runId) {
         const nextRun = await api.getRun(runId);
@@ -860,7 +939,7 @@ export default function Home() {
       setEventIssue(toIssue(error));
       setEventState("error");
     }
-  }, [loadClaimsForRun]);
+  }, [loadClaimsForRun, loadTranscriptionForEvent]);
 
   useEffect(() => {
     if (!run || run.status !== "queued" || localDispatchRuns.current.has(run.id)) return;
@@ -870,6 +949,45 @@ export default function Home() {
       // Run polling will surface a real processing failure if dispatch fails.
     });
   }, [run]);
+
+  useEffect(() => {
+    if (!transcriptionRun || transcriptionRun.status !== "queued" || localDispatchTranscriptionRuns.current.has(transcriptionRun.id)) return;
+    localDispatchTranscriptionRuns.current.add(transcriptionRun.id);
+    void api.kickLocalDispatcher().catch(() => {
+      // Production uses the scheduled dispatcher. Polling below surfaces the
+      // durable server status when local dispatch is unavailable.
+    });
+  }, [transcriptionRun]);
+
+  useEffect(() => {
+    if (!transcriptionRun || !runInProgress.has(transcriptionRun.status)) return;
+    transcriptionPollAttempts.current = 0;
+    const timer = window.setInterval(async () => {
+      if (transcriptionPollAttempts.current >= 240) {
+        window.clearInterval(timer);
+        return;
+      }
+      transcriptionPollAttempts.current += 1;
+      try {
+        const latest = await api.getTranscriptionRun(transcriptionRun.id);
+        setTranscriptionRun(latest);
+        if (!runInProgress.has(latest.status)) {
+          window.clearInterval(timer);
+          if (latest.status === "succeeded" && event?.id) {
+            const refreshed = await api.getEvent(event.id);
+            setEvent(refreshed);
+            flash(`逐字稿已生成，包含 ${latest.segmentCount ?? latest.segments.length} 个带时间点的片段`);
+          }
+        }
+      } catch (error) {
+        const issue = toIssue(error);
+        if (issue.status >= 500 || issue.status === 0) return;
+        window.clearInterval(timer);
+        setEventIssue(issue);
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [event?.id, flash, transcriptionRun]);
 
   useEffect(() => {
     if (!run || !runInProgress.has(run.status)) return;
@@ -1269,7 +1387,7 @@ export default function Home() {
 
   async function startExtractionForEvent(targetEvent: Event) {
     const ids = targetEvent.assets
-      .filter((asset) => asset.status === "ready")
+      .filter(assetIsAnalyzable)
       .map((asset) => asset.versionId)
       .filter((id): id is string => Boolean(id));
     if (!ids.length) {
@@ -1326,7 +1444,8 @@ export default function Home() {
 
   async function attachSimpleFile(file: File) {
     if (!event) return;
-    const localIssue = photoUploadIssue(file.name, file.type, file.size);
+    const localIssue = photoUploadIssue(file.name, file.type, file.size)
+      ?? audioUploadIssue(file.name, file.type, file.size);
     if (localIssue) {
       setEventIssue(localIssue);
       return;
@@ -1335,8 +1454,9 @@ export default function Home() {
     setEventIssue(null);
     try {
       const imageMime = modelImageMimeFor(file.name, file.type);
-      const kind = imageMime ? "photo" : file.type === "application/pdf" ? "pdf" : "text";
-      const contentType = imageMime || file.type || "text/plain";
+      const audioMime = audioMimeFor(file.name, file.type);
+      const kind = imageMime ? "photo" : audioMime ? "audio" : file.type === "application/pdf" ? "pdf" : "text";
+      const contentType = imageMime || audioMime || file.type || "text/plain";
       const fingerprint = ["asset-init", event.id, kind, file.name, contentType, file.size].join(":");
       const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, idempotencyKey);
@@ -1344,10 +1464,21 @@ export default function Home() {
       await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
-      flash("材料已加入");
+      if (kind === "audio") {
+        const transcriptionFingerprint = ["transcription", init.assetId, file.name, file.size, file.lastModified].join(":");
+        const transcriptionKey = transcriptionKeys.current.get(transcriptionFingerprint) || crypto.randomUUID();
+        transcriptionKeys.current.set(transcriptionFingerprint, transcriptionKey);
+        const nextTranscription = await api.startTranscription(init.assetId, transcriptionKey);
+        transcriptionKeys.current.delete(transcriptionFingerprint);
+        setTranscriptionRun(nextTranscription);
+        flash("录音已保存，正在生成带说话人和时间点的逐字稿");
+      } else {
+        flash("材料已加入");
+      }
       if (project) await loadSimpleProject(project.id, event.id);
     } catch (error) {
       setEventIssue(toIssue(error));
+      if (project) await loadSimpleProject(project.id, event.id).catch(() => undefined);
     } finally {
       setBusyAction(null);
     }
@@ -1429,24 +1560,29 @@ export default function Home() {
           onAddFile={(file) => void attachSimpleFile(file)}
           onAnalyze={() => { if (event) void startExtractionForEvent(event); }}
           onConfirmScenario={confirmCurrentScenario}
+          transcriptionRun={transcriptionRun}
           onReview={() => void loadReviewQueue()}
           onResult={() => void loadView("folder-summary")}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
         {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={goProjects} onRetry={() => project && void loadProject(project.id)} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
-        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={() => project ? void loadProject(project.id) : goProjects()} onRetry={() => event && void loadEvent(event.id)} onDebug={() => run && void openRunDebug(run.id)} onStart={async () => {
+        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={() => project ? void loadProject(project.id) : goProjects()} onRetry={() => event && void loadEvent(event.id)} onDebug={() => run && void openRunDebug(run.id)} onStart={async () => {
           if (event) await startExtractionForEvent(event);
         }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id)} onAttach={async (input) => {
           if (!event) return;
-          const localIssue = photoUploadIssue(input.filename, input.contentType, input.blob.size);
+          const localIssue = photoUploadIssue(input.filename, input.contentType, input.blob.size)
+            ?? audioUploadIssue(input.filename, input.contentType, input.blob.size);
           if (localIssue) {
             setEventIssue(localIssue);
             return;
           }
           const imageMime = modelImageMimeFor(input.filename, input.contentType);
+          const audioMime = audioMimeFor(input.filename, input.contentType);
           const preparedInput = imageMime
             ? { ...input, kind: "photo", contentType: imageMime }
-            : input;
+            : audioMime
+              ? { ...input, kind: "audio", contentType: audioMime }
+              : input;
           setBusyAction("asset");
           setEventIssue(null);
           try {
@@ -1457,9 +1593,22 @@ export default function Home() {
             await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType);
             await api.finalizeAsset(init.assetId);
             mutationKeys.current.delete(fingerprint);
-            flash("材料已加入这次沟通");
+            if (preparedInput.kind === "audio") {
+              const transcriptionFingerprint = ["transcription", init.assetId, preparedInput.filename, preparedInput.blob.size].join(":");
+              const transcriptionKey = transcriptionKeys.current.get(transcriptionFingerprint) || crypto.randomUUID();
+              transcriptionKeys.current.set(transcriptionFingerprint, transcriptionKey);
+              const nextTranscription = await api.startTranscription(init.assetId, transcriptionKey);
+              transcriptionKeys.current.delete(transcriptionFingerprint);
+              setTranscriptionRun(nextTranscription);
+              flash("录音已保存，正在生成逐字稿");
+            } else {
+              flash("材料已加入这次沟通");
+            }
             await loadEvent(event.id);
-          } catch (error) { setEventIssue(toIssue(error)); } finally { setBusyAction(null); }
+          } catch (error) {
+            setEventIssue(toIssue(error));
+            await loadEvent(event.id).catch(() => undefined);
+          } finally { setBusyAction(null); }
         }} busy={busyAction} />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
         {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit) => void runVerdict(action, reason, edit)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} />}
@@ -1519,6 +1668,7 @@ type SimpleTestScreenProps = {
   eventState: AsyncState;
   eventIssue: ApiIssue | null;
   run: ExtractionRun | null;
+  transcriptionRun: TranscriptionRun | null;
   claims: Claim[];
   busy: string | null;
   onUseProject: (id: string) => void;
@@ -1544,6 +1694,7 @@ function SimpleTestScreen({
   eventState,
   eventIssue,
   run,
+  transcriptionRun,
   claims,
   busy,
   onUseProject,
@@ -1564,8 +1715,11 @@ function SimpleTestScreen({
     const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
     return leftSample - rightSample || left.name.localeCompare(right.name, "zh-CN");
   });
-  const readyAssets = event?.assets.filter((asset) => asset.status === "ready") ?? [];
+  const readyAssets = event?.assets.filter(assetIsAnalyzable) ?? [];
   const materialsReady = readyAssets.length > 0;
+  const transcriptionRunning = Boolean(transcriptionRun && runInProgress.has(transcriptionRun.status));
+  const transcriptionDone = transcriptionRun?.status === "succeeded";
+  const transcriptionFailed = transcriptionRun?.status === "failed";
   const analysisRunning = Boolean(run && runInProgress.has(run.status));
   const analysisDone = Boolean(run && runComplete.has(run.status));
   const pendingCount = event
@@ -1590,7 +1744,7 @@ function SimpleTestScreen({
       <header className="simple-header">
         <span className="eyebrow">核心流程测试</span>
         <h1>用真实材料走完一次</h1>
-        <p>选一组现成材料，或者上传自己的 Transcript 和照片。页面只显示服务器中的真实数据，服务没有配置好时会直接说明原因。</p>
+        <p>选一组现成材料，或者上传自己的 Transcript、照片或录音。录音会先生成带说话人和时间点的逐字稿，再进入分析。</p>
       </header>
 
       <section className="simple-session" aria-label="测试材料">
@@ -1627,8 +1781,8 @@ function SimpleTestScreen({
       <section className="simple-steps" aria-label="四步测试流程">
         <button className={`simple-step-button ${materialsReady ? "complete" : ""}`} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>
           <span className="simple-step-number">1</span>
-          <span className="simple-step-copy"><strong>导入材料</strong><small>{materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript 或照片"}</small></span>
-          <span className="simple-step-state">{materialsReady ? "已就绪" : "开始"}</span>
+          <span className="simple-step-copy"><strong>导入材料</strong><small>{transcriptionRunning ? "正在把录音转成逐字稿" : materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript、照片或录音"}</small></span>
+          <span className="simple-step-state">{transcriptionRunning ? "转写中" : materialsReady ? "已就绪" : "开始"}</span>
         </button>
         <button className={`simple-step-button ${analysisDone ? "complete" : ""}`} disabled={!materialsReady || analysisRunning || Boolean(busy)} onClick={onAnalyze}>
           <span className="simple-step-number">2</span>
@@ -1671,18 +1825,23 @@ function SimpleTestScreen({
         <section className="simple-import-panel" aria-label="添加材料">
           <div>
             <h2>添加自己的材料</h2>
-            <p>{project ? "Transcript 会建立一条新的记录。照片会加到当前选中的记录中。" : "新建一次测试后，先上传 Transcript。"}</p>
+            <p>{project ? "Transcript 会建立一条新记录。照片和录音会加到当前记录，录音完成转写后自动成为可分析材料。" : "新建一次测试后，可以上传 Transcript 或录音。"}</p>
           </div>
           <div className="simple-import-actions">
             <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span>TXT</span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></button>
+            <label className={`simple-import-action ${!event || busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : "先选择一条记录"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={!event || Boolean(busy)} onChange={chooseSupportingFile} /></label>
             <label className={`simple-import-action ${!event || busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : "先选择一条记录"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={!event || Boolean(busy)} onChange={chooseSupportingFile} /></label>
             <button className="simple-import-action quiet-choice" disabled={Boolean(busy)} onClick={onStartOwn}><span>NEW</span><strong>新建一次测试</strong><small>使用一组新的材料</small></button>
           </div>
           {event && event.assets.length > 0 && (
             <div className="simple-material-list">
-              {event.assets.map((asset) => <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={asset.status} /></span>)}
+              {event.assets.map((asset) => <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun.status : asset.status} /></span>)}
             </div>
           )}
+          {transcriptionRun && <section className={`transcription-progress ${transcriptionFailed ? "failed" : ""}`}>
+            <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>
+            {transcriptionDone && transcriptionRun.segments.length > 0 && <div className="transcript-preview">{transcriptionRun.segments.slice(0, 5).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div>}
+          </section>}
         </section>
       )}
 
@@ -1925,12 +2084,12 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
   );
 }
 
-function EventScreen({ state, issue, event, run, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; busy: string | null }) {
+function EventScreen({ state, issue, event, run, transcriptionRun, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; transcriptionRun: TranscriptionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; busy: string | null }) {
   const [paste, setPaste] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取这次沟通…" /></div>;
   if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
-  const readyAssets = event.assets.filter((item) => item.status === "ready" && item.versionId);
+  const readyAssets = event.assets.filter(assetIsAnalyzable);
   const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
   return (
     <div className="page">
@@ -1939,20 +2098,22 @@ function EventScreen({ state, issue, event, run, claims, claimsState, claimsIssu
       {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{statusLabel(run.status)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? "你可以离开这个页面，处理会在后台继续。" : run.status === "completed_with_warnings" ? "部分候选没有通过证据校验，合格内容仍可审核。" : "打开审核区查看通过程序校验的候选记录。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
-          <div className="section-heading"><div><h2>本次材料</h2><p>提取只会分析下列已完成版本。</p></div><button className="button secondary small" onClick={() => fileRef.current?.click()}>上传文件</button></div>
-          <input ref={fileRef} className="visually-hidden" type="file" accept={`.txt,.vtt,.srt,.json,${MODEL_IMAGE_FILE_ACCEPT}`} onChange={(change) => {
+          <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" onClick={() => fileRef.current?.click()}>上传材料</button></div>
+          <input ref={fileRef} className="visually-hidden" type="file" accept={`.txt,.vtt,.srt,.json,${MODEL_IMAGE_FILE_ACCEPT},${AUDIO_FILE_ACCEPT}`} onChange={(change) => {
             const file = change.target.files?.[0];
             if (!file) return;
             const imageMime = modelImageMimeFor(file.name, file.type);
-            const kind = imageMime ? "photo" : "transcript";
-            void onAttach({ kind, filename: file.name, contentType: imageMime || file.type || "text/plain", blob: file });
+            const audioMime = audioMimeFor(file.name, file.type);
+            const kind = imageMime ? "photo" : audioMime ? "audio" : "transcript";
+            void onAttach({ kind, filename: file.name, contentType: imageMime || audioMime || file.type || "text/plain", blob: file });
             change.target.value = "";
           }} />
-          {!event.assets.length ? <EmptyState title="还没有材料" body="上传 Transcript 或照片，也可以在下面粘贴一段文字。" /> : <div className="asset-list">{event.assets.map((asset) => <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small></span><StatusBadge value={asset.status} /></article>)}</div>}
+          {!event.assets.length ? <EmptyState title="还没有材料" body="上传 Transcript、录音或照片，也可以在下面粘贴一段文字。" /> : <div className="asset-list">{event.assets.map((asset) => <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}</span><StatusBadge value={asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun.status : asset.status} /></article>)}</div>}
+          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div>}</section>}
           <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={async () => { const blob = new Blob([paste], { type: "text/plain" }); await onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }); setPaste(""); }}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
         </section>
         <aside className="event-rail">
-          <section className="panel extraction-card"><h2>准备提取</h2><p>{readyAssets.length ? `${readyAssets.length} 份材料已就绪。` : "至少需要一份状态为“材料已就绪”的内容。"}</p><button className="button primary full" disabled={!canStart || busy === "extraction"} onClick={onStart}>{run ? "重新提取" : "开始提取"}</button>{!run && <small>系统会提取候选记录，并附上可以核对的原始证据。</small>}</section>
+          <section className="panel extraction-card"><h2>准备提取</h2><p>{readyAssets.length ? `${readyAssets.length} 份可分析材料已就绪。` : transcriptionRun && runInProgress.has(transcriptionRun.status) ? "录音仍在生成逐字稿，完成后才能分析。" : "至少需要一份 Transcript、文字或照片。"}</p><button className="button primary full" disabled={!canStart || busy === "extraction"} onClick={onStart}>{run ? "重新提取" : "开始提取"}</button>{!run && <small>系统会提取候选记录，并附上可以核对的原始证据。</small>}</section>
         </aside>
       </div>
       {claimsIssue && <ErrorNotice issue={claimsIssue} compact />}
@@ -2104,12 +2265,22 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, selected, on
 }
 
 function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
+  const audioStart = typeof evidence.timestampStart === "number"
+    ? evidence.timestampStart
+    : undefined;
+  const audioEnd = typeof evidence.timestampEnd === "number"
+    ? evidence.timestampEnd
+    : undefined;
+  const audioSource = evidence.audioUrl
+    ? `${evidence.audioUrl}${audioStart == null ? "" : `#t=${Math.max(0, audioStart)},${audioEnd == null ? "" : Math.max(audioStart, audioEnd)}`}`
+    : undefined;
   return (
     <article className="evidence-card">
-      <div className="evidence-card-head"><span className="file-kind">{evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${evidence.role} evidence · ` : ""}{formatTimestamp(evidence.timestampStart)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
+      <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${evidence.role} evidence · ` : ""}{formatTimestamp(evidence.timestampStart)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
       {/* Evidence URLs can be short-lived signed URLs and cannot use the build-time image loader. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {evidence.imageUrl && <img src={evidence.imageUrl} alt={evidence.caption || "原始图片证据"} />}
+      {audioSource && <div className="evidence-audio"><audio controls preload="metadata" src={audioSource} /><small>播放会从这句原文附近开始。逐字稿和时间点由服务器保存，可随时回到原录音核对。</small></div>}
       {evidence.viewUrl && !evidence.imageUrl && <a className="evidence-open" href={evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
       {evidence.quote && <blockquote>“{evidence.quote}”</blockquote>}
       {evidence.caption && evidence.caption !== evidence.quote && <p>{evidence.caption}</p>}

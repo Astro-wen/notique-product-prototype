@@ -6,7 +6,7 @@
 
 ## 当前范围
 
-- 内部测试前端：创建 Project 和 Event、上传材料、提交提取、审核 Claim、查看证据和正式结果
+- 内部测试前端：创建 Project 和 Event、上传 Transcript、照片或录音、提交提取、审核 Claim、查看证据和正式结果
 - 服务端 API：统一成功和错误格式、Workspace 隔离、写操作并发保护和幂等控制
 - D1：Project、Event、Asset、Transcript Segment、Run、Claim Ledger、Evidence、Verdict、关系、结果快照和 Outbox
 - R2：原始材料使用不可覆盖的版本化 Key 保存
@@ -46,6 +46,21 @@ OpenAI 的正式提取路径使用 Responses API。`AI_REASONING_EFFORT=max` 表
 Run 的输入指纹和调试参数，改变推理强度后必须创建新的 Run，不能复用旧结果。
 
 `AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
+
+录音转写使用 OpenAI Audio Transcriptions API。默认模型为
+`gpt-4o-transcribe-diarize`，输出逐句说话人和开始、结束时间。原音频保留在私有
+R2，转写结果作为派生 Transcript 保存；之后的 Claim 仍引用逐字原文和时间点，
+证据页可以从对应位置播放原录音。录音支持 MP3、M4A、WAV、WebM、MP4、MPEG
+和 MPGA，单文件上限 25 MiB。相关配置为：
+
+```text
+AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize
+AI_TRANSCRIPTION_TIMEOUT_MS=300000
+MAX_AUDIO_BYTES=26214400
+```
+
+录音上传、转写和业务提取是三段独立的可重试操作。上传成功但转写失败时，原音频
+不会丢失；转写成功前，原音频不会直接进入 Claim 提取。
 
 Run Debug 只保留已经通过服务端 Schema 校验的模型 JSON，大小上限为 1 MiB，并与成功状态在同一个 D1 事务中写入。失败的 Run 保持为空。模型服务的鉴权信息和原始错误正文不会进入这个字段。
 

@@ -18,6 +18,11 @@ import {
   normalizeMimeType,
 } from "@/lib/domain/asset-policy";
 import {
+  audioMimeFor,
+  MAX_AUDIO_BYTES,
+  validAudioMagic,
+} from "@/lib/domain/audio-transcription";
+import {
   assetObjectKey,
   importObjectKey,
   sha256Hex,
@@ -78,6 +83,8 @@ const ASSET_SELECT = `
          av.parser_version,
          av.r2_original_key,
          av.r2_model_key,
+         av.derived_from_asset_version_id,
+         av.transform_json,
          av.finalized_at
     FROM assets a
     LEFT JOIN asset_versions av ON av.id = a.current_version_id`;
@@ -1054,7 +1061,9 @@ export async function initializeAsset(
   },
   idempotencyKey: string,
 ): Promise<AssetRecord> {
-  const mimeType = normalizeMimeType(input.mimeType);
+  const mimeType = input.kind === "audio"
+    ? audioMimeFor(input.filename, input.mimeType) ?? normalizeMimeType(input.mimeType)
+    : normalizeMimeType(input.mimeType);
   if (
     isHeifLike(input.filename, mimeType) ||
     !allowedMime(input.kind, mimeType)
@@ -1135,6 +1144,12 @@ function maxAssetBytes(kind: AssetKind): number {
   if (kind === "photo") return MAX_IMAGE_BYTES;
   if (kind === "pdf") return 10 * 1024 * 1024;
   if (kind === "transcript") return 5 * 1024 * 1024;
+  if (kind === "audio") {
+    return Math.min(
+      configuredPositiveInteger(getBindings().MAX_AUDIO_BYTES, MAX_AUDIO_BYTES),
+      MAX_AUDIO_BYTES,
+    );
+  }
   return 1024 * 1024;
 }
 
@@ -1145,6 +1160,16 @@ function allowedMime(kind: AssetKind, mime: string): boolean {
     photo: [...MODEL_IMAGE_MIME_TYPES],
     pdf: ["application/pdf"],
     text: ["text/plain"],
+    audio: [
+      "audio/mpeg",
+      "audio/mp3",
+      "audio/mp4",
+      "audio/x-m4a",
+      "audio/wav",
+      "audio/x-wav",
+      "audio/webm",
+      "video/mp4",
+    ],
   };
   return kind === "photo"
     ? isSupportedModelImageMime(normalized)
@@ -1158,10 +1183,16 @@ function unsupportedAssetFormat(
 ): ApiFault {
   const photoMessage =
     "Photos must be JPEG, PNG, or WebP. HEIC/HEIF conversion is not available in this POC.";
+  const audioMessage =
+    "Audio must be MP3, MP4, MPEG, MPGA, M4A, WAV, or WebM and no larger than 25 MB.";
   return new ApiFault(
     415,
     "ASSET_UNSUPPORTED_FORMAT",
-    kind === "photo" ? photoMessage : "Asset format is unsupported.",
+    kind === "photo"
+      ? photoMessage
+      : kind === "audio"
+        ? audioMessage
+        : "Asset format is unsupported.",
     {
       kind,
       filename,
@@ -1173,6 +1204,7 @@ function unsupportedAssetFormat(
 
 function validMagic(kind: AssetKind, mime: string, bytes: Uint8Array): boolean {
   if (kind === "transcript" || kind === "text") return true;
+  if (kind === "audio") return validAudioMagic(mime, bytes);
   if (mime === "application/pdf") {
     return String.fromCharCode(...bytes.slice(0, 5)) === "%PDF-";
   }
@@ -1484,6 +1516,15 @@ export async function createExtractionRun(
     throw new ApiFault(400, "BAD_REQUEST", "Every asset_version_id must belong to the event.");
   }
   const photoVersions = versions.filter((row) => String(row.kind) === "photo");
+  const directAudio = versions.find((row) => String(row.kind) === "audio");
+  if (directAudio) {
+    throw new ApiFault(
+      409,
+      "EVENT_NOT_READY",
+      "Audio must finish transcription before analysis. Select the derived Transcript instead.",
+      { audio_asset_version_id: directAudio.id },
+    );
+  }
   const unsupportedPhoto = photoVersions.find((row) =>
     isHeifLike(String(row.filename), String(row.mime_type)) ||
     !isSupportedModelImageMime(String(row.mime_type)),
@@ -2024,10 +2065,13 @@ export async function getClaimHistory(scope: RequestScope, claimId: string) {
 
 export async function getEvidenceRef(scope: RequestScope, evidenceRefId: string) {
   const row = await first(
-    `SELECT er.*, a.id AS asset_id, a.filename, av.mime_type, av.r2_original_key
+    `SELECT er.*, a.id AS asset_id, a.filename, av.mime_type, av.r2_original_key,
+            source_a.id AS audio_asset_id, source_a.filename AS audio_filename
        FROM evidence_refs er
        LEFT JOIN asset_versions av ON av.id = er.asset_version_id
        LEFT JOIN assets a ON a.id = av.asset_id
+       LEFT JOIN asset_versions source_av ON source_av.id = av.derived_from_asset_version_id
+       LEFT JOIN assets source_a ON source_a.id = source_av.asset_id AND source_a.kind = 'audio'
       WHERE er.id = ? AND er.workspace_id = ?`,
     [evidenceRefId, scope.workspaceId],
   );
@@ -2040,6 +2084,9 @@ export async function getEvidenceRef(scope: RequestScope, evidenceRefId: string)
     bbox: parseJson(String(row.bbox_json ?? "null"), null),
     asset_view_url: row.asset_version_id
       ? `/api/v1/assets/${encodeURIComponent(String(row.asset_id ?? ""))}/evidence-view`
+      : null,
+    audio_view_url: row.audio_asset_id
+      ? `/api/v1/assets/${encodeURIComponent(String(row.audio_asset_id))}/evidence-view`
       : null,
   };
 }
