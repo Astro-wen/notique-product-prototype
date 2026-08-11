@@ -1,6 +1,6 @@
 import type { ClaimWithVersion, ProjectLedger, TranscriptSegment } from "./types";
 
-export const CONTEXT_PACK_SCHEMA_VERSION = "context-pack.v1" as const;
+export const CONTEXT_PACK_SCHEMA_VERSION = "context-pack.v2" as const;
 
 export type ContextClaim = {
   claimId: string;
@@ -9,6 +9,11 @@ export type ContextClaim = {
   statement: string;
   normalizedValue: Record<string, unknown> | null;
   materiality: ClaimWithVersion["materiality"];
+  lifecycleStatus: ClaimWithVersion["lifecycleStatus"];
+  uncertainty: ClaimWithVersion["version"]["uncertainty"];
+  openedAt: string | null;
+  lastRepeatedAt: string | null;
+  repeatCount: number;
   eventId: string;
   evidenceRefIds: string[];
 };
@@ -56,6 +61,11 @@ function contextClaim(claim: ClaimWithVersion): ContextClaim {
     statement: claim.version.statement,
     normalizedValue: claim.version.normalizedValue,
     materiality: claim.materiality,
+    lifecycleStatus: claim.lifecycleStatus,
+    uncertainty: claim.version.uncertainty,
+    openedAt: claim.openedAt,
+    lastRepeatedAt: claim.lastRepeatedAt,
+    repeatCount: claim.repeatCount,
     eventId: claim.eventId,
     evidenceRefIds: [...claim.version.evidenceRefIds],
   };

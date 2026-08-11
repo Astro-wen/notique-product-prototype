@@ -2,7 +2,7 @@ import type { ClaimType, EvidenceRole } from "./types";
 import type { ContextPack } from "./context-pack";
 
 export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v1" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v4" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v5" as const;
 
 export const MODEL_CONTRACT_LIMITS = {
   claims: 10,
@@ -327,6 +327,76 @@ function validateReaffirmedClaimsAgainstContext(
   });
 }
 
+function validateRelationsAgainstContext(
+  claims: unknown[],
+  context: ContextPack,
+  issues: ModelContractIssue[],
+) {
+  const activeTargets = [
+    ...context.verified_context.active_claims,
+    ...context.verified_context.open_questions,
+    ...context.verified_context.active_risks,
+  ];
+  const targetByClaimId = new Map(
+    [...activeTargets, ...context.verified_context.recent_history]
+      .map((claim) => [claim.claimId, claim]),
+  );
+  const activeTargetIds = new Set(activeTargets.map((claim) => claim.claimId));
+
+  claims.forEach((claim, claimIndex) => {
+    if (!record(claim) || !Array.isArray(claim.relations)) return;
+    const lifecycleRelationByTarget = new Set<string>();
+    claim.relations.forEach((relation, relationIndex) => {
+      if (!record(relation)) return;
+      const path = `$.claims[${claimIndex}].relations[${relationIndex}]`;
+      const target = typeof relation.target_claim_id === "string"
+        ? targetByClaimId.get(relation.target_claim_id)
+        : undefined;
+      if (!target || target.claimVersionId !== relation.target_claim_version_id) {
+        issues.push({
+          path: `${path}.target_claim_version_id`,
+          message: "Relation target must be an exact Verified Claim version in this Context Pack.",
+        });
+        return;
+      }
+
+      const relationType = relation.type;
+      if (
+        (relationType === "supersedes" || relationType === "contradicts" || relationType === "resolves") &&
+        !activeTargetIds.has(target.claimId)
+      ) {
+        issues.push({
+          path: `${path}.type`,
+          message: "A lifecycle relation may only change a currently active Verified Claim.",
+        });
+      }
+      if (
+        relationType === "resolves" &&
+        target.type !== "open_question" &&
+        target.type !== "risk" &&
+        target.type !== "concern" &&
+        target.uncertainty === null
+      ) {
+        issues.push({
+          path: `${path}.type`,
+          message: "Resolves requires an open question, risk, concern, or explicitly uncertain target.",
+        });
+      }
+
+      if (relationType === "supersedes" || relationType === "contradicts" || relationType === "resolves") {
+        const key = target.claimId;
+        if (lifecycleRelationByTarget.has(key)) {
+          issues.push({
+            path,
+            message: "One source Claim cannot apply more than one lifecycle relation to the same target.",
+          });
+        }
+        lifecycleRelationByTarget.add(key);
+      }
+    });
+  });
+}
+
 function validBbox(value: unknown): value is [number, number, number, number] {
   if (!Array.isArray(value) || value.length !== 4) return false;
   if (!value.every((item) => typeof item === "number" && Number.isFinite(item))) return false;
@@ -507,6 +577,7 @@ export function validateExtractClaimsOutput(value: unknown, context?: ContextPac
   });
   if (context && Array.isArray(value.claims)) {
     validateReaffirmedClaimsAgainstContext(value.claims, context, issues);
+    validateRelationsAgainstContext(value.claims, context, issues);
   }
   return { valid: issues.length === 0, issues, output: issues.length ? null : value as ExtractClaimsOutput };
 }

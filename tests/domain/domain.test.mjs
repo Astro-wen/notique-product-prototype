@@ -137,9 +137,14 @@ function contextPackWithTarget({
   type = "risk",
   statement = "The ceiling stain has an unknown cause and must be investigated before closing the drywall.",
   normalizedValue = { cause_status: "unknown", next_step: "investigate before closing drywall" },
+  uncertainty = {
+    reason: "The source of the moisture has not been identified.",
+    alternatives: ["plumbing", "roof"],
+    question: "What caused the ceiling stain?",
+  },
 } = {}) {
   return {
-    schema_version: "context-pack.v1",
+    schema_version: "context-pack.v2",
     project: { id: "project-1", scenario: "Kitchen renovation", locale: "en-US", context_version: 2 },
     verified_context: {
       glossary: [],
@@ -153,6 +158,11 @@ function contextPackWithTarget({
         statement,
         normalizedValue,
         materiality: "high",
+        lifecycleStatus: "active",
+        uncertainty,
+        openedAt: "2026-08-01T00:00:00.000Z",
+        lastRepeatedAt: null,
+        repeatCount: 0,
         eventId: "event-previous",
         evidenceRefIds: ["evidence-existing"],
       }],
@@ -582,6 +592,10 @@ test("context pack is verified-only and never includes withdrawn claims", () => 
   assert.deepEqual(pack.verified_context.active_claims.map((item) => item.claimId), ["active"]);
   assert.deepEqual(pack.verified_context.recent_history.map((item) => item.claimId), ["resolved"]);
   assert.deepEqual(pack.verified_context.glossary.map((item) => item.term), ["allowed"]);
+  assert.equal(pack.schema_version, "context-pack.v2");
+  assert.deepEqual(pack.verified_context.active_claims[0].uncertainty, active.version.uncertainty);
+  assert.equal(pack.verified_context.active_claims[0].lifecycleStatus, "active");
+  assert.equal(pack.verified_context.active_claims[0].repeatCount, active.repeatCount);
 });
 
 test("model output contract rejects extra fields and invalid targets", () => {
@@ -594,8 +608,8 @@ test("model output contract rejects extra fields and invalid targets", () => {
   }).valid, false);
 });
 
-test("claim extraction prompt contract is v4", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v4");
+test("claim extraction prompt contract is v5", () => {
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v5");
 });
 
 test("reaffirmed occurrences are exact target facts and never carry relations", () => {
@@ -624,6 +638,61 @@ test("reaffirmed occurrences are exact target facts and never carry relations", 
   const wrongVersion = structuredClone(exact);
   wrongVersion.claims[0].reaffirmed_target_version_id = "claim-existing-v0";
   assert.equal(validateExtractClaimsOutput(wrongVersion, context).valid, false);
+});
+
+test("relation validation uses exact current targets and mutually exclusive lifecycle semantics", () => {
+  const context = contextPackWithTarget();
+  const target = context.verified_context.active_risks[0];
+  const relation = (type) => ({
+    type,
+    target_claim_id: target.claimId,
+    target_claim_version_id: target.claimVersionId,
+    reason: "The new event changes or closes the previous item.",
+    confidence: 0.95,
+  });
+
+  const resolves = validModelOutput();
+  resolves.claims[0].relations = [relation("resolves")];
+  assert.equal(validateExtractClaimsOutput(resolves, context).valid, true);
+
+  const missing = structuredClone(resolves);
+  missing.claims[0].relations[0].target_claim_id = "claim-not-in-context";
+  assert.equal(validateExtractClaimsOutput(missing, context).valid, false);
+
+  const doubleLifecycle = structuredClone(resolves);
+  doubleLifecycle.claims[0].relations.push(relation("supersedes"));
+  const doubleResult = validateExtractClaimsOutput(doubleLifecycle, context);
+  assert.equal(doubleResult.valid, false);
+  assert.equal(
+    doubleResult.issues.some((issue) => /more than one lifecycle relation/.test(issue.message)),
+    true,
+  );
+
+  const preferenceContext = contextPackWithTarget({
+    type: "preference",
+    statement: "The client prefers matte white tile.",
+    normalizedValue: { finish: "matte", color: "white" },
+    uncertainty: null,
+  });
+  const invalidResolve = validModelOutput();
+  invalidResolve.claims[0].relations = [{
+    ...relation("resolves"),
+    target_claim_id: preferenceContext.verified_context.active_risks[0].claimId,
+    target_claim_version_id: preferenceContext.verified_context.active_risks[0].claimVersionId,
+  }];
+  const invalidResolveResult = validateExtractClaimsOutput(invalidResolve, preferenceContext);
+  assert.equal(invalidResolveResult.valid, false);
+  assert.equal(
+    invalidResolveResult.issues.some((issue) => /Resolves requires/.test(issue.message)),
+    true,
+  );
+
+  const historicalContext = structuredClone(context);
+  historicalContext.verified_context.recent_history = [{ ...target, lifecycleStatus: "resolved" }];
+  historicalContext.verified_context.active_risks = [];
+  const historicalRelation = validModelOutput();
+  historicalRelation.claims[0].relations = [relation("supersedes")];
+  assert.equal(validateExtractClaimsOutput(historicalRelation, historicalContext).valid, false);
 });
 
 test("Event 3 mixed facts cannot be hidden inside reaffirmed occurrences", () => {

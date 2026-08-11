@@ -683,8 +683,8 @@ test("provider schema and server validator share bounded output limits", async (
   assert.doesNotMatch(provider, /strict:\s*false|\boneOf\s*:|maxProperties\s*:/i);
   assert.match(
     provider,
-    /Return no more than 10 of the most important material atomic claims/i,
-    "the prompt must prioritize at most ten material atomic claims",
+    /return no more than 10[\s\S]{0,260}Never combine propositions merely to fit the limit/i,
+    "the prompt must rank at most ten material propositions without combining them to fit the cap",
   );
   assert.match(
     provider,
@@ -705,6 +705,16 @@ test("provider schema and server validator share bounded output limits", async (
     provider,
     /split every material change[\s\S]{0,300}new atomic claims/i,
     "the prompt must split material changes out of mixed reaffirmed source sentences",
+  );
+  assert.match(
+    provider,
+    /Relation policy:[\s\S]{0,900}Never attach both supersedes and resolves to the same target/i,
+    "the prompt must define mutually exclusive lifecycle relation semantics",
+  );
+  assert.match(
+    provider,
+    /lifecycleStatus, uncertainty, openedAt, lastRepeatedAt, and repeatCount/i,
+    "the model must receive the target lifecycle and uncertainty needed for stable relation decisions",
   );
   assert.match(
     contract,
