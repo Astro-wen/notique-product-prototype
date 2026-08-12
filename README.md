@@ -48,6 +48,7 @@ Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实
 `AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系；确定性检查
 发现关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 时，Agent B 才升级到
 `xhigh` 再复核一次。两个 Agent 共用同一个 `AI_API_KEY`，不需要第二个密钥。
+`max` 不属于当前产品配置；缺失或误填的第一轮强度会回到 `xhigh`，第二轮会回到 `high`。
 
 `AI_TWO_PASS_PIPELINE=1` 开启双阶段；设为 `0` 可回滚到单阶段执行。每个阶段的模型、
 推理强度、输入哈希、Token、耗时、Provider Request ID、通过 Schema 的输出和升级原因

@@ -201,6 +201,10 @@ export async function upsertExtractionModelStage(
          validated_output_json = excluded.validated_output_json,
          error_code = excluded.error_code,
          error_details_json = excluded.error_details_json,
+         started_at = CASE
+           WHEN excluded.status = 'processing' THEN excluded.started_at
+           ELSE extraction_model_stages.started_at
+         END,
          finished_at = excluded.finished_at,
          duration_ms = excluded.duration_ms,
          updated_at = excluded.updated_at

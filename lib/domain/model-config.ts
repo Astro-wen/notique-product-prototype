@@ -3,7 +3,6 @@ export const OPENAI_REASONING_EFFORTS = [
   "medium",
   "high",
   "xhigh",
-  "max",
 ] as const;
 
 export const DEFAULT_AI_TIMEOUT_MS = 90_000;
@@ -52,10 +51,10 @@ export type OpenAiReasoningEffort = typeof OPENAI_REASONING_EFFORTS[number];
 export function normalizeOpenAiReasoningEffort(
   value: string | undefined,
 ): OpenAiReasoningEffort {
-  const normalized = value?.trim().toLowerCase() || "max";
+  const normalized = value?.trim().toLowerCase() || "xhigh";
   return (OPENAI_REASONING_EFFORTS as readonly string[]).includes(normalized)
     ? normalized as OpenAiReasoningEffort
-    : "max";
+    : "xhigh";
 }
 
 export function normalizeVerifierReasoningEffort(

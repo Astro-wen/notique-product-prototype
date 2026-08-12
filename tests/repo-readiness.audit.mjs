@@ -169,10 +169,15 @@ test("Run Debug persists only bounded, schema-validated model output", async () 
 });
 
 test("reasoning effort is frozen per Run and Run Debug exposes execution limits", async () => {
+  const modelConfig = await read("lib/domain/model-config.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const provider = await read("lib/server/ai/model-provider.ts");
   const page = await read("app/page.tsx");
+
+  assert.doesNotMatch(modelConfig, /OPENAI_REASONING_EFFORTS\s*=\s*\[[\s\S]{0,200}["']max["']/);
+  assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']xhigh["']/);
+  assert.match(modelConfig, /normalizeVerifierReasoningEffort[\s\S]{0,220}\|\| ["']high["']/);
 
   assert.match(
     core,
@@ -922,6 +927,7 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const outbox = await read("lib/server/jobs/outbox.ts");
+  const worker = await read("worker/index.ts");
 
   assert.match(
     modelConfig,
@@ -936,7 +942,7 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   assert.match(
     processor,
     /plusMilliseconds\(timestamp,\s*EXTRACTION_RUN_LEASE_MS\)/,
-    "the processor lease must use the shared ten-minute boundary",
+    "the processor lease must use the shared pipeline boundary",
   );
   assert.match(
     outbox,
@@ -962,6 +968,21 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
     outbox,
     /dispatchDueOutbox\(5\)/,
     "the cron path must not process five long model calls serially",
+  );
+  assert.match(
+    processor,
+    /EXTRACTION_STAGE_STALE_AFTER_MS[\s\S]{0,2400}extraction_model_stages[\s\S]{0,900}IN \('xhigh', 'high'\)/i,
+    "a stale xhigh/high model stage must be recoverable without permitting a frozen max Run",
+  );
+  assert.match(
+    processor,
+    /UPDATE queue_outbox[\s\S]{0,700}STALE_MODEL_STAGE[\s\S]{0,700}status = 'queued'/i,
+    "recovering a stale Run must make its durable outbox message dispatchable again",
+  );
+  assert.match(
+    worker,
+    /return dispatchResponse\(await sweepAndDispatch\(\), requestId\)/,
+    "a visible browser recovery must sweep stale leases before dispatching",
   );
 });
 
@@ -1218,7 +1239,7 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /await dispatchAllDueOutbox\(\)/);
+  assert.match(worker, /await sweepAndDispatch\(\)/);
   assert.match(client, /async kickDispatcher\(\)/);
   assert.match(client, /["']\/api\/v1\/jobs\/dispatch["']/);
   assert.doesNotMatch(client, /kickLocalDispatcher/);

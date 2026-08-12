@@ -17,6 +17,21 @@ export type RunTimingInput = {
   stages: RunTimingStage[];
 };
 
+export const EXTRACTION_STAGE_STALE_AFTER_MS = 10 * 60_000;
+
+export function runNeedsRecovery(
+  run: RunTimingInput,
+  clockMs = Date.now(),
+  staleAfterMs = EXTRACTION_STAGE_STALE_AFTER_MS,
+): boolean {
+  if (run.status !== "processing") return false;
+  const currentStage = [...run.stages]
+    .reverse()
+    .find((stage) => stage.status === "processing");
+  const startedAt = timestamp(currentStage?.startedAt ?? run.startedAt);
+  return startedAt !== null && clockMs - startedAt >= staleAfterMs;
+}
+
 export type RunTimingItem = {
   key: "queue" | "prepare" | "inventory" | "verify" | "verify_escalated" | "persist" | "analysis" | "review";
   label: string;

@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { dispatchAllDueOutbox, sweepAndDispatch } from "@/lib/server/jobs/outbox";
+import { sweepAndDispatch } from "@/lib/server/jobs/outbox";
 
 interface Env {
   ASSETS: Fetcher;
@@ -87,7 +87,10 @@ const worker = {
         }
       }
       try {
-        return dispatchResponse({ dispatch: await dispatchAllDueOutbox() }, requestId);
+        // A browser retry must also recover an expired lease. Sites cron is the
+        // normal safety net, but a visible user action should never leave a
+        // stale Run spinning until the next scheduled invocation.
+        return dispatchResponse(await sweepAndDispatch(), requestId);
       } catch (error) {
         console.error("browser_dispatch_failed", {
           request_id: requestId,

@@ -65,3 +65,29 @@ test("legacy single-stage runs retain a useful analysis timer", async () => {
   }, Date.now());
   assert.equal(items.find((item) => item.key === "analysis").durationMs, 10_000);
 });
+
+test("a processing model stage becomes recoverable after the timeout window", async () => {
+  const { EXTRACTION_STAGE_STALE_AFTER_MS, runNeedsRecovery } = await loadTiming();
+  const run = {
+    status: "processing",
+    createdAt: "2026-08-12T08:55:57.000Z",
+    startedAt: "2026-08-12T08:55:58.000Z",
+    stages: [{
+      stage: "inventory",
+      status: "processing",
+      reasoningEffort: "xhigh",
+      startedAt: "2026-08-12T08:56:00.000Z",
+    }],
+  };
+  assert.equal(
+    runNeedsRecovery(run, Date.parse("2026-08-12T09:05:59.999Z")),
+    false,
+  );
+  assert.equal(
+    runNeedsRecovery(
+      run,
+      Date.parse("2026-08-12T08:56:00.000Z") + EXTRACTION_STAGE_STALE_AFTER_MS,
+    ),
+    true,
+  );
+});

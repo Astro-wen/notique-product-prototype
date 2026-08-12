@@ -8,6 +8,7 @@ import {
   EXTRACTION_RUN_LEASE_MS,
   normalizeVerifierReasoningEffort,
 } from "@/lib/domain/model-config";
+import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
 import {
   canonicalizeTranscriptEvidence,
   validateDocumentPage,
@@ -1577,18 +1578,90 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
 }
 
 export async function failExpiredProcessingRuns(timestamp = now()): Promise<number> {
-  const result = await getD1()
-    .prepare(
+  const db = getD1();
+  const staleStageCutoff = new Date(
+    Date.parse(timestamp) - EXTRACTION_STAGE_STALE_AFTER_MS,
+  ).toISOString();
+  const scenarioLeaseExpiresAt = plusMilliseconds(
+    timestamp,
+    EXTRACTION_RUN_LEASE_MS + 5 * 60_000,
+  );
+  const [requeued, , , failed] = await db.batch([
+    db.prepare(
+      `UPDATE extraction_runs
+          SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+              started_at = NULL, finished_at = NULL,
+              error_code = 'MODEL_TIMEOUT',
+              error_details_json = '{"reason":"stale_model_stage","retryable":true}',
+              updated_at = ?
+        WHERE status = 'processing'
+          AND (
+            (lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+            OR EXISTS (
+              SELECT 1 FROM extraction_model_stages s
+               WHERE s.run_id = extraction_runs.id
+                 AND s.status = 'processing' AND s.started_at <= ?
+            )
+          )
+          AND COALESCE(json_extract(model_params_json, '$.two_pass_pipeline'), 0) = 1
+          AND COALESCE(json_extract(model_params_json, '$.reasoning_effort'), '') IN ('xhigh', 'high')
+          AND EXISTS (
+            SELECT 1 FROM queue_outbox o
+             WHERE o.run_id = extraction_runs.id AND o.attempt < 3
+          )`,
+    ).bind(timestamp, timestamp, staleStageCutoff),
+    db.prepare(
+      `UPDATE queue_outbox
+          SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = ?, last_error_code = 'STALE_MODEL_STAGE', updated_at = ?
+        WHERE status = 'sending' AND attempt < 3
+          AND run_id IN (
+            SELECT id FROM extraction_runs
+             WHERE status = 'queued' AND error_code = 'MODEL_TIMEOUT'
+               AND json_extract(error_details_json, '$.reason') = 'stale_model_stage'
+          )`,
+    ).bind(timestamp, timestamp),
+    db.prepare(
+      `UPDATE projects
+          SET scenario_lease_expires_at = ?, updated_at = ?
+        WHERE scenario_status = 'assessing'
+          AND scenario_assessment_run_id IN (
+            SELECT id FROM extraction_runs WHERE status = 'queued'
+          )`,
+    ).bind(scenarioLeaseExpiresAt, timestamp),
+    db.prepare(
       `UPDATE extraction_runs
           SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
               finished_at = ?, error_code = 'MODEL_TIMEOUT',
-              error_details_json = '{"reason":"consumer_lease_expired"}', updated_at = ?
-        WHERE status = 'processing' AND lease_expires_at IS NOT NULL
-          AND lease_expires_at <= ?`,
+              error_details_json = '{"reason":"stale_model_stage","retryable":false}', updated_at = ?
+        WHERE status = 'processing'
+          AND (
+            (lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+            OR (
+              COALESCE(json_extract(model_params_json, '$.two_pass_pipeline'), 0) = 1
+              AND EXISTS (
+                SELECT 1 FROM extraction_model_stages s
+                 WHERE s.run_id = extraction_runs.id
+                   AND s.status = 'processing' AND s.started_at <= ?
+              )
+            )
+          )`,
+    ).bind(timestamp, timestamp, timestamp, staleStageCutoff),
+  ]);
+  await db
+    .prepare(
+      `UPDATE queue_outbox
+          SET status = 'sent', sent_at = ?, lease_owner = NULL, lease_expires_at = NULL,
+              last_error_code = 'STALE_MODEL_STAGE', updated_at = ?
+        WHERE status = 'sending' AND run_id IN (
+          SELECT id FROM extraction_runs
+           WHERE status = 'failed' AND error_code = 'MODEL_TIMEOUT'
+             AND json_extract(error_details_json, '$.reason') = 'stale_model_stage'
+        )`,
     )
-    .bind(timestamp, timestamp, timestamp)
+    .bind(timestamp, timestamp)
     .run();
-  await getD1()
+  await db
     .prepare(
       `UPDATE projects
           SET scenario_status = 'unassessed', scenario_assessment_run_id = NULL,
@@ -1602,5 +1675,5 @@ export async function failExpiredProcessingRuns(timestamp = now()): Promise<numb
     )
     .bind(timestamp, timestamp)
     .run();
-  return Number(result.meta.changes ?? 0);
+  return Number(requeued.meta.changes ?? 0) + Number(failed.meta.changes ?? 0);
 }

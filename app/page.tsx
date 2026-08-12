@@ -20,7 +20,7 @@ import {
   projectNeedsScenarioConfirmation,
   type ProjectWorkflowPlan,
 } from "@/lib/domain/project-workflow";
-import { buildRunTimingItems, runTotalDurationMs } from "@/lib/domain/run-timing";
+import { buildRunTimingItems, runNeedsRecovery, runTotalDurationMs } from "@/lib/domain/run-timing";
 import {
   ApiClientError,
   ApiIssue,
@@ -925,6 +925,7 @@ export default function Home() {
   const transcriptionKeys = useRef(new Map<string, string>());
   const mutationKeys = useRef(new Map<string, string>());
   const localDispatchRuns = useRef(new Set<string>());
+  const staleRecoveryRuns = useRef(new Set<string>());
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
   const projectWorkflowRefreshToken = useRef(0);
@@ -1290,6 +1291,21 @@ export default function Home() {
       try {
         const latest = await api.getRun(runId);
         setRun(latest);
+        if (runNeedsRecovery({
+          status: latest.status,
+          createdAt: latest.createdAt,
+          queuedAt: latest.queuedAt,
+          startedAt: latest.startedAt,
+          finishedAt: latest.finishedAt,
+          stages: latest.stages,
+        }) && !staleRecoveryRuns.current.has(runId)) {
+          staleRecoveryRuns.current.add(runId);
+          flash("检测到模型请求已经失去响应，正在检查并恢复；旧的 max 运行不会继续使用");
+          void api.kickDispatcher().finally(() => {
+            setRunPollCycle((value) => value + 1);
+          });
+          return;
+        }
         if (!runInProgress.has(latest.status)) {
           window.clearInterval(timer);
           if (runComplete.has(latest.status)) {
@@ -1322,7 +1338,7 @@ export default function Home() {
       }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, loadClaimsForRun, project?.id, runPollCycle]);
+  }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, flash, loadClaimsForRun, project?.id, runPollCycle]);
 
   const syncReviewTiming = useCallback(async (latestProject: Project) => {
     const pendingTotal = latestProject.pendingClaimCount + latestProject.pendingOccurrenceCount;

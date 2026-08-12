@@ -16,6 +16,8 @@ import {
   EXTRACTION_RUN_LEASE_MS,
   MAX_AI_TIMEOUT_MS,
   normalizeAiTimeoutMs,
+  normalizeOpenAiReasoningEffort,
+  normalizeVerifierReasoningEffort,
   outboxLeaseDurationMs,
 } from "../lib/domain/model-config.ts";
 import {
@@ -32,6 +34,14 @@ import {
 } from "./fixtures/qa-domain-fixture.mjs";
 
 const NOW = "2026-08-10T12:00:00.000Z";
+
+test("Luna uses xhigh for inventory and high for verification without max", () => {
+  assert.equal(normalizeOpenAiReasoningEffort(undefined), "xhigh");
+  assert.equal(normalizeOpenAiReasoningEffort("xhigh"), "xhigh");
+  assert.equal(normalizeOpenAiReasoningEffort("max"), "xhigh");
+  assert.equal(normalizeVerifierReasoningEffort(undefined), "high");
+  assert.equal(normalizeVerifierReasoningEffort("max"), "high");
+});
 
 function segmentMap(segments = transcriptSegments) {
   return new Map(segments.map((segment) => [segment.id, segment]));
