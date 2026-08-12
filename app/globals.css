@@ -84,6 +84,18 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .project-workflow-progress progress { width: 100%; height: 8px; border: 0; border-radius: 999px; overflow: hidden; accent-color: #2458a6; }
 .project-workflow-progress progress::-webkit-progress-bar { background: #dfe5ee; }
 .project-workflow-progress progress::-webkit-progress-value { border-radius: 999px; background: #2458a6; }
+.workflow-timing { grid-column: 1 / -1; border: 1px solid #d8e2df; border-radius: 10px; background: rgba(255, 255, 255, 0.74); padding: 12px; display: grid; gap: 10px; }
+.workflow-timing > header { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.workflow-timing > header > div { display: grid; gap: 4px; }
+.workflow-timing > header strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.workflow-timing > header > small { color: var(--muted); font-size: 9px; }
+.workflow-timing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 7px; }
+.workflow-timing-grid > div { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 9px; display: grid; gap: 4px; }
+.workflow-timing-grid > div.running { border-color: #a8cbbf; background: #f5fbf8; }
+.workflow-timing-grid > div.failed { border-color: #e1bdc1; background: #fff8f8; }
+.workflow-timing-grid span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-timing-grid strong { font-size: 12px; font-variant-numeric: tabular-nums; }
+.workflow-timing-grid small { color: var(--brand-green); font-size: 8px; }
 .project-workflow-action { grid-column: 1 / -1; min-height: 58px; width: 100%; border: 1px solid #1d2026; border-radius: 9px; background: #1d2026; color: #fff; padding: 0 20px; font-size: 16px; font-weight: 800; }
 .project-workflow-action:hover:not(:disabled) { background: #30343d; }
 .project-workflow-action:disabled { border-color: #cad1dc; background: #e5e9ef; color: #717b89; }
@@ -483,6 +495,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .withdraw-box p { margin: 0 0 5px; color: var(--muted); font-size: 10px; line-height: 1.55; }
 
 .result-layout { margin-top: 18px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 14px; align-items: start; }
+.report-load-timing { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); padding: 7px 10px; font-size: 9px; font-variant-numeric: tabular-nums; }
 .result-nav { position: sticky; top: 14px; display: grid; gap: 4px; }
 .result-nav button { min-height: 43px; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 0 9px; display: grid; grid-template-columns: 27px 1fr 8px; align-items: center; gap: 7px; color: #4d5662; text-align: left; font-size: 10px; }
 .result-nav button span { width: 27px; height: 27px; border-radius: 6px; background: #e9edf2; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }
@@ -676,6 +689,8 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
   .meeting-tab-panel { padding: 11px; }
   .project-workflow-card { padding: 17px; grid-template-columns: 1fr; }
   .project-workflow-copy h2 { font-size: 18px; }
+  .workflow-timing > header { align-items: flex-start; flex-direction: column; }
+  .workflow-timing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .project-workflow-action { min-height: 54px; font-size: 14px; }
   .simple-step-button { min-height: 126px; padding: 16px; grid-template-columns: 38px minmax(0, 1fr); }
   .simple-step-number { width: 38px; height: 38px; }

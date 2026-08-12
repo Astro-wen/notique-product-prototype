@@ -132,7 +132,10 @@ export function transcriptImportRecord(
   };
 }
 
-export function extractionRunRecord(row: Row): ExtractionRunRecord {
+export function extractionRunRecord(
+  row: Row,
+  stages: ExtractionRunRecord["stages"] = [],
+): ExtractionRunRecord {
   return {
     id: text(row, "id"),
     project_id: text(row, "project_id"),
@@ -151,6 +154,8 @@ export function extractionRunRecord(row: Row): ExtractionRunRecord {
     queued_at: nullableText(row, "queued_at"),
     started_at: nullableText(row, "started_at"),
     finished_at: nullableText(row, "finished_at"),
+    updated_at: text(row, "updated_at"),
+    stages,
   };
 }
 

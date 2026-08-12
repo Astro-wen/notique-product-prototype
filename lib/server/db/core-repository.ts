@@ -47,7 +47,10 @@ import {
   findMutationReplay,
   mutationReplayStatement,
 } from "@/lib/server/db/mutation-replay";
-import { listExtractionModelStageDebug } from "@/lib/server/db/extraction-stage-repository";
+import {
+  listExtractionModelStageDebug,
+  listExtractionModelStageTimings,
+} from "@/lib/server/db/extraction-stage-repository";
 import type {
   AssetKind,
   AssetRecord,
@@ -1930,7 +1933,8 @@ export async function getExtractionRun(
   if (!row) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Extraction run was not found.");
   }
-  return extractionRunRecord(row);
+  const stages = await listExtractionModelStageTimings(runId, scope.workspaceId);
+  return extractionRunRecord(row, stages);
 }
 
 async function evidenceIdsForVersions(versionIds: string[]): Promise<Map<string, string[]>> {

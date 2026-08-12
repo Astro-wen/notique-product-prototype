@@ -43,7 +43,7 @@ AI_API_KEY=<服务端 Secret>
 INTERNAL_JOB_TOKEN=<高强度随机 Secret>
 ```
 
-OpenAI 的正式提取路径使用 Responses API。当前双阶段合同是 Prompt v8.1 / Schema v3：
+OpenAI 的正式提取路径使用 Responses API。当前双阶段合同是 Prompt v8.2 / Schema v3：
 Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实，Agent B 默认用
 `AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系；确定性检查
 发现关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 时，Agent B 才升级到
@@ -53,6 +53,10 @@ Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实
 推理强度、输入哈希、Token、耗时、Provider Request ID、通过 Schema 的输出和升级原因
 都会单独保存，成功的 Agent A 阶段可在同一 Run 重试时复用。全部执行参数都会写入 Run
 输入指纹，参数改变后必须创建新 Run，不能混用旧结果。
+
+Prompt v8.2 保持 Agent A `xhigh` 和 Agent B `high` 不变，把两阶段共用的证据上下文放到
+稳定前缀并使用同一缓存标识，减少第二阶段重复读取长材料。核心测试页会显示排队、材料准备、
+事实盘点、查漏纠错、加强复核和结果保存的服务器真实耗时，报告页也会显示读取耗时。
 
 `AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
 

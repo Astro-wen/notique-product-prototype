@@ -145,6 +145,10 @@ export type TranscriptionRun = {
   derivedTranscriptAssetId?: Id;
   segmentCount?: number;
   durationMs?: number;
+  createdAt?: string;
+  queuedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
   errorCode?: string;
   errorMessage?: string;
   segments: Array<{
@@ -167,7 +171,23 @@ export type ExtractionRun = {
   errorMessage?: string;
   pipelineStage?: "inventory" | "verify" | "verify_escalated";
   createdAt?: string;
+  queuedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt?: string;
   completedAt?: string;
+  stages: Array<{
+    stage: "inventory" | "verify" | "verify_escalated";
+    status: "processing" | "succeeded" | "failed";
+    attempt: number;
+    reasoningEffort: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    startedAt: string;
+    finishedAt?: string;
+    durationMs?: number;
+  }>;
 };
 
 export type Event = {
@@ -439,6 +459,10 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
     ) || undefined,
     segmentCount: asNumber(pick(source, ["segment_count"])),
     durationMs: asNumber(pick(source, ["duration_ms"])),
+    createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
+    queuedAt: asString(pick(source, ["queued_at", "queuedAt"]), undefined as unknown as string) || undefined,
+    startedAt: asString(pick(source, ["started_at", "startedAt"]), undefined as unknown as string) || undefined,
+    finishedAt: asString(pick(source, ["finished_at", "finishedAt"]), undefined as unknown as string) || undefined,
     errorCode: asString(pick(source, ["error_code"]), undefined as unknown as string) || undefined,
     errorMessage: asString(
       pick(errorDetails, ["message"]),
@@ -462,6 +486,28 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
 
 export function normalizeRun(value: unknown): ExtractionRun {
   const source = isRecord(unwrap(value)) ? (unwrap(value) as JsonRecord) : {};
+  const stages = (pick<unknown[]>(source, ["stages", "stage_timings", "stageTimings"], []) ?? [])
+    .flatMap((item): ExtractionRun["stages"] => {
+      if (!isRecord(item)) return [];
+      const stage = asString(pick(item, ["stage"]));
+      if (stage !== "inventory" && stage !== "verify" && stage !== "verify_escalated") return [];
+      const status = asString(pick(item, ["status"]));
+      if (status !== "processing" && status !== "succeeded" && status !== "failed") return [];
+      const startedAt = asString(pick(item, ["started_at", "startedAt"]));
+      if (!startedAt) return [];
+      return [{
+        stage,
+        status,
+        attempt: asNumber(pick(item, ["attempt"])) ?? 1,
+        reasoningEffort: asString(pick(item, ["reasoning_effort", "reasoningEffort"]), "unknown"),
+        inputTokens: asNumber(pick(item, ["input_tokens", "inputTokens"])),
+        outputTokens: asNumber(pick(item, ["output_tokens", "outputTokens"])),
+        cachedTokens: asNumber(pick(item, ["cached_tokens", "cachedTokens"])),
+        startedAt,
+        finishedAt: asString(pick(item, ["finished_at", "finishedAt"]), undefined as unknown as string) || undefined,
+        durationMs: asNumber(pick(item, ["duration_ms", "durationMs"])),
+      }];
+    });
   return {
     id: asString(pick(source, ["id", "run_id", "runId"])),
     eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
@@ -475,7 +521,15 @@ export function normalizeRun(value: unknown): ExtractionRun {
       undefined as unknown as string,
     ) as ExtractionRun["pipelineStage"],
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
-    completedAt: asString(pick(source, ["completed_at", "completedAt"]), undefined as unknown as string) || undefined,
+    queuedAt: asString(pick(source, ["queued_at", "queuedAt"]), undefined as unknown as string) || undefined,
+    startedAt: asString(pick(source, ["started_at", "startedAt"]), undefined as unknown as string) || undefined,
+    finishedAt: asString(pick(source, ["finished_at", "finishedAt"]), undefined as unknown as string) || undefined,
+    updatedAt: asString(pick(source, ["updated_at", "updatedAt"]), undefined as unknown as string) || undefined,
+    completedAt: asString(
+      pick(source, ["finished_at", "finishedAt", "completed_at", "completedAt"]),
+      undefined as unknown as string,
+    ) || undefined,
+    stages,
   };
 }
 

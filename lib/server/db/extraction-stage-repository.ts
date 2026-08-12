@@ -5,6 +5,7 @@ import type {
   ExtractionModelStageName,
   ExtractionModelStageRecord,
   ExtractionModelStageStatus,
+  ExtractionModelStageTimingRecord,
 } from "@/lib/shared/api-types";
 
 type Row = Record<string, unknown>;
@@ -283,4 +284,36 @@ export async function listExtractionModelStageDebug(
           : "[OMITTED_OVERSIZE]",
     } as ExtractionModelStageDebugRecord;
   });
+}
+
+export async function listExtractionModelStageTimings(
+  runId: string,
+  workspaceId: string,
+): Promise<ExtractionModelStageTimingRecord[]> {
+  const result = await getD1()
+    .prepare(
+      `SELECT s.stage, s.status, s.attempt, s.reasoning_effort,
+              s.input_tokens, s.output_tokens, s.cached_tokens,
+              s.started_at, s.finished_at, s.duration_ms
+         FROM extraction_model_stages s
+         JOIN extraction_runs r ON r.id = s.run_id
+        WHERE s.run_id = ? AND r.workspace_id = ?
+        ORDER BY CASE s.stage
+          WHEN 'inventory' THEN 1 WHEN 'verify' THEN 2 ELSE 3 END,
+          s.attempt ASC`,
+    )
+    .bind(runId, workspaceId)
+    .all<Row>();
+  return (result.results ?? []).map((row) => ({
+    stage: String(row.stage) as ExtractionModelStageTimingRecord["stage"],
+    status: String(row.status) as ExtractionModelStageTimingRecord["status"],
+    attempt: Number(row.attempt),
+    reasoning_effort: String(row.reasoning_effort),
+    input_tokens: row.input_tokens == null ? null : Number(row.input_tokens),
+    output_tokens: row.output_tokens == null ? null : Number(row.output_tokens),
+    cached_tokens: row.cached_tokens == null ? null : Number(row.cached_tokens),
+    started_at: String(row.started_at),
+    finished_at: row.finished_at == null ? null : String(row.finished_at),
+    duration_ms: row.duration_ms == null ? null : Number(row.duration_ms),
+  }));
 }

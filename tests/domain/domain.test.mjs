@@ -802,7 +802,7 @@ test("model output contract rejects extra fields and invalid targets", () => {
 });
 
 test("claim extraction prompt contract is v8", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v8.1");
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v8.2");
 });
 
 test("model uncertainty and additional-evidence flags have one unambiguous contract", () => {

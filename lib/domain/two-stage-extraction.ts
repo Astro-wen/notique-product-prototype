@@ -11,7 +11,7 @@ import type {
 import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 
-export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.1" as const;
+export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.2" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
 export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v3" as const;
 
@@ -86,6 +86,7 @@ export interface TwoStageModelProvider extends ModelProvider {
 export type ModelStageRequestOptions = {
   signal?: AbortSignal;
   idempotencyKey?: string;
+  promptCacheKey?: string;
   qualityFeedback?: string[];
 };
 

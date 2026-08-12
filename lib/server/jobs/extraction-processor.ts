@@ -451,9 +451,13 @@ async function loadContextInput(run: Row): Promise<{
       "PDF extraction requires a provider-specific canonical page adapter.",
     );
   }
-  const photos: ContextPackAsset[] = [];
   const bucket = getEvidenceBucket();
-  for (const row of photoRows) {
+  const scope = { workspaceId: String(run.workspace_id), actorId: "system:notique-extraction" };
+  // These inputs are independent. Loading photos serially made the visible
+  // "preparing facts" phase grow with every image even before the model ran.
+  // Fetch R2 objects, verified context, and glossary in parallel while
+  // preserving the manifest order in Promise.all's result.
+  const photosPromise = Promise.all(photoRows.map(async (row): Promise<ContextPackAsset> => {
     const mimeType = String(row.mime_type);
     if (!isSupportedModelImageMime(mimeType)) {
       throw new ProcessingFault(
@@ -469,16 +473,14 @@ async function loadContextInput(run: Row): Promise<{
         asset_version_id: row.id,
       });
     }
-    photos.push({
+    return {
       assetVersionId: String(row.id),
       mimeType,
       modelUrl: `data:${mimeType};base64,${arrayBufferToBase64(await object.arrayBuffer())}`,
-    });
-  }
-
-  const scope = { workspaceId: String(run.workspace_id), actorId: "system:notique-extraction" };
-  const ledger = await loadProjectLedger(scope, String(run.project_id));
-  const glossaryRows = await all(
+    };
+  }));
+  const ledgerPromise = loadProjectLedger(scope, String(run.project_id));
+  const glossaryRowsPromise = all(
     `SELECT ge.canonical_value, ge.aliases_json, ge.category, ge.source_type,
             ge.source_claim_version_id
        FROM glossary_entries ge
@@ -499,6 +501,11 @@ async function loadContextInput(run: Row): Promise<{
         )`,
     [run.project_id, run.workspace_id],
   );
+  const [photos, ledger, glossaryRows] = await Promise.all([
+    photosPromise,
+    ledgerPromise,
+    glossaryRowsPromise,
+  ]);
   const glossary = glossaryRows.flatMap((row) => {
     const canonical = String(row.canonical_value).trim();
     if (!canonical) return [];
@@ -1357,7 +1364,7 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (idempotencyKey) => inventoryProvider.inventoryClaims(
           input.contextPack,
-          { idempotencyKey },
+          { idempotencyKey, promptCacheKey: `notique:${leased.id}:two-stage` },
         ),
       });
       completedUsage = inventoryStage.usage;
@@ -1397,7 +1404,7 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
           invoke: (idempotencyKey) => verifierProvider.verifyClaims(
             input.contextPack,
             inventoryStage.output,
-            { idempotencyKey },
+            { idempotencyKey, promptCacheKey: `notique:${leased.id}:two-stage` },
           ),
         });
       } catch (error) {
@@ -1454,6 +1461,7 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
               inventoryStage.output,
               {
                 idempotencyKey,
+                promptCacheKey: `notique:${leased.id}:two-stage`,
                 qualityFeedback: [
                   ...assessment.reasons,
                   ...(assessment.droppedCriticalInventoryKeys.length

@@ -20,6 +20,7 @@ import {
   projectNeedsScenarioConfirmation,
   type ProjectWorkflowPlan,
 } from "@/lib/domain/project-workflow";
+import { buildRunTimingItems, runTotalDurationMs } from "@/lib/domain/run-timing";
 import {
   ApiClientError,
   ApiIssue,
@@ -135,6 +136,7 @@ function formatDate(value?: string, includeTime = false): string {
 }
 
 function formatReviewDuration(value: number): string {
+  if (value > 0 && value < 1000) return `${Math.max(1, Math.round(value))} 毫秒`;
   const totalSeconds = Math.max(0, Math.floor(value / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -901,6 +903,7 @@ export default function Home() {
   const [viewData, setViewData] = useState<unknown>(null);
   const [viewState, setViewState] = useState<AsyncState>("idle");
   const [viewIssue, setViewIssue] = useState<ApiIssue | null>(null);
+  const [viewLoadDurationMs, setViewLoadDurationMs] = useState<number | null>(null);
   const [runDebug, setRunDebug] = useState<RunDebug | null>(null);
   const [runDebugState, setRunDebugState] = useState<AsyncState>("idle");
   const [runDebugIssue, setRunDebugIssue] = useState<ApiIssue | null>(null);
@@ -1405,10 +1408,12 @@ export default function Home() {
 
   const loadView = useCallback(async (tab: ResultTab) => {
     if (!project) return;
+    const loadStartedAt = performance.now();
     setViewTab(tab);
     setScreen("results");
     setViewState("loading");
     setViewIssue(null);
+    setViewLoadDurationMs(null);
     try {
       const [result, nextProject, nextEvents] = await Promise.all([
         tab === "brief-card"
@@ -1438,6 +1443,8 @@ export default function Home() {
       setViewIssue(issue);
       setViewState(issue.status === 404 ? "empty" : "error");
       setViewData(null);
+    } finally {
+      setViewLoadDurationMs(Math.max(0, Math.round(performance.now() - loadStartedAt)));
     }
   }, [project]);
 
@@ -2233,7 +2240,7 @@ export default function Home() {
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
         {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
-        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
       </main>
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
@@ -2338,6 +2345,7 @@ function SimpleTestScreen({
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
+  const [timingNow, setTimingNow] = useState(() => Date.now());
   const sortedProjects = [...projects].sort((left, right) => {
     const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
     const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
@@ -2439,6 +2447,57 @@ function SimpleTestScreen({
   const workflowSelectedCurrent = Boolean(
     event?.id && event.id === projectWorkflow.currentEventId,
   );
+  const showLiveTiming = transcriptionRunning || Boolean(
+    run && workflowSelectedCurrent && (
+      runInProgress.has(run.status)
+      || projectWorkflow.phase === "waiting_scenario"
+      || projectWorkflow.phase === "waiting_review"
+    ),
+  );
+  useEffect(() => {
+    if (!showLiveTiming) return;
+    const timer = window.setInterval(() => setTimingNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [run?.id, showLiveTiming]);
+  const runTimingItems = run && workflowSelectedCurrent
+    ? buildRunTimingItems(
+        {
+          status: run.status,
+          createdAt: run.createdAt,
+          queuedAt: run.queuedAt,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          stages: run.stages,
+        },
+        timingNow,
+        {
+          awaitingReview: projectWorkflow.phase === "waiting_scenario"
+            || projectWorkflow.phase === "waiting_review",
+        },
+      )
+    : [];
+  const totalRunDurationMs = run && workflowSelectedCurrent
+    ? runTotalDurationMs({
+        status: run.status,
+        createdAt: run.createdAt,
+        queuedAt: run.queuedAt,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        stages: run.stages,
+      }, timingNow)
+    : null;
+  const transcriptionTimingStart = transcriptionRun
+    ? Date.parse(transcriptionRun.startedAt || transcriptionRun.queuedAt || transcriptionRun.createdAt || "")
+    : Number.NaN;
+  const transcriptionTimingEnd = transcriptionRun?.finishedAt
+    ? Date.parse(transcriptionRun.finishedAt)
+    : transcriptionRunning
+      ? timingNow
+      : Number.NaN;
+  const transcriptionProcessingDurationMs = Number.isFinite(transcriptionTimingStart)
+    && Number.isFinite(transcriptionTimingEnd)
+    ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
+    : null;
   const workflowStepActionable = workflowActionable && workflowSelectedCurrent;
   const workflowStepStateLabels: Record<ProjectWorkflowState["phase"], string> = {
     idle: "准备中",
@@ -2573,6 +2632,10 @@ function SimpleTestScreen({
             {project && <section className={`project-workflow-card ${projectWorkflow.phase}`} aria-label="整组沟通处理" aria-live="polite">
               <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
               <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>
+              {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
+                <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
+                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
+              </div>}
               <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>
             </section>}
 
@@ -2601,7 +2664,7 @@ function SimpleTestScreen({
 
           {activeTab === "transcript" && <div className="meeting-tab-panel">
             {transcriptionRun ? <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
-              <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>
+              <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · 音频 ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}${transcriptionProcessingDurationMs != null ? ` · 转写用时 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}` : `${transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
               {transcriptionDone && transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 8).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="button secondary transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}
               {transcriptionFailed && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}
             </section> : <div className="tab-empty"><span>T</span><h3>当前没有自动逐字稿</h3><p>上传 Transcript 可以直接分析；录音保存后会在这里显示带说话人和时间点的全文。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
@@ -3264,13 +3327,13 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
   );
 }
 
-function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack, onSelect, onRetry, onOpenClaim, onResolveContradiction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void }) {
+function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDurationMs, onBack, onSelect, onRetry, onOpenClaim, onResolveContradiction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; loadDurationMs: number | null; onBack: () => void; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void }) {
   const current = resultTabs.find((item) => item.key === tab)!;
   const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
   const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="已确认结果" body="这些页面只读取已确认且仍有效的记录。撤回内容只保留在历史时间线。" back={onBack} />
+      <PageHeader eyebrow={project?.name} title="已确认结果" body="这些页面只读取已确认且仍有效的记录。撤回内容只保留在历史时间线。" back={onBack} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav">{resultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</aside><section className="result-content"><div className="section-heading"><div><span className="section-kicker">Verified only</span><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}{state === "ready" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}</section></div>
     </div>

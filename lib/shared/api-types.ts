@@ -271,6 +271,24 @@ export type ExtractionRunRecord = {
   queued_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+  updated_at: string;
+  stages: ExtractionModelStageTimingRecord[];
+};
+
+// Safe, compact stage telemetry for the normal Run endpoint. The full debug
+// record remains restricted to the debug endpoint because it can contain
+// validated model output and provider correlation details.
+export type ExtractionModelStageTimingRecord = {
+  stage: ExtractionModelStageName;
+  status: ExtractionModelStageStatus;
+  attempt: number;
+  reasoning_effort: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
 };
 
 export type ExtractionModelStageRecord = {
