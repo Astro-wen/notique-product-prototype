@@ -20,6 +20,11 @@ import {
   projectNeedsScenarioConfirmation,
   type ProjectWorkflowPlan,
 } from "@/lib/domain/project-workflow";
+import {
+  chooseRememberedSelection,
+  deriveGuidedDisplayStatus,
+  nextPendingClaimId,
+} from "@/lib/domain/guided-workflow";
 import { buildRunTimingItems, runNeedsRecovery, runTotalDurationMs } from "@/lib/domain/run-timing";
 import {
   ApiClientError,
@@ -92,6 +97,12 @@ type ProjectWorkflowSnapshot = {
   plan: ProjectWorkflowPlan;
 };
 
+type ReviewQueueSnapshot = {
+  project: Project;
+  claims: Claim[];
+  occurrenceCandidates: OccurrenceCandidate[];
+};
+
 const resultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
   { key: "folder-summary", label: "事项概况", short: "概况" },
   { key: "timeline", label: "时间线", short: "时间线" },
@@ -107,6 +118,31 @@ const resultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
 const runInProgress = new Set(["queued", "processing", "extracting"]);
 const runComplete = new Set(["succeeded", "completed", "completed_with_warnings"]);
 const acceptedTranscriptTypes = [".txt", ".vtt", ".srt", ".json"];
+const recentProjectStorageKey = "notique.ui.recent-project-id";
+const workflowIntentStorageKey = "notique.ui.workflow-intent-project-id";
+
+function recentEventStorageKey(projectId: string): string {
+  return `notique.ui.recent-event-id:${projectId}`;
+}
+
+function readStoredId(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storeId(key: string, value: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value) window.localStorage.setItem(key, value);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Navigation preferences are optional. Server data remains authoritative.
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -411,6 +447,7 @@ function extractionProgressBody(run?: ExtractionRun | null): string {
 }
 
 function issueTitle(issue: ApiIssue): string {
+  if (issue.code === "EXTRACTION_POLL_TIMEOUT" || issue.code === "TRANSCRIPTION_POLL_TIMEOUT") return "仍在后台运行";
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "模型服务尚未配置";
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音转写服务尚未配置";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音转写超时";
@@ -425,6 +462,8 @@ function issueTitle(issue: ApiIssue): string {
 }
 
 function issueMessage(issue: ApiIssue): string {
+  if (issue.code === "EXTRACTION_POLL_TIMEOUT") return "页面暂时停止等待，但原来的事实识别任务仍由服务器保存。重新检查只会读取同一个任务，不会重复付费。";
+  if (issue.code === "TRANSCRIPTION_POLL_TIMEOUT") return "页面暂时停止等待，但录音和原来的转写任务仍然保留。重新检查不会重复上传录音。";
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "服务端还没有配置模型 Provider 和 API Key。本次没有生成任何候选记录，配置完成后可以安全重试。";
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音已经安全保存，但服务端还没有配置 OpenAI 转写模型。本次没有生成逐字稿，配置完成后可以重新提交。";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音已经保存，但本次转写在时限内没有完成。可以安全重试，不需要重新上传。";
@@ -467,6 +506,11 @@ function issueMessage(issue: ApiIssue): string {
 }
 
 function ErrorNotice({ issue, onRetry, compact = false }: { issue: ApiIssue; onRetry?: () => void; compact?: boolean }) {
+  const retryLabel = issue.code === "EXTRACTION_POLL_TIMEOUT" || issue.code === "TRANSCRIPTION_POLL_TIMEOUT"
+    ? "检查状态"
+    : issue.code.includes("EMPTY_OUTPUT")
+      ? "检查材料"
+      : "重试";
   return (
     <section className={`notice notice-error ${compact ? "notice-compact" : ""}`} role="alert">
       <span className="notice-mark">!</span>
@@ -475,7 +519,7 @@ function ErrorNotice({ issue, onRetry, compact = false }: { issue: ApiIssue; onR
         <p>{issueMessage(issue)}</p>
         {issue.requestId && <small>Request ID: {issue.requestId}</small>}
       </div>
-      {onRetry && <button className="button secondary" onClick={onRetry}>重试</button>}
+      {onRetry && <button className="button secondary" onClick={onRetry}>{retryLabel}</button>}
     </section>
   );
 }
@@ -783,7 +827,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const agendaItems = recordArray(data.agendaItems);
     const missing = Number(data.missingSlotCount ?? data.missing_slot_count ?? 0);
     if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="会前速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
-    return <div className="brief-grid">
+    return <div className="brief-grid"><div className="brief-overview-action"><div><span className="section-kicker">下一步</span><strong>需要更多细节？</strong><p>完整报告会展开事项概况、时间线、决定、偏好、问题、风险和下次沟通清单。</p></div><button className="button secondary" onClick={() => onSelect("folder-summary")}>查看完整报告</button></div>
       <BriefGroup title="当前最重要的情况" items={stateItem ? [stateItem] : []} kind="state" empty="还没有可用记录" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="最近变化" items={deltaItems} kind="delta" empty="还没有变化" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="下次要问" items={agendaItems} kind="agenda" empty="还没有待确认事项" onOpenClaim={onOpenClaim} onSelect={onSelect} />
@@ -914,6 +958,9 @@ export default function Home() {
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [projectWorkflow, setProjectWorkflow] = useState<ProjectWorkflowState>(idleProjectWorkflow);
+  const [workflowIntentProjectId, setWorkflowIntentProjectId] = useState<string | null>(() =>
+    readStoredId(workflowIntentStorageKey),
+  );
   const [selectedClaimIds, setSelectedClaimIds] = useState<Set<string>>(new Set());
   const [runPollCycle, setRunPollCycle] = useState(0);
   const [transcriptionPollCycle, setTranscriptionPollCycle] = useState(0);
@@ -929,6 +976,8 @@ export default function Home() {
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
   const projectWorkflowRefreshToken = useRef(0);
+  const guidedTransitionKey = useRef("");
+  const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "complete") => void>(() => undefined);
 
   const flash = useCallback((message: string) => {
     setToast(message);
@@ -958,6 +1007,13 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
   }, [loadProjects]);
+
+  useEffect(() => {
+    const rememberedIntent = readStoredId(workflowIntentStorageKey);
+    if (!rememberedIntent) return;
+    const timer = window.setTimeout(() => setWorkflowIntentProjectId(rememberedIntent), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const loadProject = useCallback(async (projectId: string, nextScreen: Screen = "project") => {
     setProjectState("loading");
@@ -1048,7 +1104,12 @@ export default function Home() {
       setProject(nextProject);
       setEvents(nextEvents);
       setProjectState("ready");
-      const target = nextEvents.find((item) => item.id === preferredEventId) ?? nextEvents[0] ?? null;
+      storeId(recentProjectStorageKey, nextProject.id);
+      const rememberedEventId = preferredEventId ?? readStoredId(recentEventStorageKey(projectId));
+      const target = chooseRememberedSelection(nextEvents, rememberedEventId);
+      if (rememberedEventId && !nextEvents.some((item) => item.id === rememberedEventId)) {
+        storeId(recentEventStorageKey(projectId), null);
+      }
       if (!target) {
         setEvent(null);
         setRun(null);
@@ -1059,6 +1120,7 @@ export default function Home() {
       setEventState("loading");
       const nextEvent = await api.getEvent(target.id);
       setEvent(nextEvent);
+      storeId(recentEventStorageKey(projectId), nextEvent.id);
       setEventState("ready");
       await loadTranscriptionForEvent(nextEvent);
       const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
@@ -1073,6 +1135,14 @@ export default function Home() {
       if (runComplete.has(nextRun.status)) await loadClaimsForRun(nextRun.id);
     } catch (error) {
       const issue = toIssue(error);
+      if (issue.status === 404 || issue.status === 403) {
+        storeId(recentProjectStorageKey, null);
+        storeId(recentEventStorageKey(projectId), null);
+        if (readStoredId(workflowIntentStorageKey) === projectId) {
+          storeId(workflowIntentStorageKey, null);
+          setWorkflowIntentProjectId(null);
+        }
+      }
       setProjectIssue(issue);
       setProjectState("error");
       setEventIssue(issue);
@@ -1082,9 +1152,13 @@ export default function Home() {
 
   useEffect(() => {
     if (screen !== "simple" || project || projectsState !== "ready") return;
-    const sample = projects.find((item) => item.name.startsWith("[SYNTHETIC]"));
-    if (!sample) return;
-    const timer = window.setTimeout(() => void loadSimpleProject(sample.id), 0);
+    const rememberedProjectId = readStoredId(recentProjectStorageKey);
+    const selection = chooseRememberedSelection(projects, rememberedProjectId);
+    if (!selection) return;
+    if (rememberedProjectId && selection.id !== rememberedProjectId) {
+      storeId(recentProjectStorageKey, null);
+    }
+    const timer = window.setTimeout(() => void loadSimpleProject(selection.id), 0);
     return () => window.clearTimeout(timer);
   }, [loadSimpleProject, project, projects, projectsState, screen]);
 
@@ -1131,12 +1205,11 @@ export default function Home() {
         window.clearInterval(timer);
         const issue: ApiIssue = {
           code: "EXTRACTION_POLL_TIMEOUT",
-          message: "等待分析结果的时间过长。材料和后台任务都已保留，可以重新检查任务状态。",
+          message: "页面等待时间已到，但同一个任务仍在后台运行。材料和任务都已保留；点击“重新检查”不会创建新的付费任务。",
           status: 408,
         };
-        setProjectWorkflow((current) => current.currentRunId === runId
-          ? { ...current, phase: "error", issue }
-          : current);
+        setEventIssue(issue);
+        setProjectWorkflow((current) => current.currentRunId === runId ? { ...current, issue } : current);
         return;
       }
       attempts += 1;
@@ -1271,20 +1344,18 @@ export default function Home() {
       pollAttempts.current = 0;
     }
     const timer = window.setInterval(async () => {
-      // Luna Max may legitimately spend several minutes reasoning before it
+      // Luna xhigh may legitimately spend several minutes reasoning before it
       // returns structured output. Keep the simple test screen live for up to
       // 15 minutes; the server remains the source of truth if the page closes.
       if (pollAttempts.current >= 360) {
         window.clearInterval(timer);
         const issue: ApiIssue = {
           code: "EXTRACTION_POLL_TIMEOUT",
-          message: "等待分析结果的时间过长。材料和后台任务都已保留，可以重新检查任务状态。",
+          message: "页面等待时间已到，但同一个任务仍在后台运行。材料和任务都已保留；点击“重新检查”不会创建新的付费任务。",
           status: 408,
         };
         setEventIssue(issue);
-        setProjectWorkflow((current) => current.currentRunId === runId
-          ? { ...current, phase: "error", issue }
-          : current);
+        setProjectWorkflow((current) => current.currentRunId === runId ? { ...current, issue } : current);
         return;
       }
       pollAttempts.current += 1;
@@ -1300,7 +1371,7 @@ export default function Home() {
           stages: latest.stages,
         }) && !staleRecoveryRuns.current.has(runId)) {
           staleRecoveryRuns.current.add(runId);
-          flash("检测到模型请求已经失去响应，正在检查并恢复；旧的 max 运行不会继续使用");
+          flash("检测到事实识别长时间没有更新，正在检查并恢复同一个后台任务");
           void api.kickDispatcher().finally(() => {
             setRunPollCycle((value) => value + 1);
           });
@@ -1385,8 +1456,8 @@ export default function Home() {
       .finally(() => completingReviewSessions.current.delete(reviewSession.id));
   }, [flash, project, reviewSession]);
 
-  const loadReviewQueue = useCallback(async () => {
-    if (!project) return;
+  const loadReviewQueue = useCallback(async (): Promise<ReviewQueueSnapshot | null> => {
+    if (!project) return null;
     setScreen("review");
     setClaimsState("loading");
     setClaimsIssue(null);
@@ -1403,7 +1474,7 @@ export default function Home() {
         setOccurrenceCandidates([]);
         setClaimsState("empty");
         await syncReviewTiming(latestProject);
-        return;
+        return { project: latestProject, claims: [], occurrenceCandidates: [] };
       }
       const results = await Promise.allSettled(runIds.map((runId) => api.getRunReview(runId)));
       const failed = results.find((item): item is PromiseRejectedResult => item.status === "rejected");
@@ -1416,9 +1487,15 @@ export default function Home() {
       setOccurrenceCandidates(uniqueOccurrences);
       setClaimsState(uniqueClaims.length || uniqueOccurrences.length ? "ready" : "empty");
       await syncReviewTiming(latestProject);
+      return {
+        project: latestProject,
+        claims: uniqueClaims,
+        occurrenceCandidates: uniqueOccurrences,
+      };
     } catch (error) {
       setClaimsIssue(toIssue(error));
       setClaimsState("error");
+      return null;
     }
   }, [project, syncReviewTiming]);
 
@@ -1533,10 +1610,83 @@ export default function Home() {
             ? "empty"
             : "error",
       );
+      const followingClaimId = nextPendingClaimId(claims, nextClaim.id);
+      const followingClaim = claims.find((item) => item.id === followingClaimId);
+      if (followingClaim?.evidenceRefIds.length) {
+        void Promise.allSettled(followingClaim.evidenceRefIds.map((id) => api.getEvidence(id)));
+      }
     } catch {
       setEvidenceState("error");
     }
   }
+
+  async function finishGuidedReview() {
+    if (!project) return;
+    const snapshot = await inspectProjectWorkflow(project.id);
+    setProject(snapshot.project);
+    setEvents(snapshot.events);
+    setProjectWorkflow(snapshot.plan);
+    if (snapshot.plan.phase === "complete") {
+      storeId(workflowIntentStorageKey, null);
+      setWorkflowIntentProjectId(null);
+      flash("整组沟通已经核对完成，正在打开会前速览");
+      await loadView("brief-card");
+      return;
+    }
+    if (snapshot.plan.currentEventId) {
+      await loadSimpleProject(project.id, snapshot.plan.currentEventId);
+      flash("本次核对已完成。下一次沟通已准备好，需要你点击后才会开始分析");
+      return;
+    }
+    await loadSimpleProject(project.id, event?.id);
+  }
+
+  async function enterContinuousReview() {
+    const snapshot = await loadReviewQueue();
+    if (!snapshot) return;
+    const firstPending = snapshot.claims.find((item) => item.reviewStatus === "pending");
+    if (firstPending) {
+      await openClaim(firstPending.id);
+      return;
+    }
+    if (snapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
+      setScreen("review");
+      return;
+    }
+    await finishGuidedReview();
+  }
+
+  guidedTransitionAction.current = (phase) => {
+    if (phase === "waiting_scenario") {
+      document.querySelector(".simple-scenario-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (phase === "waiting_review") {
+      void enterContinuousReview();
+      return;
+    }
+    storeId(workflowIntentStorageKey, null);
+    setWorkflowIntentProjectId(null);
+    void loadView("brief-card");
+  };
+
+  useEffect(() => {
+    if (!project?.id || workflowIntentProjectId !== project.id) return;
+    const phase = projectWorkflow.phase;
+    if (phase !== "waiting_scenario" && phase !== "waiting_review" && phase !== "complete") return;
+    const transitionKey = `${project.id}:${projectWorkflow.currentRunId || "none"}:${phase}`;
+    if (guidedTransitionKey.current === transitionKey) return;
+    guidedTransitionKey.current = transitionKey;
+    const timer = window.setTimeout(() => {
+      guidedTransitionAction.current(phase);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    project?.id,
+    projectWorkflow.currentRunId,
+    projectWorkflow.phase,
+    workflowIntentProjectId,
+  ]);
 
   const pendingClaims = useMemo(() => claims.filter((item) => item.reviewStatus === "pending"), [claims]);
   const selectedBatch = useMemo(
@@ -1554,6 +1704,8 @@ export default function Home() {
     retainRelationIds?: string[],
   ) {
     if (!selectedClaim) return;
+    const reviewedClaimId = selectedClaim.id;
+    const wasPending = selectedClaim.reviewStatus === "pending";
     if ((action === "confirm" || action === "edit") && evidenceState !== "ready") {
       flash("证据尚未完整加载，暂时不能确认或修改这条记录");
       return;
@@ -1583,7 +1735,8 @@ export default function Home() {
       });
       mutationKeys.current.delete(fingerprint);
       setSelectedClaim(updated);
-      setClaims((items) => items.map((item) => item.id === selectedClaim.id ? updated : item));
+      const updatedClaims = claims.map((item) => item.id === reviewedClaimId ? updated : item);
+      setClaims(updatedClaims);
       if (project) {
         const [latestProject, latestEvents] = await Promise.all([
           api.getProject(project.id),
@@ -1594,7 +1747,25 @@ export default function Home() {
         await syncReviewTiming(latestProject);
       }
       flash(action === "reject" ? "已记录为不采纳" : action === "edit" ? "修改已保存并确认" : "记录已确认");
-      if (action === "edit") await openClaim(updated.id);
+      if (!wasPending) {
+        if (action === "edit") await openClaim(updated.id);
+        return;
+      }
+      const nextId = nextPendingClaimId(updatedClaims, reviewedClaimId);
+      if (nextId) {
+        await openClaim(nextId);
+        return;
+      }
+      const reviewSnapshot = await loadReviewQueue();
+      if (!reviewSnapshot) return;
+      const remainingClaim = reviewSnapshot.claims.find((item) => item.reviewStatus === "pending");
+      if (remainingClaim) {
+        await openClaim(remainingClaim.id);
+        return;
+      }
+      if (!reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
+        await finishGuidedReview();
+      }
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
@@ -1674,6 +1845,12 @@ export default function Home() {
         await syncReviewTiming(latestProject);
       }
       flash(`已确认 ${selectedBatch.length} 条记录`);
+      const reviewSnapshot = await loadReviewQueue();
+      const remainingClaim = reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
+      if (remainingClaim) await openClaim(remainingClaim.id);
+      else if (reviewSnapshot && !reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
+        await finishGuidedReview();
+      }
     } catch (error) {
       setClaimsIssue(toIssue(error));
     } finally {
@@ -1691,7 +1868,12 @@ export default function Home() {
       await api.saveOccurrenceVerdict(candidate, action, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       flash(action === "confirm" ? "已确认这次再次出现，并保存新的原始证据" : "这次再次出现未被采纳");
-      await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue();
+      const remainingClaim = reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
+      if (remainingClaim) await openClaim(remainingClaim.id);
+      else if (reviewSnapshot && !reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
+        await finishGuidedReview();
+      }
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
@@ -1720,7 +1902,10 @@ export default function Home() {
       const converted = await api.convertOccurrenceToClaims(candidate, newClaims, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       flash(`已生成 ${converted.length} 条待审核记录，原记录没有改动`);
-      await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue();
+      const firstConverted = reviewSnapshot?.claims.find((item) => converted.some((created) => created.id === item.id));
+      const remainingClaim = firstConverted ?? reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
+      if (remainingClaim) await openClaim(remainingClaim.id);
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
@@ -1956,6 +2141,8 @@ export default function Home() {
 
   async function advanceProjectWorkflow() {
     if (!project) return;
+    storeId(workflowIntentStorageKey, project.id);
+    setWorkflowIntentProjectId(project.id);
     setBusyAction("project-workflow");
     setEventIssue(null);
     try {
@@ -1974,7 +2161,7 @@ export default function Home() {
           setEventState("ready");
           setRun(current.run);
         }
-        await loadReviewQueue();
+        await enterContinuousReview();
         return;
       }
       if (snapshot.plan.phase === "waiting_scenario") {
@@ -1988,7 +2175,10 @@ export default function Home() {
         return;
       }
       if (snapshot.plan.phase === "complete") {
-        flash("全部沟通都已处理并核对完成");
+        storeId(workflowIntentStorageKey, null);
+        setWorkflowIntentProjectId(null);
+        flash("全部沟通都已处理并核对完成，正在打开会前速览");
+        await loadView("brief-card");
         return;
       }
       if (snapshot.plan.phase === "empty" || !current) {
@@ -2161,7 +2351,7 @@ export default function Home() {
       mutationKeys.current.delete(fingerprint);
       setProject(updated);
       flash("使用场景已确认，后续沟通会沿用这个设置");
-      if (screen === "simple") await loadSimpleProject(project.id, event?.id);
+      if (screen === "simple") await enterContinuousReview();
       else await loadProject(project.id);
     } catch (error) {
       setProjectIssue(toIssue(error));
@@ -2185,7 +2375,7 @@ export default function Home() {
       <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
       <main>
         {screen === "simple" && <SimpleTestScreen
-          key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`}
+          key={project?.id ?? "none"}
           projects={projects}
           projectsState={projectsState}
           projectsIssue={projectsIssue}
@@ -2209,8 +2399,8 @@ export default function Home() {
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
-          onReview={() => void loadReviewQueue()}
-          onResult={() => void loadView("folder-summary")}
+          onReview={() => void enterContinuousReview()}
+          onResult={() => void loadView("brief-card")}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
         {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={goProjects} onRetry={() => project && void loadProject(project.id)} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
@@ -2255,7 +2445,7 @@ export default function Home() {
           } finally { setBusyAction(null); }
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} reviewClaims={claims} pendingOccurrenceCount={occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onOpenReviewClaim={(id) => void openClaim(id)} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
       </main>
@@ -2392,10 +2582,20 @@ function SimpleTestScreen({
       : undefined;
   const needsScenario = project?.scenarioStatus === "pending_confirmation"
     || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
+  const currentDisplayStatus = deriveGuidedDisplayStatus({
+    assetCount: event?.assets.length ?? 0,
+    analyzableAssetCount: readyAssets.length,
+    transcriptionStatus: transcriptionRun?.status,
+    runStatus: run?.status,
+    pipelineStage: run?.pipelineStage,
+    needsScenarioConfirmation: needsScenario,
+    pendingCount,
+  });
   const workflowPosition = projectWorkflow.currentPosition || Math.min(projectWorkflow.completed + 1, projectWorkflow.total);
   const workflowActionable = projectWorkflow.phase === "ready"
     || projectWorkflow.phase === "waiting_review"
     || projectWorkflow.phase === "empty_output"
+    || projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "error";
   const workflowActionLabels: Record<ProjectWorkflowState["phase"], string> = {
     idle: "正在准备整组材料",
@@ -2404,10 +2604,10 @@ function SimpleTestScreen({
     waiting_material: "等待当前材料准备完成",
     ready: projectWorkflow.completed > 0 ? "继续处理下一次沟通" : "开始处理全部沟通",
     running: "正在处理，请稍候",
-    empty_output: "重新处理这次沟通",
+    empty_output: "检查材料并重新处理",
     waiting_scenario: "请先确认使用场景",
     waiting_review: "核对这次结果",
-    complete: "整组处理已完成",
+    complete: "打开会前速览",
     error: "重新检查并继续",
   };
   const workflowActionLabel = workflowActionLabels[projectWorkflow.phase];
@@ -2514,7 +2714,9 @@ function SimpleTestScreen({
     && Number.isFinite(transcriptionTimingEnd)
     ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
     : null;
-  const workflowStepActionable = workflowActionable && workflowSelectedCurrent;
+  const workflowStepActionable = projectWorkflow.phase === "complete"
+    ? true
+    : workflowActionable && workflowSelectedCurrent;
   const workflowStepStateLabels: Record<ProjectWorkflowState["phase"], string> = {
     idle: "准备中",
     loading: "检查中",
@@ -2579,7 +2781,7 @@ function SimpleTestScreen({
           </select>
         </label>
         {events.length > 0 && (
-          <label>
+          <label className="simple-event-select">
             <span>当前沟通</span>
             <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => onUseEvent(change.target.value)}>
               {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
@@ -2616,25 +2818,33 @@ function SimpleTestScreen({
             {events.map((item, index) => {
               const displayItem = item.id === event?.id ? event : item;
               const itemPending = displayItem.pendingClaimCount + displayItem.pendingOccurrenceCount;
-              const itemRunStatus = displayItem.latestRun?.status || displayItem.status;
+              const itemRun = displayItem.latestRun;
               const itemAudioStatus = displayItem.assets.find((asset) => asset.kind === "audio")?.metadata.transcription_status;
+              const itemDisplayStatus = deriveGuidedDisplayStatus({
+                assetCount: displayItem.assets.length,
+                analyzableAssetCount: displayItem.assets.filter(assetIsAnalyzable).length,
+                transcriptionStatus: stringValue(itemAudioStatus),
+                runStatus: itemRun?.status,
+                pipelineStage: itemRun?.pipelineStage,
+                needsScenarioConfirmation: needsScenario,
+                pendingCount: itemPending,
+              });
               return (
                 <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => { setActiveTab("materials"); onUseEvent(item.id); }}>
                   <span className="meeting-index">{index + 1}</span>
-                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small><em>{itemAudioStatus ? `转写 ${statusLabel(String(itemAudioStatus))}` : itemRunStatus ? `分析 ${statusLabel(itemRunStatus)}` : "尚未分析"}</em></span>
-                  {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <StatusBadge value={itemRunStatus || "ready"} />}
+                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small><em>{itemDisplayStatus.label}</em></span>
+                  {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <span className={`guided-status ${itemDisplayStatus.tone}`}>{itemDisplayStatus.label}</span>}
                 </button>
               );
             })}
             {events.length === 0 && <p>还没有沟通记录。直接录音或上传材料时，系统会自动建立第一条。</p>}
           </div>
-          <button className="meeting-add" disabled={Boolean(busy)} onClick={onAddTranscript}>＋ 添加一次沟通</button>
         </aside>
 
         <article className="simple-current-event">
           <header className="current-event-header">
             <div><span className="section-kicker">当前沟通</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${event.assets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一次沟通。"}</p></div>
-            <span className={`current-event-status ${pendingCount > 0 ? "warning" : materialsReady ? "success" : ""}`}>{pendingCount > 0 ? `${pendingCount} 条待核对` : analysisDone ? "分析完成" : materialsReady ? "材料就绪" : "等待材料"}</span>
+            <span className={`current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
@@ -2652,7 +2862,7 @@ function SimpleTestScreen({
                 <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
                 <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
               </div>}
-              <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>
+              <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? onResult : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>
             </section>}
 
             <section className="materials-section">
@@ -2674,7 +2884,7 @@ function SimpleTestScreen({
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
                   return <article key={asset.id}><span className="file-kind">{asset.kind === "audio" ? "AUD" : asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
                 })}
-              </div> : <div className="materials-empty"><span>＋</span><strong>还没有材料</strong><p>点击“添加材料”，或直接录下这次沟通。</p></div>}
+              </div> : <div className="materials-empty"><span>＋</span><strong>还没有材料</strong><p>可以直接开始录音，也可以上传已有材料。</p><div className="materials-empty-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => { setShowImportChoices(true); setShowRecorder(true); }}>直接录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices(true)}>添加材料</button></div></div>}
             </section>
           </div>}
 
@@ -3198,7 +3408,7 @@ function relationReviewEffect(type: string): string {
   return "接受后，两条记录会保留参考关系，不改变旧记录状态。";
 }
 
-function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, onBack, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
+function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, evidence, evidenceState, issue, busy, onBack, onOpenReviewClaim, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; reviewClaims: Claim[]; pendingOccurrenceCount: number; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenReviewClaim: (id: string) => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
   const [edit, setEdit] = useState(false);
   const [statement, setStatement] = useState(claim?.statement ?? "");
   const [claimType, setClaimType] = useState(claim?.type ?? "other");
@@ -3234,6 +3444,8 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
     .filter((relation) => relationDecisions[relation.id] === "accept")
     .map((relation) => relation.id);
   const evidenceReady = evidenceState === "ready";
+  const reviewQueue = reviewClaims.filter((item) => item.reviewStatus === "pending");
+  const reviewPosition = Math.max(0, reviewQueue.findIndex((item) => item.id === claim.id)) + 1;
   const editHasSupportingEvidence = evidence.some(
     (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
   );
@@ -3298,10 +3510,11 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
     secondaryEvidenceNote: secondaryEvidenceNote.trim() || undefined,
   });
   return (
-    <div className="page narrow-page">
-      <PageHeader eyebrow={typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${confidenceText(claim.confidence)}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
+    <div className="page review-detail-page">
+      <PageHeader eyebrow={typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${confidenceText(claim.confidence)}${pending ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
+        {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续审核队列"><header><span className="section-kicker">连续审核</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>Claim 处理完后，还有 {pendingOccurrenceCount} 条“再次出现”记录需要决定。</p>}</aside>}
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>确认前，请检查原文是否真的支持这条陈述。</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
         <aside className="panel verdict-panel"><h2>{edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{(pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
@@ -3333,7 +3546,7 @@ function ClaimScreen({ projectId, claim, evidence, evidenceState, issue, busy, o
             </fieldset>}
             <button className="button primary full" disabled={Boolean(busy) || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", reason.trim(), undefined, acceptedRelationIds)}>确认并加入正式结果</button>
             <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改后确认</button>
-            <div className="batch-review-attestation"><strong>需要一次批量处理多条？</strong>{proposedRelations.length > 0 ? <p>这条记录包含关系判断，不能批量确认。请在上方逐条接受或拒绝。</p> : <><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</>}</div>
+            <details className="batch-review-attestation"><summary>批量处理选项</summary>{proposedRelations.length > 0 ? <p>这条记录包含关系判断，不能批量确认。请在上方逐条接受或拒绝。</p> : <><p>请先核对上方原始证据。点击下面的按钮会留下本次核对记录，但不会确认这条内容。</p>{claim.batchReviewAttested ? <span className="review-attested-state">本版本的证据已核对，可以返回列表批量选择。</span> : <button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={onBatchReviewAttest}>{busy === "evidence-review-attestation" ? "正在记录…" : "我已核对证据，返回列表"}</button>}</>}</details>
             <label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
             <button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button>
           </div>}

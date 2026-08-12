@@ -38,7 +38,19 @@ test("client shell starts empty and delegates all durable data to the API", asyn
   assert.match(page, /api\.listProjects\(\)/);
   assert.match(page, /api\.getRunClaims\(/);
   assert.match(page, /api\.getView\(/);
-  assert.doesNotMatch(page, /const\s+claimSets\s*[:=]|localStorage|sessionStorage/i);
+  assert.doesNotMatch(page, /const\s+claimSets\s*[:=]|sessionStorage/i);
+  assert.match(page, /notique\.ui\.recent-project-id/);
+  assert.match(page, /notique\.ui\.recent-event-id/);
+  assert.match(page, /notique\.ui\.workflow-intent-project-id/);
+  assert.equal((page.match(/window\.localStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 3);
+  const preferenceTargets = [...page.matchAll(/storeId\(([^,\n]+)/g)].map((match) => match[1].trim());
+  assert.ok(preferenceTargets.every((target) =>
+    target === "key: string"
+      || target === "recentProjectStorageKey"
+      || target === "workflowIntentStorageKey"
+      || target.startsWith("recentEventStorageKey("),
+  ));
+  assert.doesNotMatch(page, /storeId\([^\n]+JSON\.stringify/);
   assert.doesNotMatch(page, /Sample Project|Sample Claim|Budget is \$/i);
 
   assert.match(client, /async function request<T>/);
