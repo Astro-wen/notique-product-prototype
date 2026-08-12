@@ -328,7 +328,8 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(processor, /chunking_strategy", "auto"/);
   assert.match(outbox, /TRANSCRIPTION_MAX_ATTEMPTS/);
   assert.match(repository, /Audio must finish transcription before analysis/);
-  assert.match(page, /上传录音/);
+  assert.match(page, /上传已有录音/);
+  assert.match(page, /DirectRecorder/);
   assert.match(page, /resolveSimpleImportTarget/);
   assert.match(page, /audioSource/);
   assert.match(envExample, /^AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize$/m);

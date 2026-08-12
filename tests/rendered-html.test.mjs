@@ -17,7 +17,8 @@ test("production build contains the real-data shell without seeded AI output", a
   assert.match(serverBundle, /Notique AI · Evidence-backed project records/);
   assert.match(pageBundle, /Projects/);
   assert.match(pageBundle, /正在读取 Projects/);
-  assert.match(pageBundle, /录音会先生成带说话人和时间点的逐字稿/);
+  assert.match(pageBundle, /保存后会进入现有的说话人识别和逐字稿流程/);
+  assert.match(pageBundle, /上传已有录音/);
   assert.match(pageBundle, /role:["'`]status["'`]/);
   assert.doesNotMatch(
     `${serverBundle}\n${pageBundle}`,

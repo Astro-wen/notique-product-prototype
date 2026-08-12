@@ -44,6 +44,7 @@ import {
   normalizeClaim,
   toIssue,
 } from "./api-client";
+import { DirectRecorder } from "./direct-recorder";
 
 type Screen = "simple" | "projects" | "project" | "event" | "review" | "claim" | "results" | "run-debug";
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
@@ -2039,12 +2040,12 @@ export default function Home() {
     }
   }
 
-  async function attachSimpleFile(file: File) {
+  async function attachSimpleFile(file: File): Promise<boolean> {
     const localIssue = photoUploadIssue(file.name, file.type, file.size)
       ?? audioUploadIssue(file.name, file.type, file.size);
     if (localIssue) {
       setEventIssue(localIssue);
-      return;
+      return false;
     }
     let targetProject = project;
     let targetEvent = event;
@@ -2066,7 +2067,7 @@ export default function Home() {
           return createdEvent;
         },
       });
-      if (!target) return;
+      if (!target) return false;
       targetProject = target.project;
       targetEvent = target.event;
       setProject(targetProject);
@@ -2092,6 +2093,7 @@ export default function Home() {
         flash("材料已加入");
       }
       await loadSimpleProject(targetProject.id, targetEvent.id);
+      return true;
     } catch (error) {
       const issue = toIssue(error);
       const targetEventId = targetEvent?.id;
@@ -2099,6 +2101,7 @@ export default function Home() {
         await loadSimpleProject(targetProject.id, targetEventId).catch(() => undefined);
       }
       setEventIssue(issue);
+      return false;
     } finally {
       setBusyAction(null);
     }
@@ -2154,7 +2157,7 @@ export default function Home() {
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects}><span>▣</span>高级工具</button>
           {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => setScreen("project")}><span>◫</span>{project.name}</button>}
         </nav>
-        <div className="sidebar-note"><strong>核心测试版</strong><p>按四个大按钮完成一次测试。高级工具不影响这条主流程。</p></div>
+        <div className="sidebar-note"><strong>核心工作区</strong><p>按沟通顺序添加材料、分析、核对，再从确认内容生成报告。</p></div>
       </aside>
       <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
       <main>
@@ -2178,7 +2181,7 @@ export default function Home() {
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => void beginSimpleTest()}
           onAddTranscript={() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(true); }}
-          onAddFile={(file) => void attachSimpleFile(file)}
+          onAddFile={attachSimpleFile}
           onProjectWorkflowAction={() => void advanceProjectWorkflow()}
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
           onConfirmScenario={confirmCurrentScenario}
@@ -2294,7 +2297,7 @@ type SimpleTestScreenProps = {
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
   onAddTranscript: () => void;
-  onAddFile: (file: File) => void;
+  onAddFile: (file: File) => Promise<boolean>;
   onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
@@ -2330,6 +2333,8 @@ function SimpleTestScreen({
   onResult,
 }: SimpleTestScreenProps) {
   const [showImportChoices, setShowImportChoices] = useState(false);
+  const [showRecorder, setShowRecorder] = useState(false);
+  const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
@@ -2435,10 +2440,6 @@ function SimpleTestScreen({
     event?.id && event.id === projectWorkflow.currentEventId,
   );
   const workflowStepActionable = workflowActionable && workflowSelectedCurrent;
-  const workflowStepComplete = projectWorkflow.completed > 0
-    || projectWorkflow.phase === "waiting_scenario"
-    || projectWorkflow.phase === "waiting_review"
-    || projectWorkflow.phase === "complete";
   const workflowStepStateLabels: Record<ProjectWorkflowState["phase"], string> = {
     idle: "准备中",
     loading: "检查中",
@@ -2470,26 +2471,26 @@ function SimpleTestScreen({
   function chooseSupportingFile(change: ChangeEvent<HTMLInputElement>) {
     const file = change.target.files?.[0];
     change.target.value = "";
-    if (file) onAddFile(file);
+    if (file) void onAddFile(file);
   }
 
   return (
     <div className="page simple-page">
       <header className="simple-header">
-        <span className="eyebrow">核心流程测试</span>
-        <h1>用真实材料走完一次</h1>
-        <p>选一组现成材料，或者上传自己的 Transcript、照片或录音。录音会先生成带说话人和时间点的逐字稿，再进入分析。</p>
+        <span className="eyebrow">Notique Workspace</span>
+        <h1>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "把每次沟通变成可核对的项目记忆"}</h1>
+        <p>{event ? `当前沟通：${event.title}` : "选择已有项目，或用 Transcript、录音和照片开始一次新测试。"}</p>
       </header>
 
-      <section className="simple-session" aria-label="测试材料">
+      <section className="simple-session" aria-label="当前项目和沟通">
         <div className="simple-session-copy">
-          <strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "先选择测试材料"}</strong>
-          <small>{event ? event.title : project ? "请选择其中一次记录" : "可以使用现成案例，也可以上传自己的材料"}</small>
+          <span className="context-mark">N</span>
+          <span><strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "尚未选择项目"}</strong><small>{event ? event.title : project ? "请选择一次沟通" : "可以先创建空白项目，也可以直接上传材料"}</small></span>
         </div>
         <label>
-          <span>整组材料</span>
+          <span>当前项目</span>
           <select
-            aria-label="选择整组测试材料"
+            aria-label="选择当前项目"
             value={project?.id ?? ""}
             disabled={projectsState === "loading" || Boolean(busy)}
             onChange={(change) => onUseProject(change.target.value)}
@@ -2504,34 +2505,14 @@ function SimpleTestScreen({
         </label>
         {events.length > 0 && (
           <label>
-            <span>这次要分析的记录</span>
-            <select aria-label="选择要分析的记录" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => onUseEvent(change.target.value)}>
+            <span>当前沟通</span>
+            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => onUseEvent(change.target.value)}>
               {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           </label>
         )}
+        <button className="button secondary simple-new-project" disabled={Boolean(busy)} onClick={onStartOwn}>新建项目</button>
       </section>
-
-      {project && (
-        <section className={`project-workflow-card ${projectWorkflow.phase}`} aria-label="整组沟通处理" aria-live="polite">
-          <div className="project-workflow-copy">
-            <span className="section-kicker">整组处理</span>
-            <h2>{currentWorkflowCopy.title}</h2>
-            <p>{currentWorkflowCopy.body}</p>
-          </div>
-          <div className="project-workflow-progress">
-            <div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div>
-            <progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} />
-          </div>
-          <button
-            className="project-workflow-action"
-            disabled={!workflowActionable || Boolean(busy)}
-            onClick={onProjectWorkflowAction}
-          >
-            {busy === "project-workflow" ? "正在检查…" : workflowActionLabel}
-          </button>
-        </section>
-      )}
 
       {needsScenario && (
         <section className="simple-scenario-panel" aria-label="确认使用场景">
@@ -2553,62 +2534,88 @@ function SimpleTestScreen({
         </section>
       )}
 
-      <section className="simple-steps" aria-label="四步测试流程">
-        <button className={`simple-step-button ${materialsReady ? "complete" : ""}`} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>
-          <span className="simple-step-number">1</span>
-          <span className="simple-step-copy"><strong>导入材料</strong><small>{transcriptionRunning ? "正在把录音转成逐字稿" : materialsReady ? `${readyAssets.length} 份材料可以使用` : "加入 Transcript、照片或录音"}</small></span>
-          <span className="simple-step-state">{transcriptionRunning ? "转写中" : materialsReady ? "已就绪" : "开始"}</span>
-        </button>
-        <button className={`simple-step-button ${workflowStepComplete ? "complete" : ""}`} disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>
-          <span className="simple-step-number">2</span>
-          <span className="simple-step-copy"><strong>{workflowStepTitle}</strong><small>{workflowStepBody}</small></span>
-          <span className="simple-step-state">{workflowSelectedCurrent || !projectWorkflow.currentEventId ? workflowStepStateLabels[projectWorkflow.phase] : "顺序锁定"}</span>
-        </button>
-        <button className={`simple-step-button ${verifiedCount > 0 ? "complete" : ""}`} disabled={!workflowReviewReady || Boolean(busy)} onClick={onReview}>
-          <span className="simple-step-number">3</span>
-          <span className="simple-step-copy"><strong>核对证据</strong><small>{workflowReviewBody}</small></span>
-          <span className="simple-step-state">{workflowReviewReady ? "核对" : projectWorkflow.phase === "waiting_scenario" ? "等待场景" : verifiedCount > 0 ? `已确认 ${verifiedCount}` : "等待"}</span>
-        </button>
-        <button className="simple-step-button" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>
-          <span className="simple-step-number">4</span>
-          <span className="simple-step-copy"><strong>查看报告</strong><small>{verifiedCount > 0 ? "查看已经确认的内容" : analysisDone ? "未确认的内容不会进入报告" : "完成前三步后查看结果"}</small></span>
-          <span className="simple-step-state">查看</span>
-        </button>
-      </section>
+      <section className="simple-workspace" aria-label="项目工作区">
+        <aside className="simple-meeting-rail">
+          <header><div><span className="section-kicker">沟通记录</span><strong>{events.length} 次</strong></div><button className="icon-button" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button></header>
+          <div className="simple-meeting-list">
+            {events.map((item, index) => {
+              const displayItem = item.id === event?.id ? event : item;
+              const itemPending = displayItem.pendingClaimCount + displayItem.pendingOccurrenceCount;
+              const itemRunStatus = displayItem.latestRun?.status || displayItem.status;
+              const itemAudioStatus = displayItem.assets.find((asset) => asset.kind === "audio")?.metadata.transcription_status;
+              return (
+                <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => { setActiveTab("materials"); onUseEvent(item.id); }}>
+                  <span className="meeting-index">{index + 1}</span>
+                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small><em>{itemAudioStatus ? `转写 ${statusLabel(String(itemAudioStatus))}` : itemRunStatus ? `分析 ${statusLabel(itemRunStatus)}` : "尚未分析"}</em></span>
+                  {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <StatusBadge value={itemRunStatus || "ready"} />}
+                </button>
+              );
+            })}
+            {events.length === 0 && <p>还没有沟通记录。直接录音或上传材料时，系统会自动建立第一条。</p>}
+          </div>
+          <button className="meeting-add" disabled={Boolean(busy)} onClick={onAddTranscript}>＋ 添加一次沟通</button>
+        </aside>
 
-      {showImportChoices && (
-        <section className="simple-import-panel" aria-label="添加材料">
-          <div>
-            <h2>添加自己的材料</h2>
-            <p>{project ? "Transcript 会建立一条新记录。照片和录音会加到当前记录，录音完成转写后自动成为可分析材料。" : "可以直接上传录音或照片，系统会自动建立测试和第一条记录。"}</p>
-          </div>
-          <div className="simple-import-actions">
-            <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span>TXT</span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></button>
-            <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span>AUD</span><strong>上传录音</strong><small>{event ? "自动区分说话人并保留时间点" : project ? "会自动建立第一条沟通记录" : "会自动建立测试和第一条沟通记录"}</small><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
-            <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span>IMG</span><strong>添加照片</strong><small>{event ? `加入“${event.title}” · 支持 JPG、PNG、WebP` : project ? "会自动建立第一条沟通记录" : "会自动建立测试和第一条沟通记录"}</small><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
-            <button className="simple-import-action quiet-choice" disabled={Boolean(busy)} onClick={onStartOwn}><span>NEW</span><strong>新建一次测试</strong><small>使用一组新的材料</small></button>
-          </div>
-          {event && event.assets.length > 0 && (
-            <div className="simple-material-list">
-              {event.assets.map((asset) => {
-                const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
-                const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
-                const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
-                return <span key={asset.id}><b>{asset.filename}</b><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span>;
-              })}
-            </div>
-          )}
-          {transcriptionRun && <section className={`transcription-progress ${transcriptionFailed ? "failed" : ""}`}>
-            <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>
-            {transcriptionDone && transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 5).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}
-            {transcriptionFailed && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button>}
-          </section>}
-        </section>
-      )}
+        <article className="simple-current-event">
+          <header className="current-event-header">
+            <div><span className="section-kicker">当前沟通</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${event.assets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一次沟通。"}</p></div>
+            <span className={`current-event-status ${pendingCount > 0 ? "warning" : materialsReady ? "success" : ""}`}>{pendingCount > 0 ? `${pendingCount} 条待核对` : analysisDone ? "分析完成" : materialsReady ? "材料就绪" : "等待材料"}</span>
+          </header>
+
+          <nav className="meeting-tabs" aria-label="当前沟通内容">
+            <button className={activeTab === "materials" ? "active" : ""} onClick={() => setActiveTab("materials")}>材料 <span>{event?.assets.length ?? 0}</span></button>
+            <button className={activeTab === "transcript" ? "active" : ""} onClick={() => setActiveTab("transcript")}>Transcript {transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
+            <button className={activeTab === "review" ? "active" : ""} onClick={() => setActiveTab("review")}>待核对 {pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            <button className={activeTab === "results" ? "active" : ""} onClick={() => setActiveTab("results")}>结果</button>
+          </nav>
+
+          {activeTab === "materials" && <div className="meeting-tab-panel">
+            {project && <section className={`project-workflow-card ${projectWorkflow.phase}`} aria-label="整组沟通处理" aria-live="polite">
+              <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
+              <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>
+              <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>
+            </section>}
+
+            <section className="materials-section">
+              <header><div><h3>材料</h3><p>{event ? `所有新文件都会加入“${event.title}”` : "还没有当前沟通时，系统会自动建立。"}</p></div><button className="button secondary" onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加材料"}</button></header>
+              {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
+                <div className="simple-import-actions">
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => setShowRecorder((open) => !open)}><span className="material-action-icon record">●</span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
+                  <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span className="material-action-icon">↑</span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span><input type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span className="material-action-icon">T</span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
+                  <label className={`simple-import-action ${busy ? "disabled" : ""}`}><span className="material-action-icon">▧</span><span><strong>添加照片</strong><small>JPG、PNG、WebP</small></span><input type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} /></label>
+                </div>
+                {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
+              </div>}
+
+              {event && event.assets.length > 0 ? <div className="simple-material-list">
+                {event.assets.map((asset) => {
+                  const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
+                  const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
+                  const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
+                  return <article key={asset.id}><span className="file-kind">{asset.kind === "audio" ? "AUD" : asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
+                })}
+              </div> : <div className="materials-empty"><span>＋</span><strong>还没有材料</strong><p>点击“添加材料”，或直接录下这次沟通。</p></div>}
+            </section>
+          </div>}
+
+          {activeTab === "transcript" && <div className="meeting-tab-panel">
+            {transcriptionRun ? <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
+              <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>
+              {transcriptionDone && transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 8).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="button secondary transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}
+              {transcriptionFailed && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button>}
+            </section> : <div className="tab-empty"><span>T</span><h3>当前没有自动逐字稿</h3><p>上传 Transcript 可以直接分析；录音保存后会在这里显示带说话人和时间点的全文。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
+          </div>}
+
+          {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div><button className="button primary" disabled={!workflowReviewReady || Boolean(busy)} onClick={onReview}>进入核对</button></div></div>}
+
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">Verified Ledger</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "报告只使用人工确认后的内容"}</h3><p>{analysisDone ? "Folder Summary、Timeline、Decision、Preferences、Questions、Risks、Agenda 和 Brief 都从同一份确认记录生成。" : "先完成分析和核对，再查看一致的项目报告。"}</p></div><button className="button primary" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>查看全部报告</button></div></div>}
+        </article>
+      </section>
 
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
-      {!project && projectsState === "empty" && <p className="simple-footnote">还没有可选材料。点击“导入材料”后再选择“新建一次测试”。</p>}
+      {!project && projectsState === "empty" && <p className="simple-footnote">还没有项目。可以点击“新建项目”，也可以直接录音或上传材料，系统会自动创建。</p>}
       {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新处理当前沟通" : "请先选择当前沟通"}</button></div>}
       {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
