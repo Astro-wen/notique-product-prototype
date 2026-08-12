@@ -745,6 +745,45 @@ export const reviewSessions = sqliteTable(
   ],
 );
 
+// A draft assessment captures the reviewer's first impression before any
+// Claim verdict changes the AI output. It is intentionally separate from the
+// Verified Ledger: saying that a draft is usable is evaluation feedback, not
+// permission to publish unreviewed facts.
+export const aiDraftAssessments = sqliteTable(
+  "ai_draft_assessments",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    extractionRunId: text("extraction_run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    assessment: text("assessment", {
+      enum: ["basically_usable", "needs_review"],
+    }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_ai_draft_assessment_actor_run").on(
+      table.workspaceId,
+      table.actorId,
+      table.extractionRunId,
+    ),
+    index("idx_ai_draft_assessments_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const verdicts = sqliteTable(
   "verdicts",
   {

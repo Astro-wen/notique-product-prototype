@@ -48,6 +48,7 @@ test("all D1 migrations apply from an empty database", async () => {
     "transcription_runs",
     "transcription_queue_outbox",
     "review_sessions",
+    "ai_draft_assessments",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }
@@ -146,6 +147,18 @@ test("all D1 migrations apply from an empty database", async () => {
     reviewSessionIndexes.has("uq_review_sessions_active_actor_project"),
     true,
     "only one active review timer may exist per actor and Project",
+  );
+
+  const draftAssessmentIndexes = new Set(
+    database
+      .prepare("PRAGMA index_list(ai_draft_assessments)")
+      .all()
+      .map((row) => row.name),
+  );
+  assert.equal(
+    draftAssessmentIndexes.has("uq_ai_draft_assessment_actor_run"),
+    true,
+    "each reviewer must have one durable first-impression assessment per Run",
   );
 
   assert.throws(

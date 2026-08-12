@@ -1450,3 +1450,43 @@ test("manual Claim relations are scoped, atomic, idempotent, and visible after c
     assert.match(page, new RegExp(label), `manual relation UI is missing ${label}`);
   }
 });
+
+test("AI draft stays outside the ledger and human missed facts require canonical Transcript evidence", async () => {
+  const repository = await read("lib/server/db/ai-draft-repository.ts");
+  const route = await read("app/api/v1/[...segments]/route.ts");
+  const client = await read("app/api-client.ts");
+  const page = await read("app/page.tsx");
+
+  assert.match(route, /segments\[2\] === ["']draft-assessment["']/);
+  assert.match(route, /segments\[2\] === ["']transcript-segments["']/);
+  assert.match(route, /segments\[2\] === ["']manual-claims["']/);
+  assert.match(client, /recordAiDraftAssessment/);
+  assert.match(client, /createManualClaim/);
+  assert.match(
+    repository,
+    /INSERT INTO ai_draft_assessments/,
+    "draft usability must be stored separately from Claim verification",
+  );
+  assert.doesNotMatch(
+    repository,
+    /assessment[\s\S]{0,300}review_status = 'verified'/,
+    "a positive draft assessment must never verify AI Claims",
+  );
+  assert.match(
+    repository,
+    /text_segments[\s\S]{0,450}workspace_id = \?[\s\S]{0,150}project_id = \?[\s\S]{0,150}event_id = \?/,
+    "manual missed facts must select Event-scoped canonical Transcript segments",
+  );
+  assert.match(repository, /review_status[\s\S]{0,300}'pending'/);
+  assert.match(repository, /source[\s\S]{0,300}'human'/);
+  assert.match(repository, /structural_validation_status[\s\S]{0,180}'valid'/);
+  for (const label of [
+    "AI 会议信息初稿",
+    "这份初稿基本可用",
+    "AI 漏掉了重要信息",
+    "开始核对和修正",
+    "本轮核对完成",
+  ]) {
+    assert.match(page, new RegExp(label), `guided draft UI is missing ${label}`);
+  }
+});

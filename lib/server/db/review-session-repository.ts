@@ -48,9 +48,76 @@ function reviewSessionRecord(row: Row): ReviewSessionRecord {
       row,
       "remaining_pending_occurrence_count",
     ),
+    outcome: {
+      confirmed_claim_count: integer(row, "confirmed_claim_count"),
+      edited_claim_count: integer(row, "edited_claim_count"),
+      rejected_claim_count: integer(row, "rejected_claim_count"),
+      human_added_claim_count: integer(row, "human_added_claim_count"),
+      confirmed_occurrence_count: integer(row, "confirmed_occurrence_count"),
+      rejected_occurrence_count: integer(row, "rejected_occurrence_count"),
+      accepted_relation_count: integer(row, "accepted_relation_count"),
+      rejected_relation_count: integer(row, "rejected_relation_count"),
+    },
     created_at: String(row.created_at ?? ""),
     updated_at: String(row.updated_at ?? ""),
   };
+}
+
+async function reviewOutcomeColumns(
+  scope: RequestScope,
+  row: Row,
+): Promise<Row> {
+  const projectId = String(row.project_id ?? "");
+  const startedAt = String(row.started_at ?? "");
+  const endedAt = nullableText(row, "completed_at") ?? now();
+  const result = await getD1()
+    .prepare(
+      `SELECT
+         COALESCE((SELECT SUM(CASE WHEN v.action = 'confirm' THEN 1 ELSE 0 END)
+           FROM verdicts v WHERE v.project_id = ? AND v.user_id = ?
+             AND v.created_at >= ? AND v.created_at <= ?), 0) AS confirmed_claim_count,
+         COALESCE((SELECT SUM(CASE WHEN v.action = 'edit' THEN 1 ELSE 0 END)
+           FROM verdicts v WHERE v.project_id = ? AND v.user_id = ?
+             AND v.created_at >= ? AND v.created_at <= ?), 0) AS edited_claim_count,
+         COALESCE((SELECT SUM(CASE WHEN v.action = 'reject' THEN 1 ELSE 0 END)
+           FROM verdicts v WHERE v.project_id = ? AND v.user_id = ?
+             AND v.created_at >= ? AND v.created_at <= ?), 0) AS rejected_claim_count,
+         COALESCE((SELECT COUNT(*) FROM claims c
+           WHERE c.project_id = ? AND c.workspace_id = ? AND c.source = 'human'
+             AND c.created_at >= ? AND c.created_at <= ?), 0) AS human_added_claim_count,
+         COALESCE((SELECT SUM(CASE WHEN ov.action = 'confirm' THEN 1 ELSE 0 END)
+           FROM occurrence_verdicts ov
+           JOIN claim_occurrence_candidates occ ON occ.id = ov.candidate_id
+          WHERE occ.project_id = ? AND occ.workspace_id = ? AND ov.user_id = ?
+            AND ov.created_at >= ? AND ov.created_at <= ?), 0) AS confirmed_occurrence_count,
+         COALESCE((SELECT SUM(CASE WHEN ov.action = 'reject' THEN 1 ELSE 0 END)
+           FROM occurrence_verdicts ov
+           JOIN claim_occurrence_candidates occ ON occ.id = ov.candidate_id
+          WHERE occ.project_id = ? AND occ.workspace_id = ? AND ov.user_id = ?
+            AND ov.created_at >= ? AND ov.created_at <= ?), 0) AS rejected_occurrence_count,
+         COALESCE((SELECT SUM(CASE WHEN rv.action = 'confirm' THEN 1 ELSE 0 END)
+           FROM relation_verdicts rv
+           JOIN claim_relations cr ON cr.id = rv.relation_id
+          WHERE cr.project_id = ? AND cr.workspace_id = ? AND rv.user_id = ?
+            AND rv.created_at >= ? AND rv.created_at <= ?), 0) AS accepted_relation_count,
+         COALESCE((SELECT SUM(CASE WHEN rv.action = 'reject' THEN 1 ELSE 0 END)
+           FROM relation_verdicts rv
+           JOIN claim_relations cr ON cr.id = rv.relation_id
+          WHERE cr.project_id = ? AND cr.workspace_id = ? AND rv.user_id = ?
+            AND rv.created_at >= ? AND rv.created_at <= ?), 0) AS rejected_relation_count`,
+    )
+    .bind(
+      projectId, scope.actorId, startedAt, endedAt,
+      projectId, scope.actorId, startedAt, endedAt,
+      projectId, scope.actorId, startedAt, endedAt,
+      projectId, scope.workspaceId, startedAt, endedAt,
+      projectId, scope.workspaceId, scope.actorId, startedAt, endedAt,
+      projectId, scope.workspaceId, scope.actorId, startedAt, endedAt,
+      projectId, scope.workspaceId, scope.actorId, startedAt, endedAt,
+      projectId, scope.workspaceId, scope.actorId, startedAt, endedAt,
+    )
+    .first<Row>();
+  return result ?? {};
 }
 
 async function pendingCounts(
@@ -115,7 +182,8 @@ async function sessionById(
   if (!row) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Review session was not found.");
   }
-  const record = reviewSessionRecord(row);
+  const outcome = await reviewOutcomeColumns(scope, row);
+  const record = reviewSessionRecord({ ...row, ...outcome });
   if (record.status !== "active") return record;
   const counts = await pendingCounts(scope, record.project_id);
   return {

@@ -2,11 +2,13 @@ import type {
   BatchClaimVerdictRequest,
   AssetInitRequest,
   AssetResponse,
+  AiDraftAssessmentRecord,
   ApiSuccess,
   ClaimRecord,
   ClaimEvidenceReviewAttestationResponse,
   ClaimVerdictRequest,
   ClaimVerdictResponse,
+  CreateManualClaimRequest,
   CreateManualRelationRequest,
   CreateManualRelationResponse,
   CreateEventRequest,
@@ -20,6 +22,7 @@ import type {
   FinalizeTranscriptImportResponse,
   GetEventResponse,
   ExtractionRunDebugRecord,
+  EventTranscriptSegmentRecord,
   GetExtractionRunResponse,
   GetProjectResponse,
   GetReviewSessionResponse,
@@ -52,6 +55,8 @@ export type GlossaryEntry = GlossaryEntryRecord;
 export type GlossaryEntryCategory = GlossaryCategory;
 export type RelationTarget = ManualRelationTargetRecord;
 export type RelationType = ManualRelationType;
+export type TranscriptSegment = EventTranscriptSegmentRecord;
+export type AiDraftAssessment = AiDraftAssessmentRecord;
 
 export type RunReview = {
   claims: Claim[];
@@ -123,6 +128,16 @@ export type ReviewSession = {
   initialPendingOccurrenceCount: number;
   remainingPendingClaimCount: number;
   remainingPendingOccurrenceCount: number;
+  outcome: {
+    confirmedClaimCount: number;
+    editedClaimCount: number;
+    rejectedClaimCount: number;
+    humanAddedClaimCount: number;
+    confirmedOccurrenceCount: number;
+    rejectedOccurrenceCount: number;
+    acceptedRelationCount: number;
+    rejectedRelationCount: number;
+  };
 };
 
 export type Asset = {
@@ -219,6 +234,8 @@ export type EvidenceRef = {
   viewUrl?: string;
   caption?: string;
   assetId?: Id;
+  eventId?: Id;
+  segmentIds: Id[];
   audioUrl?: string;
 };
 
@@ -226,6 +243,7 @@ export type Claim = {
   id: Id;
   versionId: Id;
   runId?: Id;
+  source: "ai" | "human" | "occurrence_conversion";
   eventId?: Id;
   eventTitle?: string;
   type: string;
@@ -420,6 +438,16 @@ function normalizeReviewSession(value: unknown): ReviewSession | null {
           "remainingPendingOccurrenceCount",
         ]),
       ) ?? 0,
+    outcome: {
+      confirmedClaimCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["confirmed_claim_count", "confirmedClaimCount"])) ?? 0,
+      editedClaimCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["edited_claim_count", "editedClaimCount"])) ?? 0,
+      rejectedClaimCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["rejected_claim_count", "rejectedClaimCount"])) ?? 0,
+      humanAddedClaimCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["human_added_claim_count", "humanAddedClaimCount"])) ?? 0,
+      confirmedOccurrenceCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["confirmed_occurrence_count", "confirmedOccurrenceCount"])) ?? 0,
+      rejectedOccurrenceCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["rejected_occurrence_count", "rejectedOccurrenceCount"])) ?? 0,
+      acceptedRelationCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["accepted_relation_count", "acceptedRelationCount"])) ?? 0,
+      rejectedRelationCount: asNumber(pick(isRecord(value.outcome) ? value.outcome : {}, ["rejected_relation_count", "rejectedRelationCount"])) ?? 0,
+    },
   };
 }
 
@@ -579,6 +607,8 @@ function normalizeEvidence(value: unknown): EvidenceRef | null {
     viewUrl,
     caption: asString(pick(value, ["caption", "description", "observation"]), undefined as unknown as string) || undefined,
     assetId: asString(pick(value, ["asset_id", "assetId"]), undefined as unknown as string) || undefined,
+    eventId: asString(pick(value, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
+    segmentIds: (pick<unknown[]>(value, ["segment_ids", "segmentIds"], []) ?? []).map((item) => asString(item)).filter(Boolean),
     audioUrl: asString(pick(value, ["audio_view_url", "audioUrl"]), undefined as unknown as string) || undefined,
   };
 }
@@ -621,6 +651,7 @@ export function normalizeClaim(value: unknown): Claim {
     id: asString(pick(source, ["id", "claim_id", "claimId"])),
     versionId: asString(pick(version, ["id", "version_id", "claim_version_id", "versionId"])),
     runId: asString(pick(source, ["run_id", "runId", "extraction_run_id"]), undefined as unknown as string) || undefined,
+    source: asString(pick(source, ["source"]), "ai") as Claim["source"],
     eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
     eventTitle: asString(pick(source, ["event_title", "eventTitle"]), undefined as unknown as string) || undefined,
     type: asString(pick(source, ["type", "claim_type", "claimType"]), "fact"),
@@ -856,6 +887,33 @@ export const api = {
     return event;
   },
 
+  async listEventTranscriptSegments(eventId: Id): Promise<TranscriptSegment[]> {
+    const body = await request<ApiSuccess<{ segments: TranscriptSegment[] }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/transcript-segments`,
+      { cache: "no-store" },
+    );
+    if (!Array.isArray(body.data.segments)) {
+      invalidContract("The server returned an invalid Transcript segment list.");
+    }
+    return body.data.segments;
+  },
+
+  async createManualClaim(
+    eventId: Id,
+    input: CreateManualClaimRequest,
+    idempotencyKey: string,
+  ): Promise<Claim> {
+    const body = await request<ApiSuccess<{ claim: ClaimRecord }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/manual-claims`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody(input),
+      },
+    );
+    return requireId(normalizeClaim(body.data.claim), "manual Claim");
+  },
+
   async beginTranscriptImport(projectId: Id, files: File[], idempotencyKey: string): Promise<ImportSession> {
     const payload: CreateTranscriptImportRequest = {
       files: files.map((file) => ({ filename: file.name, mime_type: file.type || "text/plain", size_bytes: file.size })),
@@ -970,6 +1028,33 @@ export const api = {
   async getRun(runId: Id): Promise<ExtractionRun> {
     const body = await request<GetExtractionRunResponse>(`/api/v1/extraction-runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
     return requireId(normalizeRun(body.data.run), "extraction run");
+  },
+
+  async getAiDraftAssessment(runId: Id): Promise<AiDraftAssessment | null> {
+    const body = await request<ApiSuccess<{ assessment: AiDraftAssessment | null }>>(
+      `/api/v1/extraction-runs/${encodeURIComponent(runId)}/draft-assessment`,
+      { cache: "no-store" },
+    );
+    return body.data.assessment;
+  },
+
+  async recordAiDraftAssessment(
+    runId: Id,
+    assessment: AiDraftAssessment["assessment"],
+    idempotencyKey: string,
+  ): Promise<AiDraftAssessment> {
+    const body = await request<ApiSuccess<{ assessment: AiDraftAssessment }>>(
+      `/api/v1/extraction-runs/${encodeURIComponent(runId)}/draft-assessment`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ assessment }),
+      },
+    );
+    if (!body.data.assessment?.id) {
+      invalidContract("The server returned an invalid AI draft assessment.");
+    }
+    return body.data.assessment;
   },
 
   async getRunDebug(runId: Id): Promise<RunDebug> {

@@ -26,8 +26,10 @@ import {
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
 import { buildRunTimingItems, runNeedsRecovery, runTotalDurationMs } from "@/lib/domain/run-timing";
+import { groupAiDraftClaims, sortClaimsForReview } from "@/lib/domain/ai-draft";
 import {
   ApiClientError,
+  AiDraftAssessment,
   ApiIssue,
   Claim,
   ClaimEditSubmission,
@@ -46,13 +48,14 @@ import {
   ReviewSession,
   RunDebug,
   TranscriptionRun,
+  TranscriptSegment,
   api,
   normalizeClaim,
   toIssue,
 } from "./api-client";
 import { DirectRecorder } from "./direct-recorder";
 
-type Screen = "simple" | "projects" | "project" | "event" | "review" | "claim" | "results" | "run-debug";
+type Screen = "simple" | "projects" | "project" | "event" | "draft" | "review" | "claim" | "review-summary" | "results" | "run-debug";
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
 type ResultTab = ProjectViewName;
 
@@ -101,6 +104,11 @@ type ReviewQueueSnapshot = {
   project: Project;
   claims: Claim[];
   occurrenceCandidates: OccurrenceCandidate[];
+};
+
+type ReviewSummaryDestination = {
+  complete: boolean;
+  nextEventId?: string;
 };
 
 const resultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
@@ -323,9 +331,9 @@ function formatTimestamp(value?: string | number): string {
 }
 
 function confidenceText(value?: number): string {
-  if (value == null) return "未提供排序分";
+  if (value == null) return "AI 未提供置信度";
   const normalized = value <= 1 ? value * 100 : value;
-  return `模型排序分 ${Math.round(normalized)}`;
+  return `AI 置信度 ${Math.round(normalized)}%`;
 }
 
 function isCompleteEvidenceSet(
@@ -935,12 +943,16 @@ export default function Home() {
   const [run, setRun] = useState<ExtractionRun | null>(null);
   const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
+  const [draftAssessment, setDraftAssessment] = useState<AiDraftAssessment | null>(null);
+  const [showMissingClaim, setShowMissingClaim] = useState(false);
+  const [reviewSummaryDestination, setReviewSummaryDestination] = useState<ReviewSummaryDestination | null>(null);
   const [reviewClockNow, setReviewClockNow] = useState(() => Date.now());
   const [claims, setClaims] = useState<Claim[]>([]);
   const [occurrenceCandidates, setOccurrenceCandidates] = useState<OccurrenceCandidate[]>([]);
   const [claimsState, setClaimsState] = useState<AsyncState>("idle");
   const [claimsIssue, setClaimsIssue] = useState<ApiIssue | null>(null);
   const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
+  const [claimBackScreen, setClaimBackScreen] = useState<"draft" | "review" | "results">("review");
   const [evidence, setEvidence] = useState<EvidenceRef[]>([]);
   const [evidenceState, setEvidenceState] = useState<AsyncState>("idle");
   const [viewTab, setViewTab] = useState<ResultTab>("folder-summary");
@@ -1456,9 +1468,11 @@ export default function Home() {
       .finally(() => completingReviewSessions.current.delete(reviewSession.id));
   }, [flash, project, reviewSession]);
 
-  const loadReviewQueue = useCallback(async (): Promise<ReviewQueueSnapshot | null> => {
+  const loadReviewQueue = useCallback(async (
+    destination: "review" | "draft" = "review",
+  ): Promise<ReviewQueueSnapshot | null> => {
     if (!project) return null;
-    setScreen("review");
+    setScreen(destination);
     setClaimsState("loading");
     setClaimsIssue(null);
     try {
@@ -1481,7 +1495,9 @@ export default function Home() {
       const foundClaims = results.flatMap((item) => item.status === "fulfilled" ? item.value.claims : []);
       const foundOccurrences = results.flatMap((item) => item.status === "fulfilled" ? item.value.occurrenceCandidates : []);
       if (failed && !foundClaims.length && !foundOccurrences.length) throw failed.reason;
-      const uniqueClaims = [...new Map(foundClaims.map((item) => [item.id, item])).values()];
+      const uniqueClaims = sortClaimsForReview(
+        [...new Map(foundClaims.map((item) => [item.id, item])).values()],
+      );
       const uniqueOccurrences = [...new Map(foundOccurrences.map((item) => [item.id, item])).values()];
       setClaims(uniqueClaims);
       setOccurrenceCandidates(uniqueOccurrences);
@@ -1556,7 +1572,10 @@ export default function Home() {
     }
   }, []);
 
-  async function openClaim(claimOrVersionId: string) {
+  async function openClaim(
+    claimOrVersionId: string,
+    origin?: "draft" | "review" | "results",
+  ) {
     let listClaim = claims.find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
     let nextClaim: Claim | null = null;
     setBusyAction("open-claim");
@@ -1593,6 +1612,7 @@ export default function Home() {
     }
     if (!nextClaim?.id) return;
     setSelectedClaim(nextClaim);
+    setClaimBackScreen(origin ?? (screen === "draft" ? "draft" : screen === "results" ? "results" : "review"));
     setScreen("claim");
     setEvidence([]);
     setEvidenceState("loading");
@@ -1626,27 +1646,62 @@ export default function Home() {
     setProject(snapshot.project);
     setEvents(snapshot.events);
     setProjectWorkflow(snapshot.plan);
-    if (snapshot.plan.phase === "complete") {
+    let latestReviewSession = await api.getReviewSession(project.id);
+    if (latestReviewSession?.status === "active") {
+      const fingerprint = `review-complete:${latestReviewSession.id}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      latestReviewSession = await api.completeReviewSession(latestReviewSession.id, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+    }
+    if (latestReviewSession) setReviewSession(latestReviewSession);
+    setReviewSummaryDestination({
+      complete: snapshot.plan.phase === "complete",
+      ...(snapshot.plan.currentEventId ? { nextEventId: snapshot.plan.currentEventId } : {}),
+    });
+    setScreen("review-summary");
+  }
+
+  async function continueAfterReviewSummary() {
+    if (!project || !reviewSummaryDestination) return;
+    if (reviewSummaryDestination.complete) {
       storeId(workflowIntentStorageKey, null);
       setWorkflowIntentProjectId(null);
       flash("整组沟通已经核对完成，正在打开会前速览");
       await loadView("brief-card");
-      return;
+    } else if (reviewSummaryDestination.nextEventId) {
+      await loadSimpleProject(project.id, reviewSummaryDestination.nextEventId);
+      flash("下一次沟通已准备好，需要你点击后才会开始分析");
+    } else {
+      await loadSimpleProject(project.id, event?.id);
     }
-    if (snapshot.plan.currentEventId) {
-      await loadSimpleProject(project.id, snapshot.plan.currentEventId);
-      flash("本次核对已完成。下一次沟通已准备好，需要你点击后才会开始分析");
-      return;
+    setReviewSummaryDestination(null);
+  }
+
+  async function enterAiDraft() {
+    const snapshot = await loadReviewQueue("draft");
+    if (!snapshot) return;
+    const currentRunId = projectWorkflow.currentRunId
+      || event?.latestRun?.id
+      || event?.latestRunId
+      || run?.id;
+    if (currentRunId) {
+      try {
+        setDraftAssessment(await api.getAiDraftAssessment(currentRunId));
+      } catch (error) {
+        setClaimsIssue(toIssue(error));
+      }
+    } else {
+      setDraftAssessment(null);
     }
-    await loadSimpleProject(project.id, event?.id);
   }
 
   async function enterContinuousReview() {
-    const snapshot = await loadReviewQueue();
+    const snapshot = await loadReviewQueue("review");
     if (!snapshot) return;
     const firstPending = snapshot.claims.find((item) => item.reviewStatus === "pending");
     if (firstPending) {
-      await openClaim(firstPending.id);
+      await openClaim(firstPending.id, "review");
       return;
     }
     if (snapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
@@ -1662,7 +1717,7 @@ export default function Home() {
       return;
     }
     if (phase === "waiting_review") {
-      void enterContinuousReview();
+      void enterAiDraft();
       return;
     }
     storeId(workflowIntentStorageKey, null);
@@ -2339,6 +2394,87 @@ export default function Home() {
     void loadProjects();
   }
 
+  function currentDraftRunId(): string | null {
+    return projectWorkflow.currentRunId
+      || event?.latestRun?.id
+      || event?.latestRunId
+      || run?.id
+      || null;
+  }
+
+  async function recordCurrentDraftAssessment(
+    assessment: AiDraftAssessment["assessment"],
+  ): Promise<void> {
+    const runId = currentDraftRunId();
+    if (!runId) return;
+    setBusyAction("draft-assessment");
+    try {
+      const fingerprint = `draft-assessment:${runId}:${assessment}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const saved = await api.recordAiDraftAssessment(runId, assessment, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      setDraftAssessment(saved);
+      if (assessment === "basically_usable") {
+        flash("已记录：AI 初稿基本可用。它仍不会自动进入正式报告");
+      }
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function createMissingClaim(input: {
+    statement: string;
+    type: string;
+    segmentIds: string[];
+  }): Promise<void> {
+    const targetEventId = projectWorkflow.currentEventId || event?.id;
+    if (!targetEventId) return;
+    setBusyAction("manual-claim");
+    try {
+      const fingerprint = [
+        "manual-claim",
+        targetEventId,
+        input.type,
+        input.statement,
+        ...[...input.segmentIds].sort(),
+      ].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const created = await api.createManualClaim(
+        targetEventId,
+        {
+          statement: input.statement,
+          type: input.type as Parameters<typeof api.createManualClaim>[1]["type"],
+          segment_ids: input.segmentIds,
+        },
+        idempotencyKey,
+      );
+      mutationKeys.current.delete(fingerprint);
+      setShowMissingClaim(false);
+      const snapshot = await loadReviewQueue("draft");
+      if (snapshot) {
+        setClaims((items) => sortClaimsForReview([
+          ...items.filter((item) => item.id !== created.id),
+          created,
+        ]));
+      }
+      flash("漏项已加入待核对队列；确认前不会进入正式报告");
+    } catch (error) {
+      setClaimsIssue(toIssue(error));
+      throw error;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function startContinuousReviewFromDraft() {
+    if (!draftAssessment) await recordCurrentDraftAssessment("needs_review");
+    await enterContinuousReview();
+  }
+
   async function confirmCurrentScenario(scenario: string, custom?: string) {
     if (!project) return;
     setBusyAction("scenario");
@@ -2351,7 +2487,7 @@ export default function Home() {
       mutationKeys.current.delete(fingerprint);
       setProject(updated);
       flash("使用场景已确认，后续沟通会沿用这个设置");
-      if (screen === "simple") await enterContinuousReview();
+      if (screen === "simple") await enterAiDraft();
       else await loadProject(project.id);
     } catch (error) {
       setProjectIssue(toIssue(error));
@@ -2399,7 +2535,7 @@ export default function Home() {
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
-          onReview={() => void enterContinuousReview()}
+          onReview={() => void enterAiDraft()}
           onResult={() => void loadView("brief-card")}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
@@ -2444,8 +2580,29 @@ export default function Home() {
             setEventIssue(issue);
           } finally { setBusyAction(null); }
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
-        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} reviewClaims={claims} pendingOccurrenceCount={occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen("review")} onOpenReviewClaim={(id) => void openClaim(id)} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "draft" && <AiDraftScreen
+          event={events.find((item) => item.id === projectWorkflow.currentEventId) ?? event}
+          runId={currentDraftRunId()}
+          claims={claims}
+          occurrenceCandidates={occurrenceCandidates}
+          assessment={draftAssessment}
+          state={claimsState}
+          issue={claimsIssue}
+          busy={busyAction}
+          onBack={() => setScreen("simple")}
+          onOpenClaim={(id) => void openClaim(id)}
+          onAssessUsable={() => void recordCurrentDraftAssessment("basically_usable")}
+          onStartReview={() => void startContinuousReviewFromDraft()}
+          onAddMissing={() => setShowMissingClaim(true)}
+        />}
+        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen("draft")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} reviewClaims={claims} pendingOccurrenceCount={occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen(claimBackScreen)} onOpenReviewClaim={(id) => void openClaim(id)} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "review-summary" && <ReviewCompletionScreen
+          project={project}
+          session={reviewSession}
+          destination={reviewSummaryDestination}
+          onContinue={() => void continueAfterReviewSummary()}
+        />}
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
       </main>
@@ -2462,6 +2619,12 @@ export default function Home() {
           await loadProject(created.id);
         } catch (error) { setProjectsIssue(toIssue(error)); } finally { setBusyAction(null); }
       }} busy={busyAction === "new-project"} />}
+      {showMissingClaim && (projectWorkflow.currentEventId || event?.id) && <MissingClaimModal
+        eventId={projectWorkflow.currentEventId || event!.id}
+        busy={busyAction === "manual-claim"}
+        onClose={() => setShowMissingClaim(false)}
+        onCreate={createMissingClaim}
+      />}
       {showNewEvent && project && <NewEventModal onClose={() => setShowNewEvent(false)} onCreate={async (input) => {
         setBusyAction("new-event");
         try {
@@ -3329,6 +3492,46 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
   );
 }
 
+const aiDraftSectionLabels = {
+  decisions: "决定与要求",
+  money_dates_owners: "金额、日期与负责人",
+  preferences: "偏好与材料",
+  open_questions: "仍待确认",
+  risks: "风险与补证据",
+  other: "其他重要事实",
+} as const;
+
+function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment, state, issue, busy, onBack, onOpenClaim, onAssessUsable, onStartReview, onAddMissing }: { event: Event | null; runId: string | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; assessment: AiDraftAssessment | null; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenClaim: (id: string) => void; onAssessUsable: () => void; onStartReview: () => void; onAddMissing: () => void }) {
+  const runClaims = claims.some((claim) => claim.runId === runId)
+    ? claims.filter((claim) => claim.runId === runId)
+    : claims.filter((claim) => claim.reviewStatus === "pending");
+  const runOccurrences = occurrenceCandidates.filter((candidate) => !runId || candidate.extraction_run_id === runId);
+  const grouped = groupAiDraftClaims(runClaims);
+  const proposedRelationCount = runClaims.reduce((total, claim) => total + claim.relationsForReview.filter((relation) => relation.status === "proposed").length, 0);
+  const sectionEntries = Object.entries(grouped) as Array<[keyof typeof aiDraftSectionLabels, Claim[]]>;
+  return <div className="page ai-draft-page"><PageHeader eyebrow={event?.title || "本次沟通"} title="AI 会议信息初稿" body="先看 AI 对整场沟通的理解，再决定从哪里开始核对。初稿不会自动进入正式报告或后续记忆。" back={onBack} actions={<span className="status-badge pending">待人工核对</span>} />{issue && <ErrorNotice issue={issue} compact />}{state === "loading" ? <LoadingBlock label="正在整理已经生成的 AI 初稿…" /> : <><section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>只有逐条核对并确认后，内容才会进入事项概况、后续沟通上下文和会前速览。</p></div></section><div className="draft-sections">{sectionEntries.filter(([, items]) => items.length > 0).map(([key, items]) => <section className="panel draft-section" key={key}><header><h2>{aiDraftSectionLabels[key]}</h2><span>{items.length}</span></header><div>{items.map((claim) => <article key={claim.id} className={claim.source === "human" ? "human-added" : ""}><div><span className="claim-type">{claim.source === "human" ? "人工补充" : typeLabel(claim.type)}</span>{claim.needsAdditionalEvidence && <span className="status-badge neutral">需补证据</span>}{claim.relationsForReview.some((relation) => relation.status === "proposed") && <span className="status-badge warning">需判断关系</span>}</div><p>{claim.statement}</p><button className="text-button" onClick={() => onOpenClaim(claim.id)}>查看原文与核对</button></article>)}</div></section>)}{runOccurrences.length > 0 && <section className="panel draft-section"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}</div>{runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}<section className="draft-actions panel"><div><h2>你对这份初稿的第一感觉</h2><p>这个选择只用于评估 AI 第一版是否有用，不等于确认其中的事实。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>开始核对和修正</button></div></section></>}</div>;
+}
+
+function MissingClaimModal({ eventId, busy, onClose, onCreate }: { eventId: string; busy: boolean; onClose: () => void; onCreate: (input: { statement: string; type: string; segmentIds: string[] }) => Promise<void> }) {
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [state, setState] = useState<AsyncState>("loading");
+  const [issue, setIssue] = useState<ApiIssue | null>(null);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [statement, setStatement] = useState("");
+  const [type, setType] = useState<OccurrenceNewClaim["type"]>("other");
+  useEffect(() => { let active = true; void api.listEventTranscriptSegments(eventId).then((items) => { if (!active) return; setSegments(items); setState(items.length ? "ready" : "empty"); }).catch((error) => { if (!active) return; setIssue(toIssue(error)); setState("error"); }); return () => { active = false; }; }, [eventId]);
+  const shown = segments.filter((segment) => !query.trim() || `${segment.speaker || ""} ${segment.text}`.toLowerCase().includes(query.trim().toLowerCase()));
+  async function submit() { if (!statement.trim() || selected.size === 0) return; setIssue(null); try { await onCreate({ statement: statement.trim(), type, segmentIds: [...selected] }); } catch (error) { setIssue(toIssue(error)); } }
+  return <Modal title="补上 AI 漏掉的重要信息" description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{segment.speaker || "说话人未标注"}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder="例如：客户确认总预算上限为 21,500 美元。" /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
+}
+
+function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
+  const outcome = session?.outcome;
+  const aiInitial = (session?.initialPendingClaimCount ?? 0) + (session?.initialPendingOccurrenceCount ?? 0);
+  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮核对完成" body="下面展示 AI 初稿经过人工核对后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark">✓</span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮核对。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>直接确认、修改后确认和经过确认的人工补充会进入 Verified Ledger；拒绝内容和未处理草稿不会进入报告，也不会影响下一次沟通。</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看会前速览" : "准备下一次沟通"}</button></section></div>;
+}
+
 function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSession, reviewClockNow, selected, onBack, onRetry, onOpen, onToggle, onBatch, onOccurrenceVerdict, onOccurrenceConvert, batchCount, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; reviewSession: ReviewSession | null; reviewClockNow: number; selected: Set<string>; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onToggle: (id: string) => void; onBatch: () => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; batchCount: number; busy: string | null }) {
   const [filter, setFilter] = useState<"pending" | "reviewed" | "all">("pending");
   const visible = claims.filter((item) => filter === "pending" ? item.reviewStatus === "pending" : filter === "reviewed" ? item.reviewStatus !== "pending" : true);
@@ -3353,7 +3556,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
       {visible.length > 0 && <div className="review-list">{visible.map((claim) => {
         const hasProposedRelations = claim.relationsForReview.some((relation) => relation.status === "proposed");
         const batchEligible = claim.reviewStatus === "pending" && claim.batchReviewAttested && !hasProposedRelations;
-        return <article key={claim.id} className="review-card"><label className="claim-select" title={hasProposedRelations ? "包含待核对关系，请逐条处理" : claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={!batchEligible} checked={selected.has(claim.id) && batchEligible} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待核对</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看证据和处理记录 ›" : hasProposedRelations ? "打开并逐条核对事实与关系 ›" : claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : "打开并核对证据后才能批量选择 ›"}</span></button></article>;
+        return <article key={claim.id} className={`review-card${claim.source === "human" ? " human-added" : ""}`}><label className="claim-select" title={hasProposedRelations ? "包含待核对关系，请逐条处理" : claim.batchReviewAttested ? "加入批量确认" : "请先打开并核对证据"}><input type="checkbox" disabled={!batchEligible} checked={selected.has(claim.id) && batchEligible} onChange={() => onToggle(claim.id)} aria-label={`选择 ${claim.statement}`} /></label><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待核对</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看证据和处理记录 ›" : hasProposedRelations ? "打开并逐条核对事实与关系 ›" : claim.batchReviewAttested ? "证据已核对，可批量选择 ›" : "打开并核对证据后才能批量选择 ›"}</span></button></article>;
       })}</div>}
       {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新证据附到原记录。如果里面有新变化，可以拆成新的待审核记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
     </div>
@@ -3361,6 +3564,9 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
 }
 
 function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
+  const [context, setContext] = useState<TranscriptSegment[] | null>(null);
+  const [contextIssue, setContextIssue] = useState<ApiIssue | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
   const audioStart = typeof evidence.timestampStart === "number"
     ? evidence.timestampStart
     : undefined;
@@ -3370,6 +3576,21 @@ function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
   const audioSource = evidence.audioUrl
     ? `${evidence.audioUrl}${audioStart == null ? "" : `#t=${Math.max(0, audioStart)},${audioEnd == null ? "" : Math.max(audioStart, audioEnd)}`}`
     : undefined;
+  async function loadContext() {
+    if (!evidence.eventId || !evidence.segmentIds.length || contextLoading) return;
+    setContextLoading(true);
+    setContextIssue(null);
+    try {
+      const allSegments = await api.listEventTranscriptSegments(evidence.eventId);
+      const selectedIndexes = allSegments.flatMap((segment, index) => evidence.segmentIds.includes(segment.id) ? [index] : []);
+      const contextIndexes = new Set(selectedIndexes.flatMap((index) => [index - 1, index, index + 1]).filter((index) => index >= 0 && index < allSegments.length));
+      setContext(allSegments.filter((_, index) => contextIndexes.has(index)));
+    } catch (error) {
+      setContextIssue(toIssue(error));
+    } finally {
+      setContextLoading(false);
+    }
+  }
   return (
     <article className="evidence-card">
       <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${evidence.role} evidence · ` : ""}{formatTimestamp(evidence.timestampStart)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
@@ -3379,6 +3600,9 @@ function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
       {audioSource && <div className="evidence-audio"><audio controls preload="metadata" src={audioSource} /><small>播放会从这句原文附近开始。逐字稿和时间点由服务器保存，可随时回到原录音核对。</small></div>}
       {evidence.viewUrl && !evidence.imageUrl && <a className="evidence-open" href={evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
       {evidence.quote && <blockquote>“{evidence.quote}”</blockquote>}
+      {evidence.eventId && evidence.segmentIds.length > 0 && <button className="text-button" disabled={contextLoading} onClick={() => context ? setContext(null) : void loadContext()}>{contextLoading ? "正在读取前后原文…" : context ? "收起前后原文" : "查看这句话前后的原文"}</button>}
+      {contextIssue && <ErrorNotice issue={contextIssue} compact />}
+      {context && <div className="evidence-context">{context.map((segment) => <p key={segment.id} className={evidence.segmentIds.includes(segment.id) ? "selected" : ""}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{segment.speaker || "说话人未标注"}</b><span>{segment.text}</span></p>)}</div>}
       {evidence.caption && evidence.caption !== evidence.quote && <p>{evidence.caption}</p>}
       {!evidence.quote && !evidence.imageUrl && !evidence.caption && <p className="muted">这条证据已记录，但服务器没有返回可在页面预览的内容。</p>}
     </article>
@@ -3511,7 +3735,7 @@ function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, e
   });
   return (
     <div className="page review-detail-page">
-      <PageHeader eyebrow={typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${confidenceText(claim.confidence)}${pending ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
+      <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
         {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续审核队列"><header><span className="section-kicker">连续审核</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>Claim 处理完后，还有 {pendingOccurrenceCount} 条“再次出现”记录需要决定。</p>}</aside>}

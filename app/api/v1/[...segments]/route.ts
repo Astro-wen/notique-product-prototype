@@ -54,6 +54,12 @@ import {
   startReviewSession,
 } from "@/lib/server/db/review-session-repository";
 import {
+  createManualClaim,
+  getAiDraftAssessment,
+  listEventTranscriptSegments,
+  recordAiDraftAssessment,
+} from "@/lib/server/db/ai-draft-repository";
+import {
   ApiFault,
   enumValue,
   isoDate,
@@ -73,6 +79,7 @@ import type {
   ClaimVerdictRequest,
   OccurrenceConversionClaimInput,
   OccurrenceVerdictRequest,
+  CreateManualClaimRequest,
 } from "@/lib/shared/api-types";
 import { getBindings } from "@/db";
 
@@ -307,6 +314,9 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 2 && segments[0] === "events") {
     return ok(await getEvent(scope, segments[1]), id);
   }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "transcript-segments") {
+    return ok({ segments: await listEventTranscriptSegments(scope, segments[1]) }, id);
+  }
   if (
     segments.length === 3 &&
     segments[0] === "projects" &&
@@ -353,6 +363,13 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   }
   if (segments.length === 2 && segments[0] === "extraction-runs") {
     return ok({ run: await getExtractionRun(scope, segments[1]) }, id);
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === "extraction-runs" &&
+    segments[2] === "draft-assessment"
+  ) {
+    return ok({ assessment: await getAiDraftAssessment(scope, segments[1]) }, id);
   }
   if (segments.length === 2 && segments[0] === "transcription-runs") {
     return ok({ transcription_run: await getTranscriptionRun(scope, segments[1]) }, id);
@@ -417,6 +434,45 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "manual-claims") {
+    const body = await jsonObject(request);
+    const input: CreateManualClaimRequest = {
+      statement: requiredString(body.statement, "statement", { max: 10_000 }),
+      type: enumValue(body.type, "type", CLAIM_TYPES),
+      segment_ids: stringArray(body.segment_ids, "segment_ids", { min: 1, max: 8 }),
+    };
+    const claim = await createManualClaim(
+      scope,
+      segments[1],
+      input,
+      idempotencyKey(request),
+    );
+    return ok({ claim }, id, 201);
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === "extraction-runs" &&
+    segments[2] === "draft-assessment"
+  ) {
+    const body = await jsonObject(request);
+    const assessment = enumValue(
+      body.assessment,
+      "assessment",
+      ["basically_usable", "needs_review"] as const,
+    );
+    return ok(
+      {
+        assessment: await recordAiDraftAssessment(
+          scope,
+          segments[1],
+          assessment,
+          idempotencyKey(request),
+        ),
+      },
+      id,
+      201,
+    );
+  }
   if (segments.length === 1 && segments[0] === "claim-relations") {
     const body = await jsonObject(request);
     const relation = await createManualRelation(

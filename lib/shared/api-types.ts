@@ -68,6 +68,9 @@ export type ApiErrorCode =
   | "CLAIM_VERSION_CONFLICT"
   | "CLAIM_STATE_CONFLICT"
   | "REVIEW_SESSION_CONFLICT"
+  | "DRAFT_ASSESSMENT_CONFLICT"
+  | "RUN_STATE_CONFLICT"
+  | "EVIDENCE_SCOPE_INVALID"
   | "GLOSSARY_VERSION_CONFLICT"
   | "GLOSSARY_DUPLICATE"
   | "IDEMPOTENCY_KEY_REQUIRED"
@@ -189,6 +192,16 @@ export type ReviewSessionRecord = {
   initial_pending_occurrence_count: number;
   remaining_pending_claim_count: number;
   remaining_pending_occurrence_count: number;
+  outcome: {
+    confirmed_claim_count: number;
+    edited_claim_count: number;
+    rejected_claim_count: number;
+    human_added_claim_count: number;
+    confirmed_occurrence_count: number;
+    rejected_occurrence_count: number;
+    accepted_relation_count: number;
+    rejected_relation_count: number;
+  };
   created_at: string;
   updated_at: string;
 };
@@ -365,6 +378,7 @@ export type ClaimRecord = {
   project_id: string;
   event_id: string;
   extraction_run_id: string;
+  source: "ai" | "human" | "occurrence_conversion";
   type: string;
   materiality: "high" | "medium" | "low";
   confidence: number | null;
@@ -384,6 +398,45 @@ export type ClaimRecord = {
   batch_review_attested: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type EventTranscriptSegmentRecord = {
+  id: string;
+  event_id: string;
+  asset_version_id: string;
+  ordinal: number;
+  speaker: string | null;
+  start_ms: number | null;
+  end_ms: number | null;
+  text: string;
+};
+
+export type CreateManualClaimRequest = {
+  statement: string;
+  type:
+    | "budget"
+    | "preference"
+    | "requirement"
+    | "decision"
+    | "concern"
+    | "risk"
+    | "open_question"
+    | "person_role"
+    | "timing"
+    | "property_fact"
+    | "material"
+    | "measurement"
+    | "other";
+  segment_ids: string[];
+};
+
+export type AiDraftAssessmentRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  extraction_run_id: string;
+  assessment: "basically_usable" | "needs_review";
+  created_at: string;
 };
 
 export type ClaimRelationForReviewRecord = {

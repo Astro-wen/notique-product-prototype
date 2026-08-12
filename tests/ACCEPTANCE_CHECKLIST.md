@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 211 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、阶段恢复与分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、引导式状态恢复、连续审核导航、生产 Bundle 和发布包密钥扫描。
+- `npm test` 通过，合计 214 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、阶段恢复与分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、引导式状态恢复、AI 初稿、遗漏补充、风险优先审核、连续审核导航、生产 Bundle 和发布包密钥扫描。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -156,6 +156,8 @@
 - 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。第一次会停下来让用户确认 Scenario，每次生成候选后会停下来让用户核对；待审核内容清空后才允许继续下一次，所以后续 Context 只继承已经确认的记录。已有 Run 只会继续轮询，不会重复提交。零候选、未就绪材料和旧的单条分析入口都不能绕过这条顺序。
 - 引导式页面只在浏览器保存最近 Project ID、Event ID 和“已开始整组处理”的导航意图，不保存 Claim、Evidence、Verdict 或报告。刷新后会从服务器恢复真实 Run、Scenario 和待核对数量。分析完成会直接进入 Scenario 或第一条审核；单条确认、拒绝或修改后自动进入下一条；本次清空后只准备下一次沟通，必须由用户再点击一次才产生下一次模型请求；整组完成后自动打开会前速览。
 - 连续审核桌面端使用“队列、Evidence、决定”三栏。手机端队列变为横向选择区。Relation 继续要求逐条接受或拒绝，Evidence 不完整时确认和修改继续锁定；批量处理被收进次级区域，没有削弱服务端 Evidence attestation。后台等待超时显示“仍在后台运行”，其“检查状态”动作只读取原 Run。
+- 分析完成后会先显示按业务主题分组的 AI 会议信息初稿，再进入逐条审核。用户对“初稿基本可用”的第一印象单独保存，不能改变任何 Claim 的 Verified 状态。人工可以从当前 Event 的完整 Transcript 中选择一到八段原文，补回 AI 漏掉的事实；新记录标记为人工补充、保持 Pending，并复用同一套 Evidence 和 Relation 审核门。
+- 审核队列按明确风险排序：人工补充、金额、日期、决定、责任人、候选关系和补证据项优先。Evidence 可以展开选中引文前后的相邻 Transcript。队列清空后，服务端 Review Session 会汇总确认、修改、拒绝、人工补充、Occurrence 和 Relation 决定数量；该汇总不调用模型，也不重新读取 Transcript 生成报告。
 - 公开 Sites 已用真实服务器数据做导航回归：最近 Project/Event 刷新后恢复；完成 Project 一次点击进入会前速览；沟通卡片只显示一个状态；Brief 证据不足的三个位置保持空白。检查没有创建新 Run 或调用模型。桌面连续审核已验证可直接打开第 1/10 条并同时显示队列、Evidence 和决定；手机布局由 390px 回归和响应式合同覆盖，尚待真人在手机浏览器走完一次完整审核。
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。

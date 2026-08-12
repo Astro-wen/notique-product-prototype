@@ -237,6 +237,7 @@ export function claimRecord(
     project_id: text(row, "project_id"),
     event_id: text(row, "event_id"),
     extraction_run_id: text(row, "extraction_run_id"),
+    source: text(row, "source") as ClaimRecord["source"],
     type: text(row, "type"),
     materiality: text(row, "materiality") as ClaimRecord["materiality"],
     confidence:
