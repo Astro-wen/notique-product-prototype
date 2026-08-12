@@ -2818,7 +2818,7 @@ function SimpleTestScreen({
             {events.map((item, index) => {
               const displayItem = item.id === event?.id ? event : item;
               const itemPending = displayItem.pendingClaimCount + displayItem.pendingOccurrenceCount;
-              const itemRun = displayItem.latestRun;
+              const itemRun = item.id === event?.id ? (run ?? displayItem.latestRun) : displayItem.latestRun;
               const itemAudioStatus = displayItem.assets.find((asset) => asset.kind === "audio")?.metadata.transcription_status;
               const itemDisplayStatus = deriveGuidedDisplayStatus({
                 assetCount: displayItem.assets.length,
@@ -2832,7 +2832,7 @@ function SimpleTestScreen({
               return (
                 <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => { setActiveTab("materials"); onUseEvent(item.id); }}>
                   <span className="meeting-index">{index + 1}</span>
-                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small><em>{itemDisplayStatus.label}</em></span>
+                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small></span>
                   {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <span className={`guided-status ${itemDisplayStatus.tone}`}>{itemDisplayStatus.label}</span>}
                 </button>
               );

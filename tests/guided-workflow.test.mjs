@@ -51,5 +51,7 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(source, /await finishGuidedReview\(\)/);
   assert.match(source, /reviewClaims=\{claims\}/);
   assert.match(source, /relationsReviewed/);
+  assert.doesNotMatch(source, /<em>\{itemDisplayStatus\.label\}<\/em>/);
+  assert.match(source, /item\.id === event\?\.id \? \(run \?\? displayItem\.latestRun\)/);
   assert.doesNotMatch(source, /Luna Max|旧的 max/);
 });
