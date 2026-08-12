@@ -159,6 +159,7 @@
 - 分析完成后会先显示按业务主题分组的 AI 会议信息初稿，再进入逐条审核。用户对“初稿基本可用”的第一印象单独保存，不能改变任何 Claim 的 Verified 状态。人工可以从当前 Event 的完整 Transcript 中选择一到八段原文，补回 AI 漏掉的事实；新记录标记为人工补充、保持 Pending，并复用同一套 Evidence 和 Relation 审核门。
 - 审核队列按明确风险排序：人工补充、金额、日期、决定、责任人、候选关系和补证据项优先。Evidence 可以展开选中引文前后的相邻 Transcript。队列清空后，服务端 Review Session 会汇总确认、修改、拒绝、人工补充、Occurrence 和 Relation 决定数量；该汇总不调用模型，也不重新读取 Transcript 生成报告。
 - 公开 Sites 已用真实服务器数据做导航回归：最近 Project/Event 刷新后恢复；完成 Project 一次点击进入会前速览；沟通卡片只显示一个状态；Brief 证据不足的三个位置保持空白。检查没有创建新 Run 或调用模型。桌面连续审核已验证可直接打开第 1/10 条并同时显示队列、Evidence 和决定；手机布局由 390px 回归和响应式合同覆盖，尚待真人在手机浏览器走完一次完整审核。
+- Sites v15 已用现有待核对 Project 验证 AI 初稿入口。页面正确显示八条按主题分组的候选、风险与补证据区、三种人工动作和“初稿不会进入正式结果”的边界；没有浏览器错误，也没有创建新 Run。此次功能发布包对应提交 `8ab5acf`，不含本地环境或凭据文件。
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
 - 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
@@ -251,4 +252,4 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - [ ] 由第二位标注者独立标注 Realtor 和 Insurance 开发集并完成分歧裁决。
 - [ ] 真实计时验证一次人工审核可以在两分钟内完成。
 - [ ] 通过 live API 验证跨 Workspace、跨 Project 隔离，以及 Verdict、Import、Extraction 的真实并发冲突。
-- [ ] 把当前代码部署为新的 Sites 版本，完成权限、Secret、D1、R2、后台任务、上传、审核和结果页的线上端到端验证；在此之前 GitHub Pages 跳转页不算完整产品部署。
+- [x] 当前代码已发布为 Sites v15，D1 Migration、R2、后台任务、已有材料、AI 初稿、审核入口和结果读取可以在线工作。GitHub Pages 仍只是跳转入口，不承担全栈处理。
