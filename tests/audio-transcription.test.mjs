@@ -292,7 +292,7 @@ test("single byte Range parser supports explicit, open, and suffix ranges and re
   });
 });
 
-test("diarized output requires ordered speaker segments and preserves exact timing", async () => {
+test("diarized output sorts overlapping speaker segments and preserves exact timing", async () => {
   const policy = await loadAudioPolicy();
   const output = policy.validateDiarizedTranscriptOutput({
     duration: 8.5,
@@ -305,12 +305,39 @@ test("diarized output requires ordered speaker segments and preserves exact timi
   assert.equal(output.segments.length, 2);
   assert.equal(output.segments[0].startSeconds, 0.25);
   assert.equal(output.segments[1].speaker, "Client");
-  assert.throws(() => policy.validateDiarizedTranscriptOutput({
+  const reordered = policy.validateDiarizedTranscriptOutput({
     segments: [
       { speaker: "B", start: 4, end: 5, text: "later" },
       { speaker: "A", start: 1, end: 2, text: "earlier" },
     ],
-  }), /ordered/);
+  });
+  assert.deepEqual(reordered.segments.map((segment) => segment.speaker), ["A", "B"]);
+});
+
+test("diarized streaming output requires completion and preserves every segment", async () => {
+  const policy = await loadAudioPolicy();
+  const body = [
+    'event: transcript.text.segment',
+    'data: {"type":"transcript.text.segment","id":"seg_2","start":4,"end":6,"text":"Second","speaker":"B"}',
+    '',
+    'event: transcript.text.segment',
+    'data: {"type":"transcript.text.segment","id":"seg_1","start":0,"end":3,"text":"First","speaker":"A"}',
+    '',
+    'event: transcript.text.done',
+    'data: {"type":"transcript.text.done","text":"First Second"}',
+    '',
+    'data: [DONE]',
+  ].join("\n");
+  const output = policy.parseDiarizedTranscriptProviderBody(body, "text/event-stream");
+  assert.equal(output.text, "First Second");
+  assert.deepEqual(output.segments.map((segment) => segment.speaker), ["A", "B"]);
+  assert.throws(
+    () => policy.parseDiarizedTranscriptProviderBody(
+      'data: {"type":"transcript.text.segment","start":0,"end":1,"text":"Partial","speaker":"A"}\n',
+      "text/event-stream",
+    ),
+    /before the final completion event/,
+  );
 });
 
 test("production route, durable worker, UI, and evidence playback share the audio contract", async () => {
@@ -326,6 +353,8 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(processor, /\/audio\/transcriptions/);
   assert.match(processor, /response_format", "diarized_json"/);
   assert.match(processor, /chunking_strategy", "auto"/);
+  assert.match(processor, /stream", "true"/);
+  assert.match(processor, /parseDiarizedTranscriptProviderBody/);
   assert.match(outbox, /TRANSCRIPTION_MAX_ATTEMPTS/);
   assert.match(repository, /Audio must finish transcription before analysis/);
   assert.match(page, /上传已有录音/);

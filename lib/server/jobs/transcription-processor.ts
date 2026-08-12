@@ -2,6 +2,7 @@ import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import {
   AUDIO_TRANSCRIPTION_PARSER_VERSION,
   diarizedTranscriptJson,
+  parseDiarizedTranscriptProviderBody,
   validateDiarizedTranscriptOutput,
   type ValidatedDiarizedTranscript,
 } from "@/lib/domain/audio-transcription";
@@ -26,7 +27,12 @@ const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_PROVIDER_ERROR_CHARS = 500;
 
 class TranscriptionFault extends Error {
-  constructor(readonly code: string, message: string, readonly retryable = false) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable = false,
+    readonly providerRequestId: string | null = null,
+  ) {
     super(message);
     this.name = "TranscriptionFault";
   }
@@ -137,6 +143,7 @@ async function callProvider(run: Row): Promise<{
   form.set("model", String(run.model));
   form.set("response_format", "diarized_json");
   form.set("chunking_strategy", "auto");
+  form.set("stream", "true");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(run.request_timeout_ms));
@@ -179,24 +186,20 @@ async function callProvider(run: Row): Promise<{
     const failure = classifyTranscriptionHttpFailure(response.status);
     throw new TranscriptionFault(failure.code, message, failure.retryable);
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new TranscriptionFault(
-      "TRANSCRIPTION_OUTPUT_INVALID",
-      "OpenAI transcription did not return valid JSON.",
-    );
-  }
   try {
     return {
-      transcript: validateDiarizedTranscriptOutput(parsed),
+      transcript: parseDiarizedTranscriptProviderBody(
+        body,
+        response.headers.get("content-type"),
+      ),
       providerRequestId,
     };
   } catch (error) {
     throw new TranscriptionFault(
       "TRANSCRIPTION_OUTPUT_INVALID",
       error instanceof Error ? error.message : "Transcription output is invalid.",
+      false,
+      providerRequestId,
     );
   }
 }
@@ -533,18 +536,23 @@ async function markFailed(
 ): Promise<TranscriptionProcessResult> {
   const timestamp = now();
   const code = errorCode(error);
+  const providerRequestId = error instanceof TranscriptionFault
+    ? error.providerRequestId
+    : null;
   await getD1().batch([
     getD1()
       .prepare(
         `UPDATE transcription_runs
             SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
-                finished_at = ?, error_code = ?, error_details_json = ?, updated_at = ?
+                finished_at = ?, error_code = ?, error_details_json = ?,
+                provider_request_id = COALESCE(?, provider_request_id), updated_at = ?
           WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
       )
       .bind(
         timestamp,
         code,
         JSON.stringify({ message: safeError(error) }),
+        providerRequestId,
         timestamp,
         run.id,
         owner,
@@ -589,19 +597,24 @@ async function markRetryable(
 ): Promise<TranscriptionProcessResult> {
   const timestamp = now();
   const code = errorCode(error);
+  const providerRequestId = error instanceof TranscriptionFault
+    ? error.providerRequestId
+    : null;
   await getD1().batch([
     getD1()
       .prepare(
         `UPDATE transcription_runs
             SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
                 queued_at = ?, finished_at = NULL, error_code = ?,
-                error_details_json = ?, updated_at = ?
+                error_details_json = ?, provider_request_id = COALESCE(?, provider_request_id),
+                updated_at = ?
           WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
       )
       .bind(
         timestamp,
         code,
         JSON.stringify({ message: safeError(error), retryable: true }),
+        providerRequestId,
         timestamp,
         run.id,
         owner,

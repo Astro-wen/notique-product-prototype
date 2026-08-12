@@ -213,6 +213,7 @@ export function transcriptionRunRecord(row: Row): TranscriptionRunRecord {
         : integer(row, "duration_ms"),
     provider_request_id: nullableText(row, "provider_request_id"),
     error_code: nullableText(row, "error_code"),
+    error_details: parseJson<unknown>(nullableText(row, "error_details_json"), null),
     created_at: text(row, "created_at"),
     queued_at: nullableText(row, "queued_at"),
     started_at: nullableText(row, "started_at"),

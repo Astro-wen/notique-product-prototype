@@ -137,7 +137,7 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 201 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.1/v3 合同、阶段恢复与调试记录、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、生产 Bundle 和发布包密钥扫描。
+- `npm test` 通过，合计 202 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.1/v3 合同、阶段恢复与调试记录、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、生产 Bundle 和发布包密钥扫描。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -151,6 +151,7 @@
 - 材料区现在同时提供“直接录音”和“上传已有录音”。直接录音覆盖麦克风授权、开始、暂停或继续、结束、试听、重新录制和保存。保存后生成现有音频上传格式，并继续复用同一套持久化、说话人转写和逐字稿流程，没有新增第二套后端逻辑。
 - 空白状态也可以直接选择照片或录音。页面会保留用户已经选择的 File，在后台创建 Project 和第一次 Event 后继续同一次上传，不要求重新选择文件。
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
+- 较长或多人抢话的录音改用 OpenAI 的逐段流式返回，避免把整篇逐字稿塞进一个容易截断的 JSON。模型片段若因重叠说话而乱序，系统会在保留原始时间点的前提下稳定排序。流式结果缺少最终完成事件时仍会拒绝写入，避免把不完整逐字稿当成正式材料；失败页会显示后台保存的具体校验原因。
 - Evidence 文件读取支持单一 Byte Range，覆盖完整响应、指定起止、开放结束、后缀范围和越界 416。浏览器音频播放可以从时间点继续读取，同时保持 Workspace 和 Project 范围校验。
 - 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。第一次会停下来让用户确认 Scenario，每次生成候选后会停下来让用户核对；待审核内容清空后才允许继续下一次，所以后续 Context 只继承已经确认的记录。已有 Run 只会继续轮询，不会重复提交。零候选、未就绪材料和旧的单条分析入口都不能绕过这条顺序。
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。

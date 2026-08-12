@@ -334,6 +334,7 @@ export type TranscriptionRunRecord = {
   duration_ms: number | null;
   provider_request_id: string | null;
   error_code: string | null;
+  error_details: unknown | null;
   created_at: string;
   queued_at: string | null;
   started_at: string | null;

@@ -120,6 +120,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .transcription-progress strong { font-size: 11px; }
 .transcription-progress small { color: var(--muted); font-size: 9px; }
 .transcription-progress.compact { margin: 10px 14px 14px; background: #f8fbff; }
+.transcription-error-detail { margin: 0; padding: 10px 12px; border-radius: 9px; background: #fff; color: #8f2f2f; font-size: 11px; line-height: 1.5; }
 .transcript-preview { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
 .transcript-preview p { margin: 0; display: grid; grid-template-columns: 44px 72px minmax(0, 1fr); gap: 8px; align-items: start; color: var(--ink); font-size: 9px; line-height: 1.5; }
 .transcript-preview time { color: #315f9f; font-variant-numeric: tabular-nums; }

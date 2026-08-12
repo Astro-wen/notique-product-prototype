@@ -39,6 +39,13 @@ export type ValidatedDiarizedTranscript = {
   segments: DiarizedTranscriptSegment[];
 };
 
+type ProviderTranscriptSegment = {
+  speaker: unknown;
+  text: unknown;
+  start: unknown;
+  end: unknown;
+};
+
 function normalizedMime(value: string): string {
   return value.trim().toLowerCase().split(";", 1)[0] ?? "";
 }
@@ -99,9 +106,8 @@ export function validateDiarizedTranscriptOutput(
   if (!Array.isArray(source.segments) || source.segments.length < 1 || source.segments.length > 10_000) {
     throw new Error("Transcription response must contain 1 to 10,000 speaker segments.");
   }
-  let previousStart = -1;
   let totalCharacters = 0;
-  const segments = source.segments.map((item, index): DiarizedTranscriptSegment => {
+  const segments = source.segments.map((item, index): DiarizedTranscriptSegment & { sourceIndex: number } => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new Error(`segments[${index}] must be an object.`);
     }
@@ -113,16 +119,18 @@ export function validateDiarizedTranscriptOutput(
     if (startSeconds < 0 || endSeconds < startSeconds) {
       throw new Error(`segments[${index}] has an invalid time range.`);
     }
-    if (startSeconds < previousStart) {
-      throw new Error("Transcription segments must be ordered by start time.");
-    }
-    previousStart = startSeconds;
     totalCharacters += text.length;
     if (totalCharacters > 5 * 1024 * 1024) {
       throw new Error("Transcription text exceeds the 5 MiB safety limit.");
     }
-    return { speaker, text, startSeconds, endSeconds };
-  });
+    return { speaker, text, startSeconds, endSeconds, sourceIndex: index };
+  }).sort((left, right) => left.startSeconds - right.startSeconds || left.sourceIndex - right.sourceIndex)
+    .map((segment) => ({
+      speaker: segment.speaker,
+      text: segment.text,
+      startSeconds: segment.startSeconds,
+      endSeconds: segment.endSeconds,
+    }));
   const responseDuration = source.duration === undefined
     ? null
     : finiteNumber(source.duration, "duration");
@@ -134,6 +142,74 @@ export function validateDiarizedTranscriptOutput(
     ? source.text.trim()
     : segments.map((segment) => segment.text).join(" ");
   return { durationSeconds, text: fullText, segments };
+}
+
+function looksLikeEventStream(body: string, contentType: string | null): boolean {
+  return contentType?.toLowerCase().includes("text/event-stream") === true
+    || /^\s*(?:event|data):/m.test(body);
+}
+
+function parseEventStream(body: string): Record<string, unknown> {
+  const segments: ProviderTranscriptSegment[] = [];
+  let completedText = "";
+  let sawDone = false;
+  for (const line of body.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let event: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      event = parsed as Record<string, unknown>;
+    } catch {
+      throw new Error("OpenAI transcription stream contained invalid JSON.");
+    }
+    if (event.type === "error") {
+      const nested = event.error && typeof event.error === "object"
+        ? event.error as Record<string, unknown>
+        : null;
+      throw new Error(typeof nested?.message === "string"
+        ? nested.message
+        : "OpenAI transcription stream returned an error.");
+    }
+    if (event.type === "transcript.text.segment") {
+      segments.push({
+        speaker: event.speaker,
+        text: event.text,
+        start: event.start,
+        end: event.end,
+      });
+    }
+    if (event.type === "transcript.text.done") {
+      sawDone = true;
+      if (typeof event.text === "string") completedText = event.text;
+    }
+  }
+  if (!sawDone) {
+    throw new Error("OpenAI transcription stream ended before the final completion event.");
+  }
+  return {
+    text: completedText,
+    segments,
+  };
+}
+
+export function parseDiarizedTranscriptProviderBody(
+  body: string,
+  contentType: string | null = null,
+): ValidatedDiarizedTranscript {
+  let parsed: unknown;
+  if (looksLikeEventStream(body, contentType)) {
+    parsed = parseEventStream(body);
+  } else {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new Error("OpenAI transcription did not return valid JSON.");
+    }
+  }
+  return validateDiarizedTranscriptOutput(parsed);
 }
 
 export function diarizedTranscriptJson(value: ValidatedDiarizedTranscript): string {

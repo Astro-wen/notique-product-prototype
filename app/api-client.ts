@@ -146,6 +146,7 @@ export type TranscriptionRun = {
   segmentCount?: number;
   durationMs?: number;
   errorCode?: string;
+  errorMessage?: string;
   segments: Array<{
     id: Id;
     ordinal: number;
@@ -425,6 +426,7 @@ function normalizeAsset(value: unknown): Asset | null {
 function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
   const source = isRecord(unwrap(value)) ? unwrap(value) as JsonRecord : {};
   const segments = Array.isArray(source.segments) ? source.segments : [];
+  const errorDetails = isRecord(source.error_details) ? source.error_details : {};
   return {
     id: asString(pick(source, ["id", "run_id"])),
     eventId: asString(pick(source, ["event_id"])),
@@ -438,6 +440,10 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
     segmentCount: asNumber(pick(source, ["segment_count"])),
     durationMs: asNumber(pick(source, ["duration_ms"])),
     errorCode: asString(pick(source, ["error_code"]), undefined as unknown as string) || undefined,
+    errorMessage: asString(
+      pick(errorDetails, ["message"]),
+      undefined as unknown as string,
+    ) || undefined,
     segments: segments.flatMap((item): TranscriptionRun["segments"] => {
       if (!isRecord(item)) return [];
       const id = asString(pick(item, ["id"]));
