@@ -88,7 +88,7 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 6. 用户阅读 Claim、Evidence 或报告时，后台工作流不能抢走页面。
 7. 报告中的 Verified Claim 使用只读阅读模式，不显示无关审核队列。
 
-这部分已经进入代码。正式 Sites 发布后仍需分别在桌面和手机验收。
+这部分已随 Sites v17 发布。桌面端的时间线只读路径、页面返回、浏览器返回、报告返回和刷新恢复已经在线验收；真实手机浏览器仍未验收。
 
 ### 4.2 排队和计时
 
@@ -103,7 +103,9 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 5. 首次排队、本轮排队、材料准备、Agent A、Agent B、加强复核、写入和总时间分别显示。
 6. workflow snapshot 一次返回页面需要的项目状态和唯一下一步，减少请求风暴。
 
-目标是正常 `queued → processing` P95 小于 10 秒，最后兜底小于 130 秒。这个目标只有新版本发布后跑真实 Run 才能确认。
+目标是正常 `queued → processing` P95 小于 10 秒，最后兜底小于 130 秒。这个目标只有在 Sites v17 用新后台架构跑新的付费 Run 后才能确认。
+
+Sites v17 发布后尚未通过新的 OpenAI Background Responses 架构发起付费 Run。本轮线上检查使用已有记录，因此不能把桌面只读 QA 写成 live paid QA，也不能据此更新 P95。
 
 ### 4.3 AI 初稿和 Evidence
 
@@ -131,7 +133,20 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 
 Preference 同时保留当前值和历史变化，显示条件、决策人、首次出现和最近确认。它仍然使用通用结构，没有把房地产话术硬编码进生产逻辑。
 
-Evidence、Timeline 和 Preference 的 UI 已完成代码接线和本地自动化验证。正式站发布后才能写“线上已验收”。
+Evidence 和 Timeline 已在 Sites v17 完成桌面只读验收；Preference 的代码与自动化已完成，但仍需用确实带历史变化的数据做线上验收。手机端只有样式与自动化结果，尚未在真实手机浏览器验收。
+
+### 4.5 Sites v17 发布和桌面只读验收
+
+本轮已发布到原来的公开测试站，GitHub `main` 基线为提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`。桌面端使用已有 Verified 数据完成了以下检查：
+
+1. Timeline 显示纵向轨道和节点，每个节点可见 Speaker 与 `mm:ss` 时间点。
+2. 从 Timeline 打开已确认 Claim 后，URL 保留 `origin=results` 和 `originTab=timeline`；页面显示“返回时间线”，不出现连续审核队列。
+3. 页面箭头和浏览器 Back 均准确回到 Timeline；从报告栏目返回会回到核心工作台。
+4. 深层 Claim 刷新后约 2 至 3 秒恢复 readonly 状态和正确返回标签。
+5. Evidence 精确标记目标句，默认显示前两段和后两段；音频从目标时间前约 3 秒播放。
+6. 检查期间浏览器控制台为 0 error。
+
+工程测试 250 项全绿，独立审计没有发现 P0/P1。手机 CSS 与自动化也通过，但内置浏览器的 viewport override 没有真正改变视口，实际宽度仍是 1280px；因此手机真人验收必须保持未完成。
 
 ## 5. Eric 的要求逐条对照
 
@@ -139,13 +154,13 @@ Evidence、Timeline 和 Preference 的 UI 已完成代码接线和本地自动�
 |---|---|---|
 | AI 初稿要在人工以前单独看 | 已完成并有一次真实多人音频结果 | 未确认 Scenario/Claim；原始初稿命中 6/8，安全门后命中 4/8 |
 | 每条信息回到精确原文 | 部分通过 | 落库引文 6/6 逐字回填；两条任务记录最后只剩职位介绍，语义支持不足 |
-| 原句要突出并展示前后文 | 本轮已实现 | 正式站发布后做视觉验收 |
+| 原句要突出并展示前后文 | Sites v17 桌面只读验收通过 | 精确 mark、默认前两段后两段、音频前约 3 秒均已确认；手机待验收 |
 | 人可以确认、修改、拒绝和补漏 | 已完成 | 不同动作都会改变后续 Verified Ledger |
 | Relation 由人决定 | 已完成 | 未审核 Relation 不能改变生命周期 |
 | 后续沟通继承已确认记忆 | 已完成工程链路 | 已在受控多 Event 案例跑通 |
-| Timeline 真正显示变化 | 本轮已实现 | 正式站发布后再验收 UI |
-| Preference 可看当前和历史 | 本轮已实现 | 真实连续客户旅程尚未证明 |
-| 操作简单、返回稳定、刷新能恢复 | 本轮已实现 | 还需要真人完整走一遍 |
+| Timeline 真正显示变化 | Sites v17 桌面只读验收通过 | 已看到纵向节点、Speaker 和 `mm:ss`；手机待验收 |
+| Preference 可看当前和历史 | 代码和自动化已完成 | 仍需用带历史变化的数据做线上验收；真实连续客户旅程尚未证明 |
+| 操作简单、返回稳定、刷新能恢复 | 桌面只读路径已通过 | 页面箭头、浏览器 Back、报告返回和深层刷新均正确；完整审核与手机流程仍待真人完成 |
 | 处理速度更快 | 单次真实 Run 的排队已通过目标 | 转写与 Extraction 排队分别为 10 ms、9 ms；仍需多次 Run 才能计算 P95 |
 | 正式结果不含 Pending | 已完成 | 自动测试中的 leakage 为 0 |
 | 音频上传、转写和后续分析 | 公开许可多人音频已跑通 | 约 21 分钟音频端到端约 10 分钟；质量差距见第 7 节 |
@@ -286,7 +301,7 @@ AMI 是公开许可的真实多人语音，但会议内容来自受控产品设�
 
 ## 8. 需要再花时间看看
 
-1. 发布本轮版本，并完成桌面和手机导航、Evidence、Timeline 和 Preference 验收。
+1. 在真实手机浏览器完成导航、Evidence、Timeline、Preference、刷新和连续审核验收；桌面只读路径已经通过。
 2. 修复 Evidence 选择：自动改用连续、逐字、靠近目标事实的 Segment，尤其是成本上限和三位负责人的任务句。
 3. 修复重要事实取舍：国际市场和电视功能范围问题明明存在于 Transcript，却没有进入最终十条。
 4. 用当前 Prompt 和同一上下文重复三次，重新测语义稳定性。
@@ -308,9 +323,10 @@ AMI 是公开许可的真实多人语音，但会议内容来自受控产品设�
 
 ## 10. 当前公开部署
 
-1. 完整交互应用：<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
-2. GitHub：<https://github.com/Astro-wen/notique-product-prototype>
+1. 完整交互应用：Sites v17，<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
+2. GitHub：<https://github.com/Astro-wen/notique-product-prototype>，`main` 提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`
 3. GitHub Pages 只负责跳转到 Sites，不承担 API、数据库、文件上传或模型任务。
+4. 桌面只读线上 QA 已通过；手机真人 QA 和 v17 新付费 Run 仍未完成。
 
 当前 Sites 适合用公开许可、合成或脱敏材料做 MVP 测试。测试者可能共用一个测试 Workspace、项目数据和模型额度。正式给不同客户使用以前，必须补 Workspace、权限和费用隔离。
 

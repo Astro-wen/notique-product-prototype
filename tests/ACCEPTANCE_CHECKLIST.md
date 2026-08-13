@@ -138,6 +138,7 @@
 ## 当前自动化证据
 
 - `npm test` 通过，合计 250 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、生产 Bundle 和发布包密钥扫描。
+- 独立发布审计没有发现 P0/P1。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
@@ -147,7 +148,7 @@
 - 生产 Worker 配置包含每分钟一次的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
 - 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
 - 最小测试页支持从空白状态直接上传录音。系统会先建立 Project 和第一次 Event，再保存音频并启动转写，不再要求用户先上传 Transcript。转写启动失败时，错误不会被随后的页面刷新覆盖，已上传的音频也不会丢失。失败或长时间停留的任务可以重新检查或重新转写；轮询次数按同一个 Run 累积，不会因页面重复渲染不断归零。成功后既保留简短预览，也可打开包含全部说话人、原文和时间点的完整逐字稿。
-- 核心页已重新排布为“沟通列表 + 当前沟通”工作区。当前项目和当前沟通持续显示；材料、Transcript、待核对和结果放在同一条标签导航中；技术调试继续保留在高级工具。桌面端使用左右布局，手机端把沟通列表变为顶部横向选择区。390px 视口实测没有横向溢出。
+- 核心页已重新排布为“沟通列表 + 当前沟通”工作区。当前项目和当前沟通持续显示；材料、Transcript、待核对和结果放在同一条标签导航中；技术调试继续保留在高级工具。桌面端使用左右布局，手机端把沟通列表变为顶部横向选择区。390px CSS 与自动化回归没有横向溢出；内置浏览器的 viewport override 实际仍为 1280px，因此不能把这次检查算作真实手机浏览器验收。
 - 材料区现在同时提供“直接录音”和“上传已有录音”。直接录音覆盖麦克风授权、开始、暂停或继续、结束、试听、重新录制和保存。保存后生成现有音频上传格式，并继续复用同一套持久化、说话人转写和逐字稿流程，没有新增第二套后端逻辑。
 - 空白状态也可以直接选择照片或录音。页面会保留用户已经选择的 File，在后台创建 Project 和第一次 Event 后继续同一次上传，不要求重新选择文件。
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
@@ -158,7 +159,8 @@
 - 连续审核桌面端使用“队列、Evidence、决定”三栏。手机端队列变为横向选择区。Relation 继续要求逐条接受或拒绝，Evidence 不完整时确认和修改继续锁定；批量处理被收进次级区域，没有削弱服务端 Evidence attestation。后台等待超时显示“仍在后台运行”，其“检查状态”动作只读取原 Run。
 - 分析完成后会先显示按业务主题分组的 AI 会议信息初稿，再进入逐条审核。用户对“初稿基本可用”的第一印象单独保存，不能改变任何 Claim 的 Verified 状态。人工可以从当前 Event 的完整 Transcript 中选择一到八段原文，补回 AI 漏掉的事实；新记录标记为人工补充、保持 Pending，并复用同一套 Evidence 和 Relation 审核门。
 - 审核队列按明确风险排序：人工补充、金额、日期、决定、责任人、候选关系和补证据项优先。Evidence 可以展开选中引文前后的相邻 Transcript。队列清空后，服务端 Review Session 会汇总确认、修改、拒绝、人工补充、Occurrence 和 Relation 决定数量；该汇总不调用模型，也不重新读取 Transcript 生成报告。
-- 公开 Sites 已用真实服务器数据做导航回归：最近 Project/Event 刷新后恢复；完成 Project 一次点击进入会前速览；沟通卡片只显示一个状态；Brief 证据不足的三个位置保持空白。检查没有创建新 Run 或调用模型。桌面连续审核已验证可直接打开第 1/10 条并同时显示队列、Evidence 和决定；手机布局由 390px 回归和响应式合同覆盖，尚待真人在手机浏览器走完一次完整审核。
+- 公开 Sites 已用真实服务器数据做导航回归：最近 Project/Event 刷新后恢复；完成 Project 一次点击进入会前速览；沟通卡片只显示一个状态；Brief 证据不足的三个位置保持空白。检查没有创建新 Run 或调用模型。桌面连续审核已验证可直接打开第 1/10 条并同时显示队列、Evidence 和决定；手机布局只有 CSS 与自动化覆盖，尚待真人在手机浏览器走完一次完整审核。
+- Sites v17 已在原 URL 用现有 Verified 数据完成桌面只读 QA：Timeline 显示纵向节点、Speaker 和 `mm:ss`；从 Timeline 打开 Claim 时 URL 保留 `origin=results` 与 `originTab=timeline`，显示“返回时间线”且没有连续审核队列；页面箭头和浏览器 Back 均返回 Timeline；报告栏目返回核心工作台；深层 Claim 刷新约 2 至 3 秒后恢复 readonly 和返回标签；Evidence 精确标记目标句，默认前两段后两段，音频从目标前约 3 秒播放；浏览器控制台 0 error。本次没有创建新的付费 Run。
 - Sites v15 已用现有待核对 Project 验证 AI 初稿入口。页面正确显示八条按主题分组的候选、风险与补证据区、三种人工动作和“初稿不会进入正式结果”的边界；没有浏览器错误，也没有创建新 Run。此次功能发布包对应提交 `8ab5acf`，不含本地环境或凭据文件。
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
@@ -171,7 +173,7 @@
 
 ## 本轮 MVP 修复与 Eric 要求对齐
 
-下面把“代码和合同已经完成”与“正式站已经实测”分开。前者可以由源码和自动测试证明；后者必须等新版本发布后由真实浏览器完成，不能因为本地实现存在就提前勾选。
+下面把“代码和合同已经完成”“Sites v17 桌面只读实测通过”和“仍待真人或付费验证”分开。只勾选实际完成的范围。
 
 ### 导航和阅读模式
 
@@ -181,8 +183,10 @@
 - [x] 自动工作流只在核心工作台触发；用户阅读 Claim、Evidence 或结果时，不会被异步阶段变化抢走页面。
 - [x] 报告中的 Verified Claim 使用只读阅读模式，不再显示无关的 Pending 连续审核队列。
 - [x] 页面请求带版本或取消边界，用户切换 Project 后，旧 Project 的迟到响应不能覆盖新页面。
-- [ ] 新 Sites 版本实测“时间线 → Evidence → 返回时间线”，并恢复原滚动位置。
-- [ ] 新 Sites 版本实测“审核列表 → Claim → 返回相同列表和游标”、浏览器返回和刷新恢复。
+- [x] Sites v17 桌面实测“时间线 → 已确认 Claim → 返回时间线”；URL 来源、页面返回文案和只读模式正确，不显示连续审核队列。
+- [x] Sites v17 桌面实测页面箭头和浏览器 Back 都准确返回 Timeline；深层 Claim 刷新约 2 至 3 秒后恢复 readonly 与返回标签。
+- [x] Sites v17 桌面实测从报告栏目返回核心工作台，浏览器控制台 0 error。
+- [ ] 正式 Sites 实测“审核列表 → Claim → 返回相同列表和游标”，并确认原滚动位置。
 
 ### 后台调度、计时和请求数量
 
@@ -207,7 +211,8 @@
 - [x] Timeline moments 包含 Event 日期与顺序、Transcript 时间点和 Speaker，以及新增、修改或取代、已解决、矛盾、再次确认和撤回。
 - [x] Timeline 只读取 Verified、Active 数据；Pending 和 Rejected 不得出现。第一场默认只展示最重要节点，其余可折叠。
 - [x] Preference 输出区分当前偏好、条件、决策人、首次出现、最近确认和历史变化；同一偏好变化时保留新旧来源。
-- [ ] 正式 Sites 验证目标句视觉突出、前后文、音频定位、Timeline 纵向节点和 Preference 历史均可用。
+- [x] Sites v17 桌面实测目标句精确标记、默认前两段后两段、音频目标前约 3 秒定位，以及带 Speaker 和 `mm:ss` 的 Timeline 纵向节点。
+- [ ] 正式 Sites 用有历史变化的数据完成 Preference 当前值与历史展示验收。
 - [ ] 桌面和手机各完成一次 AI 初稿 → Evidence → 返回 → 连续审核 → Timeline 的完整流程。
 
 ### 公开许可真实音频
@@ -305,4 +310,6 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - [ ] 由第二位标注者独立标注 Realtor 和 Insurance 开发集并完成分歧裁决。
 - [ ] 真实计时验证一次人工审核可以在两分钟内完成。
 - [ ] 通过 live API 验证跨 Workspace、跨 Project 隔离，以及 Verdict、Import、Extraction 的真实并发冲突。
-- [x] 当前代码已发布为 Sites v15，D1 Migration、R2、后台任务、已有材料、AI 初稿、审核入口和结果读取可以在线工作。GitHub Pages 仍只是跳转入口，不承担全栈处理。
+- [x] 当前代码已从 GitHub `main` 提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe` 发布为 Sites v17，原有公开 URL 保持不变。D1 Migration、R2、已有材料、审核入口和结果读取可以在线工作；GitHub Pages 仍只是跳转入口，不承担全栈处理。
+- [ ] Sites v17 通过新 OpenAI Background Responses 架构发起并完成一次新的付费 Run。当前发布后只做了桌面只读 QA，不能算 live paid QA。
+- [ ] 在真实手机浏览器完成导航、Evidence、Timeline、Preference、刷新和连续审核验收。CSS 与自动化通过不替代这项真人验收。
