@@ -48,6 +48,8 @@ import {
   createTranscriptionRun,
   getTranscriptionRun,
 } from "@/lib/server/db/transcription-repository";
+import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
+import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
 import {
   completeReviewSession,
   getReviewSession,
@@ -72,7 +74,10 @@ import {
   stringArray,
   toResponse,
 } from "@/lib/server/http/api";
-import { getRequestScope } from "@/lib/server/http/context";
+import {
+  getRequestScope,
+  initializeRequestWorkspace,
+} from "@/lib/server/http/context";
 import { planByteRangeResponse } from "@/lib/server/http/byte-range";
 import type {
   BatchClaimVerdictRequest,
@@ -308,6 +313,16 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 2 && segments[0] === "projects") {
     return ok({ project: await getProject(scope, segments[1]) }, id);
   }
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "workflow-snapshot"
+  ) {
+    return ok(
+      { workflow_snapshot: await getWorkflowSnapshot(scope, segments[1]) },
+      id,
+    );
+  }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "events") {
     return ok({ events: await listEvents(scope, segments[1]) }, id);
   }
@@ -396,6 +411,13 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
     return ok({ evidence_ref: await getEvidenceRef(scope, segments[1]) }, id);
   }
   if (
+    segments.length === 3 &&
+    segments[0] === "evidence-refs" &&
+    segments[2] === "context"
+  ) {
+    return ok({ evidence_context: await getEvidenceContext(scope, segments[1]) }, id);
+  }
+  if (
     segments.length === 4 &&
     segments[0] === "projects" &&
     segments[2] === "views"
@@ -434,6 +456,7 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  await initializeRequestWorkspace(scope);
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "manual-claims") {
     const body = await jsonObject(request);
     const input: CreateManualClaimRequest = {
@@ -860,6 +883,7 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
 
 async function putHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  await initializeRequestWorkspace(scope);
   if (segments.length === 2 && segments[0] === "glossary") {
     const body = await jsonObject(request);
     const glossaryEntry = await updateGlossaryEntry(
@@ -898,6 +922,7 @@ async function putHandler(request: Request, segments: string[], id: string): Pro
 
 async function deleteHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  await initializeRequestWorkspace(scope);
   if (segments.length === 2 && segments[0] === "glossary") {
     const body = await jsonObject(request);
     const glossaryEntry = await deleteGlossaryEntry(

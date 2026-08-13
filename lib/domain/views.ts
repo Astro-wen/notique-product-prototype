@@ -2,6 +2,7 @@ import type {
   ClaimRelation,
   ClaimWithVersion,
   ProjectLedger,
+  VerifiedEvidenceRef,
   WithdrawRecord,
 } from "./types";
 
@@ -154,6 +155,85 @@ export type TimelineDelta =
       withdrawVerdictId: string;
     };
 
+export type TimelineMomentKind =
+  | "new"
+  | "updated"
+  | "resolved"
+  | "contradicted"
+  | "reaffirmed"
+  | "withdrawn";
+
+export type TimelineMomentEndpoint = {
+  claimId: string;
+  claimVersionId: string;
+  statement: string;
+  evidenceRefIds: string[];
+};
+
+export type TimelineMomentEvidence = {
+  evidenceRefId: string;
+  kind: VerifiedEvidenceRef["kind"];
+  speaker: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  quoteRaw: string | null;
+};
+
+export type TimelineMoment = {
+  id: string;
+  kind: TimelineMomentKind;
+  eventId: string;
+  eventSequenceNo: number;
+  eventOccurredAt: string;
+  displayText: string;
+  transcriptStartMs: number | null;
+  transcriptEndMs: number | null;
+  evidence: TimelineMomentEvidence[];
+  before: TimelineMomentEndpoint | null;
+  after: TimelineMomentEndpoint | null;
+  relationId: string | null;
+  occurrenceId: string | null;
+  withdrawVerdictId: string | null;
+};
+
+function evidencePointers(
+  refs: readonly VerifiedEvidenceRef[],
+): TimelineMomentEvidence[] {
+  return refs.map((ref) => ({
+    evidenceRefId: ref.id,
+    kind: ref.kind,
+    speaker: ref.speakers[0] ?? null,
+    startMs: ref.startMs,
+    endMs: ref.endMs,
+    quoteRaw: ref.quoteRaw,
+  }));
+}
+
+function momentTimes(evidence: readonly TimelineMomentEvidence[]) {
+  const starts = evidence
+    .map((ref) => ref.startMs)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  const ends = evidence
+    .map((ref) => ref.endMs)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  return {
+    transcriptStartMs: starts.length ? Math.min(...starts) : null,
+    transcriptEndMs: ends.length ? Math.max(...ends) : null,
+  };
+}
+
+function timelineEndpoint(
+  claim: ClaimWithVersion,
+  version: ClaimWithVersion["version"],
+): TimelineMomentEndpoint {
+  return {
+    claimId: claim.id,
+    claimVersionId: version.id,
+    statement: version.statement,
+    evidenceRefIds: [...version.evidenceRefIds],
+  };
+}
+
 function relationDelta(
   relation: ClaimRelation,
   claimById: ReadonlyMap<string, ClaimWithVersion>,
@@ -231,8 +311,37 @@ export function buildTimeline(ledger: ProjectLedger) {
   const versionById = new Map(
     ledger.claimVersions.map((version) => [version.id, version]),
   );
+  const eventById = new Map(ledger.events.map((event) => [event.id, event]));
+  const evidenceByVersion = new Map<string, VerifiedEvidenceRef[]>();
+  const evidenceById = new Map<string, VerifiedEvidenceRef>();
+  for (const ref of ledger.evidenceRefs ?? []) {
+    evidenceById.set(ref.id, ref);
+    evidenceByVersion.set(ref.claimVersionId, [
+      ...(evidenceByVersion.get(ref.claimVersionId) ?? []),
+      ref,
+    ]);
+  }
   const relatedVersions = new Set<string>();
   const deltas: TimelineDelta[] = [];
+  const moments: TimelineMoment[] = [];
+
+  function appendMoment(
+    input: Omit<
+      TimelineMoment,
+      "eventSequenceNo" | "eventOccurredAt" | "transcriptStartMs" | "transcriptEndMs"
+    >,
+  ) {
+    const event = eventById.get(input.eventId);
+    if (!event) {
+      throw new Error("Verified timeline data references an Event outside the project ledger.");
+    }
+    moments.push({
+      ...input,
+      eventSequenceNo: event.sequenceNo,
+      eventOccurredAt: event.occurredAt,
+      ...momentTimes(input.evidence),
+    });
+  }
 
   for (const relation of ledger.relations) {
     const delta = relationDelta(relation, claimById, versionById);
@@ -240,6 +349,27 @@ export function buildTimeline(ledger: ProjectLedger) {
     if (delta.type === "withdrawn" || delta.type === "new") continue;
     relatedVersions.add(delta.afterClaimVersionId);
     deltas.push(delta);
+    const afterClaim = claimById.get(relation.sourceClaimId)!;
+    const beforeClaim = claimById.get(relation.targetClaimId)!;
+    const afterVersion = versionById.get(relation.sourceClaimVersionId)!;
+    const beforeVersion = versionById.get(relation.targetClaimVersionId)!;
+    const evidence = evidencePointers(evidenceByVersion.get(afterVersion.id) ?? []);
+    appendMoment({
+      id: `moment_relation_${relation.id}`,
+      kind: relation.type === "supersedes"
+        ? "updated"
+        : relation.type === "resolves"
+          ? "resolved"
+          : "contradicted",
+      eventId: afterClaim.eventId,
+      displayText: delta.displayText,
+      evidence,
+      before: timelineEndpoint(beforeClaim, beforeVersion),
+      after: timelineEndpoint(afterClaim, afterVersion),
+      relationId: relation.id,
+      occurrenceId: null,
+      withdrawVerdictId: null,
+    });
   }
   for (const withdraw of ledger.withdraws) {
     const delta = withdrawDelta(withdraw, claimById, versionById);
@@ -247,6 +377,20 @@ export function buildTimeline(ledger: ProjectLedger) {
     if (delta.type !== "withdrawn") continue;
     relatedVersions.add(delta.claimVersionId);
     deltas.push(delta);
+    const claim = claimById.get(withdraw.claimId)!;
+    const version = versionById.get(withdraw.claimVersionId)!;
+    appendMoment({
+      id: `moment_withdraw_${withdraw.id}`,
+      kind: "withdrawn",
+      eventId: claim.eventId,
+      displayText: delta.displayText,
+      evidence: evidencePointers(evidenceByVersion.get(version.id) ?? []),
+      before: timelineEndpoint(claim, version),
+      after: null,
+      relationId: null,
+      occurrenceId: null,
+      withdrawVerdictId: withdraw.id,
+    });
   }
   for (const claim of verified) {
     if (relatedVersions.has(claim.version.id) || claim.lifecycleStatus === "withdrawn") continue;
@@ -257,9 +401,44 @@ export function buildTimeline(ledger: ProjectLedger) {
       displayText: `新增：${claim.version.statement}`,
       afterClaimVersionId: claim.version.id,
     });
+    appendMoment({
+      id: `moment_new_${claim.version.id}`,
+      kind: "new",
+      eventId: claim.eventId,
+      displayText: `新增：${claim.version.statement}`,
+      evidence: evidencePointers(evidenceByVersion.get(claim.version.id) ?? []),
+      before: null,
+      after: timelineEndpoint(claim, claim.version),
+      relationId: null,
+      occurrenceId: null,
+      withdrawVerdictId: null,
+    });
+  }
+  for (const occurrence of ledger.occurrences ?? []) {
+    const claim = claimById.get(occurrence.claimId);
+    const version = versionById.get(occurrence.claimVersionId);
+    const evidenceRef = evidenceById.get(occurrence.evidenceRefId);
+    if (
+      !claim ||
+      !version ||
+      version.claimId !== claim.id ||
+      !evidenceRef ||
+      evidenceRef.eventId !== occurrence.eventId
+    ) continue;
+    appendMoment({
+      id: `moment_occurrence_${occurrence.id}`,
+      kind: "reaffirmed",
+      eventId: occurrence.eventId,
+      displayText: `再次确认：${version.statement}`,
+      evidence: evidencePointers([evidenceRef]),
+      before: timelineEndpoint(claim, version),
+      after: timelineEndpoint(claim, version),
+      relationId: null,
+      occurrenceId: occurrence.id,
+      withdrawVerdictId: null,
+    });
   }
 
-  const eventById = new Map(ledger.events.map((event) => [event.id, event]));
   const groups = ledger.events
     .slice()
     .sort((a, b) => a.sequenceNo - b.sequenceNo)
@@ -270,6 +449,13 @@ export function buildTimeline(ledger: ProjectLedger) {
         summary: readableEventSummary(claims),
         claims,
         deltas: deltas.filter((delta) => delta.eventId === event.id),
+        moments: moments
+          .filter((moment) => moment.eventId === event.id)
+          .sort((left, right) =>
+            (left.transcriptStartMs ?? Number.MAX_SAFE_INTEGER) -
+              (right.transcriptStartMs ?? Number.MAX_SAFE_INTEGER) ||
+            left.id.localeCompare(right.id),
+          ),
       };
     });
 
@@ -313,21 +499,210 @@ export function buildDecisionLog(ledger: ProjectLedger) {
     }));
 }
 
+type NormalizedScalar = string | number | boolean;
+
+export type PreferenceHistoryItem = {
+  id: string;
+  kind: "stated" | "updated" | "reaffirmed" | "withdrawn";
+  claimId: string;
+  claimVersionId: string;
+  eventId: string;
+  eventSequenceNo: number;
+  eventOccurredAt: string;
+  statement: string;
+  normalizedValue: Record<string, unknown> | null;
+  evidenceRefIds: string[];
+  occurrenceId: string | null;
+};
+
+function normalizedKey(value: string) {
+  return value.toLocaleLowerCase("en-US").replace(/[^a-z0-9]/g, "");
+}
+
+function normalizedScalars(value: unknown): NormalizedScalar[] {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) return [value];
+  if (Array.isArray(value)) return value.flatMap(normalizedScalars);
+  return [];
+}
+
+function valuesForNormalizedKeys(
+  normalizedValue: Record<string, unknown> | null,
+  allowedKeys: ReadonlySet<string>,
+) {
+  if (!normalizedValue) return [];
+  return Object.entries(normalizedValue).flatMap(([key, value]) =>
+    allowedKeys.has(normalizedKey(key)) ? normalizedScalars(value) : [],
+  );
+}
+
+const CONDITION_KEYS = new Set([
+  "condition",
+  "conditions",
+  "precondition",
+  "preconditions",
+  "contingency",
+  "contingencies",
+  "onlyif",
+  "dependson",
+  "purchasecondition",
+]);
+const DECISION_PERSON_KEYS = new Set([
+  "decisionperson",
+  "decisionmaker",
+  "decisionmakers",
+  "approvedby",
+  "owner",
+]);
+
+/**
+ * Builds current preference records with their verified history. Structured
+ * fields are copied only from normalized values already present in the Ledger.
+ */
 export function buildPreferences(ledger: ProjectLedger) {
-  return timelineVerifiedClaims(ledger.claims)
-    .filter(
-      (claim) =>
-        claim.lifecycleStatus !== "withdrawn" &&
-        claim.type === "preference",
-    )
-    .map((claim) => ({
-      claimId: claim.id,
-      claimVersionId: claim.version.id,
-      eventId: claim.eventId,
-      lifecycleStatus: claim.lifecycleStatus,
-      statement: claim.version.statement,
-      evidenceRefIds: claim.version.evidenceRefIds,
-    }));
+  const preferences = timelineVerifiedClaims(ledger.claims).filter(
+    (claim) => claim.type === "preference",
+  );
+  const claimById = new Map(preferences.map((claim) => [claim.id, claim]));
+  const eventById = new Map(ledger.events.map((event) => [event.id, event]));
+  const olderByNewer = new Map<string, string[]>();
+  for (const relation of ledger.relations) {
+    if (
+      relation.type !== "supersedes" ||
+      (relation.status !== "active" && relation.status !== "inactive") ||
+      !claimById.has(relation.sourceClaimId) ||
+      !claimById.has(relation.targetClaimId)
+    ) continue;
+    olderByNewer.set(relation.sourceClaimId, [
+      ...(olderByNewer.get(relation.sourceClaimId) ?? []),
+      relation.targetClaimId,
+    ]);
+  }
+
+  function linkedHistory(root: ClaimWithVersion) {
+    const result: ClaimWithVersion[] = [];
+    const visited = new Set<string>();
+    const visit = (claim: ClaimWithVersion) => {
+      if (visited.has(claim.id)) return;
+      visited.add(claim.id);
+      for (const olderId of olderByNewer.get(claim.id) ?? []) {
+        const older = claimById.get(olderId);
+        if (older) visit(older);
+      }
+      result.push(claim);
+    };
+    visit(root);
+    return result.sort((left, right) => {
+      const leftEvent = eventById.get(left.eventId);
+      const rightEvent = eventById.get(right.eventId);
+      return (
+        (leftEvent?.sequenceNo ?? Number.MAX_SAFE_INTEGER) -
+          (rightEvent?.sequenceNo ?? Number.MAX_SAFE_INTEGER) ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id)
+      );
+    });
+  }
+
+  const roots = preferences
+    .filter((claim) => claim.lifecycleStatus === "active")
+    .slice()
+    .sort(byImportanceThenTime);
+  const included = new Set(roots.flatMap((root) => linkedHistory(root).map((claim) => claim.id)));
+  roots.push(
+    ...preferences.filter(
+      (claim) => claim.lifecycleStatus !== "withdrawn" && !included.has(claim.id),
+    ),
+  );
+
+  return roots.map((root) => {
+    const linked = linkedHistory(root);
+    const history: PreferenceHistoryItem[] = linked.map((claim, index) => {
+      const event = eventById.get(claim.eventId);
+      if (!event) throw new Error("Verified Preference references an Event outside the project ledger.");
+      return {
+        id: `preference_${claim.version.id}`,
+        kind: claim.lifecycleStatus === "withdrawn"
+          ? "withdrawn"
+          : index === 0
+            ? "stated"
+            : "updated",
+        claimId: claim.id,
+        claimVersionId: claim.version.id,
+        eventId: event.id,
+        eventSequenceNo: event.sequenceNo,
+        eventOccurredAt: event.occurredAt,
+        statement: claim.version.statement,
+        normalizedValue: claim.version.normalizedValue,
+        evidenceRefIds: [...claim.version.evidenceRefIds],
+        occurrenceId: null,
+      };
+    });
+    const linkedIds = new Set(linked.map((claim) => claim.id));
+    for (const occurrence of ledger.occurrences ?? []) {
+      if (!linkedIds.has(occurrence.claimId)) continue;
+      const claim = claimById.get(occurrence.claimId);
+      const version = ledger.claimVersions.find(
+        (candidate) => candidate.id === occurrence.claimVersionId,
+      );
+      const event = eventById.get(occurrence.eventId);
+      if (!claim || !version || !event) continue;
+      history.push({
+        id: `preference_occurrence_${occurrence.id}`,
+        kind: "reaffirmed",
+        claimId: claim.id,
+        claimVersionId: version.id,
+        eventId: event.id,
+        eventSequenceNo: event.sequenceNo,
+        eventOccurredAt: event.occurredAt,
+        statement: version.statement,
+        normalizedValue: version.normalizedValue,
+        evidenceRefIds: [occurrence.evidenceRefId],
+        occurrenceId: occurrence.id,
+      });
+    }
+    history.sort((left, right) =>
+      left.eventSequenceNo - right.eventSequenceNo ||
+      left.id.localeCompare(right.id),
+    );
+
+    const firstSeen = history[0] ?? null;
+    const lastSeen = history.at(-1) ?? null;
+    const conditions = valuesForNormalizedKeys(root.version.normalizedValue, CONDITION_KEYS);
+    const decisionPeople = valuesForNormalizedKeys(
+      root.version.normalizedValue,
+      DECISION_PERSON_KEYS,
+    ).map(String);
+    return {
+      claimId: root.id,
+      claimVersionId: root.version.id,
+      eventId: root.eventId,
+      lifecycleStatus: root.lifecycleStatus,
+      isCurrent: root.lifecycleStatus === "active",
+      statement: root.version.statement,
+      currentValue: root.version.normalizedValue,
+      conditions,
+      decisionPerson: decisionPeople[0] ?? null,
+      decisionPeople,
+      firstSeen: firstSeen && {
+        eventId: firstSeen.eventId,
+        eventSequenceNo: firstSeen.eventSequenceNo,
+        eventOccurredAt: firstSeen.eventOccurredAt,
+        evidenceRefIds: [...firstSeen.evidenceRefIds],
+      },
+      lastSeen: lastSeen && {
+        eventId: lastSeen.eventId,
+        eventSequenceNo: lastSeen.eventSequenceNo,
+        eventOccurredAt: lastSeen.eventOccurredAt,
+        evidenceRefIds: [...lastSeen.evidenceRefIds],
+      },
+      history,
+      evidenceRefIds: [...root.version.evidenceRefIds],
+    };
+  });
 }
 
 export function buildOpenQuestions(ledger: ProjectLedger, asOf: Date = new Date()) {

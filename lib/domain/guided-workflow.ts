@@ -2,6 +2,7 @@ export type GuidedDisplayStatusKey =
   | "waiting_material"
   | "transcribing"
   | "ready"
+  | "queued"
   | "inventory"
   | "verify"
   | "verify_escalated"
@@ -37,6 +38,9 @@ export function deriveGuidedDisplayStatus(input: {
   }
   if (runStatus && failedStatuses.has(runStatus)) {
     return { key: "action_required", label: "需要处理", tone: "danger" };
+  }
+  if (runStatus === "queued") {
+    return { key: "queued", label: "等待后台启动", tone: "neutral" };
   }
   if (runStatus && runningStatuses.has(runStatus)) {
     if (input.pipelineStage === "verify_escalated") {

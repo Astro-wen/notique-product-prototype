@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import {
   failExpiredProcessingRuns,
   processExtractionRun,
+  recoverExpiredTargetedExtractionRun,
   type ExtractionProcessResult,
 } from "@/lib/server/jobs/extraction-processor";
 import { outboxLeaseDurationMs } from "@/lib/domain/model-config";
@@ -37,6 +38,18 @@ export type SweepResult = {
 
 const MAX_OUTBOX_ATTEMPTS = 3;
 const POC_DISPATCH_BATCH_LIMIT = 1;
+// Cloudflare may cancel HTTP waitUntil work after 30 seconds. Give the
+// checkpoint a small fencing margin while still making an interrupted browser
+// wake recoverable by the next 15-second same-Run kick.
+const TARGETED_HTTP_CHECKPOINT_LEASE_MS = 40_000;
+const EXTRACTION_TERMINAL_STATES = [
+  "succeeded",
+  "completed_with_warnings",
+  "failed",
+  "cancelled",
+] as const;
+
+type DispatchTarget = { runId: string; workspaceId: string };
 
 function now(): string {
   return new Date().toISOString();
@@ -58,7 +71,12 @@ async function hashText(value: string): Promise<string> {
   return sha256Hex(new TextEncoder().encode(value).buffer);
 }
 
-async function leaseOutbox(row: Row, owner: string, timestamp: string): Promise<Row | null> {
+async function leaseOutbox(
+  row: Row,
+  owner: string,
+  timestamp: string,
+  leaseDurationMs?: number,
+): Promise<Row | null> {
   const db = getD1();
   const guardId = id("guard");
   let frozenTimeoutMs: unknown;
@@ -75,7 +93,9 @@ async function leaseOutbox(row: Row, owner: string, timestamp: string): Promise<
     frozenMaxStages = undefined;
   }
   const leaseExpiresAt = new Date(
-    Date.parse(timestamp) + outboxLeaseDurationMs(frozenTimeoutMs, frozenMaxStages),
+    Date.parse(timestamp) + (
+      leaseDurationMs ?? outboxLeaseDurationMs(frozenTimeoutMs, frozenMaxStages)
+    ),
   ).toISOString();
   try {
     await db.batch([
@@ -86,6 +106,19 @@ async function leaseOutbox(row: Row, owner: string, timestamp: string): Promise<
              SELECT 1 FROM queue_outbox
               WHERE id = ? AND status IN ('pending', 'failed')
                 AND attempt < ? AND next_attempt_at <= ?
+                AND EXISTS (
+                  SELECT 1 FROM extraction_runs r
+                   WHERE r.id = queue_outbox.run_id AND (
+                     r.status = 'queued' OR (
+                       r.status = 'processing' AND r.lease_owner IS NULL
+                       AND EXISTS (
+                         SELECT 1 FROM extraction_model_stages s
+                          WHERE s.run_id = r.id AND s.status = 'processing'
+                            AND s.provider_request_id IS NOT NULL
+                       )
+                     )
+                   )
+                )
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(guardId, row.id, MAX_OUTBOX_ATTEMPTS, timestamp, timestamp),
@@ -95,7 +128,20 @@ async function leaseOutbox(row: Row, owner: string, timestamp: string): Promise<
               SET status = 'sending', attempt = attempt + 1, lease_owner = ?,
                   lease_expires_at = ?, last_error_code = NULL, updated_at = ?
             WHERE id = ? AND status IN ('pending', 'failed')
-              AND attempt < ? AND next_attempt_at <= ?`,
+              AND attempt < ? AND next_attempt_at <= ?
+              AND EXISTS (
+                SELECT 1 FROM extraction_runs r
+                 WHERE r.id = queue_outbox.run_id AND (
+                   r.status = 'queued' OR (
+                     r.status = 'processing' AND r.lease_owner IS NULL
+                     AND EXISTS (
+                       SELECT 1 FROM extraction_model_stages s
+                        WHERE s.run_id = r.id AND s.status = 'processing'
+                          AND s.provider_request_id IS NOT NULL
+                     )
+                   )
+                 )
+              )`,
         )
         .bind(
           owner,
@@ -127,6 +173,18 @@ async function markSent(row: Row, owner: string): Promise<void> {
     )
     .bind(timestamp, timestamp, row.id, owner)
     .run();
+}
+
+function hasFrozenTwoPassPipeline(row: Row): boolean {
+  try {
+    const modelParams = JSON.parse(String(row.run_model_params_json ?? "{}")) as Record<
+      string,
+      unknown
+    >;
+    return modelParams.two_pass_pipeline === true;
+  } catch {
+    return false;
+  }
 }
 
 async function markDispatchFailure(row: Row, owner: string, code: string): Promise<boolean> {
@@ -166,6 +224,20 @@ async function failDeferredRun(runId: string, code: string): Promise<void> {
       .bind(timestamp, code, timestamp, runId),
     getD1()
       .prepare(
+        `UPDATE extraction_model_stages
+            SET status = 'failed', validated_output_json = NULL,
+                finished_at = ?,
+                duration_ms = MAX(0, CAST(
+                  (julianday(?) - julianday(started_at)) * 86400000 AS INTEGER
+                )),
+                error_code = 'STAGE_RETRY_EXHAUSTED',
+                error_details_json = '{"reason":"transport_retry_exhausted"}',
+                updated_at = ?
+          WHERE run_id = ? AND status = 'processing'`,
+      )
+      .bind(timestamp, timestamp, timestamp, runId),
+    getD1()
+      .prepare(
         `UPDATE projects
             SET scenario_status = 'unassessed', scenario_assessment_run_id = NULL,
                 scenario_candidates_json = '[]', scenario_lease_expires_at = NULL,
@@ -176,27 +248,163 @@ async function failDeferredRun(runId: string, code: string): Promise<void> {
   ]);
 }
 
-export async function dispatchDueOutbox(): Promise<DispatchResult> {
+async function prepareTargetedExtractionOutbox(
+  target: DispatchTarget,
+  timestamp: string,
+): Promise<"queued" | "processing" | "terminal" | "missing"> {
+  const row = await first(
+    `SELECT r.status, r.lease_owner,
+            CASE WHEN EXISTS (
+              SELECT 1 FROM extraction_model_stages s
+               WHERE s.run_id = r.id AND s.status = 'processing'
+                 AND s.provider_request_id IS NOT NULL
+            ) THEN 1 ELSE 0 END AS background_resumable
+       FROM extraction_runs r WHERE r.id = ? AND r.workspace_id = ?`,
+    [target.runId, target.workspaceId],
+  );
+  if (!row) return "missing";
+  const status = String(row.status);
+  if (
+    EXTRACTION_TERMINAL_STATES.includes(
+      status as (typeof EXTRACTION_TERMINAL_STATES)[number],
+    )
+  ) {
+    await getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'sent', sent_at = COALESCE(sent_at, ?),
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'RUN_ALREADY_TERMINAL', updated_at = ?
+          WHERE run_id = ? AND status <> 'sent'`,
+      )
+      .bind(timestamp, timestamp, target.runId)
+      .run();
+    return "terminal";
+  }
+  if (status === "processing") {
+    if (row.lease_owner != null || Number(row.background_resumable) !== 1) {
+      return "processing";
+    }
+    await getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'TARGETED_BACKGROUND_POLL', updated_at = ?
+          WHERE run_id = ? AND attempt < ? AND status IN ('sent', 'failed')`,
+      )
+      .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
+      .run();
+    return "queued";
+  }
+  if (status !== "queued") return "missing";
+  await getD1()
+    .prepare(
+      `UPDATE queue_outbox
+          SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+              lease_owner = NULL, lease_expires_at = NULL,
+              last_error_code = 'TARGETED_REKICK', updated_at = ?
+        WHERE run_id = ? AND attempt < ?
+          AND status IN ('sent', 'failed')`,
+    )
+    .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
+    .run();
+  return "queued";
+}
+
+async function clearTerminalExtractionOutbox(timestamp: string): Promise<void> {
+  await getD1()
+    .prepare(
+      `UPDATE queue_outbox
+          SET status = 'sent', sent_at = COALESCE(sent_at, ?),
+              lease_owner = NULL, lease_expires_at = NULL,
+              last_error_code = 'RUN_ALREADY_TERMINAL', updated_at = ?
+        WHERE status <> 'sent' AND run_id IN (
+          SELECT id FROM extraction_runs
+           WHERE status IN ('succeeded', 'completed_with_warnings', 'failed', 'cancelled')
+        )`,
+    )
+    .bind(timestamp, timestamp)
+    .run();
+}
+
+export async function dispatchDueOutbox(
+  target?: DispatchTarget,
+): Promise<DispatchResult> {
   const timestamp = now();
+  if (target) {
+    // A previous HTTP checkpoint may have been cancelled after its 202
+    // response. Recover only an expired short lease; a live owner is never
+    // disturbed, and any persisted OpenAI Response ID remains resumable.
+    await recoverExpiredTargetedExtractionRun(
+      target.workspaceId,
+      target.runId,
+      timestamp,
+    );
+    const state = await prepareTargetedExtractionOutbox(target, timestamp);
+    if (state !== "queued") {
+      return {
+        claimed: 0,
+        sent: 0,
+        deferred: state === "processing" ? 1 : 0,
+        items: [],
+      };
+    }
+  } else {
+    await clearTerminalExtractionOutbox(timestamp);
+  }
+  const targetClause = target
+    ? " AND o.run_id = ? AND r.workspace_id = ?"
+    : "";
+  const bindings: unknown[] = [MAX_OUTBOX_ATTEMPTS, timestamp];
+  if (target) bindings.push(target.runId, target.workspaceId);
+  bindings.push(POC_DISPATCH_BATCH_LIMIT);
   const rows =
     (
       await getD1()
         .prepare(
-          `SELECT o.*, r.model_params_json AS run_model_params_json
+          `SELECT o.*, r.model_params_json AS run_model_params_json,
+                    r.provider AS run_provider
              FROM queue_outbox o
              JOIN extraction_runs r ON r.id = o.run_id
             WHERE o.status IN ('pending', 'failed') AND o.attempt < ?
               AND o.next_attempt_at <= ?
+              AND (
+                r.status = 'queued' OR (
+                  r.status = 'processing' AND r.lease_owner IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM extraction_model_stages s
+                     WHERE s.run_id = r.id AND s.status = 'processing'
+                       AND s.provider_request_id IS NOT NULL
+                  )
+                )
+              )
+              ${targetClause}
             ORDER BY o.next_attempt_at, o.created_at
             LIMIT ?`,
         )
-        .bind(MAX_OUTBOX_ATTEMPTS, timestamp, POC_DISPATCH_BATCH_LIMIT)
+        .bind(...bindings)
         .all<Row>()
     ).results ?? [];
   const result: DispatchResult = { claimed: 0, sent: 0, deferred: 0, items: [] };
   for (const row of rows) {
+    const targetedHttpCheckpoint = Boolean(
+      target && String(row.run_provider) === "openai" && hasFrozenTwoPassPipeline(row),
+    );
+    if (target && !targetedHttpCheckpoint) {
+      // Single-pass and non-OpenAI providers may perform one long synchronous
+      // call. Never put them behind the short HTTP recovery lease: leave the
+      // durable message due for the scheduled worker's normal long lease.
+      result.deferred += 1;
+      continue;
+    }
     const owner = `dispatcher_${crypto.randomUUID()}`;
-    const leased = await leaseOutbox(row, owner, timestamp);
+    const leased = await leaseOutbox(
+      row,
+      owner,
+      timestamp,
+      targetedHttpCheckpoint ? TARGETED_HTTP_CHECKPOINT_LEASE_MS : undefined,
+    );
     if (!leased) {
       result.deferred += 1;
       continue;
@@ -225,7 +433,27 @@ export async function dispatchDueOutbox(): Promise<DispatchResult> {
         });
         continue;
       }
-      const processed = await processExtractionRun(String(leased.run_id));
+      const processed = await processExtractionRun(
+        String(leased.run_id),
+        targetedHttpCheckpoint
+          ? {
+              leaseDurationMs: TARGETED_HTTP_CHECKPOINT_LEASE_MS,
+              dispatchOutboxOwner: owner,
+            }
+          : undefined,
+      );
+      if (processed.status === "background_pending") {
+        // The processor atomically released the Run and this exact owned
+        // outbox delivery. Never issue a second, post-hoc release here: after
+        // lease recovery it could race with a newer dispatcher owner.
+        result.deferred += 1;
+        result.items.push({
+          outboxId: String(leased.id),
+          runId: String(leased.run_id),
+          outcome: processed.status,
+        });
+        continue;
+      }
       if (processed.status === "deferred") {
         const code = processed.errorCode ?? "MODEL_PROVIDER_REQUEST_FAILED";
         const terminal = await markDispatchFailure(leased, owner, code);
@@ -321,7 +549,7 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
               last_error_code = 'LONG_QUEUED_RUN', updated_at = ?
         WHERE status = 'sent' AND run_id IN (
           SELECT id FROM extraction_runs
-           WHERE status = 'queued' AND queued_at <= ?
+           WHERE status = 'queued' AND COALESCE(current_queued_at, queued_at) <= ?
         )`,
     )
     .bind(timestamp, timestamp, longQueuedThreshold)
@@ -366,10 +594,14 @@ export async function sweepAndDispatch(): Promise<{
   transcription_sweep: TranscriptionSweepResult;
   transcription_dispatch: TranscriptionDispatchResult;
 }> {
-  const transcription_sweep = await sweepTranscriptionJobs();
-  const sweep = await sweepJobs();
-  const transcription_dispatch = await dispatchDueTranscriptionOutbox();
-  const dispatch = await dispatchDueOutbox();
+  const [transcription_sweep, sweep] = await Promise.all([
+    sweepTranscriptionJobs(),
+    sweepJobs(),
+  ]);
+  const [transcription_dispatch, dispatch] = await Promise.all([
+    dispatchDueTranscriptionOutbox(),
+    dispatchDueOutbox(),
+  ]);
   return { sweep, dispatch, transcription_sweep, transcription_dispatch };
 }
 
@@ -377,7 +609,16 @@ export async function dispatchAllDueOutbox(): Promise<{
   transcription: TranscriptionDispatchResult;
   extraction: DispatchResult;
 }> {
-  const transcription = await dispatchDueTranscriptionOutbox();
-  const extraction = await dispatchDueOutbox();
+  const [transcription, extraction] = await Promise.all([
+    dispatchDueTranscriptionOutbox(),
+    dispatchDueOutbox(),
+  ]);
   return { transcription, extraction };
+}
+
+export async function dispatchExtractionRun(
+  workspaceId: string,
+  runId: string,
+): Promise<DispatchResult> {
+  return dispatchDueOutbox({ workspaceId, runId });
 }

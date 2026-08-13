@@ -34,6 +34,9 @@ export type TranscriptionSweepResult = {
 
 const MAX_OUTBOX_ATTEMPTS = TRANSCRIPTION_MAX_ATTEMPTS;
 const BATCH_LIMIT = 1;
+const TRANSCRIPTION_TERMINAL_STATES = ["succeeded", "failed", "cancelled"] as const;
+
+type DispatchTarget = { runId: string; workspaceId: string };
 
 function now(): string {
   return new Date().toISOString();
@@ -70,6 +73,11 @@ async function lease(row: Row, owner: string, timestamp: string): Promise<Row | 
              SELECT 1 FROM transcription_queue_outbox
               WHERE id = ? AND status IN ('pending', 'failed')
                 AND attempt < ? AND next_attempt_at <= ?
+                AND EXISTS (
+                  SELECT 1 FROM transcription_runs r
+                   WHERE r.id = transcription_queue_outbox.run_id
+                     AND r.status = 'queued'
+                )
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(guardId, row.id, MAX_OUTBOX_ATTEMPTS, timestamp, timestamp),
@@ -79,7 +87,12 @@ async function lease(row: Row, owner: string, timestamp: string): Promise<Row | 
               SET status = 'sending', attempt = attempt + 1, lease_owner = ?,
                   lease_expires_at = ?, last_error_code = NULL, updated_at = ?
             WHERE id = ? AND status IN ('pending', 'failed')
-              AND attempt < ? AND next_attempt_at <= ?`,
+              AND attempt < ? AND next_attempt_at <= ?
+              AND EXISTS (
+                SELECT 1 FROM transcription_runs r
+                 WHERE r.id = transcription_queue_outbox.run_id
+                   AND r.status = 'queued'
+              )`,
         )
         .bind(owner, leaseExpiresAt, timestamp, row.id, MAX_OUTBOX_ATTEMPTS, timestamp),
       db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
@@ -171,8 +184,88 @@ async function markRetryExhaustedRun(runId: string, code: string): Promise<void>
   ]);
 }
 
-export async function dispatchDueTranscriptionOutbox(): Promise<TranscriptionDispatchResult> {
+async function prepareTargetedTranscriptionOutbox(
+  target: DispatchTarget,
+  timestamp: string,
+): Promise<"queued" | "processing" | "terminal" | "missing"> {
+  const row = await first(
+    `SELECT status FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    [target.runId, target.workspaceId],
+  );
+  if (!row) return "missing";
+  const status = String(row.status);
+  if (
+    TRANSCRIPTION_TERMINAL_STATES.includes(
+      status as (typeof TRANSCRIPTION_TERMINAL_STATES)[number],
+    )
+  ) {
+    await getD1()
+      .prepare(
+        `UPDATE transcription_queue_outbox
+            SET status = 'sent', sent_at = COALESCE(sent_at, ?),
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'RUN_ALREADY_TERMINAL', updated_at = ?
+          WHERE run_id = ? AND status <> 'sent'`,
+      )
+      .bind(timestamp, timestamp, target.runId)
+      .run();
+    return "terminal";
+  }
+  if (status === "processing") return "processing";
+  if (status !== "queued") return "missing";
+  await getD1()
+    .prepare(
+      `UPDATE transcription_queue_outbox
+          SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+              lease_owner = NULL, lease_expires_at = NULL,
+              last_error_code = 'TARGETED_REKICK', updated_at = ?
+        WHERE run_id = ? AND attempt < ?
+          AND status IN ('sent', 'failed')`,
+    )
+    .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
+    .run();
+  return "queued";
+}
+
+async function clearTerminalTranscriptionOutbox(timestamp: string): Promise<void> {
+  await getD1()
+    .prepare(
+      `UPDATE transcription_queue_outbox
+          SET status = 'sent', sent_at = COALESCE(sent_at, ?),
+              lease_owner = NULL, lease_expires_at = NULL,
+              last_error_code = 'RUN_ALREADY_TERMINAL', updated_at = ?
+        WHERE status <> 'sent' AND run_id IN (
+          SELECT id FROM transcription_runs
+           WHERE status IN ('succeeded', 'failed', 'cancelled')
+        )`,
+    )
+    .bind(timestamp, timestamp)
+    .run();
+}
+
+export async function dispatchDueTranscriptionOutbox(
+  target?: DispatchTarget,
+): Promise<TranscriptionDispatchResult> {
   const timestamp = now();
+  if (target) {
+    const state = await prepareTargetedTranscriptionOutbox(target, timestamp);
+    if (state !== "queued") {
+      return {
+        claimed: 0,
+        sent: 0,
+        deferred: state === "processing" ? 1 : 0,
+        items: [],
+      };
+    }
+  } else {
+    await clearTerminalTranscriptionOutbox(timestamp);
+  }
+  const targetClause = target
+    ? " AND o.run_id = ? AND r.workspace_id = ?"
+    : "";
+  const bindings: unknown[] = [MAX_OUTBOX_ATTEMPTS, timestamp];
+  if (target) bindings.push(target.runId, target.workspaceId);
+  bindings.push(BATCH_LIMIT);
   const rows = (
     await getD1()
       .prepare(
@@ -181,10 +274,12 @@ export async function dispatchDueTranscriptionOutbox(): Promise<TranscriptionDis
            JOIN transcription_runs r ON r.id = o.run_id
           WHERE o.status IN ('pending', 'failed') AND o.attempt < ?
             AND o.next_attempt_at <= ?
+            AND r.status = 'queued'
+            ${targetClause}
           ORDER BY o.next_attempt_at, o.created_at
           LIMIT ?`,
       )
-      .bind(MAX_OUTBOX_ATTEMPTS, timestamp, BATCH_LIMIT)
+      .bind(...bindings)
       .all<Row>()
   ).results ?? [];
   const result: TranscriptionDispatchResult = {
@@ -283,6 +378,26 @@ export async function dispatchDueTranscriptionOutbox(): Promise<TranscriptionDis
   return result;
 }
 
+export async function dispatchTranscriptionRun(
+  workspaceId: string,
+  runId: string,
+): Promise<TranscriptionDispatchResult> {
+  return dispatchDueTranscriptionOutbox({ workspaceId, runId });
+}
+
+/**
+ * Make an existing transcription message due without starting the long audio
+ * provider request inside an HTTP waitUntil. Production Cron invocations have
+ * a 15-minute wall-time budget; an HTTP response only keeps waitUntil work
+ * alive for roughly 30 seconds after the response is sent.
+ */
+export async function wakeTranscriptionRun(
+  workspaceId: string,
+  runId: string,
+): Promise<"queued" | "processing" | "terminal" | "missing"> {
+  return prepareTargetedTranscriptionOutbox({ workspaceId, runId }, now());
+}
+
 export async function sweepTranscriptionJobs(
   timestamp = now(),
 ): Promise<TranscriptionSweepResult> {
@@ -317,7 +432,7 @@ export async function sweepTranscriptionJobs(
               last_error_code = 'LONG_QUEUED_RUN', updated_at = ?
         WHERE status = 'sent' AND run_id IN (
           SELECT id FROM transcription_runs
-           WHERE status = 'queued' AND queued_at <= ?
+           WHERE status = 'queued' AND COALESCE(current_queued_at, queued_at) <= ?
         )`,
     )
     .bind(timestamp, timestamp, threshold)

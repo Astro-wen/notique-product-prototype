@@ -63,7 +63,16 @@ export async function loadProjectLedger(
   if (!project) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Project was not found.");
   }
-  const [claimRows, versionRows, evidenceRows, relationRows, withdrawRows, eventRows] =
+  const [
+    claimRows,
+    versionRows,
+    evidenceRows,
+    evidenceSpeakerRows,
+    relationRows,
+    withdrawRows,
+    eventRows,
+    occurrenceRows,
+  ] =
     await Promise.all([
       all(
         `SELECT c.*, c.id AS claim_id, cv.id AS version_id, cv.version_no, cv.statement, cv.normalized_value_json,
@@ -85,11 +94,26 @@ export async function loadProjectLedger(
         [projectId, scope.workspaceId],
       ),
       all(
-        `SELECT er.id, er.claim_version_id
+        `SELECT er.id, er.project_id, er.event_id, er.claim_version_id,
+                er.kind, er.asset_version_id, er.segment_ids_json,
+                er.quote_raw, er.start_ms, er.end_ms, er.observation,
+                er.evidence_role
            FROM evidence_refs er
           WHERE er.project_id = ? AND er.workspace_id = ?
             AND er.structural_validation_status = 'valid'
           ORDER BY er.created_at`,
+        [projectId, scope.workspaceId],
+      ),
+      all(
+        `SELECT er.id AS evidence_ref_id, ts.speaker
+           FROM evidence_refs er
+           JOIN json_each(COALESCE(er.segment_ids_json, '[]')) selected
+           JOIN text_segments ts ON ts.id = selected.value
+          WHERE er.project_id = ? AND er.workspace_id = ?
+            AND er.structural_validation_status = 'valid'
+            AND ts.workspace_id = er.workspace_id
+            AND ts.event_id = er.event_id
+          ORDER BY er.created_at, ts.ordinal`,
         [projectId, scope.workspaceId],
       ),
       all(
@@ -115,6 +139,17 @@ export async function loadProjectLedger(
           WHERE project_id = ? AND workspace_id = ? ORDER BY sequence_no`,
         [projectId, scope.workspaceId],
       ),
+      all(
+        `SELECT occ.*
+           FROM claim_occurrences occ
+           JOIN claims c ON c.id = occ.claim_id
+           JOIN evidence_refs er ON er.id = occ.evidence_ref_id
+          WHERE c.project_id = ? AND c.workspace_id = ?
+            AND c.review_status = 'verified'
+            AND er.structural_validation_status = 'valid'
+          ORDER BY occ.confirmed_at, occ.id`,
+        [projectId, scope.workspaceId],
+      ),
     ]);
 
   const evidenceByVersion = new Map<string, string[]>();
@@ -124,6 +159,15 @@ export async function loadProjectLedger(
       ...(evidenceByVersion.get(versionId) ?? []),
       String(row.id),
     ]);
+  }
+  const speakersByEvidence = new Map<string, string[]>();
+  for (const row of evidenceSpeakerRows) {
+    if (row.speaker == null) continue;
+    const evidenceRefId = String(row.evidence_ref_id);
+    const speakers = speakersByEvidence.get(evidenceRefId) ?? [];
+    const speaker = String(row.speaker);
+    if (!speakers.includes(speaker)) speakers.push(speaker);
+    speakersByEvidence.set(evidenceRefId, speakers);
   }
   const versionRecord = (row: Row): ClaimVersionRecord => {
     const versionId = String(row.version_id);
@@ -204,6 +248,35 @@ export async function loadProjectLedger(
       title: String(row.title),
       occurredAt: String(row.occurred_at),
       sequenceNo: Number(row.sequence_no),
+    })),
+    evidenceRefs: evidenceRows.map((row) => ({
+      id: String(row.id),
+      projectId: String(row.project_id),
+      eventId: String(row.event_id),
+      claimVersionId: String(row.claim_version_id),
+      kind: String(row.kind) as NonNullable<ProjectLedger["evidenceRefs"]>[number]["kind"],
+      assetVersionId: row.asset_version_id == null ? null : String(row.asset_version_id),
+      segmentIds: parseJson<string[]>(
+        row.segment_ids_json == null ? null : String(row.segment_ids_json),
+        [],
+      ),
+      quoteRaw: row.quote_raw == null ? null : String(row.quote_raw),
+      startMs: row.start_ms == null ? null : Number(row.start_ms),
+      endMs: row.end_ms == null ? null : Number(row.end_ms),
+      observation: row.observation == null ? null : String(row.observation),
+      evidenceRole: String(row.evidence_role) as NonNullable<
+        ProjectLedger["evidenceRefs"]
+      >[number]["evidenceRole"],
+      speakers: speakersByEvidence.get(String(row.id)) ?? [],
+    })),
+    occurrences: occurrenceRows.map((row) => ({
+      id: String(row.id),
+      claimId: String(row.claim_id),
+      claimVersionId: String(row.claim_version_id),
+      eventId: String(row.event_id),
+      evidenceRefId: String(row.evidence_ref_id),
+      confirmedAt: String(row.confirmed_at),
+      createdAt: String(row.created_at),
     })),
   };
 }

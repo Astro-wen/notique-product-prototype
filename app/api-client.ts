@@ -23,8 +23,11 @@ import type {
   GetEventResponse,
   ExtractionRunDebugRecord,
   EventTranscriptSegmentRecord,
+  EvidenceContextRecord,
+  EvidenceContextResponse,
   GetExtractionRunResponse,
   GetProjectResponse,
+  GetWorkflowSnapshotResponse,
   GetReviewSessionResponse,
   GetRunClaimsResponse,
   GetTranscriptionRunResponse,
@@ -45,6 +48,7 @@ import type {
   ScenarioVerdictResponse,
   ReviewSessionResponse,
   WithdrawClaimRequest,
+  WorkflowSnapshotRecord,
 } from "../lib/shared/api-types";
 
 export type Id = string;
@@ -57,6 +61,9 @@ export type RelationTarget = ManualRelationTargetRecord;
 export type RelationType = ManualRelationType;
 export type TranscriptSegment = EventTranscriptSegmentRecord;
 export type AiDraftAssessment = AiDraftAssessmentRecord;
+export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project"> & {
+  project: Project;
+};
 
 export type RunReview = {
   claims: Claim[];
@@ -162,7 +169,13 @@ export type TranscriptionRun = {
   durationMs?: number;
   createdAt?: string;
   queuedAt?: string;
+  firstQueuedAt?: string;
+  currentQueuedAt?: string;
   startedAt?: string;
+  firstStartedAt?: string;
+  currentStartedAt?: string;
+  processingAttemptNo?: number;
+  dispatchAttemptNo?: number;
   finishedAt?: string;
   errorCode?: string;
   errorMessage?: string;
@@ -187,7 +200,13 @@ export type ExtractionRun = {
   pipelineStage?: "inventory" | "verify" | "verify_escalated";
   createdAt?: string;
   queuedAt?: string;
+  firstQueuedAt?: string;
+  currentQueuedAt?: string;
   startedAt?: string;
+  firstStartedAt?: string;
+  currentStartedAt?: string;
+  processingAttemptNo?: number;
+  dispatchAttemptNo?: number;
   finishedAt?: string;
   updatedAt?: string;
   completedAt?: string;
@@ -238,6 +257,8 @@ export type EvidenceRef = {
   segmentIds: Id[];
   audioUrl?: string;
 };
+
+export type EvidenceContext = EvidenceContextRecord;
 
 export type Claim = {
   id: Id;
@@ -489,7 +510,13 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
     durationMs: asNumber(pick(source, ["duration_ms"])),
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     queuedAt: asString(pick(source, ["queued_at", "queuedAt"]), undefined as unknown as string) || undefined,
+    firstQueuedAt: asString(pick(source, ["first_queued_at", "firstQueuedAt"]), undefined as unknown as string) || undefined,
+    currentQueuedAt: asString(pick(source, ["current_queued_at", "currentQueuedAt"]), undefined as unknown as string) || undefined,
     startedAt: asString(pick(source, ["started_at", "startedAt"]), undefined as unknown as string) || undefined,
+    firstStartedAt: asString(pick(source, ["first_started_at", "firstStartedAt"]), undefined as unknown as string) || undefined,
+    currentStartedAt: asString(pick(source, ["current_started_at", "currentStartedAt"]), undefined as unknown as string) || undefined,
+    processingAttemptNo: asNumber(pick(source, ["processing_attempt_no", "processingAttemptNo"])),
+    dispatchAttemptNo: asNumber(pick(source, ["dispatch_attempt_no", "dispatchAttemptNo"])),
     finishedAt: asString(pick(source, ["finished_at", "finishedAt"]), undefined as unknown as string) || undefined,
     errorCode: asString(pick(source, ["error_code"]), undefined as unknown as string) || undefined,
     errorMessage: asString(
@@ -550,7 +577,13 @@ export function normalizeRun(value: unknown): ExtractionRun {
     ) as ExtractionRun["pipelineStage"],
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     queuedAt: asString(pick(source, ["queued_at", "queuedAt"]), undefined as unknown as string) || undefined,
+    firstQueuedAt: asString(pick(source, ["first_queued_at", "firstQueuedAt"]), undefined as unknown as string) || undefined,
+    currentQueuedAt: asString(pick(source, ["current_queued_at", "currentQueuedAt"]), undefined as unknown as string) || undefined,
     startedAt: asString(pick(source, ["started_at", "startedAt"]), undefined as unknown as string) || undefined,
+    firstStartedAt: asString(pick(source, ["first_started_at", "firstStartedAt"]), undefined as unknown as string) || undefined,
+    currentStartedAt: asString(pick(source, ["current_started_at", "currentStartedAt"]), undefined as unknown as string) || undefined,
+    processingAttemptNo: asNumber(pick(source, ["processing_attempt_no", "processingAttemptNo"])),
+    dispatchAttemptNo: asNumber(pick(source, ["dispatch_attempt_no", "dispatchAttemptNo"])),
     finishedAt: asString(pick(source, ["finished_at", "finishedAt"]), undefined as unknown as string) || undefined,
     updatedAt: asString(pick(source, ["updated_at", "updatedAt"]), undefined as unknown as string) || undefined,
     completedAt: asString(
@@ -746,6 +779,18 @@ export const api = {
   async getProject(projectId: Id): Promise<Project> {
     const body = await request<GetProjectResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}`, { cache: "no-store" });
     return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async getWorkflowSnapshot(projectId: Id): Promise<WorkflowSnapshot> {
+    const body = await request<GetWorkflowSnapshotResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/workflow-snapshot`,
+      { cache: "no-store" },
+    );
+    const snapshot = body.data.workflow_snapshot;
+    return {
+      ...snapshot,
+      project: requireId(normalizeProject(snapshot.project), "project"),
+    };
   },
 
   async getReviewSession(projectId: Id): Promise<ReviewSession | null> {
@@ -1018,10 +1063,15 @@ export const api = {
     return requireId(normalizeRun(body.data.run), "extraction run");
   },
 
-  async kickDispatcher(): Promise<void> {
+  async kickDispatcher(target?: {
+    kind: "extraction" | "transcription";
+    runId: Id;
+  }): Promise<void> {
     await request<unknown>("/api/v1/jobs/dispatch", {
       method: "POST",
-      body: "{}",
+      ...(target
+        ? { body: jsonBody({ kind: target.kind, run_id: target.runId }) }
+        : {}),
     });
   },
 
@@ -1108,6 +1158,24 @@ export const api = {
     const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store" });
     const result = normalizeEvidence(dataValue(body, ["evidence_ref", "evidence"]));
     if (!result) throw new ApiClientError({ status: 502, code: "INVALID_EVIDENCE_RESPONSE", message: "The server returned an invalid evidence record." });
+    return result;
+  },
+
+  async getEvidenceContext(refId: Id): Promise<EvidenceContext> {
+    const body = await request<EvidenceContextResponse>(
+      `/api/v1/evidence-refs/${encodeURIComponent(refId)}/context`,
+      { cache: "no-store" },
+    );
+    const result = body.data.evidence_context;
+    if (
+      !result ||
+      result.evidence_ref_id !== refId ||
+      !Array.isArray(result.context?.before) ||
+      !Array.isArray(result.context?.target) ||
+      !Array.isArray(result.context?.after)
+    ) {
+      invalidContract("The server returned an invalid Evidence context response.");
+    }
     return result;
   },
 

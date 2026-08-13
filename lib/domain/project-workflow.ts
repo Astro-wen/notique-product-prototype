@@ -32,6 +32,63 @@ export type ProjectWorkflowPlan = {
   ignoredEmptyCount: number;
 };
 
+export type ProjectWorkflowDisplayStatus =
+  | "waiting_material"
+  | "transcribing"
+  | "ready"
+  | "queued"
+  | "inventory"
+  | "verify"
+  | "verify_escalated"
+  | "waiting_scenario"
+  | "waiting_review"
+  | "complete"
+  | "needs_attention";
+
+export function deriveProjectWorkflowDisplayStatus(input: {
+  materialStatus: string;
+  materialTotal: number;
+  materialProcessing: number;
+  materialFailed: number;
+  transcriptionStatus: string | null;
+  extractionStatus: string | null;
+  extractionStage: "inventory" | "verify" | "verify_escalated" | null;
+  scenarioStatus: string;
+  pendingCount: number;
+  candidateCount: number;
+}): ProjectWorkflowDisplayStatus {
+  if (
+    input.materialFailed > 0 ||
+    input.transcriptionStatus === "failed" ||
+    input.extractionStatus === "failed" ||
+    input.extractionStatus === "cancelled"
+  ) return "needs_attention";
+  if (
+    input.transcriptionStatus === "queued" ||
+    input.transcriptionStatus === "processing"
+  ) return "transcribing";
+  if (
+    input.materialTotal === 0 ||
+    input.materialStatus !== "ready" ||
+    input.materialProcessing > 0
+  ) return "waiting_material";
+  if (!input.extractionStatus) return "ready";
+  if (input.extractionStatus === "queued") return "queued";
+  if (input.extractionStatus === "processing") {
+    return input.extractionStage ?? "inventory";
+  }
+  if (
+    input.extractionStatus === "succeeded" ||
+    input.extractionStatus === "completed_with_warnings"
+  ) {
+    if (input.candidateCount === 0) return "needs_attention";
+    if (input.scenarioStatus === "pending_confirmation") return "waiting_scenario";
+    if (input.pendingCount > 0) return "waiting_review";
+    return "complete";
+  }
+  return "needs_attention";
+}
+
 const successfulRunStatuses = new Set([
   "succeeded",
   "completed",

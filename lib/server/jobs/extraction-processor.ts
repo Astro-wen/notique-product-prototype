@@ -38,13 +38,15 @@ import {
 import {
   createModelProvider,
   isModelProviderNotConfigured,
+  ModelBackgroundPendingError,
   ModelOutputInvalidError,
   ModelProviderRequestError,
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
 import { loadProjectLedger } from "@/lib/server/db/ledger-repository";
 import {
-  getExtractionModelStage,
+  getLatestExtractionModelStage,
+  supersedeProcessingExtractionModelStage,
   upsertExtractionModelStage,
 } from "@/lib/server/db/extraction-stage-repository";
 import { parseJson } from "@/lib/server/http/api";
@@ -94,6 +96,7 @@ export type ExtractionProcessResult = {
     | "lease_not_acquired"
     | "succeeded"
     | "completed_with_warnings"
+    | "background_pending"
     | "deferred"
     | "failed";
   persistedClaims: number;
@@ -151,6 +154,9 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 function sanitizedIssue(value: unknown): Record<string, unknown> {
+  if (value instanceof ModelBackgroundPendingError) {
+    return { background_status: value.providerStatus };
+  }
   if (value instanceof ModelOutputInvalidError) {
     return { issues: value.issues.slice(0, 25) };
   }
@@ -163,6 +169,7 @@ function sanitizedIssue(value: unknown): Record<string, unknown> {
 
 function errorCode(error: unknown): string {
   if (isModelProviderNotConfigured(error)) return "MODEL_PROVIDER_NOT_CONFIGURED";
+  if (error instanceof ModelBackgroundPendingError) return error.code;
   if (error instanceof ModelTimeoutError) return "MODEL_TIMEOUT";
   if (error instanceof ModelOutputInvalidError) return "MODEL_OUTPUT_INVALID";
   if (error instanceof ModelProviderRequestError) return "MODEL_PROVIDER_REQUEST_FAILED";
@@ -171,6 +178,7 @@ function errorCode(error: unknown): string {
 }
 
 function isTransientModelError(error: unknown): boolean {
+  if (error instanceof ModelBackgroundPendingError) return true;
   if (error instanceof ModelTimeoutError) return true;
   return error instanceof ModelProviderRequestError &&
     (error.status === null || error.status === 408 || error.status === 429 || error.status >= 500);
@@ -227,9 +235,13 @@ async function runModelStage<T>(input: {
   inputHash: string;
   details?: Record<string, unknown>;
   validate: (value: unknown) => T | null;
-  invoke: (idempotencyKey: string) => Promise<{ output: T; usage: ModelUsage }>;
+  invoke: (options: {
+    idempotencyKey: string;
+    resumeProviderResponseId?: string;
+    onProviderResponse: (response: { id: string; status: string }) => Promise<void>;
+  }) => Promise<{ output: T; usage: ModelUsage }>;
 }): Promise<{ output: T; usage: ModelUsage; reused: boolean }> {
-  const existing = await getExtractionModelStage(String(input.run.id), input.stage, 1);
+  const existing = await getLatestExtractionModelStage(String(input.run.id), input.stage);
   if (existing?.status === "succeeded") {
     const output = input.validate(existing.validated_output);
     if (!output) {
@@ -240,28 +252,74 @@ async function runModelStage<T>(input: {
     }
     return { output, usage: stageUsage(existing), reused: true };
   }
-  const startedAt = now();
-  await upsertExtractionModelStage({
-    runId: String(input.run.id),
-    stage: input.stage,
-    attempt: 1,
-    provider: input.provider,
-    model: input.model,
-    reasoningEffort: input.reasoningEffort,
-    promptVersion: input.promptVersion,
-    schemaVersion: input.schemaVersion,
-    status: "processing",
-    inputHash: input.inputHash,
-    errorDetails: input.details,
-    startedAt,
-  });
+  const canResumeExisting = Boolean(
+    existing?.status === "processing" &&
+    existing.provider === input.provider &&
+    existing.model === input.model &&
+    existing.reasoning_effort === input.reasoningEffort &&
+    existing.prompt_version === input.promptVersion &&
+    existing.schema_version === input.schemaVersion &&
+    existing.input_hash === input.inputHash,
+  );
+  const attempt = canResumeExisting
+    ? existing!.attempt
+    : Math.max(Number(input.run.attempt_no ?? 1), (existing?.attempt ?? 0) + 1);
+  const startedAt = canResumeExisting ? existing!.started_at : now();
+  if (!canResumeExisting) {
+    await supersedeProcessingExtractionModelStage(
+      String(input.run.id),
+      input.stage,
+      attempt,
+      startedAt,
+    );
+    await upsertExtractionModelStage({
+      runId: String(input.run.id),
+      stage: input.stage,
+      attempt,
+      provider: input.provider,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      promptVersion: input.promptVersion,
+      schemaVersion: input.schemaVersion,
+      status: "processing",
+      inputHash: input.inputHash,
+      errorDetails: input.details,
+      startedAt,
+    });
+  }
+  const onProviderResponse = async (response: { id: string; status: string }) => {
+    await upsertExtractionModelStage({
+      runId: String(input.run.id),
+      stage: input.stage,
+      attempt,
+      provider: input.provider,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      promptVersion: input.promptVersion,
+      schemaVersion: input.schemaVersion,
+      status: "processing",
+      inputHash: input.inputHash,
+      providerRequestId: response.id,
+      errorDetails: {
+        ...input.details,
+        background_response_status: response.status,
+      },
+      startedAt,
+    });
+  };
   try {
-    const result = await input.invoke(`notique:${input.run.id}:${input.stage}:1`);
+    const result = await input.invoke({
+      idempotencyKey: `notique:${input.run.id}:${input.stage}:${attempt}`,
+      ...(canResumeExisting && existing?.provider_request_id
+        ? { resumeProviderResponseId: existing.provider_request_id }
+        : {}),
+      onProviderResponse,
+    });
     const finishedAt = now();
     await upsertExtractionModelStage({
       runId: String(input.run.id),
       stage: input.stage,
-      attempt: 1,
+      attempt,
       provider: input.provider,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
@@ -281,12 +339,25 @@ async function runModelStage<T>(input: {
     });
     return { ...result, reused: false };
   } catch (error) {
+    if (error instanceof ModelBackgroundPendingError) {
+      // onProviderResponse has already persisted the durable Response ID. Keep
+      // this exact stage attempt processing so the next Worker invocation uses
+      // GET /responses/:id rather than creating another paid Response.
+      throw error;
+    }
+    if (isTransientModelError(error)) {
+      // Keep this exact stage attempt processing. A retry after a POST timeout
+      // reuses the same Idempotency-Key; a retry after a GET timeout keeps the
+      // persisted Response ID and retrieves it again. Neither path is allowed
+      // to create a second paid Response merely because transport failed.
+      throw error;
+    }
     const finishedAt = now();
     const usage = error instanceof ModelOutputInvalidError ? error.usage : null;
     await upsertExtractionModelStage({
       runId: String(input.run.id),
       stage: input.stage,
-      attempt: 1,
+      attempt,
       provider: input.provider,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
@@ -340,7 +411,12 @@ function contextSnapshotView(input: ContextPack): ContextPack {
   };
 }
 
-async function acquireRunLease(runId: string, owner: string, timestamp: string): Promise<Row | null> {
+async function acquireRunLease(
+  runId: string,
+  owner: string,
+  timestamp: string,
+  leaseDurationMs = EXTRACTION_RUN_LEASE_MS,
+): Promise<Row | null> {
   const db = getD1();
   const guardId = id("guard");
   try {
@@ -349,20 +425,46 @@ async function acquireRunLease(runId: string, owner: string, timestamp: string):
         .prepare(
           `INSERT INTO mutation_guards (id, guard_value, created_at)
            SELECT ?, CASE WHEN EXISTS (
-             SELECT 1 FROM extraction_runs WHERE id = ? AND status = 'queued'
+             SELECT 1 FROM extraction_runs r WHERE r.id = ? AND (
+               r.status = 'queued' OR (
+                 r.status = 'processing' AND r.lease_owner IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM extraction_model_stages s
+                    WHERE s.run_id = r.id AND s.status = 'processing'
+                      AND s.provider_request_id IS NOT NULL
+                 )
+               )
+             )
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(guardId, runId, timestamp),
       db
         .prepare(
           `UPDATE extraction_runs
-              SET status = 'processing', lease_owner = ?, lease_expires_at = ?,
-                  started_at = COALESCE(started_at, ?), updated_at = ?
-            WHERE id = ? AND status = 'queued'`,
+              SET attempt_no = attempt_no + CASE WHEN status = 'queued' THEN 1 ELSE 0 END,
+                  status = 'processing',
+                  lease_owner = ?, lease_expires_at = ?,
+                  started_at = COALESCE(started_at, ?),
+                  first_started_at = COALESCE(first_started_at, ?),
+                  current_started_at = CASE
+                    WHEN status = 'queued' THEN ? ELSE current_started_at END,
+                  updated_at = ?
+            WHERE id = ? AND (
+              status = 'queued' OR (
+                status = 'processing' AND lease_owner IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM extraction_model_stages s
+                   WHERE s.run_id = extraction_runs.id AND s.status = 'processing'
+                     AND s.provider_request_id IS NOT NULL
+                )
+              )
+            )`,
         )
         .bind(
           owner,
-          plusMilliseconds(timestamp, EXTRACTION_RUN_LEASE_MS),
+          plusMilliseconds(timestamp, leaseDurationMs),
+          timestamp,
+          timestamp,
           timestamp,
           timestamp,
           runId,
@@ -373,6 +475,42 @@ async function acquireRunLease(runId: string, owner: string, timestamp: string):
     return null;
   }
   return first(`SELECT * FROM extraction_runs WHERE id = ? AND lease_owner = ?`, [runId, owner]);
+}
+
+/**
+ * Recover only an already-expired targeted lease. This is intentionally much
+ * narrower than the scheduled stale-stage sweep: it never steals live work,
+ * never increments model retries, and preserves a persisted background
+ * Response ID for GET-based resume.
+ */
+export async function recoverExpiredTargetedExtractionRun(
+  workspaceId: string,
+  runId: string,
+  timestamp = now(),
+): Promise<boolean> {
+  const db = getD1();
+  const result = await db.batch([
+    db.prepare(
+      `UPDATE extraction_runs
+          SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+              current_queued_at = ?, finished_at = NULL,
+              error_code = 'TARGETED_DISPATCH_INTERRUPTED',
+              error_details_json = '{"reason":"expired_http_checkpoint","retryable":true}',
+              updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND status = 'processing'
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`
+    ).bind(timestamp, timestamp, runId, workspaceId, timestamp),
+    db.prepare(
+      `UPDATE queue_outbox
+          SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = ?,
+              attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+              last_error_code = 'TARGETED_DISPATCH_INTERRUPTED', updated_at = ?
+        WHERE run_id = ? AND status = 'sending'
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`
+    ).bind(timestamp, timestamp, runId, timestamp),
+  ]);
+  return Number(result[0].meta.changes ?? 0) > 0;
 }
 
 async function loadContextInput(run: Row): Promise<{
@@ -1157,7 +1295,17 @@ async function markRunFailed(
   const usage = completedUsage ?? (
     error instanceof ModelOutputInvalidError && error.usage ? error.usage : null
   );
+  const guardId = id("guard");
   await db.batch([
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(guardId, run.id, owner, timestamp),
     db
       .prepare(
         `UPDATE extraction_runs
@@ -1191,6 +1339,7 @@ async function markRunFailed(
             AND scenario_assessment_run_id = ?`,
       )
       .bind(timestamp, run.project_id, run.workspace_id, run.id),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return {
     runId: String(run.id),
@@ -1210,12 +1359,22 @@ async function deferRunForStageRetry(
 ): Promise<ExtractionProcessResult> {
   const timestamp = now();
   const code = errorCode(error);
+  const guardId = id("guard");
   await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(guardId, run.id, owner, timestamp),
     getD1()
       .prepare(
         `UPDATE extraction_runs
             SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                started_at = NULL, finished_at = NULL,
+                current_queued_at = ?, finished_at = NULL,
                 input_tokens = COALESCE(?, input_tokens),
                 output_tokens = COALESCE(?, output_tokens),
                 cached_tokens = COALESCE(?, cached_tokens),
@@ -1224,6 +1383,7 @@ async function deferRunForStageRetry(
           WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
       )
       .bind(
+        timestamp,
         completedUsage?.inputTokens ?? null,
         completedUsage?.outputTokens ?? null,
         completedUsage?.cachedTokens ?? null,
@@ -1248,6 +1408,7 @@ async function deferRunForStageRetry(
         run.workspace_id,
         run.id,
       ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return {
     runId: String(run.id),
@@ -1259,7 +1420,98 @@ async function deferRunForStageRetry(
   };
 }
 
-export async function processExtractionRun(runId: string): Promise<ExtractionProcessResult> {
+async function releaseRunForBackgroundPoll(
+  run: Row,
+  owner: string,
+  dispatchOutboxOwner: string | undefined,
+  pending: ModelBackgroundPendingError,
+): Promise<ExtractionProcessResult> {
+  const timestamp = now();
+  const nextPollAt = plusMilliseconds(timestamp, 5_000);
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) AND (
+           ? IS NULL OR EXISTS (
+             SELECT 1 FROM queue_outbox
+              WHERE run_id = ? AND status = 'sending' AND lease_owner = ?
+           )
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        run.id,
+        owner,
+        dispatchOutboxOwner ?? null,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        timestamp,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'processing', lease_owner = NULL, lease_expires_at = NULL,
+                error_code = NULL,
+                error_details_json = '{"background_response_pending":true}',
+                updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(timestamp, run.id, owner),
+    getD1()
+      .prepare(
+        `UPDATE projects
+            SET scenario_lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
+            AND scenario_assessment_run_id = ?`,
+      )
+      .bind(
+        plusMilliseconds(timestamp, EXTRACTION_RUN_LEASE_MS + 5 * 60_000),
+        timestamp,
+        run.project_id,
+        run.workspace_id,
+        run.id,
+      ),
+    // Release the Run and requeue its durable outbox message atomically. A
+    // Worker cancellation can no longer leave `processing/no-owner` paired
+    // with a `sending` message until a long lease expires.
+    getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'BACKGROUND_RESPONSE_PENDING', updated_at = ?
+          WHERE run_id = ? AND status = 'sending'
+            AND (? IS NULL OR lease_owner = ?)`,
+      )
+      .bind(
+        nextPollAt,
+        timestamp,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        dispatchOutboxOwner ?? null,
+      ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return {
+    runId: String(run.id),
+    status: "background_pending",
+    persistedClaims: 0,
+    occurrenceCandidates: 0,
+    warningCount: 0,
+    errorCode: pending.code,
+  };
+}
+
+export async function processExtractionRun(
+  runId: string,
+  options?: { leaseDurationMs?: number; dispatchOutboxOwner?: string },
+): Promise<ExtractionProcessResult> {
   const initial = await first(`SELECT * FROM extraction_runs WHERE id = ?`, [runId]);
   if (!initial) {
     throw new ProcessingFault("NOT_FOUND", "Extraction run does not exist.");
@@ -1274,7 +1526,12 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
     };
   }
   const owner = `consumer_${crypto.randomUUID()}`;
-  const leased = await acquireRunLease(runId, owner, now());
+  const leased = await acquireRunLease(
+    runId,
+    owner,
+    now(),
+    options?.leaseDurationMs,
+  );
   if (!leased) {
     return {
       runId,
@@ -1363,9 +1620,9 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
         schemaVersion: INVENTORY_SCHEMA_VERSION,
         inputHash: inventoryInputHash,
         validate: (value) => validateInventoryOutput(value).output,
-        invoke: (idempotencyKey) => inventoryProvider.inventoryClaims(
+        invoke: (stageOptions) => inventoryProvider.inventoryClaims(
           input.contextPack,
-          { idempotencyKey, promptCacheKey: `notique:${leased.id}:two-stage` },
+          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
         ),
       });
       completedUsage = inventoryStage.usage;
@@ -1402,10 +1659,10 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
             inventoryStage.output,
             input.contextPack,
           ).output,
-          invoke: (idempotencyKey) => verifierProvider.verifyClaims(
+          invoke: (stageOptions) => verifierProvider.verifyClaims(
             input.contextPack,
             inventoryStage.output,
-            { idempotencyKey, promptCacheKey: `notique:${leased.id}:two-stage` },
+            { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
           ),
         });
       } catch (error) {
@@ -1457,11 +1714,11 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
               inventoryStage.output,
               input.contextPack,
             ).output,
-            invoke: (idempotencyKey) => escalatedProvider.verifyClaims(
+            invoke: (stageOptions) => escalatedProvider.verifyClaims(
               input.contextPack,
               inventoryStage.output,
               {
-                idempotencyKey,
+                ...stageOptions,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
                 qualityFeedback: [
                   ...assessment.reasons,
@@ -1570,6 +1827,17 @@ export async function processExtractionRun(runId: string): Promise<ExtractionPro
       String(leased.model_params_json ?? "{}"),
       {},
     );
+    if (
+      frozenModelParams.two_pass_pipeline === true &&
+      error instanceof ModelBackgroundPendingError
+    ) {
+      return releaseRunForBackgroundPoll(
+        leased,
+        owner,
+        options?.dispatchOutboxOwner,
+        error,
+      );
+    }
     if (frozenModelParams.two_pass_pipeline === true && isTransientModelError(error)) {
       return deferRunForStageRetry(leased, owner, error, completedUsage);
     }
@@ -1590,7 +1858,7 @@ export async function failExpiredProcessingRuns(timestamp = now()): Promise<numb
     db.prepare(
       `UPDATE extraction_runs
           SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-              started_at = NULL, finished_at = NULL,
+              current_queued_at = ?, finished_at = NULL,
               error_code = 'MODEL_TIMEOUT',
               error_details_json = '{"reason":"stale_model_stage","retryable":true}',
               updated_at = ?
@@ -1609,7 +1877,7 @@ export async function failExpiredProcessingRuns(timestamp = now()): Promise<numb
             SELECT 1 FROM queue_outbox o
              WHERE o.run_id = extraction_runs.id AND o.attempt < 3
           )`,
-    ).bind(timestamp, timestamp, staleStageCutoff),
+    ).bind(timestamp, timestamp, timestamp, staleStageCutoff),
     db.prepare(
       `UPDATE queue_outbox
           SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,

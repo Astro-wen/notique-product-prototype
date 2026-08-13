@@ -14,6 +14,7 @@ const {
 test("guided status exposes exactly one actionable phase", () => {
   const base = { assetCount: 1, analyzableAssetCount: 1, pendingCount: 0 };
   assert.equal(deriveGuidedDisplayStatus(base).label, "可以分析");
+  assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "queued" }).label, "等待后台启动");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "inventory" }).label, "正在识别事实");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "verify" }).label, "正在查漏纠错");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "verify_escalated" }).label, "需要加强复核");
@@ -47,11 +48,27 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(source, /storeId\(recentEventStorageKey\(projectId\), nextEvent\.id\)/);
   assert.match(source, /key=\{project\?\.id \?\? "none"\}/);
   assert.match(source, /onResult=\{\(\) => void loadView\("brief-card"\)\}/);
-  assert.match(source, /await openClaim\(nextId\)/);
+  assert.match(source, /await openClaim\(nextId, "review", undefined, "replace"\)/);
   assert.match(source, /await finishGuidedReview\(\)/);
-  assert.match(source, /reviewClaims=\{claims\}/);
+  const finishGuidedReview = source.slice(
+    source.indexOf("async function finishGuidedReview"),
+    source.indexOf("async function continueAfterReviewSummary"),
+  );
+  assert.match(finishGuidedReview, /loadView\("brief-card", project\.id, "replace"\)/);
+  assert.match(finishGuidedReview, /loadSimpleProject\(project\.id, snapshot\.plan\.currentEventId, "replace"\)/);
+  assert.doesNotMatch(finishGuidedReview, /setScreen\("review-summary"\)/);
+  assert.match(source, /reviewClaims=\{isReadonlyClaimRoute\(route\) \? \[\] : claims\}/);
   assert.match(source, /relationsReviewed/);
+  assert.equal((source.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
   assert.doesNotMatch(source, /<em>\{itemDisplayStatus\.label\}<\/em>/);
   assert.match(source, /item\.id === event\?\.id \? \(run \?\? displayItem\.latestRun\)/);
   assert.doesNotMatch(source, /Luna Max|旧的 max/);
+});
+
+test("mobile keeps one event selector and resets the tab when switching events", () => {
+  const source = fs.readFileSync("app/page.tsx", "utf8");
+  const styles = fs.readFileSync("app/globals.css", "utf8");
+  assert.match(source, /setActiveTab\("materials"\); onUseEvent\(change\.target\.value\)/);
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.simple-meeting-rail \{ display: none; \}/);
+  assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });

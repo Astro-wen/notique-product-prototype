@@ -132,6 +132,40 @@ export async function getExtractionModelStage(
   return row ? extractionModelStageRecord(row) : null;
 }
 
+export async function getLatestExtractionModelStage(
+  runId: string,
+  stage: ExtractionModelStageName,
+): Promise<ExtractionModelStageRecord | null> {
+  const row = await first(
+    `SELECT * FROM extraction_model_stages
+      WHERE run_id = ? AND stage = ?
+      ORDER BY attempt DESC LIMIT 1`,
+    [runId, stage],
+  );
+  return row ? extractionModelStageRecord(row) : null;
+}
+
+export async function supersedeProcessingExtractionModelStage(
+  runId: string,
+  stage: ExtractionModelStageName,
+  beforeAttempt: number,
+  timestamp = now(),
+): Promise<void> {
+  await getD1()
+    .prepare(
+      `UPDATE extraction_model_stages
+          SET status = 'failed', finished_at = ?,
+              duration_ms = MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)),
+              validated_output_json = NULL,
+              error_code = 'STAGE_ATTEMPT_SUPERSEDED',
+              error_details_json = '{"reason":"worker_recovery"}', updated_at = ?
+        WHERE run_id = ? AND stage = ? AND status = 'processing'
+          AND attempt < ?`,
+    )
+    .bind(timestamp, timestamp, timestamp, runId, stage, beforeAttempt)
+    .run();
+}
+
 export async function upsertExtractionModelStage(
   input: UpsertExtractionModelStageInput,
 ): Promise<ExtractionModelStageRecord> {
@@ -197,7 +231,10 @@ export async function upsertExtractionModelStage(
          output_tokens = excluded.output_tokens,
          cached_tokens = excluded.cached_tokens,
          estimated_cost_usd = excluded.estimated_cost_usd,
-         provider_request_id = excluded.provider_request_id,
+         provider_request_id = COALESCE(
+           excluded.provider_request_id,
+           extraction_model_stages.provider_request_id
+         ),
          validated_output_json = excluded.validated_output_json,
          error_code = excluded.error_code,
          error_details_json = excluded.error_details_json,

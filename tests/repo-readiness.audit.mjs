@@ -922,7 +922,7 @@ test("outbox only acknowledges lease contention when another run owner can finis
   );
 });
 
-test("long-running dispatch uses frozen timeout leases and one POC job per invocation", async () => {
+test("long-running dispatch checkpoints OpenAI work and preserves durable recovery", async () => {
   const modelConfig = await read("lib/domain/model-config.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
@@ -941,8 +941,18 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   );
   assert.match(
     processor,
-    /plusMilliseconds\(timestamp,\s*EXTRACTION_RUN_LEASE_MS\)/,
-    "the processor lease must use the shared pipeline boundary",
+    /leaseDurationMs\s*=\s*EXTRACTION_RUN_LEASE_MS[\s\S]{0,1800}plusMilliseconds\(timestamp,\s*leaseDurationMs\)/,
+    "scheduled processing must default to the shared pipeline lease while permitting a shorter HTTP checkpoint",
+  );
+  assert.match(
+    outbox,
+    /TARGETED_HTTP_CHECKPOINT_LEASE_MS\s*=\s*40_000[\s\S]*?leaseOutbox\([\s\S]*?targetedHttpCheckpoint\s*\?\s*TARGETED_HTTP_CHECKPOINT_LEASE_MS/,
+    "a browser-targeted OpenAI checkpoint must write its short outbox lease in the initial guarded claim",
+  );
+  assert.match(
+    processor,
+    /releaseRunForBackgroundPoll[\s\S]{0,1200}getD1\(\)\.batch\(\[[\s\S]{0,900}UPDATE extraction_runs[\s\S]{0,1400}UPDATE queue_outbox[\s\S]{0,500}BACKGROUND_RESPONSE_PENDING/,
+    "persisted background work must release the Run and requeue its durable outbox message atomically",
   );
   assert.match(
     outbox,
@@ -961,13 +971,18 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   );
   assert.match(
     outbox,
-    /LIMIT\s+\?`[\s\S]{0,300}POC_DISPATCH_BATCH_LIMIT/i,
+    /bindings\.push\(POC_DISPATCH_BATCH_LIMIT\)[\s\S]{0,900}LIMIT\s+\?`/i,
     "the database claim limit must use the one-job POC constant",
   );
   assert.doesNotMatch(
     outbox,
     /dispatchDueOutbox\(5\)/,
     "the cron path must not process five long model calls serially",
+  );
+  assert.match(
+    outbox,
+    /target\s*&&\s*String\(row\.run_provider\)\s*===\s*["']openai["'][\s\S]{0,160}hasFrozenTwoPassPipeline[\s\S]{0,2000}processExtractionRun\([\s\S]{0,300}leaseDurationMs:\s*TARGETED_HTTP_CHECKPOINT_LEASE_MS[\s\S]{0,100}dispatchOutboxOwner:\s*owner/,
+    "only a frozen two-pass OpenAI Run may enter the owner-fenced short HTTP checkpoint",
   );
   assert.match(
     processor,
@@ -981,8 +996,18 @@ test("long-running dispatch uses frozen timeout leases and one POC job per invoc
   );
   assert.match(
     worker,
-    /return dispatchResponse\(await sweepAndDispatch\(\), requestId\)/,
-    "a visible browser recovery must sweep stale leases before dispatching",
+    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
+    "a visible browser kick must target one extraction Run for a short checkpoint",
+  );
+  assert.match(
+    worker,
+    /return dispatchResponse\(\{[\s\S]{0,240}run_id:\s*input\.runId[\s\S]{0,160}\},\s*requestId,\s*202\)/,
+    "the targeted checkpoint must acknowledge the durable Run with 202",
+  );
+  assert.match(
+    worker,
+    /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/,
+    "the scheduled recovery path must continue sweeping stale leases",
   );
 });
 
@@ -1219,7 +1244,19 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   const context = await read("lib/server/http/context.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const worker = await read("worker/index.ts");
+  const transcriptionOutbox = await read("lib/server/jobs/transcription-outbox.ts");
   const client = await read("app/api-client.ts");
+  const localAudioBranchStart = worker.indexOf('} else if (env.APP_ENV === "local")');
+  const productionAudioBranchStart = worker.indexOf("} else {", localAudioBranchStart);
+  const productionAudioBranchEnd = worker.indexOf("return dispatchResponse", productionAudioBranchStart);
+  assert.ok(
+    localAudioBranchStart >= 0 &&
+      productionAudioBranchStart > localAudioBranchStart &&
+      productionAudioBranchEnd > productionAudioBranchStart,
+    "the Worker must keep explicit local and production transcription branches",
+  );
+  const localAudioBranch = worker.slice(localAudioBranchStart, productionAudioBranchStart);
+  const productionAudioBranch = worker.slice(productionAudioBranchStart, productionAudioBranchEnd);
 
   assert.ok(
     Array.isArray(productionConfig.triggers?.crons) &&
@@ -1239,8 +1276,39 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /await sweepAndDispatch\(\)/);
-  assert.match(client, /async kickDispatcher\(\)/);
+  assert.match(worker, /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/);
+  assert.match(
+    worker,
+    /if\s*\(env\.APP_ENV\s*!==\s*["']local["']\)[\s\S]{0,900}sameOrigin[\s\S]{0,500}authenticated/,
+    "missing or misspelled APP_ENV must also retain production dispatch authentication",
+  );
+  assert.match(
+    worker,
+    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
+    "targeted extraction may use HTTP waitUntil only for its short background checkpoint",
+  );
+  assert.match(
+    localAudioBranch,
+    /ctx\.waitUntil\(dispatchTranscriptionRun\(workspaceId,\s*input\.runId\)\.catch/,
+    "local development may start transcription immediately because it has no Cron trigger",
+  );
+  assert.match(
+    productionAudioBranch,
+    /await\s+wakeTranscriptionRun\(workspaceId,\s*input\.runId\)/,
+    "production HTTP dispatch must durably wake the existing transcription Run",
+  );
+  assert.doesNotMatch(
+    productionAudioBranch,
+    /waitUntil|dispatchTranscriptionRun/,
+    "production HTTP dispatch must not put a long audio provider request in waitUntil",
+  );
+  assert.match(
+    transcriptionOutbox,
+    /wakeTranscriptionRun[\s\S]{0,360}prepareTargetedTranscriptionOutbox/,
+    "the production wake must make the durable transcription outbox message due",
+  );
+  assert.match(worker, /run_id:\s*input\.runId[\s\S]{0,240}requestId,\s*202/);
+  assert.match(client, /async kickDispatcher\(target\?/);
   assert.match(client, /["']\/api\/v1\/jobs\/dispatch["']/);
   assert.doesNotMatch(client, /kickLocalDispatcher/);
 });

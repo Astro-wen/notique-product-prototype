@@ -76,6 +76,28 @@ test("all D1 migrations apply from an empty database", async () => {
     true,
     "Run Debug requires the validated model output column",
   );
+  for (const column of [
+    "first_queued_at",
+    "current_queued_at",
+    "first_started_at",
+    "current_started_at",
+  ]) {
+    assert.equal(extractionRunColumns.has(column), true, `missing extraction timing column ${column}`);
+  }
+  const transcriptionRunColumns = new Set(
+    database
+      .prepare("PRAGMA table_info(transcription_runs)")
+      .all()
+      .map((row) => row.name),
+  );
+  for (const column of [
+    "first_queued_at",
+    "current_queued_at",
+    "first_started_at",
+    "current_started_at",
+  ]) {
+    assert.equal(transcriptionRunColumns.has(column), true, `missing transcription timing column ${column}`);
+  }
 
   const extractionStageIndexes = new Set(
     database

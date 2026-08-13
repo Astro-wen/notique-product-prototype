@@ -16,6 +16,11 @@ import {
 } from "@/lib/domain/model-contract";
 import type { RuntimeBindings } from "@/db";
 import {
+  OpenAiBackgroundPending,
+  OpenAiBackgroundRequestFailed,
+  requestOpenAiBackgroundResponse,
+} from "@/lib/server/ai/openai-background";
+import {
   INVENTORY_SCHEMA_VERSION,
   TWO_STAGE_EXTRACTION_LIMITS,
   VERIFICATION_SCHEMA_VERSION,
@@ -56,6 +61,23 @@ export class ModelProviderRequestError extends Error {
   ) {
     super(message);
     this.name = "ModelProviderRequestError";
+  }
+}
+
+/**
+ * Control-flow signal used only after the OpenAI Response ID has been
+ * persisted. The Run can release its Worker lease and resume with GET later;
+ * this is not a provider failure and must not create a new stage attempt.
+ */
+export class ModelBackgroundPendingError extends Error {
+  readonly code = "MODEL_BACKGROUND_PENDING";
+
+  constructor(
+    readonly providerResponseId: string,
+    readonly providerStatus: "queued" | "in_progress",
+  ) {
+    super(`OpenAI background Response is ${providerStatus}.`);
+    this.name = "ModelBackgroundPendingError";
   }
 }
 
@@ -533,6 +555,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       const requestBody = isOpenAi
         ? {
             model: this.model,
+            background: true,
             reasoning: { effort: this.reasoningEffort },
             max_output_tokens: this.maxOutputTokens,
             ...(options?.promptCacheKey ? { prompt_cache_key: options.promptCacheKey } : {}),
@@ -568,23 +591,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
             ],
             response_format: { type: "json_object" },
           };
-      const response = await fetch(`${this.baseUrl}/${endpoint}`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          "content-type": "application/json",
-          ...(options?.idempotencyKey ? { "idempotency-key": options.idempotencyKey } : {}),
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new ModelProviderRequestError(
-          `Model provider returned HTTP ${response.status}.`,
-          response.status,
-        );
-      }
-      const body = (await response.json()) as {
+      type ProviderResponseBody = {
         id?: string;
         status?: unknown;
         incomplete_details?: { reason?: unknown } | null;
@@ -602,7 +609,60 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
           completion_tokens?: number;
           prompt_tokens_details?: { cached_tokens?: number };
         };
+        error?: unknown;
       };
+      let response: Response;
+      let body: ProviderResponseBody;
+      if (isOpenAi) {
+        try {
+          const result = await requestOpenAiBackgroundResponse({
+            apiKey: this.apiKey,
+            baseUrl: this.baseUrl,
+            requestBody,
+            ...(options?.idempotencyKey
+              ? { idempotencyKey: options.idempotencyKey }
+              : {}),
+            ...(options?.resumeProviderResponseId
+              ? { resumeResponseId: options.resumeProviderResponseId }
+              : {}),
+            signal: controller.signal,
+            onResponse: options?.onProviderResponse,
+          });
+          response = result.response;
+          body = result.body as ProviderResponseBody;
+        } catch (error) {
+          if (error instanceof OpenAiBackgroundPending) {
+            throw new ModelBackgroundPendingError(
+              error.responseId,
+              error.responseStatus,
+            );
+          }
+          if (error instanceof OpenAiBackgroundRequestFailed) {
+            throw new ModelProviderRequestError(error.message, error.httpStatus);
+          }
+          throw error;
+        }
+      } else {
+        response = await fetch(`${this.baseUrl}/${endpoint}`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.apiKey}`,
+            "content-type": "application/json",
+            ...(options?.idempotencyKey
+              ? { "idempotency-key": options.idempotencyKey }
+              : {}),
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new ModelProviderRequestError(
+            `Model provider returned HTTP ${response.status}.`,
+            response.status,
+          );
+        }
+        body = await response.json() as ProviderResponseBody;
+      }
       const usage: ModelUsage = {
         inputTokens: body.usage?.input_tokens ?? body.usage?.prompt_tokens ?? null,
         outputTokens: body.usage?.output_tokens ?? body.usage?.completion_tokens ?? null,
@@ -624,7 +684,11 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         throw error;
       }
     } catch (error) {
-      if (error instanceof ModelOutputInvalidError || error instanceof ModelProviderRequestError) {
+      if (
+        error instanceof ModelBackgroundPendingError ||
+        error instanceof ModelOutputInvalidError ||
+        error instanceof ModelProviderRequestError
+      ) {
         throw error;
       }
       if (controller.signal.aborted || error instanceof DOMException && error.name === "AbortError") {

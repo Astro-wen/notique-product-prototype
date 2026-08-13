@@ -96,10 +96,20 @@ async function acquireLease(runId: string, owner: string, timestamp: string): Pr
           `UPDATE transcription_runs
               SET status = 'processing', attempt_no = attempt_no + 1,
                   lease_owner = ?, lease_expires_at = ?,
-                  started_at = COALESCE(started_at, ?), updated_at = ?
+                  started_at = COALESCE(started_at, ?),
+                  first_started_at = COALESCE(first_started_at, ?),
+                  current_started_at = ?, updated_at = ?
             WHERE id = ? AND status = 'queued'`,
         )
-        .bind(owner, plusMilliseconds(timestamp, leaseMs), timestamp, timestamp, runId),
+        .bind(
+          owner,
+          plusMilliseconds(timestamp, leaseMs),
+          timestamp,
+          timestamp,
+          timestamp,
+          timestamp,
+          runId,
+        ),
       db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
     ]);
   } catch {
@@ -148,6 +158,7 @@ async function callProvider(run: Row): Promise<{
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(run.request_timeout_ms));
   let response: Response;
+  let body: string;
   try {
     const baseUrl = (bindings.AI_API_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
     response = await fetch(`${baseUrl}/audio/transcriptions`, {
@@ -159,6 +170,9 @@ async function callProvider(run: Row): Promise<{
       body: form,
       signal: controller.signal,
     });
+    // Keep the timeout active until the streamed response body has finished.
+    // Receiving headers alone does not mean a long transcription completed.
+    body = await response.text();
   } catch (error) {
     const failure = classifyTranscriptionTransportFailure(
       controller.signal.aborted || error instanceof DOMException && error.name === "AbortError",
@@ -168,13 +182,6 @@ async function callProvider(run: Row): Promise<{
     clearTimeout(timer);
   }
   const providerRequestId = response.headers.get("x-request-id");
-  let body: string;
-  try {
-    body = await response.text();
-  } catch (error) {
-    const failure = classifyTranscriptionTransportFailure(false);
-    throw new TranscriptionFault(failure.code, safeError(error), failure.retryable);
-  }
   if (!response.ok) {
     let message = `OpenAI transcription returned HTTP ${response.status}.`;
     try {
@@ -605,7 +612,7 @@ async function markRetryable(
       .prepare(
         `UPDATE transcription_runs
             SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                queued_at = ?, finished_at = NULL, error_code = ?,
+                current_queued_at = ?, finished_at = NULL, error_code = ?,
                 error_details_json = ?, provider_request_id = COALESCE(?, provider_request_id),
                 updated_at = ?
           WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
@@ -635,7 +642,7 @@ async function markRetryable(
             AND EXISTS (
               SELECT 1 FROM transcription_runs
                WHERE id = ? AND status = 'queued' AND error_code = ?
-                 AND queued_at = ?
+                 AND current_queued_at = ?
             )`,
       )
       .bind(
@@ -693,7 +700,7 @@ export async function requeueExpiredTranscriptionRuns(timestamp = now()): Promis
       .prepare(
         `UPDATE transcription_runs
             SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                queued_at = ?, finished_at = NULL, error_code = 'TRANSCRIPTION_TIMEOUT',
+                current_queued_at = ?, finished_at = NULL, error_code = 'TRANSCRIPTION_TIMEOUT',
                 error_details_json = '{"reason":"consumer_lease_expired","retryable":true}', updated_at = ?
           WHERE status = 'processing' AND lease_expires_at IS NOT NULL
             AND lease_expires_at <= ?`,
@@ -717,7 +724,7 @@ export async function requeueExpiredTranscriptionRuns(timestamp = now()): Promis
                AND workspace_id = assets.workspace_id
                AND status = 'queued'
                AND error_code = 'TRANSCRIPTION_TIMEOUT'
-               AND queued_at = ?
+               AND current_queued_at = ?
           )`,
       )
       .bind(timestamp, timestamp),

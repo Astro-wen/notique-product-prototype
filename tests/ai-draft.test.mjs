@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const compiledModule = { exports: {} };
 vm.runInNewContext(compiled, { module: compiledModule, exports: compiledModule.exports, Set });
-const { groupAiDraftClaims, sortClaimsForReview } = compiledModule.exports;
+const { buildAiDraftSummary, groupAiDraftClaims, sortClaimsForReview } = compiledModule.exports;
 
 test("review queue prioritizes human additions, critical facts, relations, then ordinary facts", () => {
   const sorted = sortClaimsForReview([
@@ -35,4 +35,36 @@ test("AI draft groups readable meeting topics without changing content", () => {
   assert.equal(grouped.preferences[0].statement, "blue");
   assert.equal(grouped.open_questions[0].statement, "who pays");
   assert.equal(grouped.risks[0].statement, "needs proof");
+});
+
+test("AI draft summary reuses validated claims and exact evidence without inventing prose", () => {
+  const summary = buildAiDraftSummary([
+    {
+      id: "later-decision",
+      type: "decision",
+      statement: "The client approved option B.",
+      reviewStatus: "pending",
+      evidenceRefs: [{ id: "ev-2", quote: "Let's use option B", speaker: "Client", timestampStart: 65_000 }],
+    },
+    {
+      id: "earlier-decision",
+      type: "decision",
+      statement: "The client rejected option A.",
+      reviewStatus: "pending",
+      evidenceRefs: [{ id: "ev-1", quote: "I do not want option A", speaker: "Client", timestampStart: "00:42" }],
+    },
+    {
+      id: "budget",
+      type: "budget",
+      statement: "The budget is $10,000.",
+      reviewStatus: "verified",
+      evidenceRefs: [],
+    },
+  ]);
+
+  assert.deepEqual(Array.from(summary, (item) => item.claimId), ["earlier-decision", "later-decision", "budget"]);
+  assert.equal(summary[0].statement, "The client rejected option A.");
+  assert.equal(summary[0].quote, "I do not want option A");
+  assert.equal(summary[0].timestampStart, 42_000);
+  assert.equal(summary[2].quote, null);
 });

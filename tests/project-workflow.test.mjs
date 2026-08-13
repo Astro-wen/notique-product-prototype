@@ -169,12 +169,59 @@ test("completion preserves the count of material-free Events that were not proce
   assert.equal(plan.ignoredEmptyCount, 1);
 });
 
+test("workflow snapshot derives one truthful display state from material and job state", async () => {
+  const { deriveProjectWorkflowDisplayStatus } = await loadWorkflow();
+  const base = {
+    materialStatus: "ready",
+    materialTotal: 1,
+    materialProcessing: 0,
+    materialFailed: 0,
+    transcriptionStatus: null,
+    extractionStatus: null,
+    extractionStage: null,
+    scenarioStatus: "confirmed",
+    pendingCount: 0,
+    candidateCount: 1,
+  };
+  assert.equal(deriveProjectWorkflowDisplayStatus(base), "ready");
+  assert.equal(
+    deriveProjectWorkflowDisplayStatus({ ...base, transcriptionStatus: "processing" }),
+    "transcribing",
+  );
+  assert.equal(
+    deriveProjectWorkflowDisplayStatus({
+      ...base,
+      extractionStatus: "processing",
+      extractionStage: "verify",
+    }),
+    "verify",
+  );
+  assert.equal(
+    deriveProjectWorkflowDisplayStatus({
+      ...base,
+      extractionStatus: "succeeded",
+      pendingCount: 2,
+    }),
+    "waiting_review",
+  );
+  assert.equal(
+    deriveProjectWorkflowDisplayStatus({
+      ...base,
+      extractionStatus: "succeeded",
+      candidateCount: 0,
+    }),
+    "needs_attention",
+  );
+});
+
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   assert.doesNotMatch(page, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
   assert.match(page, /开始处理全部沟通/);
   assert.match(page, /继续处理下一次沟通/);
-  assert.match(page, /api\.getRunReview\(latestRun\.id\)/);
+  assert.match(page, /api\.getWorkflowSnapshot\(projectId\)/);
+  assert.match(page, /candidateCount: summary\?\.candidate_count/);
+  assert.doesNotMatch(page, /api\.getRunReview\(latestRun\.id\)/);
   assert.match(page, /Claim 和再次出现记录都是 0/);
   assert.match(page, /次沟通没有材料，未纳入处理/);
   assert.match(page, /等待当前材料准备完成/);

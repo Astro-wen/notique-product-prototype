@@ -4,6 +4,91 @@ import type {
   TranscriptSegment,
 } from "./types";
 
+export const DEFAULT_EVIDENCE_CONTEXT_SEGMENTS = 2;
+export const EVIDENCE_AUDIO_PREROLL_MS = 3_000;
+
+export type EvidenceContextTranscriptSegment = {
+  id: string;
+  eventId: string;
+  assetVersionId: string;
+  ordinal: number;
+  speaker: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  textRaw: string;
+};
+
+export type TranscriptEvidenceContextWindow = {
+  before: EvidenceContextTranscriptSegment[];
+  target: EvidenceContextTranscriptSegment[];
+  after: EvidenceContextTranscriptSegment[];
+};
+
+function sameTranscriptScope(
+  segment: EvidenceContextTranscriptSegment,
+  expected: EvidenceContextTranscriptSegment,
+) {
+  return (
+    segment.eventId === expected.eventId &&
+    segment.assetVersionId === expected.assetVersionId
+  );
+}
+
+/**
+ * Produces the small Evidence reader window from already-scoped query results.
+ * Callers can fetch only the nearest rows; this helper never requires loading
+ * an Event's full Transcript.
+ */
+export function buildTranscriptEvidenceContextWindow(
+  targetSegments: readonly EvidenceContextTranscriptSegment[],
+  beforeCandidates: readonly EvidenceContextTranscriptSegment[],
+  afterCandidates: readonly EvidenceContextTranscriptSegment[],
+  contextSize = DEFAULT_EVIDENCE_CONTEXT_SEGMENTS,
+): TranscriptEvidenceContextWindow {
+  if (!Number.isSafeInteger(contextSize) || contextSize < 0 || contextSize > 10) {
+    throw new Error("Evidence context size must be an integer between 0 and 10.");
+  }
+  const target = [...targetSegments].sort(
+    (left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id),
+  );
+  if (!target.length) {
+    return { before: [], target: [], after: [] };
+  }
+  const expected = target[0];
+  const all = [...target, ...beforeCandidates, ...afterCandidates];
+  if (all.some((segment) => !sameTranscriptScope(segment, expected))) {
+    throw new Error("Evidence context cannot cross an Event or Transcript asset version.");
+  }
+  if (new Set(target.map((segment) => segment.id)).size !== target.length) {
+    throw new Error("Evidence target segments must be unique.");
+  }
+
+  const firstOrdinal = target[0].ordinal;
+  const lastOrdinal = target.at(-1)!.ordinal;
+  const before = beforeCandidates
+    .filter((segment) => segment.ordinal < firstOrdinal)
+    .slice()
+    .sort((left, right) => right.ordinal - left.ordinal || right.id.localeCompare(left.id))
+    .slice(0, contextSize)
+    .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id));
+  const after = afterCandidates
+    .filter((segment) => segment.ordinal > lastOrdinal)
+    .slice()
+    .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
+    .slice(0, contextSize);
+  return { before, target, after };
+}
+
+export function evidenceAudioStartMs(
+  evidenceStartMs: number | null,
+  hasAudioSource: boolean,
+): number | null {
+  if (!hasAudioSource || evidenceStartMs === null || !Number.isFinite(evidenceStartMs)) {
+    return null;
+  }
+  return Math.max(0, Math.round(evidenceStartMs) - EVIDENCE_AUDIO_PREROLL_MS);
+}
+
 type CanonicalizeOptions = {
   expectedEventId: string;
   allowedSegmentIds: ReadonlySet<string>;
@@ -58,6 +143,103 @@ function occurrences(haystack: string, needle: string) {
     from = index + 1;
   }
   return result;
+}
+
+const ELLIPSIS_GAP = /(?:\.{3,}|…+)/u;
+
+type OrderedMatch = {
+  start: number;
+  end: number;
+};
+
+type PartialOrderedMatch = OrderedMatch & {
+  count: 1 | 2;
+  originStart: number | null;
+};
+
+/**
+ * Locate one ellipsis-separated quote in normalized source text.
+ *
+ * The count is deliberately capped at two: callers only need to distinguish a
+ * unique ordered match from an ambiguous one. Each fragment must begin after
+ * the previous fragment ends, so an ellipsis cannot reorder or overlap text.
+ */
+function locateUniqueOrderedFragments(
+  source: string,
+  fragments: readonly string[],
+):
+  | { kind: "missing" }
+  | { kind: "ambiguous" }
+  | { kind: "unique"; match: OrderedMatch } {
+  if (!fragments.length) return { kind: "missing" };
+  const fragmentOccurrences = fragments.map((fragment) => occurrences(source, fragment));
+  if (fragmentOccurrences.some((matches) => matches.length === 0)) {
+    return { kind: "missing" };
+  }
+
+  let partials: PartialOrderedMatch[] = fragmentOccurrences[0].map((start) => ({
+    start,
+    end: start + fragments[0].length,
+    count: 1,
+    originStart: start,
+  }));
+
+  for (let fragmentIndex = 1; fragmentIndex < fragments.length; fragmentIndex += 1) {
+    const fragment = fragments[fragmentIndex];
+    const next: PartialOrderedMatch[] = [];
+    let eligibleIndex = 0;
+    let eligibleCount: 0 | 1 | 2 = 0;
+    let uniqueOrigin: number | null = null;
+
+    for (const start of fragmentOccurrences[fragmentIndex]) {
+      while (
+        eligibleIndex < partials.length &&
+        partials[eligibleIndex].end <= start
+      ) {
+        const partial = partials[eligibleIndex];
+        if (eligibleCount === 0 && partial.count === 1) {
+          eligibleCount = 1;
+          uniqueOrigin = partial.originStart;
+        } else {
+          eligibleCount = 2;
+          uniqueOrigin = null;
+        }
+        eligibleIndex += 1;
+      }
+      if (eligibleCount > 0) {
+        next.push({
+          start,
+          end: start + fragment.length,
+          count: eligibleCount === 1 ? 1 : 2,
+          originStart: eligibleCount === 1 ? uniqueOrigin : null,
+        });
+      }
+    }
+
+    if (!next.length) return { kind: "missing" };
+    partials = next;
+  }
+
+  let total: 0 | 1 | 2 = 0;
+  let unique: PartialOrderedMatch | null = null;
+  for (const partial of partials) {
+    if (total === 0 && partial.count === 1) {
+      total = 1;
+      unique = partial;
+    } else {
+      total = 2;
+      unique = null;
+      break;
+    }
+  }
+  if (total === 0) return { kind: "missing" };
+  if (total === 2 || !unique || unique.originStart == null) {
+    return { kind: "ambiguous" };
+  }
+  return {
+    kind: "unique",
+    match: { start: unique.originStart, end: unique.end },
+  };
 }
 
 function invalid(code: InvalidEvidence["code"], message: string): InvalidEvidence {
@@ -118,16 +300,44 @@ export function canonicalizeTranscriptEvidence(
     return invalid("EVIDENCE_QUOTE_AMBIGUOUS", "Quote occurs more than once in the selected segments.");
   } else {
     const normalizedRaw = normalizeWithSourceMap(raw);
-    const normalizedHint = normalizeWithSourceMap(quoteHint).value;
-    const normalizedMatches = occurrences(normalizedRaw.value, normalizedHint);
-    if (!normalizedHint || normalizedMatches.length === 0) {
-      return invalid("EVIDENCE_QUOTE_MISMATCH", "Quote could not be located in the source transcript.");
+    let normalizedStart: number;
+    let normalizedEnd: number;
+
+    if (ELLIPSIS_GAP.test(quoteHint)) {
+      const fragments = quoteHint
+        .split(ELLIPSIS_GAP)
+        .map((fragment) => normalizeWithSourceMap(fragment).value)
+        .filter(Boolean);
+      const located = locateUniqueOrderedFragments(normalizedRaw.value, fragments);
+      if (located.kind === "missing") {
+        return invalid(
+          "EVIDENCE_QUOTE_MISMATCH",
+          "Ellipsis-separated quote fragments could not be located in source order.",
+        );
+      }
+      if (located.kind === "ambiguous") {
+        return invalid(
+          "EVIDENCE_QUOTE_AMBIGUOUS",
+          "Ellipsis-separated quote fragments have more than one ordered match.",
+        );
+      }
+      normalizedStart = located.match.start;
+      normalizedEnd = located.match.end;
+    } else {
+      const normalizedHint = normalizeWithSourceMap(quoteHint).value;
+      const normalizedMatches = occurrences(normalizedRaw.value, normalizedHint);
+      if (!normalizedHint || normalizedMatches.length === 0) {
+        return invalid("EVIDENCE_QUOTE_MISMATCH", "Quote could not be located in the source transcript.");
+      }
+      if (normalizedMatches.length > 1) {
+        return invalid("EVIDENCE_QUOTE_AMBIGUOUS", "Normalized quote occurs more than once.");
+      }
+      normalizedStart = normalizedMatches[0];
+      normalizedEnd = normalizedStart + normalizedHint.length;
     }
-    if (normalizedMatches.length > 1) {
-      return invalid("EVIDENCE_QUOTE_AMBIGUOUS", "Normalized quote occurs more than once.");
-    }
-    const start = normalizedRaw.sourceIndexes[normalizedMatches[0]];
-    const finalNormalizedIndex = normalizedMatches[0] + normalizedHint.length - 1;
+
+    const start = normalizedRaw.sourceIndexes[normalizedStart];
+    const finalNormalizedIndex = normalizedEnd - 1;
     const end = normalizedRaw.sourceIndexes[finalNormalizedIndex] + 1;
     quoteRaw = raw.slice(start, end);
     matchMode = "normalized";

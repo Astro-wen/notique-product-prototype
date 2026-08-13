@@ -13,7 +13,7 @@
 - 确定性规则：Transcript 解析、逐字引文回填、状态机、Scenario、Views、Gap、Agenda 和 Brief
 - 离线评测：固定公式计算 Recall、Precision、Evidence、Citation、关系、重提、稳定性和 Brief 指标，并单独判断样本量是否达到正式门槛
 - ModelProvider 边界：OpenAI 兼容接口已经接好。未配置密钥时明确失败，不会生成占位 Claim
-- 后台任务：D1 Outbox、租约、重试、失败收口和定时 Sweep 已接好，也可以通过受保护的内部接口手动触发
+- 后台任务：D1 Outbox、租约、重试、失败收口和每分钟定时 Sweep 已接好；OpenAI 长模型阶段可以按已保存的 Background Response ID 恢复，也可以通过受保护的内部接口手动触发
 
 ## 本地运行
 
@@ -50,7 +50,14 @@ Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实
 `xhigh` 再复核一次。两个 Agent 共用同一个 `AI_API_KEY`，不需要第二个密钥。
 `max` 不属于当前产品配置；缺失或误填的第一轮强度会回到 `xhigh`，第二轮会回到 `high`。
 
-`AI_TWO_PASS_PIPELINE=1` 开启双阶段；设为 `0` 可回滚到单阶段执行。每个阶段的模型、
+每个 OpenAI 模型阶段都以 Responses API 的 `background: true` 创建。服务端收到 Response ID
+后先把它保存到对应阶段，再释放当前任务租约；后续 Outbox 唤醒使用
+`GET /responses/:id` 查询同一个 Response。`queued` 或 `in_progress` 只安排下一次查询，不会
+重新 POST 一个付费 Response。这样 Luna `xhigh` 不依赖某一次 Worker 请求一直保持连接，
+页面刷新、重复 dispatch 和定时兜底也都能恢复同一个模型任务。
+
+`AI_TWO_PASS_PIPELINE=1` 开启双阶段；设为 `0` 可回滚到单阶段执行。单阶段和非 OpenAI
+兼容供应商仍由每分钟定时任务接管，不会放进网页请求的短后台时限。每个阶段的模型、
 推理强度、输入哈希、Token、耗时、Provider Request ID、通过 Schema 的输出和升级原因
 都会单独保存，成功的 Agent A 阶段可在同一 Run 重试时复用。全部执行参数都会写入 Run
 输入指纹，参数改变后必须创建新 Run，不能混用旧结果。
@@ -82,7 +89,7 @@ Run Debug 只保留已经通过服务端 Schema 校验的模型 JSON，大小上
 
 每个 Run 在排队前会执行以下硬限制：单次输入 token、图片数量、图片总字节、Workspace 并发数、模型最大输出 token、每日模型 token。每日配额把已完成用量和排队中的预留量一起计算，因此并发请求不能绕过限制。`MAX_DAILY_EVAL_COST_USD` 目前没有参与普通 Run，因为仓库尚未内置经过确认的模型价格表；现阶段不会伪造美元成本。
 
-生产构建会从 `wrangler.jsonc` 带入每两分钟一次的 Sweep 和 Dispatch 定时任务。`POST /api/internal/jobs/dispatch` 与 `POST /api/internal/jobs/sweep` 可用于部署检查，必须提供 `Authorization: Bearer <INTERNAL_JOB_TOKEN>`。当前实现使用 D1 Outbox 轮询边界，尚未宣称 Cloudflare Queue 已部署。
+生产构建会从 `wrangler.jsonc` 带入每分钟一次的 Sweep 和 Dispatch 定时任务。双阶段 OpenAI 提取使用 Responses Background mode：网页请求只负责一个短检查点，Response ID 会先写入 D1，之后按同一 ID 恢复查询；长音频转写和单阶段回滚则由定时任务接管。`POST /api/internal/jobs/dispatch` 与 `POST /api/internal/jobs/sweep` 可用于部署检查，必须提供 `Authorization: Bearer <INTERNAL_JOB_TOKEN>`。当前实现使用 D1 Outbox 调度边界和 OpenAI Background Response 恢复查询，尚未宣称 Cloudflare Queue 已部署。
 
 ## 生产安全条件
 
@@ -110,19 +117,25 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 
 ## 普通用户使用指南
 
-核心页面现在按一条连续流程工作，不需要先理解 Project、Run 或 Ledger 这些内部概念。
+不需要先理解 Project、Run 或 Ledger。普通用户只需要记住这条循环：
 
-1. 选择已有项目，或点击“新建项目”。页面会记住最近打开的项目和沟通；这里只在浏览器保存两个 ID，材料、审核结果和报告仍全部来自服务器。
-2. 在当前沟通中直接录音，或添加 Transcript、已有录音、照片和 PDF。录音会先生成带说话人和时间点的逐字稿。
-3. 材料显示“可以分析”后，点击一次主按钮。系统会依次显示“正在识别事实”“正在查漏纠错”，必要时显示“需要加强复核”。刷新页面不会重新创建付费任务。
-4. 第一份材料处理后，只需确认一次使用场景。系统随后先显示整场“AI 会议信息初稿”，按决定与要求、金额与日期、偏好与材料、问题与风险等分组，让人先判断 AI 有没有理解大意。初稿不会直接进入正式结果。
-5. 初稿页可以记录“基本可用”，也可以选择“AI 漏掉了重要信息”。补遗漏时从完整逐字稿中选择一段或多段原文，再写成一条待核对记录；它仍需后续确认，不会绕过 Evidence 门槛。
-6. 点击“开始核对和修正”后，对照中间的原始证据，在右侧确认、修改或不采纳。系统优先显示金额、日期、决定、责任人、需要补证据的内容和人工补充项。若记录会取代、解决或冲突于旧记录，必须先逐条接受或拒绝关系。保存后系统自动打开下一条，不需要返回列表。
-7. 原文太短时，可以展开当前引文前后相邻的 Transcript，避免断章取义。初稿“可用”的反馈与事实确认分开保存，绝不会因为用户觉得初稿不错，就自动把所有内容变成 Verified。
-8. 本次核对完成后，页面显示 AI 最初给出多少条、最终确认、修改、拒绝和人工补充多少条，再自动选好下一次沟通。下一次模型费用仍需用户点击“继续处理下一次沟通”才会产生。
-9. 整组沟通完成后，系统自动打开“会前速览”。速览不足六项时会诚实留空；“查看完整报告”可以进入事项概况、时间线、决定、偏好、问题、风险和下次沟通清单。
+```text
+添加材料 → AI 初稿 → 人工核对 → 项目记忆 → 下一次沟通 → 会前速览
+```
 
-出现“仍在后台运行”时，点击“检查状态”只会读取原任务，不会重传材料或创建第二个 Run。出现“处理失败”时使用“重新处理”；出现空输出时先检查材料，再决定是否重新运行。未经确认的内容始终不会进入报告。
+1. 选择或建立项目，再选择当前沟通。
+2. 上传 Transcript、照片、PDF 或自己的录音；也可以直接使用浏览器录音。MP3、M4A、WAV、WebM、MP4、MPEG 和 MPGA 均可，单个录音上限 25 MB。
+3. 录音完成转写、材料显示“可以分析”后，点击一次“开始分析”。刷新不会建立第二个付费任务。
+4. 第一次分析先确认使用场景，然后阅读整场 AI 初稿。点击重点可以查看放大的目标句、精确高亮和前后两段原文。
+5. 进入连续核对，对 Claim、Occurrence 和 Relation 做确认、修改或不采纳。保存后自动进入下一条。
+6. 本次清空后，系统自动准备下一次沟通；只有用户点击一次，才会开始下一次付费分析。
+7. 整组完成后查看会前速览、真正的变化时间线、当前偏好和历史变化。所有正式结果只读取已经确认的记录。
+
+页面地址会保存项目、沟通、当前栏目和记录。时间线打开证据后会“返回时间线”，审核记录会“返回审核列表”；刷新后也会从服务器恢复。
+
+出现“仍在后台运行”时，点击“检查状态”只查询原任务。出现“处理失败”时按页面原因重新处理；空输出先检查材料。不要为了让流程继续而确认证据不足的内容。
+
+完整说明、错误恢复、隐私边界和每个功能的位置见 [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)。Eric 的非技术阶段说明见 [`docs/ERIC_MVP_PROGRESS.md`](docs/ERIC_MVP_PROGRESS.md)。接手项目请先读 [`docs/CLAUDE_HANDOFF.md`](docs/CLAUDE_HANDOFF.md)。
 
 ## Eric 一键演示
 

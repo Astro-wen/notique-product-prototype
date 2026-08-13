@@ -111,6 +111,112 @@ test("normalized quote matching changes whitespace and punctuation but preserves
   assert.equal(result.quoteRaw, "cap is 1.15 million, not 1.5");
 });
 
+test("ellipsis quote hints resolve one unique ordered span without weakening segment gates", () => {
+  const makeSegment = (id, ordinal, textRaw, assetVersionId = "asset-ami") => ({
+    id,
+    assetVersionId,
+    eventId: "event-1",
+    ordinal,
+    speaker: "Speaker",
+    startMs: ordinal * 1_000,
+    endMs: ordinal * 1_000 + 900,
+    textRaw,
+    textNormalized: textRaw,
+    parserVersion: "test.v1",
+  });
+  const cost = makeSegment(
+    "seg-cost",
+    10,
+    "The production cost is estimated at $4,500 per minute.",
+  );
+  const owner = makeSegment(
+    "seg-owner",
+    11,
+    "Andrew will own the final edit and send it Friday.",
+  );
+  const allowed = new Set([cost.id, owner.id]);
+  const map = segmentMap([cost, owner]);
+
+  const singleSegment = canonicalizeTranscriptEvidence(
+    [cost.id],
+    "production cost ... $4,500 per minute",
+    map,
+    { expectedEventId: "event-1", allowedSegmentIds: allowed },
+  );
+  assert.equal(singleSegment.valid, true);
+  assert.equal(singleSegment.matchMode, "normalized");
+  assert.equal(
+    singleSegment.quoteRaw,
+    "production cost is estimated at $4,500 per minute",
+  );
+
+  const contiguous = canonicalizeTranscriptEvidence(
+    [cost.id, owner.id],
+    "production cost…Andrew will own the final edit",
+    map,
+    { expectedEventId: "event-1", allowedSegmentIds: allowed },
+  );
+  assert.equal(contiguous.valid, true);
+  assert.equal(
+    contiguous.quoteRaw,
+    "production cost is estimated at $4,500 per minute.\nAndrew will own the final edit",
+  );
+  assert.equal(contiguous.startMs, cost.startMs);
+  assert.equal(contiguous.endMs, owner.endMs);
+
+  assert.equal(
+    canonicalizeTranscriptEvidence(
+      [cost.id, owner.id],
+      "Andrew will own…production cost",
+      map,
+      { expectedEventId: "event-1", allowedSegmentIds: allowed },
+    ).code,
+    "EVIDENCE_QUOTE_MISMATCH",
+  );
+  assert.equal(
+    canonicalizeTranscriptEvidence(
+      [cost.id, owner.id],
+      "production cost...Jordan will approve",
+      map,
+      { expectedEventId: "event-1", allowedSegmentIds: allowed },
+    ).code,
+    "EVIDENCE_QUOTE_MISMATCH",
+  );
+
+  const repeated = makeSegment(
+    "seg-repeated",
+    12,
+    "Production cost is $1. Andrew owns it. Production cost is $2. Andrew owns it.",
+  );
+  assert.equal(
+    canonicalizeTranscriptEvidence(
+      [repeated.id],
+      "Production cost...Andrew owns it",
+      segmentMap([repeated]),
+      { expectedEventId: "event-1", allowedSegmentIds: new Set([repeated.id]) },
+    ).code,
+    "EVIDENCE_QUOTE_AMBIGUOUS",
+  );
+
+  const nonContiguous = makeSegment(
+    "seg-non-contiguous",
+    12,
+    "Andrew will own the final edit.",
+  );
+  assert.equal(
+    canonicalizeTranscriptEvidence(
+      [cost.id, nonContiguous.id],
+      "production cost...Andrew will own",
+      segmentMap([cost, nonContiguous]),
+      {
+        expectedEventId: "event-1",
+        allowedSegmentIds: new Set([cost.id, nonContiguous.id]),
+      },
+    ).code,
+    "EVIDENCE_SEGMENT_ORDER_INVALID",
+  );
+});
+
 test("normalization never removes a semantic symbol such as a currency sign", () => {
   const currencySegment = {
     ...transcriptSegments[0],

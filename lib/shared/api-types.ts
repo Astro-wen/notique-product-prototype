@@ -280,9 +280,15 @@ export type ExtractionRunRecord = {
   schema_version: string;
   error_code: string | null;
   pipeline_stage: ExtractionModelStageName | null;
+  processing_attempt_no: number;
+  dispatch_attempt_no: number;
   created_at: string;
   queued_at: string | null;
+  first_queued_at: string | null;
+  current_queued_at: string | null;
   started_at: string | null;
+  first_started_at: string | null;
+  current_started_at: string | null;
   finished_at: string | null;
   updated_at: string;
   stages: ExtractionModelStageTimingRecord[];
@@ -366,9 +372,15 @@ export type TranscriptionRunRecord = {
   provider_request_id: string | null;
   error_code: string | null;
   error_details: unknown | null;
+  processing_attempt_no: number;
+  dispatch_attempt_no: number;
   created_at: string;
   queued_at: string | null;
+  first_queued_at: string | null;
+  current_queued_at: string | null;
   started_at: string | null;
+  first_started_at: string | null;
+  current_started_at: string | null;
   finished_at: string | null;
   segments?: TranscriptionSegmentRecord[];
 };
@@ -626,6 +638,97 @@ export type VerifiedViewResponse = {
   empty_reason: string | null;
 };
 
+export type TimelineMomentRecord = {
+  id: string;
+  kind: "new" | "updated" | "resolved" | "contradicted" | "reaffirmed" | "withdrawn";
+  eventId: string;
+  eventSequenceNo: number;
+  eventOccurredAt: string;
+  displayText: string;
+  transcriptStartMs: number | null;
+  transcriptEndMs: number | null;
+  evidence: Array<{
+    evidenceRefId: string;
+    kind: "transcript" | "text" | "photo" | "document" | "user_note";
+    speaker: string | null;
+    startMs: number | null;
+    endMs: number | null;
+    quoteRaw: string | null;
+  }>;
+  before: {
+    claimId: string;
+    claimVersionId: string;
+    statement: string;
+    evidenceRefIds: string[];
+  } | null;
+  after: {
+    claimId: string;
+    claimVersionId: string;
+    statement: string;
+    evidenceRefIds: string[];
+  } | null;
+  relationId: string | null;
+  occurrenceId: string | null;
+  withdrawVerdictId: string | null;
+};
+
+export type TimelineEventGroupRecord = {
+  event: {
+    id: string;
+    projectId: string;
+    title: string;
+    occurredAt: string;
+    sequenceNo: number;
+  };
+  summary: string;
+  moments: TimelineMomentRecord[];
+  /** Legacy fields retained while the UI migrates to moments. */
+  claims: unknown[];
+  deltas: unknown[];
+};
+
+export type PreferenceViewItemRecord = {
+  claimId: string;
+  claimVersionId: string;
+  eventId: string;
+  lifecycleStatus: ClaimLifecycleStatus;
+  isCurrent: boolean;
+  statement: string;
+  currentValue: Record<string, unknown> | null;
+  conditions: Array<string | number | boolean>;
+  decisionPerson: string | null;
+  decisionPeople: string[];
+  firstSeen: {
+    eventId: string;
+    eventSequenceNo: number;
+    eventOccurredAt: string;
+    evidenceRefIds: string[];
+  } | null;
+  lastSeen: {
+    eventId: string;
+    eventSequenceNo: number;
+    eventOccurredAt: string;
+    evidenceRefIds: string[];
+  } | null;
+  history: Array<{
+    id: string;
+    kind: "stated" | "updated" | "reaffirmed" | "withdrawn";
+    claimId: string;
+    claimVersionId: string;
+    eventId: string;
+    eventSequenceNo: number;
+    eventOccurredAt: string;
+    statement: string;
+    normalizedValue: Record<string, unknown> | null;
+    evidenceRefIds: string[];
+    occurrenceId: string | null;
+  }>;
+  evidenceRefIds: string[];
+};
+
+export type TimelineViewResponse = ApiSuccess<{ view: TimelineEventGroupRecord[] }>;
+export type PreferencesViewResponse = ApiSuccess<{ view: PreferenceViewItemRecord[] }>;
+
 export type CreateProjectRequest = { name: string; locale?: string };
 export type CreateProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
@@ -670,6 +773,97 @@ export type CreateExtractionRunResponse = ApiSuccess<{
 export type GetExtractionRunResponse = ApiSuccess<{
   run: ExtractionRunRecord;
 }>;
+
+export type WorkflowDisplayStatus =
+  | "waiting_material"
+  | "transcribing"
+  | "ready"
+  | "queued"
+  | "inventory"
+  | "verify"
+  | "verify_escalated"
+  | "waiting_scenario"
+  | "waiting_review"
+  | "complete"
+  | "needs_attention";
+
+export type WorkflowSnapshotRecord = {
+  project: ProjectRecord;
+  workflow: {
+    phase:
+      | "empty"
+      | "waiting_material"
+      | "ready"
+      | "running"
+      | "empty_output"
+      | "waiting_scenario"
+      | "waiting_review"
+      | "complete";
+    total: number;
+    completed: number;
+    current_position: number;
+    current_event_id: string | null;
+    current_run_id: string | null;
+    next_action: {
+      kind:
+        | "add_material"
+        | "start_analysis"
+        | "wait"
+        | "inspect_material"
+        | "confirm_scenario"
+        | "review"
+        | "open_brief";
+      event_id: string | null;
+      run_id: string | null;
+      requires_user_confirmation: boolean;
+    };
+  };
+  events: Array<{
+    id: string;
+    title: string;
+    occurred_at: string;
+    sequence_no: number;
+    material_status: MaterialStatus;
+    display_status: WorkflowDisplayStatus;
+    materials: {
+      total: number;
+      ready: number;
+      processing: number;
+      failed: number;
+    };
+    transcription: {
+      run_id: string;
+      status: TranscriptionRunStatus;
+      error_code: string | null;
+      processing_attempt_no: number;
+      dispatch_attempt_no: number;
+    } | null;
+    extraction: {
+      run_id: string;
+      status: ExtractionRunStatus;
+      stage: ExtractionModelStageName | null;
+      error_code: string | null;
+      processing_attempt_no: number;
+      dispatch_attempt_no: number;
+      created_at: string;
+      queued_at: string | null;
+      first_queued_at: string | null;
+      current_queued_at: string | null;
+      started_at: string | null;
+      first_started_at: string | null;
+      current_started_at: string | null;
+      finished_at: string | null;
+      updated_at: string;
+    } | null;
+    pending_claim_count: number;
+    pending_occurrence_count: number;
+    candidate_count: number;
+  }>;
+};
+
+export type GetWorkflowSnapshotResponse = ApiSuccess<{
+  workflow_snapshot: WorkflowSnapshotRecord;
+}>;
 export type CreateTranscriptionRunResponse = ApiSuccess<{
   transcription_run: TranscriptionRunRecord;
 }>;
@@ -710,6 +904,54 @@ export type AssetResponse = ApiSuccess<{
 
 export type EvidenceRefResponse = ApiSuccess<{
   evidence_ref: Record<string, unknown>;
+}>;
+
+export type EvidenceContextSegmentRecord = {
+  id: string;
+  event_id: string;
+  asset_version_id: string;
+  ordinal: number;
+  speaker: string | null;
+  start_ms: number | null;
+  end_ms: number | null;
+  text: string;
+};
+
+export type EvidenceContextRecord = {
+  evidence_ref_id: string;
+  project_id: string;
+  event_id: string;
+  claim_version_id: string;
+  kind: string;
+  evidence_role: string;
+  asset_version_id: string | null;
+  asset_id: string | null;
+  filename: string | null;
+  target: {
+    segment_ids: string[];
+    quote_raw: string | null;
+    start_ms: number | null;
+    end_ms: number | null;
+    page_number: number | null;
+    bbox: [number, number, number, number] | null;
+    observation: string | null;
+  };
+  context: {
+    before: EvidenceContextSegmentRecord[];
+    target: EvidenceContextSegmentRecord[];
+    after: EvidenceContextSegmentRecord[];
+  };
+  asset_view_url: string | null;
+  audio: {
+    asset_id: string;
+    filename: string | null;
+    view_url: string;
+    start_ms: number | null;
+  } | null;
+};
+
+export type EvidenceContextResponse = ApiSuccess<{
+  evidence_context: EvidenceContextRecord;
 }>;
 
 export type GapCheckResponse = ApiSuccess<{

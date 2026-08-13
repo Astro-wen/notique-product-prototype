@@ -85,6 +85,13 @@
       "when": 1786492800000,
       "tag": "0011_ai_draft_review",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786550400000,
+      "tag": "0012_job_queue_timing",
+      "breakpoints": true
     }
   ]
 }

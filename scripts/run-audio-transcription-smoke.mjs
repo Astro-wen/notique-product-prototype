@@ -5,7 +5,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const terminal = new Set(["succeeded", "failed", "cancelled"]);
+const transcriptionTerminal = new Set(["succeeded", "failed", "cancelled"]);
+const extractionTerminal = new Set(["succeeded", "completed", "completed_with_warnings", "failed", "cancelled"]);
 const audioMimeByExtension = new Map([
   ["wav", "audio/wav"],
   ["mp3", "audio/mpeg"],
@@ -54,7 +55,10 @@ async function request(baseUrl, method, pathname, { json, bytes, mimeType, key }
 }
 
 async function main() {
-  const [audioPath, rawBaseUrl = "http://localhost:3000"] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const extract = args.includes("--extract");
+  const positional = args.filter((value) => value !== "--extract");
+  const [audioPath, rawBaseUrl = "http://localhost:3000"] = positional;
   invariant(audioPath, "usage: npm run audio:smoke -- AUDIO_FILE [BASE_URL]");
   const baseUrl = loopbackBaseUrl(rawBaseUrl);
   const absolutePath = path.resolve(audioPath);
@@ -72,7 +76,7 @@ async function main() {
   })).project;
   const event = (await request(baseUrl, "POST", `/api/v1/projects/${encodeURIComponent(project.id)}/events`, {
     key: `audio-smoke:${runKey}:event`,
-    json: { event_type: "meeting", title: "Synthetic audio transcription smoke", occurred_at: new Date().toISOString() },
+    json: { event_type: "meeting", title: extract ? "AMI ES2002a product design meeting" : "Audio transcription smoke", occurred_at: new Date().toISOString() },
   })).event;
   const initialized = await request(baseUrl, "POST", `/api/v1/events/${encodeURIComponent(event.id)}/assets/init`, {
     key: `audio-smoke:${runKey}:asset`,
@@ -86,13 +90,23 @@ async function main() {
     json: {},
   })).transcription_run;
 
-  const deadline = Date.now() + 5 * 60_000;
-  while (!terminal.has(transcriptionRun.status) && Date.now() < deadline) {
-    await request(baseUrl, "POST", "/api/v1/local/jobs/dispatch", { json: {} });
+  const transcriptionStartedAt = Date.now();
+  const deadline = transcriptionStartedAt + 10 * 60_000;
+  await request(baseUrl, "POST", "/api/v1/jobs/dispatch", {
+    json: { kind: "transcription", run_id: transcriptionRun.id },
+  });
+  let lastTranscriptionWakeAt = transcriptionStartedAt;
+  while (!transcriptionTerminal.has(transcriptionRun.status) && Date.now() < deadline) {
     transcriptionRun = (await request(baseUrl, "GET", `/api/v1/transcription-runs/${encodeURIComponent(transcriptionRun.id)}`)).transcription_run;
-    if (!terminal.has(transcriptionRun.status)) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    if (transcriptionRun.status === "queued" && Date.now() - lastTranscriptionWakeAt >= 15_000) {
+      await request(baseUrl, "POST", "/api/v1/jobs/dispatch", {
+        json: { kind: "transcription", run_id: transcriptionRun.id },
+      });
+      lastTranscriptionWakeAt = Date.now();
+    }
+    if (!transcriptionTerminal.has(transcriptionRun.status)) await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  invariant(terminal.has(transcriptionRun.status), "Transcription did not reach a terminal state within five minutes.");
+  invariant(transcriptionTerminal.has(transcriptionRun.status), "Transcription did not reach a terminal state within ten minutes.");
   invariant(transcriptionRun.status === "succeeded", `Transcription failed with ${transcriptionRun.error_code ?? "unknown error"}.`);
   invariant(Array.isArray(transcriptionRun.segments) && transcriptionRun.segments.length > 0, "Transcription succeeded without speaker segments.");
   const persistedEvent = await request(baseUrl, "GET", `/api/v1/events/${encodeURIComponent(event.id)}`);
@@ -102,6 +116,50 @@ async function main() {
     (item) => item.kind === "transcript" && item.processing_status === "ready",
   );
   invariant(derivedTranscript, "The derived transcript Asset was not persisted on the Event.");
+
+  let extraction = null;
+  if (extract) {
+    const transcriptVersionId = derivedTranscript.version?.id;
+    invariant(transcriptVersionId, "The derived transcript is missing a finalized version.");
+    let extractionRun = (await request(baseUrl, "POST", `/api/v1/events/${encodeURIComponent(event.id)}/extraction-runs`, {
+      key: `audio-smoke:${runKey}:extraction`,
+      json: { asset_version_ids: [transcriptVersionId] },
+    })).run;
+    const extractionStartedAt = Date.now();
+    const extractionDeadline = extractionStartedAt + 30 * 60_000;
+    await request(baseUrl, "POST", "/api/v1/jobs/dispatch", {
+      json: { kind: "extraction", run_id: extractionRun.id },
+    });
+    let lastExtractionWakeAt = extractionStartedAt;
+    while (!extractionTerminal.has(extractionRun.status) && Date.now() < extractionDeadline) {
+      extractionRun = (await request(baseUrl, "GET", `/api/v1/extraction-runs/${encodeURIComponent(extractionRun.id)}`)).run;
+      if (extractionRun.status === "queued" && Date.now() - lastExtractionWakeAt >= 15_000) {
+        await request(baseUrl, "POST", "/api/v1/jobs/dispatch", {
+          json: { kind: "extraction", run_id: extractionRun.id },
+        });
+        lastExtractionWakeAt = Date.now();
+      }
+      if (!extractionTerminal.has(extractionRun.status)) await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    invariant(extractionTerminal.has(extractionRun.status), "Extraction did not reach a terminal state within thirty minutes.");
+    invariant(
+      ["succeeded", "completed", "completed_with_warnings"].includes(extractionRun.status),
+      `Extraction failed with ${extractionRun.error_code ?? "unknown error"}.`,
+    );
+    const review = await request(baseUrl, "GET", `/api/v1/extraction-runs/${encodeURIComponent(extractionRun.id)}/claims`);
+    const debug = await request(baseUrl, "GET", `/api/v1/extraction-runs/${encodeURIComponent(extractionRun.id)}/debug`);
+    extraction = {
+      run_id: extractionRun.id,
+      status: extractionRun.status,
+      elapsed_ms: Date.now() - extractionStartedAt,
+      model: extractionRun.model,
+      prompt_version: extractionRun.prompt_version,
+      schema_version: extractionRun.schema_version,
+      claims: review.claims ?? [],
+      occurrence_candidates: review.occurrence_candidates ?? [],
+      debug: debug.debug ?? null,
+    };
+  }
 
   process.stdout.write(`${JSON.stringify({
     schema_version: "notique-audio-smoke.v1",
@@ -113,6 +171,7 @@ async function main() {
     transcription_status: transcriptionRun.status,
     model: transcriptionRun.model,
     duration_seconds: transcriptionRun.duration_seconds,
+    transcription_elapsed_ms: Date.now() - transcriptionStartedAt,
     segment_count: transcriptionRun.segments.length,
     segments: transcriptionRun.segments.map((segment) => ({
       speaker: segment.speaker,
@@ -122,6 +181,7 @@ async function main() {
     })),
     derived_transcript_asset_id: derivedTranscript.id,
     derived_transcript_asset_version_id: derivedTranscript.version?.id ?? null,
+    extraction,
   }, null, 2)}\n`);
 }
 

@@ -66,6 +66,29 @@ test("legacy single-stage runs retain a useful analysis timer", async () => {
   assert.equal(items.find((item) => item.key === "analysis").durationMs, 10_000);
 });
 
+test("a retried Run preserves first queue time and reports the current queue separately", async () => {
+  const { buildRunTimingItems, runTotalDurationMs } = await loadTiming();
+  const now = Date.parse("2026-08-12T00:02:00.000Z");
+  const run = {
+    status: "queued",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    queuedAt: "2026-08-12T00:00:01.000Z",
+    firstQueuedAt: "2026-08-12T00:00:01.000Z",
+    firstStartedAt: "2026-08-12T00:00:04.000Z",
+    currentQueuedAt: "2026-08-12T00:01:45.000Z",
+    dispatchAttemptNo: 2,
+    processingAttemptNo: 1,
+    stages: [],
+  };
+  const items = buildRunTimingItems(run, now);
+  assert.equal(items.find((item) => item.key === "queue").durationMs, 3_000);
+  assert.equal(items.find((item) => item.key === "queue").status, "done");
+  assert.equal(items.find((item) => item.key === "queue").attempt, 1);
+  assert.equal(items.find((item) => item.key === "current_queue").durationMs, 15_000);
+  assert.equal(items.find((item) => item.key === "current_queue").attempt, 2);
+  assert.equal(runTotalDurationMs(run, now), 120_000);
+});
+
 test("a processing model stage becomes recoverable after the timeout window", async () => {
   const { EXTRACTION_STAGE_STALE_AFTER_MS, runNeedsRecovery } = await loadTiming();
   const run = {
@@ -90,4 +113,13 @@ test("a processing model stage becomes recoverable after the timeout window", as
     ),
     true,
   );
+});
+
+test("Run polling backs off after startup and again after two minutes", async () => {
+  const { runPollDelayMs } = await loadTiming();
+  assert.equal(runPollDelayMs(0), 2_000);
+  assert.equal(runPollDelayMs(14_999), 2_000);
+  assert.equal(runPollDelayMs(15_000), 5_000);
+  assert.equal(runPollDelayMs(119_999), 5_000);
+  assert.equal(runPollDelayMs(120_000), 10_000);
 });

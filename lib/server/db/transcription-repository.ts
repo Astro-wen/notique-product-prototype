@@ -131,8 +131,8 @@ export async function createTranscriptionRun(
           id, workspace_id, project_id, event_id, audio_asset_id,
           audio_asset_version_id, status, idempotency_key, input_hash,
           provider, model, response_format, request_timeout_ms,
-          queued_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, 'openai', ?, ?, ?, ?, ?, ?)`,
+          queued_at, first_queued_at, current_queued_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         runId,
         scope.workspaceId,
@@ -145,6 +145,8 @@ export async function createTranscriptionRun(
         model,
         TRANSCRIPTION_RESPONSE_FORMAT,
         timeoutMs,
+        timestamp,
+        timestamp,
         timestamp,
         timestamp,
         timestamp,
@@ -212,7 +214,11 @@ export async function getTranscriptionRun(
   runId: string,
 ): Promise<TranscriptionRunRecord> {
   const row = await first(
-    `SELECT * FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    `SELECT r.*,
+            COALESCE((
+              SELECT o.attempt FROM transcription_queue_outbox o WHERE o.run_id = r.id
+            ), 0) AS dispatch_attempt_no
+       FROM transcription_runs r WHERE r.id = ? AND r.workspace_id = ?`,
     [runId, scope.workspaceId],
   );
   if (!row) {

@@ -16,8 +16,6 @@ import {
 } from "@/lib/domain/audio-transcription";
 import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
 import {
-  planProjectWorkflow,
-  projectNeedsScenarioConfirmation,
   type ProjectWorkflowPlan,
 } from "@/lib/domain/project-workflow";
 import {
@@ -25,8 +23,22 @@ import {
   deriveGuidedDisplayStatus,
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
-import { buildRunTimingItems, runNeedsRecovery, runTotalDurationMs } from "@/lib/domain/run-timing";
-import { groupAiDraftClaims, sortClaimsForReview } from "@/lib/domain/ai-draft";
+import { buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
+import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft";
+import { highlightExactPhrase } from "@/lib/domain/text-highlight";
+import {
+  backLabelForRoute,
+  fallbackBackRoute,
+  isCoreWorkflowRoute,
+  isReadonlyClaimRoute,
+  normalizeAppRoute,
+  parseAppRoute,
+  routeForView,
+  serializeAppRoute,
+  type AppRoute,
+  type AppRouteOrigin,
+  type AppView,
+} from "@/lib/domain/app-navigation";
 import {
   ApiClientError,
   AiDraftAssessment,
@@ -34,6 +46,7 @@ import {
   Claim,
   ClaimEditSubmission,
   Event,
+  EvidenceContext,
   EvidenceRef,
   ExtractionRun,
   GlossaryEntry,
@@ -55,7 +68,7 @@ import {
 } from "./api-client";
 import { DirectRecorder } from "./direct-recorder";
 
-type Screen = "simple" | "projects" | "project" | "event" | "draft" | "review" | "claim" | "review-summary" | "results" | "run-debug";
+type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
 type ResultTab = ProjectViewName;
 
@@ -281,44 +294,52 @@ const idleProjectWorkflow: ProjectWorkflowState = {
 };
 
 async function inspectProjectWorkflow(projectId: string): Promise<ProjectWorkflowSnapshot> {
-  const [latestProject, latestEvents] = await Promise.all([
-    api.getProject(projectId),
+  const [snapshot, latestEvents] = await Promise.all([
+    api.getWorkflowSnapshot(projectId),
     api.listEvents(projectId),
   ]);
-  const details = await Promise.all(latestEvents.map(async (listedEvent) => {
-    const currentEvent = await api.getEvent(listedEvent.id);
-    const runId = currentEvent.latestRun?.id || currentEvent.latestRunId || listedEvent.latestRunId;
-    const latestRun = runId ? await api.getRun(runId) : null;
-    const review = latestRun && runComplete.has(latestRun.status)
-      ? await api.getRunReview(latestRun.id)
-      : null;
-    return {
-      event: currentEvent,
-      run: latestRun,
-      candidateCount: review
-        ? review.claims.length + review.occurrenceCandidates.length
-        : undefined,
-    };
-  }));
-  const plan = planProjectWorkflow({
-    events: details.map(({ event: currentEvent, run: latestRun, candidateCount }) => ({
-      id: currentEvent.id,
-      title: currentEvent.title,
-      occurredAt: currentEvent.occurredAt,
-      createdAt: currentEvent.createdAt,
-      hasMaterial: currentEvent.assets.length > 0,
-      ready: currentEvent.assets.some(assetIsAnalyzable),
-      runId: latestRun?.id || currentEvent.latestRunId,
-      runStatus: latestRun?.status,
-      candidateCount,
-      pendingCount: currentEvent.pendingClaimCount + currentEvent.pendingOccurrenceCount,
-    })),
-    needsScenarioConfirmation: projectNeedsScenarioConfirmation({
-      scenarioStatus: latestProject.scenarioStatus,
-      scenarioCandidateCount: latestProject.scenarioCandidates?.length ?? 0,
-    }),
-  });
-  return { project: latestProject, events: latestEvents, details, plan };
+  const workflow = snapshot.workflow;
+  const summary = workflow.current_event_id
+    ? snapshot.events.find((item) => item.id === workflow.current_event_id)
+    : undefined;
+  const currentEvent = workflow.current_event_id
+    ? await api.getEvent(workflow.current_event_id)
+    : null;
+  const currentRun: ExtractionRun | null = summary?.extraction
+    ? {
+        id: summary.extraction.run_id,
+        eventId: summary.id,
+        status: summary.extraction.status,
+        pipelineStage: summary.extraction.stage ?? undefined,
+        errorCode: summary.extraction.error_code ?? undefined,
+        processingAttemptNo: summary.extraction.processing_attempt_no,
+        dispatchAttemptNo: summary.extraction.dispatch_attempt_no,
+        createdAt: summary.extraction.created_at,
+        queuedAt: summary.extraction.queued_at ?? undefined,
+        firstQueuedAt: summary.extraction.first_queued_at ?? undefined,
+        currentQueuedAt: summary.extraction.current_queued_at ?? undefined,
+        startedAt: summary.extraction.started_at ?? undefined,
+        firstStartedAt: summary.extraction.first_started_at ?? undefined,
+        currentStartedAt: summary.extraction.current_started_at ?? undefined,
+        finishedAt: summary.extraction.finished_at ?? undefined,
+        updatedAt: summary.extraction.updated_at,
+        stages: [],
+      }
+    : null;
+  const details = currentEvent
+    ? [{ event: currentEvent, run: currentRun, candidateCount: summary?.candidate_count }]
+    : [];
+  const plan: ProjectWorkflowPlan = {
+    phase: workflow.phase,
+    total: workflow.total,
+    completed: workflow.completed,
+    currentPosition: workflow.current_position,
+    ...(workflow.current_event_id ? { currentEventId: workflow.current_event_id } : {}),
+    ...(currentEvent?.title ? { currentEventTitle: currentEvent.title } : {}),
+    ...(workflow.current_run_id ? { currentRunId: workflow.current_run_id } : {}),
+    ignoredEmptyCount: Math.max(0, latestEvents.length - workflow.total),
+  };
+  return { project: snapshot.project, events: latestEvents, details, plan };
 }
 
 function formatTimestamp(value?: string | number): string {
@@ -416,7 +437,7 @@ function statusLabel(value?: string): string {
     ready: "材料已就绪",
     uploading: "正在上传",
     parsing: "正在读取",
-    queued: "已进入队列",
+    queued: "等待后台启动",
     processing: "正在提取",
     extracting: "正在提取",
     succeeded: "处理完成",
@@ -441,6 +462,7 @@ function statusLabel(value?: string): string {
 
 function extractionProgressLabel(run?: ExtractionRun | null): string {
   if (!run || !runInProgress.has(run.status)) return statusLabel(run?.status);
+  if (run.status === "queued") return "等待后台启动";
   if (run.pipelineStage === "inventory") return "正在识别事实";
   if (run.pipelineStage === "verify") return "正在查漏纠错";
   if (run.pipelineStage === "verify_escalated") return "正在加强复核";
@@ -448,6 +470,7 @@ function extractionProgressLabel(run?: ExtractionRun | null): string {
 }
 
 function extractionProgressBody(run?: ExtractionRun | null): string {
+  if (run?.status === "queued") return "同一个任务正在等待后台领取；页面会继续检查，不会重复创建或重复收费。";
   if (run?.pipelineStage === "inventory") return "第一轮正在逐条盘点原子事实和证据，不会直接写入正式结果。";
   if (run?.pipelineStage === "verify") return "第二轮正在检查遗漏、重复、原子性和跨沟通关系。";
   if (run?.pipelineStage === "verify_escalated") return "确定性质量门发现风险，正在用更强推理重新复核。";
@@ -774,6 +797,109 @@ function ContradictionCard({
   );
 }
 
+const timelineMomentLabels: Record<string, string> = {
+  new: "新增",
+  updated: "修改或取代",
+  resolved: "已解决",
+  contradicted: "出现矛盾",
+  reaffirmed: "再次确认",
+  withdrawn: "已撤回",
+};
+
+function TimelineMoment({ moment, onOpenClaim }: { moment: Record<string, unknown>; onOpenClaim: (id: string) => void }) {
+  const kind = firstString(moment, ["kind"]) || "new";
+  const before = isRecord(moment.before) ? moment.before : null;
+  const after = isRecord(moment.after) ? moment.after : null;
+  const primaryEvidence = recordArray(moment.evidence)[0];
+  const claimId = (after && firstString(after, ["claimId", "claim_id"]))
+    || (before && firstString(before, ["claimId", "claim_id"]));
+  const startMs = typeof moment.transcriptStartMs === "number"
+    ? moment.transcriptStartMs
+    : typeof moment.transcript_start_ms === "number"
+      ? moment.transcript_start_ms
+      : typeof primaryEvidence?.startMs === "number"
+        ? primaryEvidence.startMs
+        : typeof primaryEvidence?.start_ms === "number"
+          ? primaryEvidence.start_ms
+          : null;
+  const speaker = primaryEvidence ? firstString(primaryEvidence, ["speaker"]) : undefined;
+  const quote = primaryEvidence ? firstString(primaryEvidence, ["quoteRaw", "quote_raw"]) : undefined;
+  const beforeStatement = before ? firstString(before, ["statement"]) : undefined;
+  const afterStatement = after ? firstString(after, ["statement"]) : undefined;
+  return (
+    <li className={`timeline-moment ${kind}`}>
+      <span className="timeline-dot" aria-hidden="true" />
+      <article>
+        <header>
+          <span className={`timeline-kind ${kind}`}>{timelineMomentLabels[kind] || kind}</span>
+          {(speaker || startMs !== null) && <small>{speaker || "说话人未标注"}{startMs !== null ? ` · ${formatTimestamp(startMs / 1000)}` : ""}</small>}
+        </header>
+        <h4>{firstString(moment, ["displayText", "display_text"]) || afterStatement || beforeStatement || "这次沟通留下了一条已确认变化"}</h4>
+        {beforeStatement && afterStatement && beforeStatement !== afterStatement && <div className="timeline-change"><p><span>之前</span>{beforeStatement}</p><p><span>现在</span>{afterStatement}</p></div>}
+        {quote && <blockquote>“{quote}”</blockquote>}
+        {claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与原始证据</button>}
+      </article>
+    </li>
+  );
+}
+
+function TimelineEventGroup({ group, index, eventRecord, onOpenClaim }: { group: Record<string, unknown>; index: number; eventRecord?: Event; onOpenClaim: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const event = isRecord(group.event) ? group.event : {};
+  const moments = recordArray(group.moments);
+  const pendingReviewCount = (eventRecord?.pendingClaimCount ?? 0) + (eventRecord?.pendingOccurrenceCount ?? 0);
+  const collapsed = index === 0 && moments.length > 3 && !expanded;
+  const visibleMoments = collapsed ? moments.slice(0, 3) : moments;
+  return (
+    <section className="timeline-group">
+      <header>
+        <div><span className="section-kicker">第 {index + 1} 次沟通</span><h3>{firstString(event, ["title"]) || "未命名沟通"}</h3></div>
+        <time>{formatDate(firstString(event, ["occurredAt", "occurred_at"]))}</time>
+      </header>
+      {pendingReviewCount > 0 && <p className="pending-review-note compact">还有 {pendingReviewCount} 条待核对，尚未进入本页结果。</p>}
+      {firstString(group, ["summary"]) && <p>{firstString(group, ["summary"])}</p>}
+      <ol className="timeline-track">
+        {visibleMoments.map((moment, momentIndex) => <TimelineMoment key={firstString(moment, ["id"]) || momentIndex} moment={moment} onOpenClaim={onOpenClaim} />)}
+      </ol>
+      {index === 0 && moments.length > 3 && <button className="button secondary timeline-expand" onClick={() => setExpanded((value) => !value)}>{expanded ? "收起次要节点" : `展开其余 ${moments.length - 3} 个节点`}</button>}
+    </section>
+  );
+}
+
+const preferenceHistoryLabels: Record<string, string> = {
+  stated: "首次提出",
+  updated: "发生变化",
+  reaffirmed: "再次确认",
+  withdrawn: "已撤回",
+};
+
+function PreferenceCard({ item, onOpenClaim }: { item: Record<string, unknown>; onOpenClaim: (id: string) => void }) {
+  const claimId = firstString(item, ["claimId", "claim_id"]);
+  const currentValue = isRecord(item.currentValue) ? item.currentValue : isRecord(item.current_value) ? item.current_value : null;
+  const conditions = Array.isArray(item.conditions) ? item.conditions.map(stringValue).filter((value): value is string => Boolean(value)) : [];
+  const decisionPeople = stringValues(item.decisionPeople ?? item.decision_people);
+  const firstSeen = isRecord(item.firstSeen) ? item.firstSeen : isRecord(item.first_seen) ? item.first_seen : null;
+  const lastSeen = isRecord(item.lastSeen) ? item.lastSeen : isRecord(item.last_seen) ? item.last_seen : null;
+  const history = recordArray(item.history);
+  const valueEntries = currentValue
+    ? Object.entries(currentValue).filter(([, value]) => value !== null && value !== undefined && stringValue(value))
+    : [];
+  return (
+    <article className="preference-card">
+      <header><div><span className="eyebrow">当前偏好</span><h3>{firstString(item, ["statement"]) || "偏好内容未显示"}</h3></div>{item.isCurrent !== false && item.is_current !== false && <span className="status-badge success">当前有效</span>}</header>
+      {valueEntries.length > 0 && <dl className="preference-values">{valueEntries.map(([key, value]) => <div key={key}><dt>{typeLabel(key)}</dt><dd>{stringValue(value)}</dd></div>)}</dl>}
+      {(conditions.length > 0 || decisionPeople.length > 0) && <div className="preference-context">{conditions.length > 0 && <p><strong>适用条件</strong>{conditions.join("、")}</p>}{decisionPeople.length > 0 && <p><strong>参与决定</strong>{decisionPeople.join("、")}</p>}</div>}
+      <div className="preference-seen"><span>首次出现<strong>{formatDate(firstSeen ? firstString(firstSeen, ["eventOccurredAt", "event_occurred_at"]) : undefined)}</strong></span><span>最近确认<strong>{formatDate(lastSeen ? firstString(lastSeen, ["eventOccurredAt", "event_occurred_at"]) : undefined)}</strong></span></div>
+      {history.length > 0 && <ol className="preference-history">{history.map((entry, index) => {
+        const entryClaimId = firstString(entry, ["claimId", "claim_id"]);
+        const kind = firstString(entry, ["kind"]) || "stated";
+        return <li key={firstString(entry, ["id"]) || index}><span aria-hidden="true" /><div><small>{preferenceHistoryLabels[kind] || kind} · {formatDate(firstString(entry, ["eventOccurredAt", "event_occurred_at"]))}</small><p>{firstString(entry, ["statement"]) || "内容未显示"}</p>{entryClaimId && <button className="text-button" onClick={() => onOpenClaim(entryClaimId)}>查看当时证据</button>}</div></li>;
+      })}</ol>}
+      {claimId && <button className="button secondary preference-open" onClick={() => onOpenClaim(claimId)}>查看当前记录与证据</button>}
+    </article>
+  );
+}
+
 function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveContradiction, busyAction }: { tab: ResultTab; data: unknown; events: Event[]; onOpenClaim: (id: string) => void; onSelect: (tab: ResultTab) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; busyAction: string | null }) {
   const emptyReason = viewEmptyReason(data);
   if (tab === "folder-summary" && isRecord(data)) {
@@ -795,12 +921,13 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     return <div className="timeline-groups">{groups.map((group, index) => {
       const event = isRecord(group.event) ? group.event : {};
       const eventId = firstString(event, ["id"]);
-      const eventRecord = events.find((item) => item.id === eventId);
-      const pendingReviewCount = (eventRecord?.pendingClaimCount ?? 0) + (eventRecord?.pendingOccurrenceCount ?? 0);
-      const claims = recordArray(group.claims).map(claimViewItem);
-      const deltas = recordArray(group.deltas);
-      return <section className="timeline-group" key={eventId || index}><header><div><span className="section-kicker">第 {index + 1} 次沟通</span><h3>{firstString(event, ["title"]) || "未命名沟通"}</h3></div><time>{formatDate(firstString(event, ["occurredAt", "occurred_at"]))}</time></header>{pendingReviewCount > 0 && <p className="pending-review-note compact">还有 {pendingReviewCount} 条待核对，尚未进入本页结果。</p>}<p>{firstString(group, ["summary"])}</p>{claims.length > 0 && <ResultSection title="已确认记录"><div className="view-grid">{claims.map((item, claimIndex) => <ViewItem key={firstString(item, ["claim_id"]) || claimIndex} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>}{deltas.length > 0 && <ResultSection title="本次变化"><div className="view-grid">{deltas.map((item, deltaIndex) => <ViewItem key={firstString(item, ["id"]) || deltaIndex} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection>}</section>;
+      return <TimelineEventGroup key={eventId || index} group={group} index={index} eventRecord={events.find((item) => item.id === eventId)} onOpenClaim={onOpenClaim} />;
     })}</div>;
+  }
+  if (tab === "preferences") {
+    const preferences = objectItems(data);
+    if (!preferences.length) return <EmptyState title="目前没有已确认的偏好" body={emptyReason || "确认偏好后，这里会保留当前内容、条件、决策人和变化过程。"} />;
+    return <div className="preferences-view">{preferences.map((item, index) => <PreferenceCard key={firstString(item, ["claimId", "claim_id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div>;
   }
   if (tab === "risks" && isRecord(data)) {
     const claims = recordArray(data.claims).map(claimViewItem);
@@ -843,7 +970,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
       {missing > 0 && <article className="view-card brief-warning"><span className="eyebrow">信息完整度</span><h3>还有 {missing} 个位置没有足够依据</h3><p>这些位置保持空白，没有用推测补齐。</p></article>}
     </div>;
   }
-  const rows = objectItems(data).map((item) => tab === "decisions" || tab === "preferences" || tab === "open-questions" ? claimViewItem(item) : item);
+  const rows = objectItems(data).map((item) => tab === "decisions" || tab === "open-questions" ? claimViewItem(item) : item);
   if (!rows.length) {
     const copy: Record<ResultTab, [string, string]> = {
       "folder-summary": ["还没有事项概况", "先完成材料处理并确认有用的记录。"],
@@ -929,7 +1056,13 @@ function BriefGroup({ title, items, kind, empty, onOpenClaim, onSelect, warning 
 }
 
 export default function Home() {
-  const [screen, setScreen] = useState<Screen>("simple");
+  // Keep the first client render identical to SSR. The URL is restored in the
+  // mount effect below, after hydration has finished.
+  const [route, setRouteState] = useState<AppRoute>({ view: "simple" });
+  const screen = route.view;
+  const routeRef = useRef(route);
+  const routeRestoreAction = useRef<(nextRoute: AppRoute) => void>(() => undefined);
+  const requestEpochs = useRef({ projects: 0, project: 0, event: 0, claims: 0, view: 0, claim: 0, debug: 0 });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsState, setProjectsState] = useState<AsyncState>("loading");
   const [projectsIssue, setProjectsIssue] = useState<ApiIssue | null>(null);
@@ -952,7 +1085,6 @@ export default function Home() {
   const [claimsState, setClaimsState] = useState<AsyncState>("idle");
   const [claimsIssue, setClaimsIssue] = useState<ApiIssue | null>(null);
   const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
-  const [claimBackScreen, setClaimBackScreen] = useState<"draft" | "review" | "results">("review");
   const [evidence, setEvidence] = useState<EvidenceRef[]>([]);
   const [evidenceState, setEvidenceState] = useState<AsyncState>("idle");
   const [viewTab, setViewTab] = useState<ResultTab>("folder-summary");
@@ -991,6 +1123,51 @@ export default function Home() {
   const guidedTransitionKey = useRef("");
   const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "complete") => void>(() => undefined);
 
+  const navigateRoute = useCallback((nextRoute: AppRoute, mode: "push" | "replace" | "none" = "push") => {
+    const normalized = normalizeAppRoute(nextRoute);
+    routeRef.current = normalized;
+    setRouteState(normalized);
+    if (mode === "none" || typeof window === "undefined") return;
+    const currentState = isRecord(window.history.state) ? window.history.state : {};
+    const currentDepth = typeof currentState.notiqueDepth === "number" ? currentState.notiqueDepth : 0;
+    const nextState = {
+      ...currentState,
+      notiqueRoute: true,
+      notiqueDepth: mode === "push" ? currentDepth + 1 : currentDepth,
+    };
+    const url = `${window.location.pathname}${serializeAppRoute(normalized)}${window.location.hash}`;
+    if (mode === "replace") window.history.replaceState(nextState, "", url);
+    else window.history.pushState(nextState, "", url);
+  }, []);
+
+  const setScreen = useCallback((nextScreen: Screen, mode: "push" | "replace" | "none" = "push") => {
+    navigateRoute(routeForView(routeRef.current, nextScreen), mode);
+  }, [navigateRoute]);
+
+  const invalidateNavigationRequests = useCallback(() => {
+    requestEpochs.current.projects += 1;
+    requestEpochs.current.project += 1;
+    requestEpochs.current.event += 1;
+    requestEpochs.current.claims += 1;
+    requestEpochs.current.view += 1;
+    requestEpochs.current.claim += 1;
+    requestEpochs.current.debug += 1;
+  }, []);
+
+  const navigateBack = useCallback(() => {
+    if (typeof window !== "undefined") {
+      const state = isRecord(window.history.state) ? window.history.state : {};
+      if (state.notiqueRoute === true && typeof state.notiqueDepth === "number" && state.notiqueDepth > 0) {
+        window.history.back();
+        return;
+      }
+    }
+    const destination = fallbackBackRoute(routeRef.current);
+    invalidateNavigationRequests();
+    navigateRoute(destination, "replace");
+    routeRestoreAction.current(destination);
+  }, [invalidateNavigationRequests, navigateRoute]);
+
   const flash = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
@@ -1003,13 +1180,17 @@ export default function Home() {
   }, [reviewSession?.id, reviewSession?.status]);
 
   const loadProjects = useCallback(async () => {
+    const token = requestEpochs.current.projects + 1;
+    requestEpochs.current.projects = token;
     setProjectsState("loading");
     setProjectsIssue(null);
     try {
       const result = await api.listProjects();
+      if (requestEpochs.current.projects !== token) return;
       setProjects(result);
       setProjectsState(result.length ? "ready" : "empty");
     } catch (error) {
+      if (requestEpochs.current.projects !== token) return;
       setProjectsIssue(toIssue(error));
       setProjectsState("error");
     }
@@ -1027,45 +1208,65 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const loadProject = useCallback(async (projectId: string, nextScreen: Screen = "project") => {
+  const loadProject = useCallback(async (
+    projectId: string,
+    nextScreen: Screen = "project",
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    const token = requestEpochs.current.project + 1;
+    requestEpochs.current.project = token;
     setProjectState("loading");
     setProjectIssue(null);
-    setScreen(nextScreen);
+    navigateRoute({
+      view: nextScreen,
+      projectId,
+      ...(nextScreen === "project" ? { origin: "projects" as const } : {}),
+    }, historyMode);
     try {
       const [nextProject, nextEvents] = await Promise.all([api.getProject(projectId), api.listEvents(projectId)]);
+      if (requestEpochs.current.project !== token) return;
       setProject(nextProject);
       setEvents(nextEvents);
       setProjectState("ready");
     } catch (error) {
+      if (requestEpochs.current.project !== token) return;
       const issue = toIssue(error);
       setProjectIssue(issue);
       setProjectState("error");
       if (issue.status === 404) setProject(null);
     }
-  }, []);
+  }, [navigateRoute]);
 
   const loadClaimsForRun = useCallback(async (runId: string) => {
+    const token = requestEpochs.current.claims + 1;
+    requestEpochs.current.claims = token;
     setClaimsState("loading");
     setClaimsIssue(null);
     try {
       const result = await api.getRunClaims(runId);
+      if (requestEpochs.current.claims !== token) return;
       setClaims(result);
       setClaimsState(result.length ? "ready" : "empty");
     } catch (error) {
+      if (requestEpochs.current.claims !== token) return;
       setClaimsIssue(toIssue(error));
       setClaimsState("error");
     }
   }, []);
 
-  const loadTranscriptionForEvent = useCallback(async (nextEvent: Event) => {
+  const loadTranscriptionForEvent = useCallback(async (nextEvent: Event, expectedEventEpoch?: number) => {
     const transcriptionRunId = transcriptionRunIdFromEvent(nextEvent);
     if (!transcriptionRunId) {
+      if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
       setTranscriptionRun(null);
       return;
     }
     try {
-      setTranscriptionRun(await api.getTranscriptionRun(transcriptionRunId));
+      const nextTranscriptionRun = await api.getTranscriptionRun(transcriptionRunId);
+      if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
+      setTranscriptionRun(nextTranscriptionRun);
     } catch (error) {
+      if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
       const issue = toIssue(error);
       if (issue.status === 404) {
         setTranscriptionRun(null);
@@ -1100,8 +1301,23 @@ export default function Home() {
     }
   }, []);
 
-  const loadSimpleProject = useCallback(async (projectId: string, preferredEventId?: string) => {
-    setScreen("simple");
+  const loadSimpleProject = useCallback(async (
+    projectId: string,
+    preferredEventId?: string,
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    // A workflow snapshot from the previously selected project must never be
+    // allowed to land after this selection has started.
+    projectWorkflowRefreshToken.current += 1;
+    const projectToken = requestEpochs.current.project + 1;
+    const eventToken = requestEpochs.current.event + 1;
+    requestEpochs.current.project = projectToken;
+    requestEpochs.current.event = eventToken;
+    navigateRoute({
+      view: "simple",
+      projectId,
+      ...(preferredEventId ? { eventId: preferredEventId } : {}),
+    }, historyMode);
     setProjectState("loading");
     setProjectIssue(null);
     setEvent(null);
@@ -1113,6 +1329,7 @@ export default function Home() {
     setClaimsState("idle");
     try {
       const [nextProject, nextEvents] = await Promise.all([api.getProject(projectId), api.listEvents(projectId)]);
+      if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       setProject(nextProject);
       setEvents(nextEvents);
       setProjectState("ready");
@@ -1131,10 +1348,13 @@ export default function Home() {
       }
       setEventState("loading");
       const nextEvent = await api.getEvent(target.id);
+      if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       setEvent(nextEvent);
       storeId(recentEventStorageKey(projectId), nextEvent.id);
+      navigateRoute({ view: "simple", projectId, eventId: nextEvent.id }, historyMode === "none" ? "none" : "replace");
       setEventState("ready");
-      await loadTranscriptionForEvent(nextEvent);
+      await loadTranscriptionForEvent(nextEvent, eventToken);
+      if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
       if (!runId) {
         setRun(null);
@@ -1143,9 +1363,11 @@ export default function Home() {
         return;
       }
       const nextRun = await api.getRun(runId);
+      if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       setRun(nextRun);
       if (runComplete.has(nextRun.status)) await loadClaimsForRun(nextRun.id);
     } catch (error) {
+      if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       const issue = toIssue(error);
       if (issue.status === 404 || issue.status === 403) {
         storeId(recentProjectStorageKey, null);
@@ -1160,10 +1382,10 @@ export default function Home() {
       setEventIssue(issue);
       setEventState("error");
     }
-  }, [loadClaimsForRun, loadTranscriptionForEvent]);
+  }, [loadClaimsForRun, loadTranscriptionForEvent, navigateRoute]);
 
   useEffect(() => {
-    if (screen !== "simple" || project || projectsState !== "ready") return;
+    if (screen !== "simple" || project || projectsState !== "ready" || routeRef.current.projectId) return;
     const rememberedProjectId = readStoredId(recentProjectStorageKey);
     const selection = chooseRememberedSelection(projects, rememberedProjectId);
     if (!selection) return;
@@ -1210,7 +1432,7 @@ export default function Home() {
     const projectId = project.id;
     const runId = projectWorkflow.currentRunId;
     if (run?.id === runId && runInProgress.has(run.status)) return;
-    void api.kickDispatcher().catch(() => undefined);
+    void api.kickDispatcher({ kind: "extraction", runId }).catch(() => undefined);
     let attempts = 0;
     const timer = window.setInterval(async () => {
       if (attempts >= 360) {
@@ -1251,18 +1473,31 @@ export default function Home() {
     screen,
   ]);
 
-  const loadEvent = useCallback(async (eventId: string) => {
+  const loadEvent = useCallback(async (
+    eventId: string,
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    const token = requestEpochs.current.event + 1;
+    requestEpochs.current.event = token;
     setEventState("loading");
     setEventIssue(null);
-    setScreen("event");
+    navigateRoute({
+      view: "event",
+      ...(project?.id || routeRef.current.projectId ? { projectId: project?.id || routeRef.current.projectId } : {}),
+      eventId,
+      origin: "project",
+    }, historyMode);
     try {
       const nextEvent = await api.getEvent(eventId);
+      if (requestEpochs.current.event !== token) return;
       setEvent(nextEvent);
       setEventState("ready");
-      await loadTranscriptionForEvent(nextEvent);
+      await loadTranscriptionForEvent(nextEvent, token);
+      if (requestEpochs.current.event !== token) return;
       const runId = nextEvent.latestRun?.id || nextEvent.latestRunId;
       if (runId) {
         const nextRun = await api.getRun(runId);
+        if (requestEpochs.current.event !== token) return;
         setRun(nextRun);
         if (runComplete.has(nextRun.status)) await loadClaimsForRun(nextRun.id);
       } else {
@@ -1271,28 +1506,76 @@ export default function Home() {
         setClaimsState("idle");
       }
     } catch (error) {
+      if (requestEpochs.current.event !== token) return;
       setEventIssue(toIssue(error));
       setEventState("error");
     }
-  }, [loadClaimsForRun, loadTranscriptionForEvent]);
+  }, [loadClaimsForRun, loadTranscriptionForEvent, navigateRoute, project?.id]);
+
+  const queuedExtractionRunId = run?.id;
+  const queuedExtractionRunStatus = run?.status;
 
   useEffect(() => {
-    if (!run || run.status !== "queued" || localDispatchRuns.current.has(run.id)) return;
-    localDispatchRuns.current.add(run.id);
-    void api.kickDispatcher().catch(() => {
+    if (!queuedExtractionRunId) return;
+    if (!runInProgress.has(queuedExtractionRunStatus ?? "")) {
+      localDispatchRuns.current.delete(queuedExtractionRunId);
+      return;
+    }
+    if (queuedExtractionRunStatus === "queued" && !localDispatchRuns.current.has(queuedExtractionRunId)) {
+      localDispatchRuns.current.add(queuedExtractionRunId);
+      void api.kickDispatcher({ kind: "extraction", runId: queuedExtractionRunId }).catch(() => {
       // The durable Run remains queued when an explicit dispatch request fails,
       // so polling and the scheduled sweeper can recover without duplicating it.
-    });
-  }, [run]);
+      });
+    }
+    const runId = queuedExtractionRunId;
+    let stopped = false;
+    let wakeTimer: number | null = null;
+    const scheduleWake = () => {
+      wakeTimer = window.setTimeout(() => {
+        void api.getRun(runId).then(async (latest) => {
+          if (stopped || !runInProgress.has(latest.status)) return;
+          // A queued Run needs starting; a processing Run may hold a durable
+          // OpenAI background Response that needs a cheap GET-based resume.
+          await api.kickDispatcher({ kind: "extraction", runId }).catch(() => undefined);
+          if (!stopped) scheduleWake();
+        }).catch(() => {
+          if (!stopped) scheduleWake();
+        });
+      }, 15_000);
+    };
+    scheduleWake();
+    return () => {
+      stopped = true;
+      if (wakeTimer !== null) window.clearTimeout(wakeTimer);
+    };
+  }, [queuedExtractionRunId, queuedExtractionRunStatus]);
+
+  const queuedTranscriptionRunId = transcriptionRun?.id;
+  const queuedTranscriptionRunStatus = transcriptionRun?.status;
 
   useEffect(() => {
-    if (!transcriptionRun || transcriptionRun.status !== "queued" || localDispatchTranscriptionRuns.current.has(transcriptionRun.id)) return;
-    localDispatchTranscriptionRuns.current.add(transcriptionRun.id);
-    void api.kickDispatcher().catch(() => {
+    if (!queuedTranscriptionRunId) return;
+    if (queuedTranscriptionRunStatus !== "queued") {
+      localDispatchTranscriptionRuns.current.delete(queuedTranscriptionRunId);
+      return;
+    }
+    if (!localDispatchTranscriptionRuns.current.has(queuedTranscriptionRunId)) {
+      localDispatchTranscriptionRuns.current.add(queuedTranscriptionRunId);
+      void api.kickDispatcher({ kind: "transcription", runId: queuedTranscriptionRunId }).catch(() => {
       // The durable transcription Run remains recoverable by the same endpoint
       // or the scheduled sweeper.
-    });
-  }, [transcriptionRun]);
+      });
+    }
+    const runId = queuedTranscriptionRunId;
+    const wakeTimer = window.setTimeout(() => {
+      void api.getTranscriptionRun(runId).then((latest) => {
+        if (latest.status !== "queued") return;
+        return api.kickDispatcher({ kind: "transcription", runId });
+      }).catch(() => undefined);
+    }, 15_000);
+    return () => window.clearTimeout(wakeTimer);
+  }, [queuedTranscriptionRunId, queuedTranscriptionRunStatus]);
 
   const activeTranscriptionRunId = transcriptionRun?.id;
   const activeTranscriptionRunStatus = transcriptionRun?.status;
@@ -1305,9 +1588,16 @@ export default function Home() {
       transcriptionPollingRunKey.current = pollKey;
       transcriptionPollAttempts.current = 0;
     }
-    const timer = window.setInterval(async () => {
-      if (transcriptionPollAttempts.current >= 240) {
-        window.clearInterval(timer);
+    const pollStartedAt = Date.now();
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void poll(), runPollDelayMs(Date.now() - pollStartedAt));
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      if (Date.now() - pollStartedAt >= 10 * 60_000) {
         setEventIssue({
           code: "TRANSCRIPTION_POLL_TIMEOUT",
           message: "等待逐字稿的时间过长。录音已经保存，可以重新检查后台状态；如果服务器已经标记失败，也可以重新转写。",
@@ -1318,11 +1608,12 @@ export default function Home() {
       transcriptionPollAttempts.current += 1;
       try {
         const latest = await api.getTranscriptionRun(runId);
+        if (cancelled) return;
         setTranscriptionRun(latest);
         if (!runInProgress.has(latest.status)) {
-          window.clearInterval(timer);
           if (latest.status === "succeeded" && event?.id) {
             const refreshed = await api.getEvent(event.id);
+            if (cancelled) return;
             setEvent(refreshed);
             setEventIssue(null);
             flash(`逐字稿已生成，包含 ${latest.segmentCount ?? latest.segments.length} 个带时间点的片段`);
@@ -1333,15 +1624,24 @@ export default function Home() {
               status: 502,
             });
           }
+          return;
         }
       } catch (error) {
         const issue = toIssue(error);
-        if (issue.status >= 500 || issue.status === 0) return;
-        window.clearInterval(timer);
+        if (issue.status >= 500 || issue.status === 0) {
+          schedule();
+          return;
+        }
         setEventIssue(issue);
+        return;
       }
-    }, 2500);
-    return () => window.clearInterval(timer);
+      schedule();
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
 
   const activeExtractionRunId = run?.id;
@@ -1355,12 +1655,19 @@ export default function Home() {
       pollingRunKey.current = pollKey;
       pollAttempts.current = 0;
     }
-    const timer = window.setInterval(async () => {
-      // Luna xhigh may legitimately spend several minutes reasoning before it
-      // returns structured output. Keep the simple test screen live for up to
-      // 15 minutes; the server remains the source of truth if the page closes.
-      if (pollAttempts.current >= 360) {
-        window.clearInterval(timer);
+    const pollStartedAt = Date.now();
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void poll(), runPollDelayMs(Date.now() - pollStartedAt));
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      // The frozen two-stage Run can legitimately include two long reasoning
+      // calls plus one escalation. Stop foreground waiting after 30 minutes,
+      // but keep the durable server Run untouched and recoverable.
+      if (Date.now() - pollStartedAt >= 30 * 60_000) {
         const issue: ApiIssue = {
           code: "EXTRACTION_POLL_TIMEOUT",
           message: "页面等待时间已到，但同一个任务仍在后台运行。材料和任务都已保留；点击“重新检查”不会创建新的付费任务。",
@@ -1373,6 +1680,7 @@ export default function Home() {
       pollAttempts.current += 1;
       try {
         const latest = await api.getRun(runId);
+        if (cancelled) return;
         setRun(latest);
         if (runNeedsRecovery({
           status: latest.status,
@@ -1384,16 +1692,16 @@ export default function Home() {
         }) && !staleRecoveryRuns.current.has(runId)) {
           staleRecoveryRuns.current.add(runId);
           flash("检测到事实识别长时间没有更新，正在检查并恢复同一个后台任务");
-          void api.kickDispatcher().finally(() => {
+          void api.kickDispatcher({ kind: "extraction", runId }).finally(() => {
             setRunPollCycle((value) => value + 1);
           });
           return;
         }
         if (!runInProgress.has(latest.status)) {
-          window.clearInterval(timer);
           if (runComplete.has(latest.status)) {
             setEventIssue(null);
             await loadClaimsForRun(latest.id);
+            if (cancelled) return;
             const refreshes: Promise<unknown>[] = [];
             if (project?.id) {
               refreshes.push(api.getProject(project.id).then((latestProject) => setProject(latestProject)));
@@ -1409,18 +1717,27 @@ export default function Home() {
               status: 502,
             });
           }
+          return;
         }
       } catch (error) {
         const issue = toIssue(error);
-        if (issue.status >= 500 || issue.status === 0) return;
-        window.clearInterval(timer);
+        if (issue.status >= 500 || issue.status === 0) {
+          schedule();
+          return;
+        }
         setClaimsIssue(issue);
         setProjectWorkflow((current) => current.currentRunId === runId
           ? { ...current, phase: "error", issue }
           : current);
+        return;
       }
-    }, 2500);
-    return () => window.clearInterval(timer);
+      schedule();
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, flash, loadClaimsForRun, project?.id, runPollCycle]);
 
   const syncReviewTiming = useCallback(async (latestProject: Project) => {
@@ -1438,48 +1755,47 @@ export default function Home() {
       }
       return;
     }
-    const latest = await api.getReviewSession(latestProject.id);
-    setReviewSession(latest);
-    if (latest?.status === "completed") {
-      mutationKeys.current.delete(`review-start:${latestProject.id}`);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (
-      !project ||
-      !reviewSession ||
-      reviewSession.status !== "active" ||
-      project.pendingClaimCount + project.pendingOccurrenceCount > 0 ||
-      completingReviewSessions.current.has(reviewSession.id)
-    ) return;
-    completingReviewSessions.current.add(reviewSession.id);
-    const fingerprint = `review-complete:${reviewSession.id}`;
-    const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-    mutationKeys.current.set(fingerprint, idempotencyKey);
-    void api.completeReviewSession(reviewSession.id, idempotencyKey)
-      .then((completed) => {
+    let latest = await api.getReviewSession(latestProject.id);
+    if (latest?.status === "active" && !completingReviewSessions.current.has(latest.id)) {
+      completingReviewSessions.current.add(latest.id);
+      const fingerprint = `review-complete:${latest.id}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      try {
+        latest = await api.completeReviewSession(latest.id, idempotencyKey);
         mutationKeys.current.delete(fingerprint);
-        mutationKeys.current.delete(`review-start:${project.id}`);
-        setReviewSession(completed);
-        flash(`本次审核完成，用时 ${formatReviewDuration(completed.durationMs ?? 0)}`);
-      })
-      .catch((error) => setClaimsIssue(toIssue(error)))
-      .finally(() => completingReviewSessions.current.delete(reviewSession.id));
-  }, [flash, project, reviewSession]);
+        flash(`本次审核完成，用时 ${formatReviewDuration(latest.durationMs ?? 0)}`);
+      } finally {
+        completingReviewSessions.current.delete(latest.id);
+      }
+    }
+    setReviewSession(latest);
+    if (latest?.status === "completed") mutationKeys.current.delete(`review-start:${latestProject.id}`);
+  }, [flash]);
 
   const loadReviewQueue = useCallback(async (
     destination: "review" | "draft" = "review",
+    projectIdOverride?: string,
+    historyMode: "push" | "replace" | "none" = "push",
   ): Promise<ReviewQueueSnapshot | null> => {
-    if (!project) return null;
-    setScreen(destination);
+    const targetProjectId = projectIdOverride || project?.id || routeRef.current.projectId;
+    if (!targetProjectId) return null;
+    const token = requestEpochs.current.claims + 1;
+    requestEpochs.current.claims = token;
+    navigateRoute({
+      view: destination,
+      projectId: targetProjectId,
+      ...(event?.id || routeRef.current.eventId ? { eventId: event?.id || routeRef.current.eventId } : {}),
+      origin: destination === "draft" ? "simple" : "draft",
+    }, historyMode);
     setClaimsState("loading");
     setClaimsIssue(null);
     try {
       const [latestProject, latestEvents] = await Promise.all([
-        api.getProject(project.id),
-        api.listEvents(project.id),
+        api.getProject(targetProjectId),
+        api.listEvents(targetProjectId),
       ]);
+      if (requestEpochs.current.claims !== token) return null;
       setProject(latestProject);
       setEvents(latestEvents);
       const runIds = [...new Set(latestEvents.map((item) => item.latestRun?.id || item.latestRunId).filter((value): value is string => Boolean(value)))];
@@ -1491,6 +1807,7 @@ export default function Home() {
         return { project: latestProject, claims: [], occurrenceCandidates: [] };
       }
       const results = await Promise.allSettled(runIds.map((runId) => api.getRunReview(runId)));
+      if (requestEpochs.current.claims !== token) return null;
       const failed = results.find((item): item is PromiseRejectedResult => item.status === "rejected");
       const foundClaims = results.flatMap((item) => item.status === "fulfilled" ? item.value.claims : []);
       const foundOccurrences = results.flatMap((item) => item.status === "fulfilled" ? item.value.occurrenceCandidates : []);
@@ -1502,6 +1819,7 @@ export default function Home() {
       setClaims(uniqueClaims);
       setOccurrenceCandidates(uniqueOccurrences);
       setClaimsState(uniqueClaims.length || uniqueOccurrences.length ? "ready" : "empty");
+      if (requestEpochs.current.claims !== token) return null;
       await syncReviewTiming(latestProject);
       return {
         project: latestProject,
@@ -1509,28 +1827,48 @@ export default function Home() {
         occurrenceCandidates: uniqueOccurrences,
       };
     } catch (error) {
+      if (requestEpochs.current.claims !== token) return null;
       setClaimsIssue(toIssue(error));
       setClaimsState("error");
       return null;
     }
-  }, [project, syncReviewTiming]);
+  }, [event?.id, navigateRoute, project?.id, syncReviewTiming]);
 
-  const loadView = useCallback(async (tab: ResultTab) => {
-    if (!project) return;
+  const loadView = useCallback(async (
+    tab: ResultTab,
+    projectIdOverride?: string,
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    const targetProjectId = projectIdOverride || project?.id || routeRef.current.projectId;
+    if (!targetProjectId) return;
+    const token = requestEpochs.current.view + 1;
+    requestEpochs.current.view = token;
     const loadStartedAt = performance.now();
     setViewTab(tab);
-    setScreen("results");
+    const currentOrigin = routeRef.current.view === "results"
+      ? routeRef.current.origin
+      : routeRef.current.view === "simple"
+        ? "simple"
+        : "project";
+    navigateRoute({
+      view: "results",
+      projectId: targetProjectId,
+      ...(event?.id || routeRef.current.eventId ? { eventId: event?.id || routeRef.current.eventId } : {}),
+      tab,
+      origin: currentOrigin,
+    }, historyMode);
     setViewState("loading");
     setViewIssue(null);
     setViewLoadDurationMs(null);
     try {
       const [result, nextProject, nextEvents] = await Promise.all([
         tab === "brief-card"
-          ? loadBriefDisplayData(project.id)
-          : api.getView(project.id, tab),
-        api.getProject(project.id),
-        api.listEvents(project.id),
+          ? loadBriefDisplayData(targetProjectId)
+          : api.getView(targetProjectId, tab),
+        api.getProject(targetProjectId),
+        api.listEvents(targetProjectId),
       ]);
+      if (requestEpochs.current.view !== token) return;
       setProject(nextProject);
       setEvents(nextEvents);
       setViewData(result);
@@ -1548,34 +1886,53 @@ export default function Home() {
           : "empty",
       );
     } catch (error) {
+      if (requestEpochs.current.view !== token) return;
       const issue = toIssue(error);
       setViewIssue(issue);
       setViewState(issue.status === 404 ? "empty" : "error");
       setViewData(null);
     } finally {
+      if (requestEpochs.current.view !== token) return;
       setViewLoadDurationMs(Math.max(0, Math.round(performance.now() - loadStartedAt)));
     }
-  }, [project]);
+  }, [event?.id, navigateRoute, project?.id]);
 
-  const openRunDebug = useCallback(async (runId: string) => {
-    setScreen("run-debug");
+  const openRunDebug = useCallback(async (
+    runId: string,
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    const token = requestEpochs.current.debug + 1;
+    requestEpochs.current.debug = token;
+    navigateRoute({
+      view: "run-debug",
+      ...(project?.id || routeRef.current.projectId ? { projectId: project?.id || routeRef.current.projectId } : {}),
+      ...(event?.id || routeRef.current.eventId ? { eventId: event?.id || routeRef.current.eventId } : {}),
+      runId,
+      origin: "event",
+    }, historyMode);
     setRunDebugState("loading");
     setRunDebugIssue(null);
     setRunDebug(null);
     try {
       const result = await api.getRunDebug(runId);
+      if (requestEpochs.current.debug !== token) return;
       setRunDebug(result);
       setRunDebugState("ready");
     } catch (error) {
+      if (requestEpochs.current.debug !== token) return;
       setRunDebugIssue(toIssue(error));
       setRunDebugState("error");
     }
-  }, []);
+  }, [event?.id, navigateRoute, project?.id]);
 
   async function openClaim(
     claimOrVersionId: string,
-    origin?: "draft" | "review" | "results",
+    origin?: AppRouteOrigin,
+    projectIdOverride?: string,
+    historyMode: "push" | "replace" | "none" = "push",
   ) {
+    const token = requestEpochs.current.claim + 1;
+    requestEpochs.current.claim = token;
     let listClaim = claims.find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
     let nextClaim: Claim | null = null;
     setBusyAction("open-claim");
@@ -1586,11 +1943,13 @@ export default function Home() {
         history = await api.getClaimHistory(lookupId);
       } catch (error) {
         const issue = toIssue(error);
-        if (!project || issue.status !== 404) throw error;
+        const targetProjectId = projectIdOverride || project?.id || routeRef.current.projectId;
+        if (!targetProjectId || issue.status !== 404) throw error;
         const [summaryView, timelineView] = await Promise.all([
-          api.getView(project.id, "folder-summary"),
-          api.getView(project.id, "timeline"),
+          api.getView(targetProjectId, "folder-summary"),
+          api.getView(targetProjectId, "timeline"),
         ]);
+        if (requestEpochs.current.claim !== token) return;
         listClaim = [...claimsFromVerifiedView(summaryView), ...claimsFromVerifiedView(timelineView)]
           .find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
         if (!listClaim) throw error;
@@ -1606,20 +1965,36 @@ export default function Home() {
         };
       }
     } catch (error) {
+      if (requestEpochs.current.claim !== token) return;
       setClaimsIssue(toIssue(error));
     } finally {
       setBusyAction(null);
     }
-    if (!nextClaim?.id) return;
+    if (!nextClaim?.id || requestEpochs.current.claim !== token) return;
+    const resolvedOrigin = origin
+      ?? (routeRef.current.view === "draft"
+        ? "draft"
+        : routeRef.current.view === "results"
+          ? "results"
+          : routeRef.current.view === "event"
+            ? "event"
+            : "review");
     setSelectedClaim(nextClaim);
-    setClaimBackScreen(origin ?? (screen === "draft" ? "draft" : screen === "results" ? "results" : "review"));
-    setScreen("claim");
+    navigateRoute({
+      view: "claim",
+      ...(projectIdOverride || project?.id || routeRef.current.projectId ? { projectId: projectIdOverride || project?.id || routeRef.current.projectId } : {}),
+      ...(nextClaim.eventId || event?.id || routeRef.current.eventId ? { eventId: nextClaim.eventId || event?.id || routeRef.current.eventId } : {}),
+      claimId: nextClaim.id,
+      origin: resolvedOrigin,
+      ...(resolvedOrigin === "results" ? { originTab: viewTab } : {}),
+    }, historyMode);
     setEvidence([]);
     setEvidenceState("loading");
     try {
       const embedded = nextClaim.evidenceRefs;
       const missingIds = nextClaim.evidenceRefIds.filter((id) => !embedded.some((item) => item.id === id));
       const fetched = await Promise.allSettled(missingIds.map((id) => api.getEvidence(id)));
+      if (requestEpochs.current.claim !== token) return;
       const refs = [...embedded, ...fetched.flatMap((item) => item.status === "fulfilled" ? [item.value] : [])];
       setEvidence(refs);
       const everyFetchSucceeded = fetched.every((item) => item.status === "fulfilled");
@@ -1636,6 +2011,7 @@ export default function Home() {
         void Promise.allSettled(followingClaim.evidenceRefIds.map((id) => api.getEvidence(id)));
       }
     } catch {
+      if (requestEpochs.current.claim !== token) return;
       setEvidenceState("error");
     }
   }
@@ -1646,20 +2022,22 @@ export default function Home() {
     setProject(snapshot.project);
     setEvents(snapshot.events);
     setProjectWorkflow(snapshot.plan);
-    let latestReviewSession = await api.getReviewSession(project.id);
-    if (latestReviewSession?.status === "active") {
-      const fingerprint = `review-complete:${latestReviewSession.id}`;
-      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(fingerprint, idempotencyKey);
-      latestReviewSession = await api.completeReviewSession(latestReviewSession.id, idempotencyKey);
-      mutationKeys.current.delete(fingerprint);
-    }
+    const latestReviewSession = await api.getReviewSession(project.id);
     if (latestReviewSession) setReviewSession(latestReviewSession);
-    setReviewSummaryDestination({
-      complete: snapshot.plan.phase === "complete",
-      ...(snapshot.plan.currentEventId ? { nextEventId: snapshot.plan.currentEventId } : {}),
-    });
-    setScreen("review-summary");
+    setReviewSummaryDestination(null);
+    if (snapshot.plan.phase === "complete") {
+      storeId(workflowIntentStorageKey, null);
+      setWorkflowIntentProjectId(null);
+      flash("整组沟通已经核对完成，正在打开会前速览");
+      await loadView("brief-card", project.id, "replace");
+      return;
+    }
+    if (snapshot.plan.currentEventId) {
+      await loadSimpleProject(project.id, snapshot.plan.currentEventId, "replace");
+      flash("下一次沟通已准备好，需要你点击后才会开始分析");
+      return;
+    }
+    await loadSimpleProject(project.id, event?.id, "replace");
   }
 
   async function continueAfterReviewSummary() {
@@ -1705,13 +2083,14 @@ export default function Home() {
       return;
     }
     if (snapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
-      setScreen("review");
+      setScreen("review", "replace");
       return;
     }
     await finishGuidedReview();
   }
 
   guidedTransitionAction.current = (phase) => {
+    if (!isCoreWorkflowRoute(routeRef.current)) return;
     if (phase === "waiting_scenario") {
       document.querySelector(".simple-scenario-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
@@ -1726,7 +2105,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (!project?.id || workflowIntentProjectId !== project.id) return;
+    if (!project?.id || workflowIntentProjectId !== project.id || !isCoreWorkflowRoute(routeRef.current)) return;
     const phase = projectWorkflow.phase;
     if (phase !== "waiting_scenario" && phase !== "waiting_review" && phase !== "complete") return;
     const transitionKey = `${project.id}:${projectWorkflow.currentRunId || "none"}:${phase}`;
@@ -1740,6 +2119,7 @@ export default function Home() {
     project?.id,
     projectWorkflow.currentRunId,
     projectWorkflow.phase,
+    screen,
     workflowIntentProjectId,
   ]);
 
@@ -1803,19 +2183,19 @@ export default function Home() {
       }
       flash(action === "reject" ? "已记录为不采纳" : action === "edit" ? "修改已保存并确认" : "记录已确认");
       if (!wasPending) {
-        if (action === "edit") await openClaim(updated.id);
+        if (action === "edit") await openClaim(updated.id, routeRef.current.origin, undefined, "replace");
         return;
       }
       const nextId = nextPendingClaimId(updatedClaims, reviewedClaimId);
       if (nextId) {
-        await openClaim(nextId);
+        await openClaim(nextId, "review", undefined, "replace");
         return;
       }
-      const reviewSnapshot = await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       if (!reviewSnapshot) return;
       const remainingClaim = reviewSnapshot.claims.find((item) => item.reviewStatus === "pending");
       if (remainingClaim) {
-        await openClaim(remainingClaim.id);
+        await openClaim(remainingClaim.id, "review", undefined, "replace");
         return;
       }
       if (!reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
@@ -1850,7 +2230,7 @@ export default function Home() {
       mutationKeys.current.delete(fingerprint);
       setSelectedClaim(updated);
       setClaims((items) => items.map((item) => item.id === updated.id ? updated : item));
-      setScreen("review");
+      setScreen("review", "replace");
       flash("已记录本次证据核对，可以在列表中选择批量确认");
     } catch (error) {
       setClaimsIssue(toIssue(error));
@@ -1900,9 +2280,9 @@ export default function Home() {
         await syncReviewTiming(latestProject);
       }
       flash(`已确认 ${selectedBatch.length} 条记录`);
-      const reviewSnapshot = await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const remainingClaim = reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
-      if (remainingClaim) await openClaim(remainingClaim.id);
+      if (remainingClaim) await openClaim(remainingClaim.id, "review", undefined, "replace");
       else if (reviewSnapshot && !reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
         await finishGuidedReview();
       }
@@ -1923,9 +2303,9 @@ export default function Home() {
       await api.saveOccurrenceVerdict(candidate, action, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       flash(action === "confirm" ? "已确认这次再次出现，并保存新的原始证据" : "这次再次出现未被采纳");
-      const reviewSnapshot = await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const remainingClaim = reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
-      if (remainingClaim) await openClaim(remainingClaim.id);
+      if (remainingClaim) await openClaim(remainingClaim.id, "review", undefined, "replace");
       else if (reviewSnapshot && !reviewSnapshot.occurrenceCandidates.some((item) => item.status === "pending")) {
         await finishGuidedReview();
       }
@@ -1957,10 +2337,10 @@ export default function Home() {
       const converted = await api.convertOccurrenceToClaims(candidate, newClaims, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       flash(`已生成 ${converted.length} 条待审核记录，原记录没有改动`);
-      const reviewSnapshot = await loadReviewQueue();
+      const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const firstConverted = reviewSnapshot?.claims.find((item) => converted.some((created) => created.id === item.id));
       const remainingClaim = firstConverted ?? reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
-      if (remainingClaim) await openClaim(remainingClaim.id);
+      if (remainingClaim) await openClaim(remainingClaim.id, "review", undefined, "replace");
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
@@ -2042,7 +2422,7 @@ export default function Home() {
       setProject(latestProject);
       setEvents(latestEvents);
       flash("记录关系已保存，当前结果已经重新计算");
-      await openClaim(selectedClaim.id);
+      await openClaim(selectedClaim.id, routeRef.current.origin, undefined, "replace");
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
@@ -2094,7 +2474,7 @@ export default function Home() {
         }
       }
       if (current && runInProgress.has(current.status)) {
-        await api.kickDispatcher().catch(() => undefined);
+        await api.kickDispatcher({ kind: "transcription", runId: current.id }).catch(() => undefined);
         const latest = await api.getTranscriptionRun(current.id);
         if (runInProgress.has(latest.status)) {
           setTranscriptionRun(latest);
@@ -2123,7 +2503,7 @@ export default function Home() {
     setBusyAction("run-status");
     setEventIssue(null);
     try {
-      await api.kickDispatcher().catch(() => undefined);
+      await api.kickDispatcher({ kind: "extraction", runId: run.id }).catch(() => undefined);
       const latest = await api.getRun(run.id);
       setRun(latest);
       if (runInProgress.has(latest.status)) {
@@ -2241,7 +2621,7 @@ export default function Home() {
         return;
       }
 
-      setScreen("simple");
+      navigateRoute({ view: "simple", projectId: snapshot.project.id, eventId: current.event.id }, "replace");
       setEvent(current.event);
       setEventState("ready");
       setEventIssue(null);
@@ -2251,7 +2631,7 @@ export default function Home() {
       await loadTranscriptionForEvent(current.event);
 
       if (snapshot.plan.phase === "running" && current.run) {
-        await api.kickDispatcher().catch(() => undefined);
+        await api.kickDispatcher({ kind: "extraction", runId: current.run.id }).catch(() => undefined);
         setRunPollCycle((value) => value + 1);
         flash(`继续等待第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通的处理结果`);
         return;
@@ -2387,7 +2767,8 @@ export default function Home() {
 
   function goProjects() {
     setSimpleFlow(false);
-    setScreen("projects");
+    invalidateNavigationRequests();
+    navigateRoute({ view: "projects" });
     setProject(null);
     setEvent(null);
     setSelectedClaim(null);
@@ -2496,6 +2877,118 @@ export default function Home() {
     }
   }
 
+  async function restoreAppRoute(requestedRoute: AppRoute): Promise<void> {
+    const target = normalizeAppRoute(requestedRoute);
+    if (target.view === "projects") {
+      navigateRoute(target, "none");
+      void loadProjects();
+      return;
+    }
+    if (!target.projectId) {
+      navigateRoute(target.view === "simple" ? target : { view: "simple" }, "none");
+      return;
+    }
+
+    const sameProject = project?.id === target.projectId;
+    const sameEvent = !target.eventId || event?.id === target.eventId;
+    if (sameProject && target.view === "project") {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (sameProject && sameEvent && (target.view === "simple" || target.view === "event")) {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (sameProject && target.view === "results" && viewTab === (target.tab ?? "folder-summary") && viewState !== "idle") {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (
+      sameProject
+      && target.view === "claim"
+      && selectedClaim?.id === target.claimId
+      && evidenceState !== "idle"
+    ) {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (sameProject && (target.view === "draft" || target.view === "review") && claimsState !== "idle") {
+      navigateRoute(target, "none");
+      return;
+    }
+
+    await loadSimpleProject(target.projectId, target.eventId, "none");
+    if (target.view === "simple") {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (target.view === "project" || target.view === "event") {
+      navigateRoute(target, "none");
+      return;
+    }
+    if (target.view === "results") {
+      await loadView(target.tab ?? "folder-summary", target.projectId, "none");
+      navigateRoute(target, "none");
+      return;
+    }
+    if (target.view === "draft" || target.view === "review") {
+      await loadReviewQueue(target.view, target.projectId, "none");
+      navigateRoute(target, "none");
+      return;
+    }
+    if (target.view === "claim" && target.claimId) {
+      if (target.origin === "results") {
+        await loadView(target.originTab ?? "folder-summary", target.projectId, "none");
+      } else if (target.origin === "draft" || target.origin === "review") {
+        await loadReviewQueue(target.origin, target.projectId, "none");
+      }
+      await openClaim(target.claimId, target.origin, target.projectId, "none");
+      navigateRoute(target, "none");
+      return;
+    }
+    if (target.view === "run-debug" && target.runId) {
+      await openRunDebug(target.runId, "none");
+      navigateRoute(target, "none");
+      return;
+    }
+    navigateRoute({ view: "simple", projectId: target.projectId, ...(target.eventId ? { eventId: target.eventId } : {}) }, "none");
+  }
+
+  routeRestoreAction.current = (nextRoute) => {
+    void restoreAppRoute(nextRoute);
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const previousScrollRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "auto";
+    const initialRoute = parseAppRoute(window.location.search);
+    routeRef.current = initialRoute;
+    const currentState = isRecord(window.history.state) ? window.history.state : {};
+    const currentDepth = typeof currentState.notiqueDepth === "number"
+      ? currentState.notiqueDepth
+      : 0;
+    window.history.replaceState(
+      { ...currentState, notiqueRoute: true, notiqueDepth: currentDepth },
+      "",
+      `${window.location.pathname}${serializeAppRoute(initialRoute)}${window.location.hash}`,
+    );
+    const timer = window.setTimeout(() => routeRestoreAction.current(initialRoute), 0);
+    const onPopState = () => {
+      const nextRoute = parseAppRoute(window.location.search);
+      invalidateNavigationRequests();
+      routeRef.current = nextRoute;
+      setRouteState(nextRoute);
+      routeRestoreAction.current(nextRoute);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("popstate", onPopState);
+      window.history.scrollRestoration = previousScrollRestoration;
+    };
+  }, [invalidateNavigationRequests]);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -2504,7 +2997,7 @@ export default function Home() {
         <nav aria-label="主要导航">
           <button className={screen === "simple" ? "active" : ""} onClick={goSimple}><span>◎</span>核心测试</button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects}><span>▣</span>高级工具</button>
-          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => setScreen("project")}><span>◫</span>{project.name}</button>}
+          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })}><span>◫</span>{project.name}</button>}
         </nav>
         <div className="sidebar-note"><strong>核心工作区</strong><p>按沟通顺序添加材料、分析、核对，再从确认内容生成报告。</p></div>
       </aside>
@@ -2539,10 +3032,10 @@ export default function Home() {
           onResult={() => void loadView("brief-card")}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
-        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={goProjects} onRetry={() => project && void loadProject(project.id)} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
-        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={() => project ? void loadProject(project.id) : goProjects()} onRetry={() => event && void loadEvent(event.id)} onDebug={() => run && void openRunDebug(run.id)} onStart={async () => {
+        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
+        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onStart={async () => {
           if (event) await startExtractionForEvent(event);
-        }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id)} onAttach={async (input) => {
+        }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id, "event")} onAttach={async (input) => {
           if (!event) return;
           const localIssue = photoUploadIssue(input.filename, input.contentType, input.blob.size)
             ?? audioUploadIssue(input.filename, input.contentType, input.blob.size);
@@ -2589,22 +3082,22 @@ export default function Home() {
           state={claimsState}
           issue={claimsIssue}
           busy={busyAction}
-          onBack={() => setScreen("simple")}
-          onOpenClaim={(id) => void openClaim(id)}
+          onBack={navigateBack}
+          onOpenClaim={(id) => void openClaim(id, "draft")}
           onAssessUsable={() => void recordCurrentDraftAssessment("basically_usable")}
           onStartReview={() => void startContinuousReviewFromDraft()}
           onAddMissing={() => setShowMissingClaim(true)}
         />}
-        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={() => setScreen("draft")} onRetry={() => void loadReviewQueue()} onOpen={(id) => void openClaim(id)} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} reviewClaims={claims} pendingOccurrenceCount={occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={() => setScreen(claimBackScreen)} onOpenReviewClaim={(id) => void openClaim(id)} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={navigateBack} onRetry={() => void loadReviewQueue("review", undefined, "replace")} onOpen={(id) => void openClaim(id, "review")} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={isReadonlyClaimRoute(route) ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={isReadonlyClaimRoute(route) ? [] : claims} pendingOccurrenceCount={isReadonlyClaimRoute(route) ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "review-summary" && <ReviewCompletionScreen
           project={project}
           session={reviewSession}
           destination={reviewSummaryDestination}
           onContinue={() => void continueAfterReviewSummary()}
         />}
-        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={() => setScreen(simpleFlow ? "simple" : "project")} onSelect={(tab) => void loadView(tab)} onRetry={() => void loadView(viewTab)} onOpenClaim={(id) => void openClaim(id)} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
-        {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={() => setScreen("event")} onRetry={() => run && void openRunDebug(run.id)} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} />}
+        {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={navigateBack} onRetry={() => run && void openRunDebug(run.id, "replace")} />}
       </main>
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
         setBusyAction("new-project");
@@ -2844,7 +3337,13 @@ function SimpleTestScreen({
           status: run.status,
           createdAt: run.createdAt,
           queuedAt: run.queuedAt,
+          firstQueuedAt: run.firstQueuedAt,
+          currentQueuedAt: run.currentQueuedAt,
           startedAt: run.startedAt,
+          firstStartedAt: run.firstStartedAt,
+          currentStartedAt: run.currentStartedAt,
+          processingAttemptNo: run.processingAttemptNo,
+          dispatchAttemptNo: run.dispatchAttemptNo,
           finishedAt: run.finishedAt,
           stages: run.stages,
         },
@@ -2860,7 +3359,13 @@ function SimpleTestScreen({
         status: run.status,
         createdAt: run.createdAt,
         queuedAt: run.queuedAt,
+        firstQueuedAt: run.firstQueuedAt,
+        currentQueuedAt: run.currentQueuedAt,
         startedAt: run.startedAt,
+        firstStartedAt: run.firstStartedAt,
+        currentStartedAt: run.currentStartedAt,
+        processingAttemptNo: run.processingAttemptNo,
+        dispatchAttemptNo: run.dispatchAttemptNo,
         finishedAt: run.finishedAt,
         stages: run.stages,
       }, timingNow)
@@ -2943,14 +3448,15 @@ function SimpleTestScreen({
             ))}
           </select>
         </label>
-        {events.length > 0 && (
+        {events.length > 0 && <>
           <label className="simple-event-select">
             <span>当前沟通</span>
-            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => onUseEvent(change.target.value)}>
+            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => { setActiveTab("materials"); onUseEvent(change.target.value); }}>
               {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           </label>
-        )}
+          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button>
+        </>}
         <button className="button secondary simple-new-project" disabled={Boolean(busy)} onClick={onStartOwn}>新建项目</button>
       </section>
 
@@ -3023,7 +3529,7 @@ function SimpleTestScreen({
               <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>
               {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
                 <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
-                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
+                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}{typeof item.attempt === "number" && item.attempt > 0 && !item.label.includes("第 ") ? ` · 第 ${item.attempt} 次` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
               </div>}
               <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? onResult : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>
             </section>}
@@ -3074,11 +3580,11 @@ function SimpleTestScreen({
   );
 }
 
-function PageHeader({ eyebrow, title, body, back, actions }: { eyebrow?: string; title: string; body?: string; back?: () => void; actions?: ReactNode }) {
+function PageHeader({ eyebrow, title, body, back, backLabel = "返回", actions }: { eyebrow?: string; title: string; body?: string; back?: () => void; backLabel?: string; actions?: ReactNode }) {
   return (
     <header className="page-header">
       <div className="page-title-row">
-        {back && <button className="back-button" onClick={back} aria-label="返回">‹</button>}
+        {back && <button className="back-button" onClick={back} aria-label={backLabel}><span aria-hidden="true">‹</span><span>{backLabel}</span></button>}
         <div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{body && <p>{body}</p>}</div>
       </div>
       {actions && <div className="header-actions">{actions}</div>}
@@ -3110,12 +3616,12 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
   const [scenario, setScenario] = useState("");
   const [custom, setCustom] = useState("");
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取 Project…" /></div>;
-  if (state === "error" || !project) return <div className="page"><PageHeader title="Project" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
+  if (state === "error" || !project) return <div className="page"><PageHeader title="Project" back={onBack} backLabel="返回项目列表" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const pendingReviewCount = project.pendingClaimCount + project.pendingOccurrenceCount;
   const needsScenario = project.scenarioStatus === "pending_confirmation" || Boolean(project.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
   return (
     <div className="page">
-      <PageHeader eyebrow="Project" title={project.name} body={`${events.length} 次沟通 · ${statusLabel(project.scenarioStatus)}`} back={onBack} actions={<><button className="button secondary" onClick={onNewEvent}>新增沟通</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
+      <PageHeader eyebrow="Project" title={project.name} body={`${events.length} 次沟通 · ${statusLabel(project.scenarioStatus)}`} back={onBack} backLabel="返回项目列表" actions={<><button className="button secondary" onClick={onNewEvent}>新增沟通</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} compact />}
       {needsScenario && <section className="scenario-panel">
         <div><span className="section-kicker">需要你确认</span><h2>这组材料属于哪种工作场景？</h2><p>场景只在第一份材料后确认一次。后续沟通会沿用，不会重复猜。</p></div>
@@ -3310,7 +3816,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取这次沟通…" /></div>;
-  if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
+  if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} backLabel="返回项目" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const readyAssets = event.assets.filter(assetIsAnalyzable);
   const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
   const audioAssets = event.assets.filter((asset) => asset.kind === "audio");
@@ -3322,7 +3828,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
       : onRetry;
   return (
     <div className="page">
-      <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
+      <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} backLabel="返回项目" actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
       {issue && <ErrorNotice issue={issue} onRetry={retryIssue} />}
       {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "质量门仍有提醒，请在审核区重点核对事实与关系。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
@@ -3364,8 +3870,8 @@ function DebugField({ label, value, mono = false }: { label: string; value: unkn
 }
 
 function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: AsyncState; issue: ApiIssue | null; debug: RunDebug | null; onBack: () => void; onRetry: () => void }) {
-  if (state === "loading") return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} /><LoadingBlock label="正在读取服务器中的运行记录…" /></div>;
-  if (state === "error" || !debug) return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} />{issue ? <ErrorNotice issue={issue} onRetry={onRetry} /> : <EmptyState title="没有运行详情" body="服务器没有返回这次运行的数据。" />}</div>;
+  if (state === "loading") return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回本次沟通" /><LoadingBlock label="正在读取服务器中的运行记录…" /></div>;
+  if (state === "error" || !debug) return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回本次沟通" />{issue ? <ErrorNotice issue={issue} onRetry={onRetry} /> : <EmptyState title="没有运行详情" body="服务器没有返回这次运行的数据。" />}</div>;
   const data = debug.data;
   const manifest = recordArray(data.input_manifest);
   const modelParams = isRecord(data.model_params) ? data.model_params : {};
@@ -3385,7 +3891,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
   const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
   return (
     <div className="page debug-page">
-      <PageHeader eyebrow="内部页" title="本次运行详情" body="用于核对模型、输入、验证结果和成本。这里不影响正式结果。" back={onBack} actions={<StatusBadge value={stringValue(data.status)} />} />
+      <PageHeader eyebrow="内部页" title="本次运行详情" body="用于核对模型、输入、验证结果和成本。这里不影响正式结果。" back={onBack} backLabel="返回本次沟通" actions={<StatusBadge value={stringValue(data.status)} />} />
       <section className="debug-request"><span>本次页面请求 ID</span><code>{debug.requestId}</code></section>
       <div className="debug-grid">
         <section className="panel debug-section"><div className="section-heading"><div><h2>模型与执行参数</h2><p>这些值从本次 Run 保存的配置读取，不使用当前环境变量补齐。</p></div></div><div className="debug-fields"><DebugField label="Provider" value={data.provider} /><DebugField label="Model" value={data.model} /><DebugField label="Reasoning effort" value={reasoningEffort ?? "未冻结"} mono /><DebugField label="最大输出 token" value={maxOutputTokens ? `${maxOutputTokens} tokens` : "未冻结"} /><DebugField label="请求超时" value={timeoutMs ? `${timeoutMs} ms` : "未冻结"} /><DebugField label="Prompt" value={data.prompt_version} mono /><DebugField label="Schema" value={data.schema_version} mono /><DebugField label="Parser" value={data.parser_version} mono /><DebugField label="Provider Request ID" value={data.provider_request_id} mono /></div>{missingFrozenParameters.length > 0 && <p className="debug-config-warning" role="alert">这次 Run 没有完整冻结执行参数：{missingFrozenParameters.join("、")}。调试时不能用当前环境配置代替这次运行的实际值。</p>}</section>
@@ -3506,10 +4012,30 @@ function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment,
     ? claims.filter((claim) => claim.runId === runId)
     : claims.filter((claim) => claim.reviewStatus === "pending");
   const runOccurrences = occurrenceCandidates.filter((candidate) => !runId || candidate.extraction_run_id === runId);
-  const grouped = groupAiDraftClaims(runClaims);
+  const claimById = new Map(runClaims.map((claim) => [claim.id, claim]));
+  const summaryItems = [...buildAiDraftSummary(runClaims)].sort((left, right) => {
+    if (left.timestampStart !== null && right.timestampStart !== null) return left.timestampStart - right.timestampStart;
+    if (left.timestampStart !== null) return -1;
+    if (right.timestampStart !== null) return 1;
+    return left.claimId.localeCompare(right.claimId);
+  });
   const proposedRelationCount = runClaims.reduce((total, claim) => total + claim.relationsForReview.filter((relation) => relation.status === "proposed").length, 0);
-  const sectionEntries = Object.entries(grouped) as Array<[keyof typeof aiDraftSectionLabels, Claim[]]>;
-  return <div className="page ai-draft-page"><PageHeader eyebrow={event?.title || "本次沟通"} title="AI 会议信息初稿" body="先看 AI 对整场沟通的理解，再决定从哪里开始核对。初稿不会自动进入正式报告或后续记忆。" back={onBack} actions={<span className="status-badge pending">待人工核对</span>} />{issue && <ErrorNotice issue={issue} compact />}{state === "loading" ? <LoadingBlock label="正在整理已经生成的 AI 初稿…" /> : <><section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>只有逐条核对并确认后，内容才会进入事项概况、后续沟通上下文和会前速览。</p></div></section><div className="draft-sections">{sectionEntries.filter(([, items]) => items.length > 0).map(([key, items]) => <section className="panel draft-section" key={key}><header><h2>{aiDraftSectionLabels[key]}</h2><span>{items.length}</span></header><div>{items.map((claim) => <article key={claim.id} className={claim.source === "human" ? "human-added" : ""}><div><span className="claim-type">{claim.source === "human" ? "人工补充" : typeLabel(claim.type)}</span>{claim.needsAdditionalEvidence && <span className="status-badge neutral">需补证据</span>}{claim.relationsForReview.some((relation) => relation.status === "proposed") && <span className="status-badge warning">需判断关系</span>}</div><p>{claim.statement}</p><button className="text-button" onClick={() => onOpenClaim(claim.id)}>查看原文与核对</button></article>)}</div></section>)}{runOccurrences.length > 0 && <section className="panel draft-section"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}</div>{runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}<section className="draft-actions panel"><div><h2>你对这份初稿的第一感觉</h2><p>这个选择只用于评估 AI 第一版是否有用，不等于确认其中的事实。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>开始核对和修正</button></div></section></>}</div>;
+  return (
+    <div className="page ai-draft-page">
+      <PageHeader eyebrow={event?.title || "本次沟通"} title="AI 会议信息初稿" body="按对话发生顺序先看 AI 抓到的重点。点击任意一条即可回到原句核对；初稿不会自动进入正式报告。" back={onBack} backLabel="返回核心工作台" actions={<span className="status-badge pending">待人工核对</span>} />
+      {issue && <ErrorNotice issue={issue} compact />}
+      {state === "loading" ? <LoadingBlock label="正在整理已经生成的 AI 初稿…" /> : <>
+        <section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>只有逐条核对并确认后，内容才会进入事项概况、后续沟通上下文和会前速览。</p></div></section>
+        {summaryItems.length > 0 && <section className="panel draft-summary"><header><div><span className="section-kicker">会议重点</span><h2>沿着原对话快速核对</h2></div><span>{summaryItems.length} 条</span></header><ol>{summaryItems.map((item, index) => {
+          const claim = claimById.get(item.claimId);
+          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{item.speaker}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并核对含义 ›</u></span></span></button></li>;
+        })}</ol></section>}
+        {runOccurrences.length > 0 && <section className="panel draft-section draft-occurrences"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}
+        {runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}
+        <section className="draft-actions panel"><div><h2>你对这份初稿的第一感觉</h2><p>这个选择只用于评估 AI 第一版是否有用，不等于确认其中的事实。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>开始核对和修正</button></div></section>
+      </>}
+    </div>
+  );
 }
 
 function MissingClaimModal({ eventId, busy, onClose, onCreate }: { eventId: string; busy: boolean; onClose: () => void; onCreate: (input: { statement: string; type: string; segmentIds: string[] }) => Promise<void> }) {
@@ -3547,7 +4073,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
     : 0;
   return (
     <div className="page narrow-page">
-      <PageHeader eyebrow="Review Queue" title="审核候选记录" body="逐条核对陈述和证据。打开一条记录并明确标记已核对后，才能把它加入批量确认。" back={onBack} actions={batchCount > 0 && <button className="button primary" disabled={Boolean(busy)} onClick={onBatch}>{busy === "batch" ? "正在确认…" : `确认所选 ${batchCount} 条`}</button>} />
+      <PageHeader eyebrow="Review Queue" title="审核候选记录" body="逐条核对陈述和证据。打开一条记录并明确标记已核对后，才能把它加入批量确认。" back={onBack} backLabel="返回 AI 初稿" actions={batchCount > 0 && <button className="button primary" disabled={Boolean(busy)} onClick={onBatch}>{busy === "batch" ? "正在确认…" : `确认所选 ${batchCount} 条`}</button>} />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
       {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">真实审核计时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本次审核已完成" : "本次计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
@@ -3564,45 +4090,48 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
 }
 
 function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
-  const [context, setContext] = useState<TranscriptSegment[] | null>(null);
+  const [context, setContext] = useState<EvidenceContext | null>(null);
   const [contextIssue, setContextIssue] = useState<ApiIssue | null>(null);
-  const [contextLoading, setContextLoading] = useState(false);
-  const audioStart = typeof evidence.timestampStart === "number"
-    ? evidence.timestampStart
-    : undefined;
-  const audioEnd = typeof evidence.timestampEnd === "number"
-    ? evidence.timestampEnd
-    : undefined;
-  const audioSource = evidence.audioUrl
-    ? `${evidence.audioUrl}${audioStart == null ? "" : `#t=${Math.max(0, audioStart)},${audioEnd == null ? "" : Math.max(audioStart, audioEnd)}`}`
-    : undefined;
-  async function loadContext() {
-    if (!evidence.eventId || !evidence.segmentIds.length || contextLoading) return;
-    setContextLoading(true);
-    setContextIssue(null);
-    try {
-      const allSegments = await api.listEventTranscriptSegments(evidence.eventId);
-      const selectedIndexes = allSegments.flatMap((segment, index) => evidence.segmentIds.includes(segment.id) ? [index] : []);
-      const contextIndexes = new Set(selectedIndexes.flatMap((index) => [index - 1, index, index + 1]).filter((index) => index >= 0 && index < allSegments.length));
-      setContext(allSegments.filter((_, index) => contextIndexes.has(index)));
-    } catch (error) {
-      setContextIssue(toIssue(error));
-    } finally {
-      setContextLoading(false);
-    }
-  }
+  const [contextLoading, setContextLoading] = useState(true);
+  const [contextAttempt, setContextAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    void api.getEvidenceContext(evidence.id).then((result) => {
+      if (active) setContext(result);
+    }).catch((error) => {
+      if (active) setContextIssue(toIssue(error));
+    }).finally(() => {
+      if (active) setContextLoading(false);
+    });
+    return () => { active = false; };
+  }, [contextAttempt, evidence.id]);
+  const audioStartSeconds = context?.audio?.start_ms != null
+    ? Math.max(0, context.audio.start_ms / 1000)
+    : typeof evidence.timestampStart === "number"
+      ? Math.max(0, evidence.timestampStart)
+      : undefined;
+  const audioUrl = context?.audio?.view_url || evidence.audioUrl;
+  const audioSource = audioUrl ? `${audioUrl}${audioStartSeconds == null ? "" : `#t=${audioStartSeconds}`}` : undefined;
+  const quote = context?.target.quote_raw || evidence.quote;
+  const beforeSegments = context?.context.before ?? [];
+  const targetSegments = context?.context.target ?? [];
+  const afterSegments = context?.context.after ?? [];
+  const renderSegmentText = (text: string) => highlightExactPhrase(text, quote).map((part, index) => part.highlighted
+    ? <mark key={`${part.text}:${index}`}>{part.text}</mark>
+    : <span key={`${part.text}:${index}`}>{part.text}</span>);
+  const renderContextSegment = (segment: EvidenceContext["context"]["target"][number], target = false) => <p key={segment.id} className={target ? "selected target" : "surrounding"}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{segment.speaker || "说话人未标注"}</b><span>{renderSegmentText(segment.text)}</span></p>;
   return (
     <article className="evidence-card">
-      <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${evidence.role} evidence · ` : ""}{formatTimestamp(evidence.timestampStart)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
+      <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{context?.filename || evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${typeLabel(evidence.role)}证据 · ` : ""}{formatTimestamp(context?.target.start_ms == null ? evidence.timestampStart : context.target.start_ms / 1000)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
       {/* Evidence URLs can be short-lived signed URLs and cannot use the build-time image loader. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {evidence.imageUrl && <img src={evidence.imageUrl} alt={evidence.caption || "原始图片证据"} />}
-      {audioSource && <div className="evidence-audio"><audio controls preload="metadata" src={audioSource} /><small>播放会从这句原文附近开始。逐字稿和时间点由服务器保存，可随时回到原录音核对。</small></div>}
-      {evidence.viewUrl && !evidence.imageUrl && <a className="evidence-open" href={evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
-      {evidence.quote && <blockquote>“{evidence.quote}”</blockquote>}
-      {evidence.eventId && evidence.segmentIds.length > 0 && <button className="text-button" disabled={contextLoading} onClick={() => context ? setContext(null) : void loadContext()}>{contextLoading ? "正在读取前后原文…" : context ? "收起前后原文" : "查看这句话前后的原文"}</button>}
-      {contextIssue && <ErrorNotice issue={contextIssue} compact />}
-      {context && <div className="evidence-context">{context.map((segment) => <p key={segment.id} className={evidence.segmentIds.includes(segment.id) ? "selected" : ""}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{segment.speaker || "说话人未标注"}</b><span>{segment.text}</span></p>)}</div>}
+      {audioSource && <div className="evidence-audio"><audio controls preload="metadata" src={audioSource} /><small>播放会从目标原句前约 3 秒开始，方便直接听前后语气。</small></div>}
+      {(context?.asset_view_url || evidence.viewUrl) && !evidence.imageUrl && <a className="evidence-open" href={context?.asset_view_url || evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
+      {quote && <blockquote className="evidence-target-quote">“{quote}”</blockquote>}
+      {contextLoading && <p className="evidence-context-loading">正在定位目标原句和前后文…</p>}
+      {contextIssue && <ErrorNotice issue={contextIssue} onRetry={() => { setContextLoading(true); setContextIssue(null); setContextAttempt((value) => value + 1); }} compact />}
+      {context && (beforeSegments.length > 0 || targetSegments.length > 0 || afterSegments.length > 0) && <div className="evidence-context" aria-label="目标原句的前后文">{beforeSegments.map((segment) => renderContextSegment(segment))}{targetSegments.map((segment) => renderContextSegment(segment, true))}{afterSegments.map((segment) => renderContextSegment(segment))}</div>}
       {evidence.caption && evidence.caption !== evidence.quote && <p>{evidence.caption}</p>}
       {!evidence.quote && !evidence.imageUrl && !evidence.caption && <p className="muted">这条证据已记录，但服务器没有返回可在页面预览的内容。</p>}
     </article>
@@ -3632,7 +4161,7 @@ function relationReviewEffect(type: string): string {
   return "接受后，两条记录会保留参考关系，不改变旧记录状态。";
 }
 
-function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, evidence, evidenceState, issue, busy, onBack, onOpenReviewClaim, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; reviewClaims: Claim[]; pendingOccurrenceCount: number; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenReviewClaim: (id: string) => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
+function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingOccurrenceCount, evidence, evidenceState, issue, busy, onBack, onOpenReviewClaim, onVerdict, onBatchReviewAttest, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; mode: "review" | "readonly"; backLabel: string; reviewClaims: Claim[]; pendingOccurrenceCount: number; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenReviewClaim: (id: string) => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onBatchReviewAttest: () => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
   const [edit, setEdit] = useState(false);
   const [statement, setStatement] = useState(claim?.statement ?? "");
   const [claimType, setClaimType] = useState(claim?.type ?? "other");
@@ -3658,7 +4187,8 @@ function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, e
   const [relationType, setRelationType] = useState<RelationType>("resolves");
   const [relationTargetVersionId, setRelationTargetVersionId] = useState("");
   const [relationReason, setRelationReason] = useState("");
-  if (!claim) return <div className="page narrow-page"><PageHeader title="记录" back={onBack} /><EmptyState title="没有找到这条记录" body="它可能已经更新。返回审核区重新打开。" /></div>;
+  if (!claim) return <div className="page narrow-page"><PageHeader title="记录" back={onBack} backLabel={backLabel} /><EmptyState title="没有找到这条记录" body="它可能已经更新，请返回来源页面重新打开。" /></div>;
+  const readonly = mode === "readonly";
   const pending = claim.reviewStatus === "pending";
   const verified = claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn";
   const activeRelations = claim.relationsForReview.filter((relation) => relation.status === "active");
@@ -3668,7 +4198,7 @@ function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, e
     .filter((relation) => relationDecisions[relation.id] === "accept")
     .map((relation) => relation.id);
   const evidenceReady = evidenceState === "ready";
-  const reviewQueue = reviewClaims.filter((item) => item.reviewStatus === "pending");
+  const reviewQueue = readonly ? [] : reviewClaims.filter((item) => item.reviewStatus === "pending");
   const reviewPosition = Math.max(0, reviewQueue.findIndex((item) => item.id === claim.id)) + 1;
   const editHasSupportingEvidence = evidence.some(
     (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
@@ -3735,12 +4265,12 @@ function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, e
   });
   return (
     <div className="page review-detail-page">
-      <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
+      <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending && !readonly ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} backLabel={backLabel} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
         {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续审核队列"><header><span className="section-kicker">连续审核</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>Claim 处理完后，还有 {pendingOccurrenceCount} 条“再次出现”记录需要决定。</p>}</aside>}
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>确认前，请检查原文是否真的支持这条陈述。</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
-        <aside className="panel verdict-panel"><h2>{edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{(pending || (verified && edit)) && <>
+        <aside className="panel verdict-panel"><h2>{readonly ? "已确认记录" : edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读证据模式</strong><p>你从已确认结果进入了这条记录。这里仅用于查看原文，不会显示待审核队列或修改操作。</p></div>}{!readonly && (pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
             <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
             <label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
@@ -3774,19 +4304,19 @@ function ClaimScreen({ projectId, claim, reviewClaims, pendingOccurrenceCount, e
             <label className="field"><span>拒绝原因，可选</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
             <button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", reason.trim())}>不采纳这条记录</button>
           </div>}
-        </>}{verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或风险</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
+        </>}{!readonly && verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或风险</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
       </div>
     </div>
   );
 }
 
-function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDurationMs, onBack, onSelect, onRetry, onOpenClaim, onResolveContradiction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; loadDurationMs: number | null; onBack: () => void; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void }) {
+function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDurationMs, onBack, backLabel, onSelect, onRetry, onOpenClaim, onResolveContradiction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; loadDurationMs: number | null; onBack: () => void; backLabel: string; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void }) {
   const current = resultTabs.find((item) => item.key === tab)!;
   const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
   const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="已确认结果" body="这些页面只读取已确认且仍有效的记录。撤回内容只保留在历史时间线。" back={onBack} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
+      <PageHeader eyebrow={project?.name} title="已确认结果" body="这些页面只读取已确认且仍有效的记录。撤回内容只保留在历史时间线。" back={onBack} backLabel={backLabel} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav">{resultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</aside><section className="result-content"><div className="section-heading"><div><span className="section-kicker">Verified only</span><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}{state === "ready" && <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} busyAction={busy} />}</section></div>
     </div>

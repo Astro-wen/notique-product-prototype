@@ -88,6 +88,19 @@ export type ModelStageRequestOptions = {
   idempotencyKey?: string;
   promptCacheKey?: string;
   qualityFeedback?: string[];
+  /**
+   * A previously-created OpenAI background Response. When present, the
+   * provider retrieves this Response instead of creating another one.
+   */
+  resumeProviderResponseId?: string;
+  /**
+   * Called as soon as OpenAI returns a durable Response ID, before a queued or
+   * in-progress result is yielded back to the job runner.
+   */
+  onProviderResponse?: (response: {
+    id: string;
+    status: string;
+  }) => Promise<void>;
 };
 
 export type FinalExtractClaimsOutput = Omit<ExtractClaimsOutput, "schema_version"> & {

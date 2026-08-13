@@ -9,6 +9,12 @@ export type DraftClaimLike = {
   relationsForReview?: Array<{ status: string }>;
   confidence?: number;
   createdAt?: string;
+  evidenceRefs?: Array<{
+    id: string;
+    quote?: string;
+    speaker?: string;
+    timestampStart?: string | number;
+  }>;
 };
 
 export type AiDraftSectionKey =
@@ -62,4 +68,71 @@ export function groupAiDraftClaims<T extends DraftClaimLike>(claims: T[]): Recor
   };
   for (const claim of claims) result[aiDraftSectionForClaim(claim)].push(claim);
   return result;
+}
+
+export type AiDraftSummaryItem = {
+  claimId: string;
+  section: AiDraftSectionKey;
+  statement: string;
+  reviewStatus: string;
+  evidenceId: string | null;
+  quote: string | null;
+  speaker: string | null;
+  timestampStart: number | null;
+};
+
+const draftSectionOrder: AiDraftSectionKey[] = [
+  "decisions",
+  "money_dates_owners",
+  "preferences",
+  "open_questions",
+  "risks",
+  "other",
+];
+
+function numericTimestamp(value: string | number | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parts = value.split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  if (parts.length === 2) return (parts[0] * 60 + parts[1]) * 1_000;
+  if (parts.length === 3) return (parts[0] * 3_600 + parts[1] * 60 + parts[2]) * 1_000;
+  return null;
+}
+
+/**
+ * Builds the readable AI-first summary from already validated Agent B claims.
+ * This is presentation-only: it never merges claims or creates new statements.
+ */
+export function buildAiDraftSummary<T extends DraftClaimLike>(claims: T[]): AiDraftSummaryItem[] {
+  return claims
+    .map((claim) => {
+      const evidence = claim.evidenceRefs?.find((item) => Boolean(item.quote)) ?? claim.evidenceRefs?.[0];
+      return {
+        claimId: claim.id,
+        section: aiDraftSectionForClaim(claim),
+        statement: claim.statement,
+        reviewStatus: claim.reviewStatus,
+        evidenceId: evidence?.id ?? null,
+        quote: evidence?.quote?.trim() || null,
+        speaker: evidence?.speaker?.trim() || null,
+        timestampStart: numericTimestamp(evidence?.timestampStart),
+      } satisfies AiDraftSummaryItem;
+    })
+    .sort((left, right) => {
+      const leftSection = draftSectionOrder.indexOf(left.section);
+      const rightSection = draftSectionOrder.indexOf(right.section);
+      if (leftSection !== rightSection) return leftSection - rightSection;
+      if (left.timestampStart !== null && right.timestampStart !== null) {
+        const timeDifference = left.timestampStart - right.timestampStart;
+        if (timeDifference) return timeDifference;
+      } else if (left.timestampStart !== null) {
+        return -1;
+      } else if (right.timestampStart !== null) {
+        return 1;
+      }
+      return left.claimId.localeCompare(right.claimId);
+    });
 }

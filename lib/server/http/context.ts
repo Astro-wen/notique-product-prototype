@@ -39,18 +39,29 @@ export async function getRequestScope(request: Request): Promise<RequestScope> {
   }
 
   const workspaceId = bindings.INTERNAL_WORKSPACE_ID || "ws_internal";
-  const workspaceName = bindings.INTERNAL_WORKSPACE_NAME || "Notique Internal";
   const actorId = email || "local@notique.test";
-  const now = new Date().toISOString();
 
+  return { workspaceId, actorId };
+}
+
+/**
+ * Ensure the authenticated workspace exists before a state-changing request.
+ *
+ * Authentication and workspace initialization used to be coupled, which made
+ * every GET/poll write `workspaces.updated_at`. Keeping this explicit lets
+ * ordinary reads remain side-effect free while preserving foreign-key safety
+ * for the first mutation in a newly provisioned workspace.
+ */
+export async function initializeRequestWorkspace(scope: RequestScope): Promise<void> {
+  const bindings = getBindings();
+  const workspaceName = bindings.INTERNAL_WORKSPACE_NAME || "Notique Internal";
+  const timestamp = new Date().toISOString();
   await getD1()
     .prepare(
       `INSERT INTO workspaces (id, name, created_at, updated_at)
        VALUES (?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+       ON CONFLICT(id) DO NOTHING`,
     )
-    .bind(workspaceId, workspaceName, now, now)
+    .bind(scope.workspaceId, workspaceName, timestamp, timestamp)
     .run();
-
-  return { workspaceId, actorId };
 }

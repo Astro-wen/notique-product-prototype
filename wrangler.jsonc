@@ -8,6 +8,6 @@
     "AUTH_GATEWAY": "chatgpt"
   },
   "triggers": {
-    "crons": ["*/2 * * * *"]
+    "crons": ["* * * * *"]
   }
 }

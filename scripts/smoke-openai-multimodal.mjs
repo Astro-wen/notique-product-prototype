@@ -43,7 +43,7 @@ function extractOutputText(response) {
 const env = parseEnv(await readFile(envPath, "utf8"));
 const apiKey = env.AI_API_KEY;
 const model = env.AI_MODEL || "gpt-5.6-luna";
-const reasoningEffort = env.AI_REASONING_EFFORT || "max";
+const reasoningEffort = env.AI_REASONING_EFFORT || "xhigh";
 
 if (!apiKey || apiKey.includes("PASTE_")) {
   throw new Error("AI_API_KEY is not configured in .dev.vars");

@@ -106,8 +106,20 @@ export function validateDiarizedTranscriptOutput(
   if (!Array.isArray(source.segments) || source.segments.length < 1 || source.segments.length > 10_000) {
     throw new Error("Transcription response must contain 1 to 10,000 speaker segments.");
   }
+  // The diarized provider can emit a timed placeholder with an empty text
+  // value around silence or a chunk boundary. It carries no transcript fact,
+  // so discard only that exact case while keeping every non-empty segment
+  // subject to the strict speaker, timing, and size checks below.
+  const contentSegments = source.segments.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return true;
+    const text = (item as Record<string, unknown>).text;
+    return typeof text !== "string" || Boolean(text.trim());
+  });
+  if (contentSegments.length < 1) {
+    throw new Error("Transcription response did not contain any spoken text.");
+  }
   let totalCharacters = 0;
-  const segments = source.segments.map((item, index): DiarizedTranscriptSegment & { sourceIndex: number } => {
+  const segments = contentSegments.map((item, index): DiarizedTranscriptSegment & { sourceIndex: number } => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new Error(`segments[${index}] must be an object.`);
     }

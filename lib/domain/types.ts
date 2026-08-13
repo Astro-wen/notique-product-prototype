@@ -128,6 +128,37 @@ export type ClaimRelation = {
   createdAt: string;
 };
 
+/**
+ * The compact, structurally-valid Evidence shape needed by deterministic
+ * project views. It deliberately excludes stored files and full transcripts.
+ */
+export type VerifiedEvidenceRef = {
+  id: string;
+  projectId: string;
+  eventId: string;
+  claimVersionId: string;
+  kind: "transcript" | "text" | "photo" | "document" | "user_note";
+  assetVersionId: string | null;
+  segmentIds: string[];
+  quoteRaw: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  observation: string | null;
+  evidenceRole: EvidenceRole;
+  speakers: string[];
+};
+
+/** A human-confirmed recurrence of an already verified Claim. */
+export type ClaimOccurrenceRecord = {
+  id: string;
+  claimId: string;
+  claimVersionId: string;
+  eventId: string;
+  evidenceRefId: string;
+  confirmedAt: string;
+  createdAt: string;
+};
+
 export type WithdrawRecord = {
   id: string;
   claimId: string;
@@ -158,6 +189,10 @@ export type ProjectLedger = {
   relations: ClaimRelation[];
   withdraws: WithdrawRecord[];
   events: EventRecord[];
+  /** Optional for backward-compatible pure-domain fixtures. */
+  evidenceRefs?: VerifiedEvidenceRef[];
+  /** Only confirmed occurrences are loaded into the verified Ledger. */
+  occurrences?: ClaimOccurrenceRecord[];
 };
 
 export type ApiErrorCode =

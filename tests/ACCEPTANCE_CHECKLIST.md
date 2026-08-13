@@ -137,14 +137,14 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 214 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、阶段恢复与分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、引导式状态恢复、AI 初稿、遗漏补充、风险优先审核、连续审核导航、生产 Bundle 和发布包密钥扫描。
+- `npm test` 通过，合计 250 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、生产 Bundle 和发布包密钥扫描。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
 - 四个资源创建接口均要求 `Idempotency-Key`。Project、Event、Transcript Import 和 Asset Init 会把 Request Hash 与 Response 一起写入 D1。同 Key 同 Body 返回原结果，同 Key 异 Body 返回 409。
 - Transcript Item 上传通过 `pending` 到 `uploaded` 的条件更新决定唯一赢家。Finalize 后同内容可重放，不同内容返回 409，上传路径没有把 `finalized` 改回 `uploaded` 的 SQL。
 - Outbox 遇到已持久化的 Terminal Failed Run 会确认消息，避免重复调用模型。遇到 `lease_not_acquired` 会先重读 Run；Run 仍是 Queued 或不存在时保留重试，只有 Processing 或 Terminal 状态才确认消息。
-- 生产 Worker 配置包含 `*/2 * * * *` 的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
+- 生产 Worker 配置包含每分钟一次的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
 - 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
 - 最小测试页支持从空白状态直接上传录音。系统会先建立 Project 和第一次 Event，再保存音频并启动转写，不再要求用户先上传 Transcript。转写启动失败时，错误不会被随后的页面刷新覆盖，已上传的音频也不会丢失。失败或长时间停留的任务可以重新检查或重新转写；轮询次数按同一个 Run 累积，不会因页面重复渲染不断归零。成功后既保留简短预览，也可打开包含全部说话人、原文和时间点的完整逐字稿。
 - 核心页已重新排布为“沟通列表 + 当前沟通”工作区。当前项目和当前沟通持续显示；材料、Transcript、待核对和结果放在同一条标签导航中；技术调试继续保留在高级工具。桌面端使用左右布局，手机端把沟通列表变为顶部横向选择区。390px 视口实测没有横向溢出。
@@ -162,16 +162,69 @@
 - Sites v15 已用现有待核对 Project 验证 AI 初稿入口。页面正确显示八条按主题分组的候选、风险与补证据区、三种人工动作和“初稿不会进入正式结果”的边界；没有浏览器错误，也没有创建新 Run。此次功能发布包对应提交 `8ab5acf`，不含本地环境或凭据文件。
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
-- 派生 Transcript 已继续通过 production extraction path 调用 `gpt-5.6-luna`、`reasoning=max` 和 Prompt v5。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这证明音频作为产品入口的工程闭环，不证明现场收音品质。
+- 早期派生 Transcript 曾通过 production extraction path 完成过一次旧 Prompt 单阶段验证。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这只证明音频入口的早期工程闭环；当前生产合同已经统一为 Agent A Luna `xhigh`、Agent B Luna `high`，旧 Run 不作为当前质量证据。
 - 当前代码已锁定 `claim-extraction-prompt.v8.2` 和 `claim-extraction.v3`。Agent A 最多盘点 24 条内部原子事实，Agent B 必须逐条说明 `included / merged / duplicate / unsupported / lower_priority`，最终仍最多 10 条。关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 会确定性触发 xhigh 加强复核。旧 Prompt 或旧 Schema 的排队任务会在调用模型前失败。v8.2 没有降低 xhigh/high 质量设置，只把共有证据上下文放到稳定前缀并使用同一缓存标识；Prompt v8.1 的质量结果继续作为历史基线，v8.2 尚待同样本付费复测。
 - 当前执行强度只允许 Agent A 使用 Luna `xhigh`、Agent B 使用 Luna `high`，升级复核使用 `xhigh`。`max` 已从可接受配置中移除；缺失或误填的第一轮配置回到 `xhigh`，第二轮回到 `high`。连续十分钟没有完成记录的模型阶段会触发恢复检查；旧 `max` Run 不会被原地复用，避免以错误配置继续消耗时间。
 - 已确认、仍处于 Active 状态且带结构化歧义的 Claim 会进入 Agenda，并显示追问、原因和候选答案。Pending 歧义不会进入 Agenda。普通 Open Question、未解决矛盾和 Scenario Gap 仍按各自来源生成，结果页不从原始 Transcript 临时补内容。
 - 三个合成场景已确定性合并为一个 Transcript-only 开发包，共 3 个 Scenario、11 个 Event。每个 Event 固定有 5 到 10 条 material Ground Truth。原始 Contractor 压力样本每个 Event 分别有 15、15、17 条 material Ground Truth，超过十条模型输出上限，理论最高 Recall 只有 66.7%、66.7% 和 58.8%，不能直接用于正式 80% Recall 判定。合并脚本使用提交在代码中的固定 `single-author-review-priority-v1` 投影，在看到模型结果前为 Contractor 三个 Event 各选定 10 条审核重点，并记录源文件哈希和所选 ID。这个开发包仍是单人标注，`sample_eligible=false`。
 - GitHub Pages 构建只生成跳转页，指向完整 Sites 应用，避免把静态页面伪装成可处理上传和分析请求的全栈产品。ChatGPT Sites 已作为公开的全栈测试入口，上传、转写、分析、审核和报告仍要在 Sites 完成，不能直接在 GitHub Pages 静态文件里运行。
 
+## 本轮 MVP 修复与 Eric 要求对齐
+
+下面把“代码和合同已经完成”与“正式站已经实测”分开。前者可以由源码和自动测试证明；后者必须等新版本发布后由真实浏览器完成，不能因为本地实现存在就提前勾选。
+
+### 导航和阅读模式
+
+- [x] 页面地址可以表达当前 Project、Event、View、Claim、报告栏目和进入来源；刷新可以据此恢复，而不是只依赖多个 React 状态猜页面。
+- [x] 时间线、AI 初稿、审核列表和 Run Debug 打开深层内容时带明确返回目标。没有来源的深层链接回所属沟通，不随机猜测。
+- [x] 页面箭头使用明确文案，例如“返回时间线”和“返回审核列表”；浏览器返回与页面箭头使用同一导航合同。
+- [x] 自动工作流只在核心工作台触发；用户阅读 Claim、Evidence 或结果时，不会被异步阶段变化抢走页面。
+- [x] 报告中的 Verified Claim 使用只读阅读模式，不再显示无关的 Pending 连续审核队列。
+- [x] 页面请求带版本或取消边界，用户切换 Project 后，旧 Project 的迟到响应不能覆盖新页面。
+- [ ] 新 Sites 版本实测“时间线 → Evidence → 返回时间线”，并恢复原滚动位置。
+- [ ] 新 Sites 版本实测“审核列表 → Claim → 返回相同列表和游标”、浏览器返回和刷新恢复。
+
+### 后台调度、计时和请求数量
+
+- [x] 新建 extraction Run 后可以用定向 dispatch 启动当前 `run_id`，接口立即返回 `202 Accepted`，不再从全局旧任务中任意领取一条。
+- [x] 同一 Run 的重复唤醒保持幂等；15 秒未领取时重新唤醒原 Run，不能创建第二个付费 Run。
+- [x] 音频转写与事实识别可以按任务类型分别调度，旧转写任务不应阻塞新 extraction。
+- [x] 首次排队、本轮重新排队、材料准备、Agent A `xhigh`、Agent B `high`、加强复核、写入结果和总端到端时间分别记录。
+- [x] `queued` 显示“等待后台启动”，不会提前显示“正在识别事实”；重试会保留第一次等待历史，同时重新计算本轮等待。
+- [x] workflow snapshot 一次返回 Project/Event 顺序、材料与转写、Run、Scenario、Pending 数量、当前阶段和唯一下一步，减少页面零散请求。
+- [x] 普通 GET 不再因为读取而更新 Workspace 时间，避免轮询制造数据库写入。
+- [ ] 正式 Sites 验证正常 `queued → processing` P95 小于 10 秒；如果即时唤醒失效，定时兜底小于 130 秒。
+- [ ] 正式 Sites 记录至少一次完整 Run 的首次排队、本轮排队、两阶段模型时间和总耗时。
+
+10 分 47 秒的历史显示不能解释为 Luna `xhigh` 思考了十分钟。该 Run 的 Agent A 与 Agent B 模型处理合计约 1 分 36 秒，其余主要来自后台领取和重试计时。本轮先修调度，不降低 Agent A `xhigh` 或 Agent B `high`。
+
+### AI 初稿、Evidence、Timeline 和 Preference
+
+- [x] AI 初稿使用 Agent B 已经生成的最终候选按时间和主题组织，不增加新的文案模型请求。
+- [x] 每个初稿重点保持 Claim 与 Evidence 的稳定连接，并可显示未审核、已确认、已修改和不采纳状态。
+- [x] Evidence context 合同默认返回目标句前两段和后两段；目标短语可精确高亮，有音频时可从目标时间前约 3 秒播放。
+- [x] Evidence 不足仍锁住确认，并允许用户明确记录“上下文不足”，不能为了继续流程被迫确认。
+- [x] Timeline moments 包含 Event 日期与顺序、Transcript 时间点和 Speaker，以及新增、修改或取代、已解决、矛盾、再次确认和撤回。
+- [x] Timeline 只读取 Verified、Active 数据；Pending 和 Rejected 不得出现。第一场默认只展示最重要节点，其余可折叠。
+- [x] Preference 输出区分当前偏好、条件、决策人、首次出现、最近确认和历史变化；同一偏好变化时保留新旧来源。
+- [ ] 正式 Sites 验证目标句视觉突出、前后文、音频定位、Timeline 纵向节点和 Preference 历史均可用。
+- [ ] 桌面和手机各完成一次 AI 初稿 → Evidence → 返回 → 连续审核 → Timeline 的完整流程。
+
+### 公开许可真实音频
+
+- [x] 选择 AMI Meeting Corpus `ES2002a`，来源与许可记录为 CC BY 4.0；没有使用 YouTube-to-MP3 第三方网站。
+- [x] 原始 WAV 已转换为小于产品 25 MB 上限的 M4A，并保存原始文件、派生文件和人工标注包的 SHA256。
+- [x] 在任何 Notique 模型运行前冻结 8 条 Ground Truth：售价、成本上限、国际市场、一个未决产品范围问题、三类责任和会议范围。
+- [x] AMI 样本已通过 production audio、Transcription、Prompt v8.2 双阶段 Extraction 和 Evidence validation 跑完；没有确认 Scenario 或 Claim，因此结果是纯 AI 初稿。
+- [x] 已分开报告 Audio → Transcript 与 Transcript → AI 初稿：关键事实转写 Coverage 8/8；Raw final 10 的 Strict/Coverage Recall 6/8，Critical 2/4；Evidence 安全门后的 Persisted 6 为 4/8，Critical 1/4。
+- [x] 已分开报告 Evidence 的机械正确与语义支持：落库 quote 6/6 逐字、Segment 回填时间内部误差 0 ms；完整语义支持仅 4/6，与 GT 重合项的起点误差 <5 秒仅 1/4，Evidence 硬门未通过。
+- [x] 已记录时间：Transcription 排队 10 ms、处理 411.7 秒；Extraction 排队 9 ms、Agent A 88.4 秒、Agent B 30.3 秒、升级 69.1 秒；端到端 599.6 秒。
+- [x] 报告已注明：这是真实多人语音，但内容来自受控产品设计场景；它不能单独证明房地产、销售或跨沟通 Preference progression。
+- [ ] 使用同一冻结输入重复三次并通过语义稳定性门；本次只有一个独立 Run。
+
 ## K. 真实模型阶段的当前结论
 
-工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是双 Agent Prompt v8.2、Schema v3；Prompt v8 与 v8.1 Contractor 单 Event Smoke 均已运行，v8.1 仍未通过 Recall 与优先级硬门。v8.2 只加入共享上下文缓存与测试计时，尚未产生新的质量结果。三行业连续 Event 仍属于 Prompt v7 历史结果，下面用于说明新合同必须解决的真实缺口。
+工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是双 Agent Prompt v8.2、Schema v3。Prompt v8 与 v8.1 Contractor 单 Event Smoke 均已运行，v8.1 仍未通过 Recall 与优先级硬门；v8.2 现在新增一份运行前冻结 Ground Truth 的 AMI 公开许可多人音频结果，同样未通过 Material Recall、Critical Recall 和 Evidence 硬门。三行业连续 Event 仍属于 Prompt v7 历史结果，下面用于说明新合同必须解决的真实缺口。
 
 ### 双 Agent Prompt v8 / v8.1 Contractor Smoke
 
@@ -234,8 +287,8 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - Transcript、图片和音频都能进入真实服务链路，Claim、Evidence、人工审核、关系和结果页可以持久化工作。
 - 已保存 Run 的逐字引用和时间点准确，重要事实 Recall、Precision、关系和稳定性没有达到门槛。
 - Contractor 三次图片独立事实覆盖均为 0/4，图片理解没有通过。
-- 音频只用合成 WAV 跑过一次。现场噪音、距离、多人重叠、口音和设备差异没有测试。
-- Prompt v8.2 和 Schema v3 的双阶段合同、升级规则、阶段恢复、关系人工审核、分段计时和调试记录已经有自动测试；模型质量仍需重新跑固定样本。
+- 除合成 WAV 外，AMI `ES2002a` 公开许可多人音频已跑一次。关键事实转写 Coverage 为 8/8，但 Raw final Claim Recall 为 6/8、Critical 2/4，Evidence 安全门后进一步降为 4/8、Critical 1/4；不能写成质量通过。
+- Prompt v8.2 和 Schema v3 的双阶段合同、升级规则、阶段恢复、关系人工审核、分段计时和调试记录已有自动测试与一份真实多人音频结果；仍需修复 Evidence 选择、重要事实排序并做三次稳定性复测。
 - 当前成果可称为可继续测试的工程原型，不能称为已经完成 Concept Validation。
 
 ## 尚未取得证据的正式验证

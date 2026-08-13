@@ -70,5 +70,6 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   assert.match(page, /查看本次运行详情/);
   assert.match(page, /高级工具/);
   assert.match(styles, /\.simple-workspace/);
-  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-meeting-list \{ grid-auto-flow: column/);
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-event-select \{ display: grid !important; \}/);
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-meeting-rail \{ display: none; \}/);
 });

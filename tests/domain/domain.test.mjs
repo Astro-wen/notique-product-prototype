@@ -9,7 +9,9 @@ import {
   releaseScenarioLease,
 } from "../../lib/domain/claim-state.ts";
 import {
+  buildTranscriptEvidenceContextWindow,
   canonicalizeTranscriptEvidence,
+  evidenceAudioStartMs,
   validateDocumentPage,
   validatePhotoBbox,
 } from "../../lib/domain/evidence.ts";
@@ -348,6 +350,30 @@ test("validates image boxes and document pages deterministically", () => {
   assert.equal(validateDocumentPage(4, 3), false);
 });
 
+test("Evidence context returns only the target and nearest two passages with audio preroll", () => {
+  const segment = (id, ordinal, startMs) => ({
+    id,
+    eventId: "event-1",
+    assetVersionId: "asset-version-1",
+    ordinal,
+    speaker: "Speaker",
+    startMs,
+    endMs: startMs + 1_000,
+    textRaw: id,
+  });
+  const window = buildTranscriptEvidenceContextWindow(
+    [segment("target", 4, 12_000)],
+    [segment("before-1", 1, 3_000), segment("before-2", 2, 6_000), segment("before-3", 3, 9_000)],
+    [segment("after-1", 5, 15_000), segment("after-2", 6, 18_000), segment("after-3", 7, 21_000)],
+  );
+  assert.deepEqual(window.before.map((item) => item.id), ["before-2", "before-3"]);
+  assert.deepEqual(window.target.map((item) => item.id), ["target"]);
+  assert.deepEqual(window.after.map((item) => item.id), ["after-1", "after-2"]);
+  assert.equal(evidenceAudioStartMs(12_000, true), 9_000);
+  assert.equal(evidenceAudioStartMs(2_000, true), 0);
+  assert.equal(evidenceAudioStartMs(12_000, false), null);
+});
+
 test("claim verdicts enforce evidence, versions, and legal transitions", () => {
   const pending = claim({ id: "budget", reviewStatus: "pending", type: "budget" });
   const confirmed = applyClaimVerdict(
@@ -553,6 +579,80 @@ test("timeline resolves inactive relations through non-current claim versions", 
   assert.match(delta.displayText, /Budget was \$1\.15M/);
 });
 
+test("timeline moments expose verified relation endpoints, evidence timing, and confirmed occurrences", () => {
+  const before = claim({
+    id: "preference-before",
+    type: "preference",
+    lifecycleStatus: "superseded",
+    statement: "The client preferred downtown.",
+    eventId: "event-1",
+  });
+  const after = claim({
+    id: "preference-after",
+    type: "preference",
+    statement: "The client now prefers a quiet residential street.",
+    eventId: "event-2",
+  });
+  const data = ledger({
+    events: [
+      { id: "event-1", projectId: "project-1", title: "Call 1", occurredAt: "2026-08-01T09:00:00.000Z", sequenceNo: 1 },
+      { id: "event-2", projectId: "project-1", title: "Call 2", occurredAt: "2026-08-02T09:00:00.000Z", sequenceNo: 2 },
+    ],
+    claims: [before, after],
+    relations: [{
+      id: "relation-preference",
+      projectId: "project-1",
+      sourceClaimId: after.id,
+      sourceClaimVersionId: after.version.id,
+      targetClaimId: before.id,
+      targetClaimVersionId: before.version.id,
+      type: "supersedes",
+      status: "active",
+      contradictionStatus: null,
+      createdAt: NOW,
+    }],
+    evidenceRefs: [{
+      id: "evidence-preference-after",
+      projectId: "project-1",
+      eventId: "event-2",
+      claimVersionId: after.version.id,
+      kind: "transcript",
+      assetVersionId: "asset-version-2",
+      segmentIds: ["segment-2"],
+      quoteRaw: "now prefers a quiet residential street",
+      startMs: 22_000,
+      endMs: 25_000,
+      observation: null,
+      evidenceRole: "direct",
+      speakers: ["Client"],
+    }],
+    occurrences: [{
+      id: "occurrence-preference",
+      claimId: after.id,
+      claimVersionId: after.version.id,
+      eventId: "event-2",
+      evidenceRefId: "evidence-preference-after",
+      confirmedAt: NOW,
+      createdAt: NOW,
+    }],
+  });
+
+  const moments = buildTimeline(data).flatMap((group) => group.moments);
+  const updated = moments.find((moment) => moment.kind === "updated");
+  assert.ok(updated);
+  assert.equal(updated.before.statement, "The client preferred downtown.");
+  assert.equal(updated.after.statement, "The client now prefers a quiet residential street.");
+  assert.equal(updated.transcriptStartMs, 22_000);
+  assert.equal(updated.evidence[0].speaker, "Client");
+  assert.equal(
+    moments.some((moment) =>
+      moment.kind === "reaffirmed" && moment.occurrenceId === "occurrence-preference"
+    ),
+    true,
+  );
+  assert.equal(moments.some((moment) => /pending|rejected/i.test(moment.displayText)), false);
+});
+
 test("gap, agenda, risks, and brief use verified sources only", () => {
   const budget = claim({ id: "budget", type: "budget", materiality: "high" });
   const question = claim({
@@ -684,6 +784,73 @@ test("Preferences contains only verified preference history, including supersede
       ["preference-current", "active"],
       ["preference-old", "superseded"],
     ],
+  );
+});
+
+test("Preferences expose structured current value, conditions, decision people, and reaffirmed history without inference", () => {
+  const oldPreference = claim({
+    id: "preference-hoa-old",
+    type: "preference",
+    lifecycleStatus: "superseded",
+    eventId: "event-1",
+    statement: "The buyer accepts an HOA up to $350 if it covers exterior maintenance.",
+    normalizedValue: {
+      maximumMonthlyHoa: 350,
+      condition: "covers exterior maintenance",
+    },
+  });
+  const currentPreference = claim({
+    id: "preference-hoa-current",
+    type: "preference",
+    eventId: "event-2",
+    statement: "Both buyers accept an HOA up to $300 after reviewing reserves.",
+    normalizedValue: {
+      maximumMonthlyHoa: 300,
+      conditions: ["review reserves", "covers exterior maintenance"],
+      approvedBy: ["Lena", "Evan"],
+    },
+  });
+  const data = ledger({
+    events: [
+      { id: "event-1", projectId: "project-1", title: "Call 1", occurredAt: "2026-08-01T09:00:00.000Z", sequenceNo: 1 },
+      { id: "event-2", projectId: "project-1", title: "Call 2", occurredAt: "2026-08-02T09:00:00.000Z", sequenceNo: 2 },
+      { id: "event-3", projectId: "project-1", title: "Call 3", occurredAt: "2026-08-03T09:00:00.000Z", sequenceNo: 3 },
+    ],
+    claims: [oldPreference, currentPreference],
+    relations: [{
+      id: "relation-hoa",
+      projectId: "project-1",
+      sourceClaimId: currentPreference.id,
+      sourceClaimVersionId: currentPreference.version.id,
+      targetClaimId: oldPreference.id,
+      targetClaimVersionId: oldPreference.version.id,
+      type: "supersedes",
+      status: "active",
+      contradictionStatus: null,
+      createdAt: NOW,
+    }],
+    occurrences: [{
+      id: "occurrence-hoa",
+      claimId: currentPreference.id,
+      claimVersionId: currentPreference.version.id,
+      eventId: "event-3",
+      evidenceRefId: "evidence-hoa-event-3",
+      confirmedAt: NOW,
+      createdAt: NOW,
+    }],
+  });
+
+  const [preference] = buildPreferences(data);
+  assert.equal(preference.isCurrent, true);
+  assert.deepEqual(preference.currentValue, currentPreference.version.normalizedValue);
+  assert.deepEqual(preference.conditions, ["review reserves", "covers exterior maintenance"]);
+  assert.equal(preference.decisionPerson, "Lena");
+  assert.deepEqual(preference.decisionPeople, ["Lena", "Evan"]);
+  assert.equal(preference.firstSeen.eventId, "event-1");
+  assert.equal(preference.lastSeen.eventId, "event-3");
+  assert.deepEqual(
+    preference.history.map((item) => item.kind),
+    ["stated", "updated", "reaffirmed"],
   );
 });
 

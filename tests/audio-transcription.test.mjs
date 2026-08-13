@@ -137,6 +137,17 @@ test("transcription retry logic distinguishes transient provider failures and ex
   );
 });
 
+test("the transcription timeout remains active while the streamed body is read", async () => {
+  const source = await readFile(
+    path.join(root, "lib/server/jobs/transcription-processor.ts"),
+    "utf8",
+  );
+  const bodyRead = source.indexOf("body = await response.text()");
+  const timerClear = source.indexOf("clearTimeout(timer)", bodyRead);
+  assert.ok(bodyRead >= 0, "the provider response body must be consumed");
+  assert.ok(timerClear > bodyRead, "the abort timer must remain active through response.text()");
+});
+
 test("a staged provider result survives a later persistence failure and prevents a second provider charge", async () => {
   const retry = await loadTypeScriptModule("lib/domain/transcription-retry.ts");
   let providerCalls = 0;
@@ -312,6 +323,24 @@ test("diarized output sorts overlapping speaker segments and preserves exact tim
     ],
   });
   assert.deepEqual(reordered.segments.map((segment) => segment.speaker), ["A", "B"]);
+
+  const withProviderSilencePlaceholder = policy.validateDiarizedTranscriptOutput({
+    segments: [
+      { speaker: "A", start: 0, end: 1, text: "Spoken content" },
+      { speaker: "A", start: 1, end: 1.4, text: "   " },
+      { speaker: "B", start: 1.5, end: 2, text: "More content" },
+    ],
+  });
+  assert.deepEqual(
+    withProviderSilencePlaceholder.segments.map((segment) => segment.text),
+    ["Spoken content", "More content"],
+  );
+  assert.throws(
+    () => policy.validateDiarizedTranscriptOutput({
+      segments: [{ speaker: "A", start: 0, end: 1, text: "" }],
+    }),
+    /did not contain any spoken text/,
+  );
 });
 
 test("diarized streaming output requires completion and preserves every segment", async () => {

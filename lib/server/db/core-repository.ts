@@ -1804,10 +1804,10 @@ export async function createExtractionRun(
         input_hash, input_snapshot_hash, input_manifest_json, context_version,
         context_snapshot_hash, provider, model, model_params_json,
         prompt_version, schema_version, parser_version, attempt_no,
-        queued_at, created_at, updated_at
+        queued_at, first_queued_at, current_queued_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?,
-                'transcript-parser.v1', 1, ?, ?, ?)`,
+                'transcript-parser.v1', 0, ?, ?, ?, ?, ?)`,
     )
       .bind(
       runId,
@@ -1825,6 +1825,8 @@ export async function createExtractionRun(
       modelParamsJson,
       CLAIM_EXTRACTION_PROMPT_VERSION,
       CLAIM_EXTRACTION_SCHEMA_VERSION,
+      timestamp,
+      timestamp,
       timestamp,
       timestamp,
       timestamp,
@@ -1919,6 +1921,8 @@ export async function getExtractionRun(
 ): Promise<ExtractionRunRecord> {
   const row = await first(
     `SELECT r.*,
+            COALESCE((SELECT o.attempt FROM queue_outbox o WHERE o.run_id = r.id), 0)
+              AS dispatch_attempt_no,
             (SELECT s.stage FROM extraction_model_stages s
               WHERE s.run_id = r.id
               ORDER BY CASE s.stage
