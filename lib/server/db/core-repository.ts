@@ -51,6 +51,10 @@ import {
   listExtractionModelStageDebug,
   listExtractionModelStageTimings,
 } from "@/lib/server/db/extraction-stage-repository";
+import {
+  ensureEventAiArtifactRuns,
+  listEventAiArtifactRunDebug,
+} from "@/lib/server/db/event-ai-artifact-repository";
 import type {
   AssetKind,
   AssetRecord,
@@ -58,6 +62,7 @@ import type {
   EventRecord,
   ExtractionRunRecord,
   OccurrenceCandidateRecord,
+  ProjectDeletePreviewRecord,
   ProjectRecord,
   TranscriptImportRecord,
   VerifiedViewResponse,
@@ -297,6 +302,234 @@ export async function getProject(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Project was not found.");
   }
   return projectRecord(row);
+}
+
+async function getDeletedProject(
+  scope: RequestScope,
+  projectId: string,
+): Promise<ProjectRecord> {
+  const row = await first(
+    `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
+      WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NOT NULL`,
+    [projectId, scope.workspaceId],
+  );
+  if (!row) throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Deleted project was not found.");
+  return projectRecord(row);
+}
+
+export async function listDeletedProjects(scope: RequestScope): Promise<ProjectRecord[]> {
+  const rows = await all(
+    `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
+      WHERE p.workspace_id = ? AND p.deleted_at IS NOT NULL
+      ORDER BY p.deleted_at DESC`,
+    [scope.workspaceId],
+  );
+  return rows.map(projectRecord);
+}
+
+export async function getProjectDeletePreview(
+  scope: RequestScope,
+  projectId: string,
+): Promise<ProjectDeletePreviewRecord> {
+  const project = await getProject(scope, projectId);
+  const row = await first(
+    `SELECT
+       (SELECT COUNT(*) FROM assets WHERE project_id = ? AND workspace_id = ?
+          AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript') AS material_count,
+       (SELECT COUNT(*) FROM extraction_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) +
+       (SELECT COUNT(*) FROM transcription_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) +
+       (SELECT COUNT(*) FROM event_ai_artifact_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) AS active_job_count`,
+    [
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+    ],
+  );
+  const activeJobCount = Number(row?.active_job_count ?? 0);
+  return {
+    project_id: project.id,
+    project_name: project.name,
+    event_count: project.event_count,
+    material_count: Number(row?.material_count ?? 0),
+    pending_count: project.pending_claim_count + project.pending_occurrence_count,
+    active_job_count: activeJobCount,
+    can_delete: activeJobCount === 0,
+  };
+}
+
+export async function moveProjectToTrash(
+  scope: RequestScope,
+  projectId: string,
+  idempotencyKey: string,
+): Promise<ProjectRecord> {
+  const endpointScope = `projects/${projectId}/trash`;
+  const replay = await findMutationReplay<{ projectId: string }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    {},
+  );
+  if (replay.response) return getDeletedProject(scope, replay.response.projectId);
+  const preview = await getProjectDeletePreview(scope, projectId);
+  if (!preview.can_delete) {
+    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Wait for transcription and analysis to finish before deleting this project.", {
+      active_job_count: preview.active_job_count,
+    });
+  }
+  const timestamp = now();
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM projects p
+          WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM extraction_runs WHERE project_id = p.id AND status IN ('queued','processing'))
+            AND NOT EXISTS (SELECT 1 FROM transcription_runs WHERE project_id = p.id AND status IN ('queued','processing'))
+            AND NOT EXISTS (SELECT 1 FROM event_ai_artifact_runs WHERE project_id = p.id AND status IN ('queued','processing'))
+       ) THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, projectId, scope.workspaceId, timestamp),
+    getD1().prepare(
+      `UPDATE projects SET deleted_at = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM extraction_runs WHERE project_id = ? AND status IN ('queued','processing'))
+          AND NOT EXISTS (SELECT 1 FROM transcription_runs WHERE project_id = ? AND status IN ('queued','processing'))
+          AND NOT EXISTS (SELECT 1 FROM event_ai_artifact_runs WHERE project_id = ? AND status IN ('queued','processing'))`,
+    ).bind(timestamp, timestamp, projectId, scope.workspaceId, projectId, projectId, projectId),
+    mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { projectId }, timestamp),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return getDeletedProject(scope, projectId);
+}
+
+export async function restoreProject(
+  scope: RequestScope,
+  projectId: string,
+  idempotencyKey: string,
+): Promise<ProjectRecord> {
+  const endpointScope = `projects/${projectId}/restore`;
+  const replay = await findMutationReplay<{ projectId: string }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    {},
+  );
+  if (replay.response) return getProject(scope, replay.response.projectId);
+  await getDeletedProject(scope, projectId);
+  const timestamp = now();
+  const guardId = id("guard");
+  const purgeLockId = `project-purge:${projectId}`;
+  try {
+    await getD1().batch([
+      getD1().prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)
+         ) THEN 1 ELSE 0 END, ?`,
+      ).bind(guardId, projectId, scope.workspaceId, purgeLockId, timestamp),
+      getD1().prepare(
+        `UPDATE projects SET deleted_at = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)`,
+      ).bind(timestamp, projectId, scope.workspaceId, purgeLockId),
+      mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { projectId }, timestamp),
+      getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch {
+    const purgeLocked = await first(`SELECT id FROM mutation_guards WHERE id = ?`, [purgeLockId]);
+    if (purgeLocked) {
+      throw new ApiFault(409, "RUN_STATE_CONFLICT", "Permanent deletion is in progress or needs to be retried before this project can be restored.");
+    }
+    throw new ApiFault(409, "CLAIM_VERSION_CONFLICT", "Project state changed. Refresh the recycle bin before restoring it.");
+  }
+  return getProject(scope, projectId);
+}
+
+export async function permanentlyDeleteProject(
+  scope: RequestScope,
+  projectId: string,
+  confirmName: string,
+  idempotencyKey: string,
+): Promise<{ projectId: string; permanentlyDeleted: true }> {
+  const endpointScope = `projects/${projectId}/permanent`;
+  const input = { confirmName };
+  const replay = await findMutationReplay<{ projectId: string; permanentlyDeleted: true }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    input,
+  );
+  if (replay.response) return replay.response;
+  const project = await getDeletedProject(scope, projectId);
+  if (confirmName !== project.name) {
+    throw new ApiFault(400, "BAD_REQUEST", "Project name confirmation does not match.", { field: "confirm_name" });
+  }
+  const purgeLockId = `project-purge:${projectId}`;
+  const timestamp = now();
+  await getD1()
+    .prepare(
+      `INSERT OR IGNORE INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, 1, ? WHERE EXISTS (
+         SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+       )`,
+    )
+    .bind(purgeLockId, timestamp, projectId, scope.workspaceId)
+    .run();
+  const purgeLock = await first(
+    `SELECT id FROM mutation_guards WHERE id = ?`,
+    [purgeLockId],
+  );
+  if (!purgeLock) {
+    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Project deletion could not be locked. Refresh the recycle bin and retry.");
+  }
+  const keyRows = await all(
+    `SELECT key FROM (
+       SELECT av.r2_original_key AS key FROM asset_versions av
+         JOIN assets a ON a.id = av.asset_id WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT av.r2_model_key AS key FROM asset_versions av
+         JOIN assets a ON a.id = av.asset_id WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT a.staged_r2_key AS key FROM assets a WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT tii.r2_key AS key FROM transcript_import_items tii
+         JOIN transcript_imports ti ON ti.id = tii.import_id WHERE ti.project_id = ? AND ti.workspace_id = ?
+       UNION SELECT tr.staged_result_r2_key AS key FROM transcription_runs tr
+         WHERE tr.project_id = ? AND tr.workspace_id = ?
+     ) WHERE key IS NOT NULL`,
+    [
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+    ],
+  );
+  try {
+    await Promise.all(keyRows.map((row) => getEvidenceBucket().delete(String(row.key))));
+  } catch {
+    throw new ApiFault(503, "R2_BINDING_UNAVAILABLE", "Stored project files could not be fully deleted. The project remains locked in the recycle bin so permanent deletion can be retried safely.");
+  }
+  const response = { projectId, permanentlyDeleted: true as const };
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+           AND EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)
+       ) THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, projectId, scope.workspaceId, purgeLockId, timestamp),
+    getD1().prepare(
+      `DELETE FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL`,
+    ).bind(projectId, scope.workspaceId),
+    mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, response, timestamp),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(purgeLockId),
+  ]);
+  return response;
 }
 
 export async function confirmScenario(
@@ -1534,7 +1767,7 @@ export async function createExtractionRun(
   }
   const versions = await all(
     `SELECT av.id, av.content_sha256, av.parser_version, av.mime_type,
-            av.size_bytes, a.kind, a.filename
+            av.size_bytes, a.kind, a.filename, a.metadata_json
        FROM asset_versions av
        JOIN assets a ON a.id = av.asset_id
       WHERE a.event_id = ? AND a.workspace_id = ?
@@ -1543,6 +1776,18 @@ export async function createExtractionRun(
   );
   if (versions.length !== assetVersionIds.length) {
     throw new ApiFault(400, "BAD_REQUEST", "Every asset_version_id must belong to the event.");
+  }
+  const derivedReadable = versions.find((row) => {
+    const metadata = parseJson<Record<string, unknown>>(String(row.metadata_json ?? "{}"), {});
+    return metadata.analysis_source === false || metadata.artifact_kind === "readable_transcript";
+  });
+  if (derivedReadable) {
+    throw new ApiFault(
+      400,
+      "BAD_REQUEST",
+      "AI-readable transcripts cannot replace raw source material for fact extraction.",
+      { asset_version_id: derivedReadable.id },
+    );
   }
   const photoVersions = versions.filter((row) => String(row.kind) === "photo");
   const directAudio = versions.find((row) => String(row.kind) === "audio");
@@ -1618,7 +1863,11 @@ export async function createExtractionRun(
   );
   const timeoutMs = normalizeAiTimeoutMs(bindings.AI_TIMEOUT_MS);
   const pipelineEnabled = twoPassPipelineEnabled(bindings.AI_TWO_PASS_PIPELINE);
-  const maxModelStages = pipelineEnabled ? 3 : 1;
+  const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
+  const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
+  const readableTranscriptEnabled = hasTranscriptInput && bindings.AI_READABLE_TRANSCRIPT !== "0";
+  const artifactStageCount = Number(eventSummaryEnabled) + Number(readableTranscriptEnabled);
+  const maxModelStages = (pipelineEnabled ? 3 : 1) + artifactStageCount;
   const reservedModelTokens =
     estimatedInputTokens * maxModelStages + maxOutputTokens * maxModelStages;
   const maxRunInputTokens = configuredPositiveInteger(
@@ -1688,6 +1937,15 @@ export async function createExtractionRun(
         { existing_run_id: existing.id },
       );
     }
+    await ensureEventAiArtifactRuns({
+      workspaceId: scope.workspaceId,
+      projectId: String(existing.project_id),
+      eventId,
+      extractionRunId: String(existing.id),
+      inputManifestJson: String(existing.input_manifest_json),
+      provider: String(existing.provider),
+      model: String(existing.model),
+    });
     return { run: extractionRunRecord(existing), created: false };
   }
 
@@ -1724,6 +1982,9 @@ export async function createExtractionRun(
     verifier_reasoning_effort: verifierReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
     max_model_stages: maxModelStages,
+    event_summary: eventSummaryEnabled,
+    readable_transcript: readableTranscriptEnabled,
+    verification_uses_readable: bindings.AI_VERIFICATION_USES_READABLE !== "0",
     reserved_input_tokens: estimatedInputTokens,
     reserved_model_tokens: reservedModelTokens,
     token_budget_policy: "token-reservation.v1",
@@ -1859,6 +2120,15 @@ export async function createExtractionRun(
       [eventId, idempotencyKey, scope.workspaceId],
     );
     if (raced && String(raced.input_hash) === inputHash) {
+      await ensureEventAiArtifactRuns({
+        workspaceId: scope.workspaceId,
+        projectId: String(raced.project_id),
+        eventId,
+        extractionRunId: String(raced.id),
+        inputManifestJson: String(raced.input_manifest_json),
+        provider: String(raced.provider),
+        model: String(raced.model),
+      });
       return { run: extractionRunRecord(raced), created: false };
     }
     if (raced) {
@@ -1912,6 +2182,15 @@ export async function createExtractionRun(
     }
     throw error;
   }
+  await ensureEventAiArtifactRuns({
+    workspaceId: scope.workspaceId,
+    projectId: String(project.id),
+    eventId,
+    extractionRunId: runId,
+    inputManifestJson,
+    provider: String(bindings.AI_PROVIDER),
+    model: String(bindings.AI_MODEL),
+  });
   return { run: await getExtractionRun(scope, runId), created: true };
 }
 
@@ -2207,7 +2486,10 @@ export async function debugRun(scope: RequestScope, runId: string) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Extraction run was not found.");
   }
   const validatedOutputJson = row.validated_output_json;
-  const stages = await listExtractionModelStageDebug(runId, scope.workspaceId);
+  const [stages, artifactRuns] = await Promise.all([
+    listExtractionModelStageDebug(runId, scope.workspaceId),
+    listEventAiArtifactRunDebug(runId, scope.workspaceId),
+  ]);
   const debugRow = { ...row };
   for (const key of [
     "idempotency_key",
@@ -2225,5 +2507,6 @@ export async function debugRun(scope: RequestScope, runId: string) {
     validated_output: parseJson(String(validatedOutputJson ?? "null"), null),
     error_details: parseJson(String(row.error_details_json ?? "null"), null),
     stages,
+    artifact_runs: artifactRuns,
   };
 }

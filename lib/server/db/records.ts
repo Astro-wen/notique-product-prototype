@@ -39,6 +39,7 @@ export function projectRecord(row: Row): ProjectRecord {
     event_count: integer(row, "event_count"),
     pending_claim_count: integer(row, "pending_claim_count"),
     pending_occurrence_count: integer(row, "pending_occurrence_count"),
+    deleted_at: nullableText(row, "deleted_at"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   };

@@ -10,7 +10,7 @@ test("browser dispatch accepts one workspace-scoped Run and returns before proce
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
   assert.match(worker, /body\.kind !== "extraction"[\s\S]*body\.kind !== "transcription"/);
   assert.match(worker, /SELECT status FROM \$\{table\} WHERE id = \? AND workspace_id = \?/);
-  assert.match(worker, /ctx\.waitUntil\(dispatchExtractionRun\([\s\S]*\.catch/);
+  assert.match(worker, /ctx\.waitUntil\(Promise\.all\(\[[\s\S]*dispatchExtractionRun\([\s\S]*dispatchEventAiArtifactsForExtraction\([\s\S]*\.catch/);
   assert.match(worker, /run_id: input\.runId[\s\S]*run_status: run\.status[\s\S]*202/);
   assert.doesNotMatch(
     worker.slice(worker.indexOf('if (url.pathname === "/api/v1/jobs/dispatch")'), worker.indexOf("return handler.fetch")),
@@ -26,7 +26,7 @@ test("production audio wakes durable Cron work instead of exceeding HTTP waitUnt
   );
   assert.match(worker, /env\.APP_ENV === "local"[\s\S]*dispatchTranscriptionRun/);
   assert.match(worker, /else \{[\s\S]*await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
-  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(sweepAndDispatch\(\)\)/);
+  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
 });

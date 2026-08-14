@@ -10,6 +10,7 @@ import type {
 // the application bundler resolves this same source module without emitting it.
 import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
+import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 
 export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.2" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
@@ -69,6 +70,14 @@ export type VerificationOutput = {
 };
 
 export interface TwoStageModelProvider extends ModelProvider {
+  summarizeEvent(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
+    output: EventSummaryOutput;
+    usage: ModelUsage;
+  }>;
+  refineTranscript(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
+    output: ReadableTranscriptOutput;
+    usage: ModelUsage;
+  }>;
   inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
     output: InventoryOutput;
     usage: ModelUsage;

@@ -46,6 +46,8 @@ import {
   Claim,
   ClaimEditSubmission,
   Event,
+  EventAiArtifact,
+  EventAiArtifactRun,
   EvidenceContext,
   EvidenceRef,
   ExtractionRun,
@@ -55,6 +57,7 @@ import {
   OccurrenceCandidate,
   OccurrenceNewClaim,
   Project,
+  ProjectDeletePreview,
   ProjectViewName,
   RelationTarget,
   RelationType,
@@ -282,7 +285,15 @@ function transcriptionRunIdFromEvent(value: Event): string | undefined {
 }
 
 function assetIsAnalyzable(asset: Event["assets"][number]): boolean {
-  return asset.status === "ready" && Boolean(asset.versionId) && asset.kind !== "audio";
+  return asset.status === "ready" &&
+    Boolean(asset.versionId) &&
+    asset.kind !== "audio" &&
+    asset.metadata.analysis_source !== false &&
+    asset.metadata.artifact_kind !== "readable_transcript";
+}
+
+function assetIsGeneratedAiArtifact(asset: Event["assets"][number]): boolean {
+  return asset.metadata.artifact_kind === "readable_transcript" || asset.metadata.analysis_source === false;
 }
 
 const idleProjectWorkflow: ProjectWorkflowState = {
@@ -593,6 +604,50 @@ function Modal({ title, description, onClose, children, wide = false }: { title:
       </section>
     </div>
   );
+}
+
+function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
+  preview: ProjectDeletePreview;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return <Modal title="把项目移到回收站？" description="项目不会立即永久消失，可以随时从回收站恢复。" onClose={busy ? () => undefined : onClose}>
+    <div className="delete-preview">
+      <strong>{preview.project_name}</strong>
+      <dl><div><dt>沟通</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
+      {!preview.can_delete && <p className="danger-note">还有 {preview.active_job_count} 个转写、分析或 AI 阅读任务正在运行。完成前不能删除。</p>}
+      <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button danger" disabled={busy || !preview.can_delete} onClick={() => void onConfirm()}>{busy ? "正在移动…" : "移到回收站"}</button></div>
+    </div>
+  </Modal>;
+}
+
+function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onRestore, onPermanentDelete }: {
+  projects: Project[];
+  state: AsyncState;
+  issue: ApiIssue | null;
+  busy: string | null;
+  onClose: () => void;
+  onRetry: () => Promise<void>;
+  onRestore: (project: Project, openAfterRestore?: boolean) => Promise<void>;
+  onPermanentDelete: (project: Project, confirmation: string) => Promise<void>;
+}) {
+  const [permanentTarget, setPermanentTarget] = useState<Project | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  return <Modal title="回收站" description="恢复会带回项目的全部材料、核对记录、Evidence 和报告。这里不会自动按天清理。" onClose={busy ? () => undefined : onClose} wide>
+    <div className="trash-list">
+      {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
+      {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
+      {state === "empty" && <EmptyState title="回收站是空的" body="移入回收站的项目会显示在这里。" />}
+      {projects.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.eventCount ?? 0} 次沟通 · 删除于 {formatDate(item.deletedAt, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRestore(item, true)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentTarget(item); setConfirmation(""); }}>永久删除</button></div></article>)}
+    </div>
+    {permanentTarget && <div className="permanent-confirm">
+      <h3>永久删除“{permanentTarget.name}”</h3>
+      <p>系统会先删除该项目在文件存储中的录音、照片、逐字稿与暂存结果，再删除数据库记录。这个动作无法撤销。</p>
+      <label className="field"><span>输入完整项目名称确认</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoFocus /></label>
+      <div className="modal-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => setPermanentTarget(null)}>取消</button><button className="button danger" disabled={Boolean(busy) || confirmation !== permanentTarget.name} onClick={() => void onPermanentDelete(permanentTarget, confirmation).then(() => { setPermanentTarget(null); setConfirmation(""); })}>{busy === `permanent:${permanentTarget.id}` ? "正在清理文件…" : "永久删除"}</button></div>
+    </div>}
+  </Modal>;
 }
 
 function TranscriptViewer({ run, onClose }: { run: TranscriptionRun; onClose: () => void }) {
@@ -1098,6 +1153,12 @@ export default function Home() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewEvent, setShowNewEvent] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [deletePreview, setDeletePreview] = useState<ProjectDeletePreview | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashProjects, setTrashProjects] = useState<Project[]>([]);
+  const [trashState, setTrashState] = useState<AsyncState>("idle");
+  const [trashIssue, setTrashIssue] = useState<ApiIssue | null>(null);
+  const [undoDeletedProject, setUndoDeletedProject] = useState<Project | null>(null);
   const [simpleFlow, setSimpleFlow] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -2498,6 +2559,125 @@ export default function Home() {
     }
   }
 
+  async function retryEventAiArtifact(
+    eventId: string,
+    kind: EventAiArtifactRun["kind"],
+  ): Promise<void> {
+    const action = `artifact:${kind}`;
+    setBusyAction(action);
+    try {
+      const fingerprint = `${action}:${eventId}`;
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const artifactRun = await api.retryEventAiArtifact(eventId, kind, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      await api.kickDispatcher({ kind: "artifact", runId: artifactRun.id }).catch(() => undefined);
+      flash(kind === "summary" ? "AI 摘要已重新提交" : "易读逐字稿已重新提交");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+      throw error;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function openProjectDeletePreview(): Promise<void> {
+    if (!project) return;
+    setBusyAction("project-delete-preview");
+    try {
+      setDeletePreview(await api.getProjectDeletePreview(project.id));
+    } catch (error) {
+      setProjectIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function clearCurrentProjectSelection(projectId: string): void {
+    invalidateNavigationRequests();
+    projectWorkflowRefreshToken.current += 1;
+    storeId(recentProjectStorageKey, null);
+    storeId(recentEventStorageKey(projectId), null);
+    if (readStoredId(workflowIntentStorageKey) === projectId) {
+      storeId(workflowIntentStorageKey, null);
+      setWorkflowIntentProjectId(null);
+    }
+    setProject(null);
+    setEvents([]);
+    setEvent(null);
+    setRun(null);
+    setTranscriptionRun(null);
+    setClaims([]);
+    setOccurrenceCandidates([]);
+    setProjectWorkflow(idleProjectWorkflow);
+  }
+
+  async function moveCurrentProjectToTrash(): Promise<void> {
+    if (!project || !deletePreview) return;
+    const deleting = project;
+    setBusyAction("project-delete");
+    try {
+      const deleted = await api.moveProjectToTrash(deleting.id, crypto.randomUUID());
+      const remaining = projects.filter((item) => item.id !== deleting.id);
+      setProjects(remaining);
+      setDeletePreview(null);
+      setUndoDeletedProject(deleted);
+      clearCurrentProjectSelection(deleting.id);
+      flash("项目已移到回收站");
+      if (remaining[0]) await loadSimpleProject(remaining[0].id, undefined, "replace");
+      else navigateRoute({ view: "simple" }, "replace");
+    } catch (error) {
+      setProjectIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  const loadTrash = useCallback(async () => {
+    setTrashState("loading");
+    setTrashIssue(null);
+    try {
+      const deleted = await api.listDeletedProjects();
+      setTrashProjects(deleted);
+      setTrashState(deleted.length ? "ready" : "empty");
+    } catch (error) {
+      setTrashIssue(toIssue(error));
+      setTrashState("error");
+    }
+  }, []);
+
+  async function restoreDeletedProject(target: Project, openAfterRestore = false): Promise<void> {
+    setBusyAction(`restore:${target.id}`);
+    try {
+      const restored = await api.restoreProject(target.id, crypto.randomUUID());
+      setUndoDeletedProject((current) => current?.id === target.id ? null : current);
+      await Promise.all([loadProjects(), loadTrash()]);
+      flash(`“${restored.name}”已恢复`);
+      if (openAfterRestore) {
+        setShowTrash(false);
+        await loadSimpleProject(restored.id, undefined, "replace");
+      }
+    } catch (error) {
+      setTrashIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function permanentlyDeleteProject(target: Project, confirmation: string): Promise<void> {
+    setBusyAction(`permanent:${target.id}`);
+    try {
+      await api.permanentlyDeleteProject(target.id, confirmation, crypto.randomUUID());
+      setTrashProjects((current) => current.filter((item) => item.id !== target.id));
+      flash(`“${target.name}”已永久删除`);
+    } catch (error) {
+      setTrashIssue(toIssue(error));
+      throw error;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function retryRunStatus() {
     if (!run || !event) return;
     setBusyAction("run-status");
@@ -3030,6 +3210,10 @@ export default function Home() {
           transcriptionRun={transcriptionRun}
           onReview={() => void enterAiDraft()}
           onResult={() => void loadView("brief-card")}
+          onOpenClaim={(id) => void openClaim(id, "draft")}
+          onRetryArtifact={retryEventAiArtifact}
+          onDeleteProject={openProjectDeletePreview}
+          onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
         {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => { setSimpleFlow(false); setShowImport(true); }} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
@@ -3141,7 +3325,9 @@ export default function Home() {
           if (created[0]) await loadEvent(created[0].id);
         }
       }} />}
-      {toast && <div className="toast" role="status">✓ {toast}</div>}
+      {deletePreview && <ProjectDeleteModal preview={deletePreview} busy={busyAction === "project-delete"} onClose={() => setDeletePreview(null)} onConfirm={moveCurrentProjectToTrash} />}
+      {showTrash && <ProjectTrashModal projects={trashProjects} state={trashState} issue={trashIssue} busy={busyAction} onClose={() => setShowTrash(false)} onRetry={loadTrash} onRestore={restoreDeletedProject} onPermanentDelete={permanentlyDeleteProject} />}
+      {toast && <div className="toast" role="status">✓ {toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}</div>}
     </div>
   );
 }
@@ -3172,7 +3358,196 @@ type SimpleTestScreenProps = {
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onReview: () => void;
   onResult: () => void;
+  onOpenClaim: (id: string) => void;
+  onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onDeleteProject: () => void;
+  onOpenTrash: () => void;
 };
+
+type TranscriptArtifactTab = "summary" | "readable" | "raw";
+
+function latestArtifactRun(
+  runs: EventAiArtifactRun[],
+  kind: EventAiArtifactRun["kind"],
+): EventAiArtifactRun | undefined {
+  return runs.find((run) => run.kind === kind);
+}
+
+function latestArtifact(
+  artifacts: EventAiArtifact[],
+  kind: EventAiArtifactRun["kind"],
+): EventAiArtifact | undefined {
+  return artifacts.find((artifact) => artifact.kind === kind);
+}
+
+function TranscriptArtifactsPanel({
+  event,
+  transcriptionRun,
+  claims,
+  busy,
+  onOpenClaim,
+  onRetryArtifact,
+}: {
+  event: Event;
+  transcriptionRun: TranscriptionRun | null;
+  claims: Claim[];
+  busy: string | null;
+  onOpenClaim: (id: string) => void;
+  onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+}) {
+  const [tab, setTab] = useState<TranscriptArtifactTab>("readable");
+  const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
+  const [runs, setRuns] = useState<EventAiArtifactRun[]>([]);
+  const [artifacts, setArtifacts] = useState<EventAiArtifact[]>([]);
+  const [state, setState] = useState<AsyncState>("loading");
+  const [issue, setIssue] = useState<ApiIssue | null>(null);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const loadEpoch = useRef(0);
+  const summaryScrollY = useRef(0);
+
+  const load = useCallback(async (quiet = false) => {
+    const token = loadEpoch.current + 1;
+    loadEpoch.current = token;
+    if (!quiet) setState("loading");
+    try {
+      const [artifactData, segments] = await Promise.all([
+        api.getEventAiArtifacts(event.id),
+        api.listEventTranscriptSegments(event.id),
+      ]);
+      if (loadEpoch.current !== token) return;
+      setRuns(artifactData.runs);
+      setArtifacts(artifactData.artifacts);
+      setRawSegments(segments);
+      setIssue(null);
+      setState(segments.length || artifactData.artifacts.length ? "ready" : "empty");
+    } catch (error) {
+      if (loadEpoch.current !== token) return;
+      if (!quiet) {
+        setIssue(toIssue(error));
+        setState("error");
+      }
+    }
+  }, [event.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load().catch(() => undefined), 0);
+    return () => {
+      window.clearTimeout(timer);
+      loadEpoch.current += 1;
+    };
+  }, [load]);
+
+  const artifactRunning = runs.some((run) => run.status === "queued" || run.status === "processing");
+  useEffect(() => {
+    if (!artifactRunning) return;
+    const timer = window.setInterval(() => void load(true), 5_000);
+    return () => window.clearInterval(timer);
+  }, [artifactRunning, load]);
+
+  const runningRunIds = runs
+    .filter((artifactRun) => artifactRun.status === "queued" || artifactRun.status === "processing")
+    .map((artifactRun) => artifactRun.id)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    const ids = runningRunIds.split(",").filter(Boolean);
+    if (!ids.length) return;
+    const wake = () => {
+      ids.forEach((runId) => {
+        void api.kickDispatcher({ kind: "artifact", runId }).catch(() => undefined);
+      });
+    };
+    wake();
+    const timer = window.setInterval(wake, 15_000);
+    return () => window.clearInterval(timer);
+  }, [runningRunIds]);
+
+  const summaryRun = latestArtifactRun(runs, "summary");
+  const readableRun = latestArtifactRun(runs, "readable_transcript");
+  const summaryArtifact = latestArtifact(artifacts, "summary");
+  const readableArtifact = latestArtifact(artifacts, "readable_transcript");
+  const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
+  const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
+  const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
+  const readableSegments = readableContent ? recordArray(readableContent.segments) : [];
+  const visibleRawSegments = rawSegments.filter((segment) =>
+    selectedSourceIds.size === 0 || selectedSourceIds.has(segment.id),
+  );
+
+  function playAt(milliseconds: number | null) {
+    if (!audioRef.current || milliseconds == null) return;
+    audioRef.current.currentTime = Math.max(0, milliseconds / 1_000 - 3);
+    void audioRef.current.play().catch(() => undefined);
+  }
+
+  function selectArtifactTab(next: TranscriptArtifactTab) {
+    if (tab === "summary") summaryScrollY.current = window.scrollY;
+    setTab(next);
+    if (next === "summary") {
+      window.setTimeout(() => window.scrollTo({ top: summaryScrollY.current }), 0);
+    }
+  }
+
+  if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
+  if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
+  return <section className="transcript-workspace" aria-label="逐字稿阅读区">
+    <nav className="transcript-subtabs" aria-label="逐字稿版本">
+      <button className={tab === "summary" ? "active" : ""} onClick={() => selectArtifactTab("summary")}>AI 摘要 {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span>未生成</span>}</button>
+      <button className={tab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}</button>
+      <button className={tab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
+    </nav>
+    {transcriptionRun?.audioAssetId && <audio ref={audioRef} controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`} />}
+
+    {tab === "summary" && <div className="artifact-panel summary-artifact">
+      {summaryArtifact ? summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
+        <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
+        <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
+          const ids = stringValues(item.source_segment_ids);
+          const matchedClaim = claims.find((claim) => claim.evidenceRefs.some((ref) => ref.segmentIds.some((id) => ids.includes(id))));
+          return <article key={firstString(item, ["item_key"]) || itemIndex}>
+            <button className="summary-sentence" onClick={() => { summaryScrollY.current = window.scrollY; setSelectedSourceIds(new Set(ids)); setTab("raw"); }}><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q><small>查看 {ids.length} 段原文</small></button>
+            {matchedClaim && <button className="text-button" onClick={() => onOpenClaim(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
+          </article>;
+        })}</div>
+      </section>) : <ArtifactFallback kind="summary" run={summaryRun} busy={busy} onRetry={() => onRetryArtifact(event.id, "summary")} onRaw={() => setTab("raw")} />}
+    </div>}
+
+    {tab === "readable" && <div className="artifact-panel readable-artifact">
+      {readableArtifact ? readableSegments.map((segment, index) => {
+        const key = firstString(segment, ["readable_key"]) || `readable-${index}`;
+        const sourceIds = stringValues(segment.source_segment_ids);
+        const edits = recordArray(segment.edits);
+        const needsCheck = segment.needs_human_check === true;
+        return <article className={needsCheck ? "needs-check" : ""} key={key}>
+          <div className="readable-meta"><button onClick={() => playAt(typeof segment.start_ms === "number" ? segment.start_ms : null)}>{formatTimestamp(typeof segment.start_ms === "number" ? segment.start_ms / 1000 : undefined)}</button><strong>{firstString(segment, ["speaker"]) || "说话人未标注"}</strong>{edits.length > 0 && <span>{edits.length} 处整理</span>}{needsCheck && <em>需要留意</em>}</div>
+          <p>{firstString(segment, ["readable_text"]) || ""}</p>
+          <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button>{edits.length > 0 && <button className="text-button" onClick={() => setOpenDiffs((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })}>{openDiffs.has(key) ? "收起差异" : "查看差异"}</button>}</div>
+          {openDiffs.has(key) && <div className="readable-diff">{edits.map((edit, editIndex) => <div key={editIndex}><del>{firstString(edit, ["original"]) || "（无）"}</del><span>→</span><ins>{firstString(edit, ["replacement"]) || "（删除）"}</ins><small>{firstString(edit, ["reason"])}</small></div>)}</div>}
+        </article>;
+      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={() => onRetryArtifact(event.id, "readable_transcript")} onRaw={() => setTab("raw")} />}
+    </div>}
+
+    {tab === "raw" && <div className="artifact-panel raw-artifact">
+      {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
+      {visibleRawSegments.length ? visibleRawSegments.map((segment) => <article className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</button><strong>{segment.speaker || "说话人未标注"}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+    </div>}
+  </section>;
+}
+
+function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
+  kind: EventAiArtifactRun["kind"];
+  run?: EventAiArtifactRun;
+  busy: string | null;
+  onRetry: () => Promise<void>;
+  onRaw: () => void;
+}) {
+  const name = kind === "summary" ? "AI 摘要" : "易读逐字稿";
+  if (run?.status === "failed") return <div className="artifact-fallback failed"><h3>{name}没有生成</h3><p>{run.error_code || "这一项单独失败；原始逐字稿和事实识别不受影响。"}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+  if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}等待后台启动` : `正在生成${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
+  return <div className="artifact-fallback"><h3>还没有{name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成{name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+}
 
 function SimpleTestScreen({
   projects,
@@ -3200,11 +3575,15 @@ function SimpleTestScreen({
   onConfirmScenario,
   onReview,
   onResult,
+  onOpenClaim,
+  onRetryArtifact,
+  onDeleteProject,
+  onOpenTrash,
 }: SimpleTestScreenProps) {
   const [showImportChoices, setShowImportChoices] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
   const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
-  const [showFullTranscript, setShowFullTranscript] = useState(false);
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
   const [timingNow, setTimingNow] = useState(() => Date.now());
@@ -3214,6 +3593,7 @@ function SimpleTestScreen({
     return leftSample - rightSample || left.name.localeCompare(right.name, "zh-CN");
   });
   const readyAssets = event?.assets.filter(assetIsAnalyzable) ?? [];
+  const visibleAssets = event?.assets.filter((asset) => !assetIsGeneratedAiArtifact(asset)) ?? [];
   const materialsReady = readyAssets.length > 0;
   const transcriptionRunning = Boolean(transcriptionRun && runInProgress.has(transcriptionRun.status));
   const transcriptionDone = transcriptionRun?.status === "succeeded";
@@ -3421,11 +3801,11 @@ function SimpleTestScreen({
 
   return (
     <div className="page simple-page">
-      <header className="simple-header">
+      {!project && <header className="simple-header">
         <span className="eyebrow">Notique Workspace</span>
-        <h1>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "把每次沟通变成可核对的项目记忆"}</h1>
-        <p>{event ? `当前沟通：${event.title}` : "选择已有项目，或用 Transcript、录音和照片开始一次新测试。"}</p>
-      </header>
+        <h1>把每次沟通变成可核对的项目记忆</h1>
+        <p>选择已有项目，或用 Transcript、录音和照片开始一次新测试。</p>
+      </header>}
 
       <section className="simple-session" aria-label="当前项目和沟通">
         <div className="simple-session-copy">
@@ -3457,7 +3837,14 @@ function SimpleTestScreen({
           </label>
           <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button>
         </>}
-        <button className="button secondary simple-new-project" disabled={Boolean(busy)} onClick={onStartOwn}>新建项目</button>
+        <div className="project-menu-wrap">
+          <button className="button secondary project-menu-trigger" disabled={Boolean(busy)} onClick={() => setShowProjectMenu((open) => !open)} aria-expanded={showProjectMenu}>项目菜单 ···</button>
+          {showProjectMenu && <div className="project-menu" role="menu">
+            <button role="menuitem" onClick={() => { setShowProjectMenu(false); onStartOwn(); }}>新建项目</button>
+            <button role="menuitem" onClick={() => { setShowProjectMenu(false); onOpenTrash(); }}>回收站</button>
+            <button role="menuitem" className="danger" disabled={!project} onClick={() => { setShowProjectMenu(false); onDeleteProject(); }}>移到回收站</button>
+          </div>}
+        </div>
       </section>
 
       {needsScenario && (
@@ -3486,12 +3873,13 @@ function SimpleTestScreen({
           <div className="simple-meeting-list">
             {events.map((item, index) => {
               const displayItem = item.id === event?.id ? event : item;
+              const displayAssets = displayItem.assets.filter((asset) => !assetIsGeneratedAiArtifact(asset));
               const itemPending = displayItem.pendingClaimCount + displayItem.pendingOccurrenceCount;
               const itemRun = item.id === event?.id ? (run ?? displayItem.latestRun) : displayItem.latestRun;
               const itemAudioStatus = displayItem.assets.find((asset) => asset.kind === "audio")?.metadata.transcription_status;
               const itemDisplayStatus = deriveGuidedDisplayStatus({
-                assetCount: displayItem.assets.length,
-                analyzableAssetCount: displayItem.assets.filter(assetIsAnalyzable).length,
+                assetCount: displayAssets.length,
+                analyzableAssetCount: displayAssets.filter(assetIsAnalyzable).length,
                 transcriptionStatus: stringValue(itemAudioStatus),
                 runStatus: itemRun?.status,
                 pipelineStage: itemRun?.pipelineStage,
@@ -3501,7 +3889,7 @@ function SimpleTestScreen({
               return (
                 <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => { setActiveTab("materials"); onUseEvent(item.id); }}>
                   <span className="meeting-index">{index + 1}</span>
-                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayItem.assets.length} 份材料</small></span>
+                  <span><strong>{displayItem.title}</strong><small>{formatDate(displayItem.occurredAt || displayItem.createdAt)} · {displayAssets.length} 份材料</small></span>
                   {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <span className={`guided-status ${itemDisplayStatus.tone}`}>{itemDisplayStatus.label}</span>}
                 </button>
               );
@@ -3512,12 +3900,12 @@ function SimpleTestScreen({
 
         <article className="simple-current-event">
           <header className="current-event-header">
-            <div><span className="section-kicker">当前沟通</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${event.assets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一次沟通。"}</p></div>
+            <div><span className="section-kicker">当前沟通</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${visibleAssets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一次沟通。"}</p></div>
             <span className={`current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
-            <button className={activeTab === "materials" ? "active" : ""} onClick={() => setActiveTab("materials")}>材料 <span>{event?.assets.length ?? 0}</span></button>
+            <button className={activeTab === "materials" ? "active" : ""} onClick={() => setActiveTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
             <button className={activeTab === "transcript" ? "active" : ""} onClick={() => setActiveTab("transcript")}>Transcript {transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
             <button className={activeTab === "review" ? "active" : ""} onClick={() => setActiveTab("review")}>待核对 {pendingCount > 0 && <span>{pendingCount}</span>}</button>
             <button className={activeTab === "results" ? "active" : ""} onClick={() => setActiveTab("results")}>结果</button>
@@ -3546,8 +3934,8 @@ function SimpleTestScreen({
                 {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
               </div>}
 
-              {event && event.assets.length > 0 ? <div className="simple-material-list">
-                {event.assets.map((asset) => {
+              {event && visibleAssets.length > 0 ? <div className="simple-material-list">
+                {visibleAssets.map((asset) => {
                   const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
                   const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
@@ -3558,11 +3946,13 @@ function SimpleTestScreen({
           </div>}
 
           {activeTab === "transcript" && <div className="meeting-tab-panel">
-            {transcriptionRun ? <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
-              <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : transcriptionDone ? "录音逐字稿已经生成" : "录音转写没有完成"}</strong><small>{transcriptionDone ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个片段${transcriptionRun.durationMs ? ` · 音频 ${formatTimestamp(transcriptionRun.durationMs / 1000)}` : ""}${transcriptionProcessingDurationMs != null ? ` · 转写用时 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}` : `${transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
-              {transcriptionDone && transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 8).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="button secondary transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}
-              {transcriptionFailed && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}
-            </section> : <div className="tab-empty"><span>T</span><h3>当前没有自动逐字稿</h3><p>上传 Transcript 可以直接分析；录音保存后会在这里显示带说话人和时间点的全文。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
+            {event ? <>
+              {transcriptionRun && !transcriptionDone && <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
+                <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : "录音转写没有完成"}</strong><small>{`${transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
+                {transcriptionFailed && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}
+              </section>}
+              <TranscriptArtifactsPanel key={event.id} event={event} transcriptionRun={transcriptionRun} claims={claims} busy={busy} onOpenClaim={onOpenClaim} onRetryArtifact={onRetryArtifact} />
+            </> : <div className="tab-empty"><span>T</span><h3>先选择一次沟通</h3><p>选择后可在 AI 摘要、易读逐字稿和原始逐字稿之间切换。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
           </div>}
 
           {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div><button className="button primary" disabled={!workflowReviewReady || Boolean(busy)} onClick={onReview}>进入核对</button></div></div>}
@@ -3575,7 +3965,6 @@ function SimpleTestScreen({
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
       {!project && projectsState === "empty" && <p className="simple-footnote">还没有项目。可以点击“新建项目”，也可以直接录音或上传材料，系统会自动创建。</p>}
       {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新处理当前沟通" : "请先选择当前沟通"}</button></div>}
-      {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
   );
 }
@@ -3886,6 +4275,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
   const errorDetails = isRecord(data.error_details) ? data.error_details : null;
   const warnings = errorDetails ? recordArray(errorDetails.warnings) : [];
   const stages = recordArray(data.stages);
+  const artifactRuns = recordArray(data.artifact_runs);
   const validatedOutput = data.validated_output;
   const hasValidatedOutput = validatedOutput !== null && validatedOutput !== undefined;
   const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
@@ -3907,6 +4297,10 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
           : [];
         return <article key={firstString(stage, ["id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{label}</strong><small>{statusLabel(firstString(stage, ["status"]))} · Reasoning {firstString(stage, ["reasoning_effort"]) || "未记录"}</small><small>Input {firstString(stage, ["input_tokens"]) || "—"} · Output {firstString(stage, ["output_tokens"]) || "—"} · {firstString(stage, ["duration_ms"]) || "—"} ms</small>{escalationReasons.length > 0 && <small>升级原因：{escalationReasons.join("、")}</small>}{firstString(stage, ["error_code"]) && <code>{firstString(stage, ["error_code"])}</code>}</div></article>;
       })}</div> : <EmptyState title="还没有阶段记录" body="任务开始调用模型后，这里会显示每一轮的真实状态。" />}</section>
+      <section className="panel debug-section"><div className="section-heading"><div><h2>阅读辅助 Agent</h2><p>摘要和易读逐字稿独立运行；它们不会覆盖原始逐字稿，也不会直接进入正式项目记忆。</p></div></div>{artifactRuns.length ? <div className="manifest-list">{artifactRuns.map((artifactRun, index) => {
+        const kind = firstString(artifactRun, ["kind"]);
+        return <article key={firstString(artifactRun, ["id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{kind === "summary" ? "Summary Agent · AI 摘要" : "Transcript Refiner · 易读逐字稿"}</strong><small>{statusLabel(firstString(artifactRun, ["status"]))} · Luna {firstString(artifactRun, ["reasoning_effort"]) || "high"}</small><small>Input {firstString(artifactRun, ["input_tokens"]) || "—"} · Output {firstString(artifactRun, ["output_tokens"]) || "—"} · Attempt {firstString(artifactRun, ["attempt_no"]) || "0"}</small>{firstString(artifactRun, ["provider_request_id"]) && <code>{firstString(artifactRun, ["provider_request_id"])}</code>}{firstString(artifactRun, ["error_code"]) && <code>{firstString(artifactRun, ["error_code"])}</code>}</div></article>;
+      })}</div> : <EmptyState title="没有阅读辅助记录" body="旧 Run 或没有 Transcript 的 Run 不会生成摘要和易读逐字稿。" />}</section>
       <section className="panel debug-section"><div className="section-heading"><div><h2>验证提醒与错误</h2><p>程序验证没有通过的内容会在这里留下原因。</p></div></div>{warnings.length ? <div className="warning-list">{warnings.map((warning, index) => <article key={`${firstString(warning, ["code"]) || "warning"}:${index}`}><strong>{firstString(warning, ["code"]) || "未命名提醒"}</strong><pre>{JSON.stringify(redactDebugValue(warning), null, 2)}</pre></article>)}</div> : <p className="muted">服务器没有记录 validation warning。</p>}<div className="debug-error-row"><DebugField label="Error code" value={data.error_code} mono /><DebugField label="Outbox error" value={data.outbox_error_code} mono /><DebugField label="Outbox status" value={data.outbox_status} /></div>{errorDetails && !warnings.length && <pre className="debug-json small">{JSON.stringify(redactDebugValue(errorDetails), null, 2)}</pre>}</section>
       <section className="panel debug-section debug-output"><div className="section-heading"><div><h2>validated_output</h2><p>这是通过服务器 Schema 校验后保留下来的模型 JSON，仅供内部排查。</p></div></div>{hasValidatedOutput ? <pre className="debug-json">{JSON.stringify(redactDebugValue(validatedOutput), null, 2)}</pre> : <p className="muted">本次没有模型输出。</p>}</section>
       <section className="panel debug-section"><div className="section-heading"><div><h2>时间</h2><p>每个阶段都直接读取服务器时间。</p></div></div><div className="debug-fields"><DebugField label="Created" value={data.created_at} /><DebugField label="Queued" value={data.queued_at} /><DebugField label="Started" value={data.started_at} /><DebugField label="Finished" value={data.finished_at} /><DebugField label="Updated" value={data.updated_at} /><DebugField label="Next queue attempt" value={data.next_attempt_at} /></div></section>

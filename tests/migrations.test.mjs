@@ -49,6 +49,10 @@ test("all D1 migrations apply from an empty database", async () => {
     "transcription_queue_outbox",
     "review_sessions",
     "ai_draft_assessments",
+    "event_ai_artifact_runs",
+    "event_ai_artifacts",
+    "readable_segment_sources",
+    "event_ai_artifact_chunks",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }

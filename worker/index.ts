@@ -10,6 +10,11 @@ import {
   dispatchTranscriptionRun,
   wakeTranscriptionRun,
 } from "@/lib/server/jobs/transcription-outbox";
+import {
+  dispatchEventAiArtifactRun,
+  dispatchEventAiArtifactsForExtraction,
+  sweepAndDispatchEventAiArtifacts,
+} from "@/lib/server/jobs/event-ai-artifacts";
 
 interface Env {
   ASSETS: Fetcher;
@@ -54,7 +59,7 @@ function dispatchError(
   });
 }
 
-type DispatchKind = "extraction" | "transcription";
+type DispatchKind = "extraction" | "transcription" | "artifact";
 
 async function dispatchInput(
   request: Request,
@@ -72,7 +77,7 @@ async function dispatchInput(
   }
   const body = value as Record<string, unknown>;
   if (
-    (body.kind !== "extraction" && body.kind !== "transcription") ||
+    (body.kind !== "extraction" && body.kind !== "transcription" && body.kind !== "artifact") ||
     typeof body.run_id !== "string" ||
     !body.run_id.trim() ||
     body.run_id.length > 128
@@ -142,7 +147,9 @@ const worker = {
         const workspaceId = env.INTERNAL_WORKSPACE_ID || "ws_internal";
         const table = input.kind === "extraction"
           ? "extraction_runs"
-          : "transcription_runs";
+          : input.kind === "transcription"
+            ? "transcription_runs"
+            : "event_ai_artifact_runs";
         const run = await env.DB
           .prepare(`SELECT status FROM ${table} WHERE id = ? AND workspace_id = ?`)
           .bind(input.runId, workspaceId)
@@ -151,7 +158,19 @@ const worker = {
           return dispatchError(404, "PROJECT_SCOPE_VIOLATION", "Run was not found.", requestId);
         }
         if (input.kind === "extraction") {
-          ctx.waitUntil(dispatchExtractionRun(workspaceId, input.runId).catch((error) => {
+          ctx.waitUntil(Promise.all([
+            dispatchExtractionRun(workspaceId, input.runId),
+            dispatchEventAiArtifactsForExtraction(workspaceId, input.runId),
+          ]).catch((error) => {
+            console.error("targeted_dispatch_failed", {
+              request_id: requestId,
+              kind: input.kind,
+              run_id: input.runId,
+              message: error instanceof Error ? error.message : "Unexpected error",
+            });
+          }));
+        } else if (input.kind === "artifact") {
+          ctx.waitUntil(dispatchEventAiArtifactRun(workspaceId, input.runId).catch((error) => {
             console.error("targeted_dispatch_failed", {
               request_id: requestId,
               kind: input.kind,
@@ -190,7 +209,7 @@ const worker = {
           return dispatchError(
             400,
             "BAD_REQUEST",
-            "kind and run_id must identify an extraction or transcription Run.",
+            "kind and run_id must identify an extraction, transcription, or AI artifact Run.",
             requestId,
           );
         }
@@ -205,7 +224,7 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
   scheduled(_controller: unknown, _env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(sweepAndDispatch());
+    ctx.waitUntil(Promise.all([sweepAndDispatch(), sweepAndDispatchEventAiArtifacts()]));
   },
 };
 

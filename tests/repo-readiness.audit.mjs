@@ -996,8 +996,8 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
-    "a visible browser kick must target one extraction Run for a short checkpoint",
+    /ctx\.waitUntil\(Promise\.all\(\[[\s\S]{0,300}dispatchExtractionRun\(workspaceId,\s*input\.runId\)[\s\S]{0,200}dispatchEventAiArtifactsForExtraction\(workspaceId,\s*input\.runId\)/,
+    "one visible browser kick must checkpoint the extraction and its independent reading artifacts",
   );
   assert.match(
     worker,
@@ -1006,7 +1006,7 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/,
+    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/,
     "the scheduled recovery path must continue sweeping stale leases",
   );
 });
@@ -1276,7 +1276,7 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/);
+  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(
     worker,
     /if\s*\(env\.APP_ENV\s*!==\s*["']local["']\)[\s\S]{0,900}sameOrigin[\s\S]{0,500}authenticated/,
@@ -1284,8 +1284,8 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   );
   assert.match(
     worker,
-    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
-    "targeted extraction may use HTTP waitUntil only for its short background checkpoint",
+    /ctx\.waitUntil\(Promise\.all\(\[[\s\S]{0,300}dispatchExtractionRun\(workspaceId,\s*input\.runId\)[\s\S]{0,200}dispatchEventAiArtifactsForExtraction\(workspaceId,\s*input\.runId\)/,
+    "targeted extraction and its reading artifacts may use HTTP waitUntil only for short background checkpoints",
   );
   assert.match(
     localAudioBranch,

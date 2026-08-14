@@ -14,13 +14,22 @@ import {
   getEvidenceRef,
   getExtractionRun,
   getProject,
+  getProjectDeletePreview,
   getRunClaims,
   initializeAsset,
   listEvents,
   listProjects,
+  listDeletedProjects,
+  moveProjectToTrash,
+  restoreProject,
+  permanentlyDeleteProject,
   uploadAssetContent,
   uploadTranscriptImportItem,
 } from "@/lib/server/db/core-repository";
+import {
+  createEventAiArtifactRetry,
+  listEventAiArtifacts,
+} from "@/lib/server/db/event-ai-artifact-repository";
 import {
   buildProjectAgenda,
   buildProjectBrief,
@@ -127,6 +136,7 @@ const GLOSSARY_CATEGORIES = [
   "material",
   "property",
 ] as const;
+const ARTIFACT_KINDS = ["summary", "readable_transcript"] as const;
 
 function record(value: unknown, field: string): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -310,8 +320,14 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 1 && segments[0] === "projects") {
     return ok({ projects: await listProjects(scope) }, id);
   }
+  if (segments.length === 2 && segments[0] === "projects" && segments[1] === "trash") {
+    return ok({ projects: await listDeletedProjects(scope) }, id);
+  }
   if (segments.length === 2 && segments[0] === "projects") {
     return ok({ project: await getProject(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "delete-preview") {
+    return ok({ preview: await getProjectDeletePreview(scope, segments[1]) }, id);
   }
   if (
     segments.length === 3 &&
@@ -331,6 +347,9 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "transcript-segments") {
     return ok({ segments: await listEventTranscriptSegments(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "ai-artifacts") {
+    return ok(await listEventAiArtifacts(scope, segments[1]), id);
   }
   if (
     segments.length === 3 &&
@@ -539,6 +558,25 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
           : requiredString(body.locale, "locale", { max: 35 }),
     }, idempotencyKey(request));
     return ok({ project }, id, 201);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "restore") {
+    await jsonObject(request);
+    return ok({ project: await restoreProject(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (
+    segments.length === 5 &&
+    segments[0] === "events" &&
+    segments[2] === "ai-artifacts" &&
+    segments[4] === "retry"
+  ) {
+    await jsonObject(request);
+    const artifactRun = await createEventAiArtifactRetry(
+      scope,
+      segments[1],
+      enumValue(segments[3], "artifact_kind", ARTIFACT_KINDS),
+      idempotencyKey(request),
+    );
+    return ok({ artifact_run: artifactRun }, id, 201);
   }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "glossary") {
     const body = await jsonObject(request);
@@ -932,6 +970,20 @@ async function deleteHandler(request: Request, segments: string[], id: string): 
       idempotencyKey(request),
     );
     return ok({ glossary_entry: glossaryEntry }, id);
+  }
+  if (segments.length === 2 && segments[0] === "projects") {
+    await jsonObject(request);
+    return ok({ project: await moveProjectToTrash(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "permanent") {
+    const body = await jsonObject(request);
+    const result = await permanentlyDeleteProject(
+      scope,
+      segments[1],
+      requiredString(body.confirm_name, "confirm_name", { max: 200 }),
+      idempotencyKey(request),
+    );
+    return ok({ project_id: result.projectId, permanently_deleted: true }, id);
   }
   throw new ApiFault(404, "NOT_FOUND", "API route was not found.");
 }

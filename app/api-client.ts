@@ -39,6 +39,13 @@ import type {
   ListEventsResponse,
   ListGlossaryEntriesResponse,
   ListProjectsResponse,
+  ListDeletedProjectsResponse,
+  ProjectDeletePreviewResponse,
+  ProjectMutationResponse,
+  PermanentProjectDeleteResponse,
+  EventAiArtifactsResponse,
+  EventAiArtifactRecord,
+  EventAiArtifactRunRecord,
   ManualRelationTargetRecord,
   ManualRelationType,
   OccurrenceCandidateRecord,
@@ -64,6 +71,9 @@ export type AiDraftAssessment = AiDraftAssessmentRecord;
 export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project"> & {
   project: Project;
 };
+export type EventAiArtifactRun = EventAiArtifactRunRecord;
+export type EventAiArtifact = EventAiArtifactRecord;
+export type ProjectDeletePreview = ProjectDeletePreviewResponse["data"]["preview"];
 
 export type RunReview = {
   claims: Claim[];
@@ -122,6 +132,7 @@ export type Project = {
   scenarioVersion?: number;
   scenario?: { key: string; label: string };
   scenarioCandidates?: ScenarioCandidate[];
+  deletedAt?: string;
 };
 
 export type ReviewSession = {
@@ -417,6 +428,7 @@ export function normalizeProject(value: unknown): Project {
     scenarioVersion: asNumber(pick(source, ["scenario_version", "scenarioVersion"])),
     scenario: scenario?.key ? { key: scenario.key, label: scenario.label || scenario.key } : undefined,
     scenarioCandidates: rawCandidates.map(normalizeScenarioCandidate).filter((item): item is ScenarioCandidate => Boolean(item)),
+    deletedAt: asString(pick(source, ["deleted_at", "deletedAt"]), undefined as unknown as string) || undefined,
   };
 }
 
@@ -781,6 +793,78 @@ export const api = {
     return requireId(normalizeProject(body.data.project), "project");
   },
 
+  async listDeletedProjects(): Promise<Project[]> {
+    const body = await request<ListDeletedProjectsResponse>("/api/v1/projects/trash", { cache: "no-store" });
+    return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
+  },
+
+  async getProjectDeletePreview(projectId: Id) {
+    const body = await request<ProjectDeletePreviewResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/delete-preview`,
+      { cache: "no-store" },
+    );
+    return body.data.preview;
+  },
+
+  async moveProjectToTrash(projectId: Id, idempotencyKey: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async restoreProject(projectId: Id, idempotencyKey: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/restore`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async permanentlyDeleteProject(projectId: Id, confirmName: string, idempotencyKey: string): Promise<void> {
+    const body = await request<PermanentProjectDeleteResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/permanent`,
+      {
+        method: "DELETE",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ confirm_name: confirmName }),
+      },
+    );
+    if (body.data.project_id !== projectId || body.data.permanently_deleted !== true) {
+      invalidContract("The server returned an invalid permanent deletion result.");
+    }
+  },
+
+  async getEventAiArtifacts(eventId: Id): Promise<{
+    runs: EventAiArtifactRunRecord[];
+    artifacts: EventAiArtifactRecord[];
+  }> {
+    const body = await request<EventAiArtifactsResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/ai-artifacts`,
+      { cache: "no-store" },
+    );
+    return body.data;
+  },
+
+  async retryEventAiArtifact(
+    eventId: Id,
+    kind: EventAiArtifactRunRecord["kind"],
+    idempotencyKey: string,
+  ): Promise<EventAiArtifactRunRecord> {
+    const body = await request<ApiSuccess<{ artifact_run: EventAiArtifactRunRecord }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/ai-artifacts/${encodeURIComponent(kind)}/retry`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    return body.data.artifact_run;
+  },
+
   async getWorkflowSnapshot(projectId: Id): Promise<WorkflowSnapshot> {
     const body = await request<GetWorkflowSnapshotResponse>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/workflow-snapshot`,
@@ -1064,7 +1148,7 @@ export const api = {
   },
 
   async kickDispatcher(target?: {
-    kind: "extraction" | "transcription";
+    kind: "extraction" | "transcription" | "artifact";
     runId: Id;
   }): Promise<void> {
     await request<unknown>("/api/v1/jobs/dispatch", {
@@ -1115,6 +1199,7 @@ export const api = {
     if (
       !isRecord(body.data.debug) ||
       !Array.isArray(body.data.debug.stages) ||
+      !Array.isArray(body.data.debug.artifact_runs) ||
       !body.request_id
     ) {
       invalidContract("The server returned an invalid run debug response.");

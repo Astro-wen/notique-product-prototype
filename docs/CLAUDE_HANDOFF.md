@@ -1,6 +1,6 @@
 # Notique 交接文档：给 Claude
 
-更新日期：2026 年 8 月 12 日
+更新日期：2026 年 8 月 13 日
 
 读完这份文档后，接手者应当可以继续当前工作，不需要从聊天记录重新猜项目目标。
 
@@ -29,6 +29,8 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 7. Preference 当前状态与历史变化。
 8. 使用一段公开许可的业务会议音频做小规模真实验证。
 9. 更新 Eric 可读文档、用户说明和验收清单。
+10. 原始 Transcript、易读 Transcript 和 AI Summary 三层分离。
+11. Project soft delete、回收站、恢复和 R2-first 永久删除。
 
 ### 2.2 保留不动的核心规则
 
@@ -37,7 +39,7 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 3. 两个 Agent 共用一个 OpenAI API Key。
 4. 不取消 Claim、Occurrence、Evidence 或 Relation 人工审核。
 5. 不重写 Ledger、模型合同和核心数据层。
-6. 不增加“文案整理 Agent”。
+6. 不增加会改写正式报告的“文案整理 Agent”；Summary 与 Transcript Refiner 只生成阅读辅助，不能写入 Verified Ledger。
 7. 不以降低 reasoning effort 换速度。
 
 ### 2.3 这轮不做
@@ -62,6 +64,12 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 8. Evidence context 合同默认返回目标句前两段和后两段，并支持精确高亮与音频定位。
 9. Timeline moments 表达新增、取代、解决、矛盾、再次确认和撤回。
 10. Preference 数据提供当前值、条件、决策人、首次出现、最近确认和历史变化。
+11. Summary Agent 与 Transcript Refiner 均使用 Luna `high` 和 OpenAI Background Responses；它们与事实识别并行、独立失败和独立重试。
+12. 易读稿对原始 Segment 做 100% 映射，长会议按最多 120 段或约 45,000 字符分块续跑；最终全局校验遗漏、重复、顺序、金额、日期、数量和否定词。
+13. Agent A 继续 raw-only；Agent B 只能把易读稿当阅读辅助，正式 Evidence 仍引用原始 Segment。
+14. 项目支持 soft delete、回收站恢复和永久删除。永久删除使用持久 purge lock，并先删 R2 再删 D1，避免恢复和清理并发造成半删除状态。
+
+第 11–14 项目前只存在于本地待发布工作树：空库迁移、生产构建、敏感信息审计和 `npm test` 259/259 通过；本地已实际验证桌面与 390px 手机布局、Transcript 三视图，以及项目删除、恢复和永久删除。尚未发布到 Sites v17，也没有付费生成真实 Summary/易读稿，不能写成 live 已通过。
 
 上述代码已经发布为 Sites v17。桌面端已用现有 Verified 数据完成线上只读验收：
 

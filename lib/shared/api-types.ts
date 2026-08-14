@@ -26,6 +26,8 @@ export type TranscriptionRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled";
+export type EventAiArtifactKind = "summary" | "readable_transcript";
+export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type ClaimReviewStatus = "pending" | "verified" | "rejected";
 export type ClaimLifecycleStatus =
   | "active"
@@ -107,6 +109,57 @@ export type ProjectRecord = {
   event_count: number;
   pending_claim_count: number;
   pending_occurrence_count: number;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectDeletePreviewRecord = {
+  project_id: string;
+  project_name: string;
+  event_count: number;
+  material_count: number;
+  pending_count: number;
+  active_job_count: number;
+  can_delete: boolean;
+};
+
+export type EventAiArtifactRunRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  extraction_run_id: string;
+  kind: EventAiArtifactKind;
+  status: EventAiArtifactRunStatus;
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  prompt_version: string;
+  schema_version: string;
+  attempt_no: number;
+  provider_request_id: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  error_code: string | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EventAiArtifactRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  run_id: string;
+  kind: EventAiArtifactKind;
+  artifact_version: number;
+  input_hash: string;
+  content: unknown;
+  derived_asset_id: string | null;
+  derived_asset_version_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -344,6 +397,7 @@ export type ExtractionModelStageDebugRecord = Omit<
 
 export type ExtractionRunDebugRecord = Record<string, unknown> & {
   stages: ExtractionModelStageDebugRecord[];
+  artifact_runs: EventAiArtifactRunRecord[];
 };
 
 export type TranscriptionSegmentRecord = {
@@ -733,6 +787,10 @@ export type CreateProjectRequest = { name: string; locale?: string };
 export type CreateProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
 export type GetProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type ListDeletedProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
+export type ProjectDeletePreviewResponse = ApiSuccess<{ preview: ProjectDeletePreviewRecord }>;
+export type ProjectMutationResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type PermanentProjectDeleteResponse = ApiSuccess<{ project_id: string; permanently_deleted: true }>;
 
 export type CreateEventRequest = {
   event_type: EventRecord["event_type"];
@@ -772,6 +830,10 @@ export type CreateExtractionRunResponse = ApiSuccess<{
 }>;
 export type GetExtractionRunResponse = ApiSuccess<{
   run: ExtractionRunRecord;
+}>;
+export type EventAiArtifactsResponse = ApiSuccess<{
+  runs: EventAiArtifactRunRecord[];
+  artifacts: EventAiArtifactRecord[];
 }>;
 
 export type WorkflowDisplayStatus =
@@ -855,6 +917,10 @@ export type WorkflowSnapshotRecord = {
       finished_at: string | null;
       updated_at: string;
     } | null;
+    ai_artifacts: {
+      summary: EventAiArtifactRunRecord | null;
+      readable_transcript: EventAiArtifactRunRecord | null;
+    };
     pending_claim_count: number;
     pending_occurrence_count: number;
     candidate_count: number;

@@ -1,5 +1,6 @@
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { buildContextPack, type ContextPack, type ContextPackAsset } from "@/lib/domain/context-pack";
+import { validateReadableTranscriptOutput } from "@/lib/domain/event-ai-artifacts";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
   isSupportedModelImageMime,
@@ -192,6 +193,21 @@ class ProcessingFault extends Error {
   ) {
     super(message);
     this.name = "ProcessingFault";
+  }
+}
+
+/**
+ * Internal control-flow signal: Agent A has finished, but the independently
+ * generated readable transcript has not reached a terminal state yet. Keep
+ * the successful inventory stage, release the Worker lease, and resume Agent
+ * B later instead of silently falling back to raw-only.
+ */
+class ReadableTranscriptPendingError extends Error {
+  readonly code = "READABLE_TRANSCRIPT_PENDING";
+
+  constructor() {
+    super("Readable transcript is still being generated.");
+    this.name = "ReadableTranscriptPendingError";
   }
 }
 
@@ -771,6 +787,145 @@ async function persistContextSnapshot(
       .bind(contextSnapshotHash, inputSnapshotHash, imageUnits, timestamp, run.id, owner),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
+}
+
+async function contextWithReadableTranscript(
+  run: Row,
+  base: ContextPack,
+  warnings: Array<Record<string, unknown>>,
+): Promise<ContextPack> {
+  const frozen = parseJson<Record<string, unknown>>(String(run.model_params_json ?? "{}"), {});
+  if (frozen.verification_uses_readable === false || getBindings().AI_VERIFICATION_USES_READABLE === "0") {
+    return base;
+  }
+  const row = await first(
+    `SELECT ar.status, ar.error_code, a.content_json
+       FROM event_ai_artifact_runs ar
+       LEFT JOIN event_ai_artifacts a ON a.run_id = ar.id
+      WHERE ar.extraction_run_id = ? AND ar.kind = 'readable_transcript'
+      ORDER BY ar.created_at DESC LIMIT 1`,
+    [run.id],
+  );
+  if (row && ["queued", "processing"].includes(String(row.status))) {
+    throw new ReadableTranscriptPendingError();
+  }
+  if (!row || String(row.status) !== "succeeded" || row.content_json == null) {
+    warnings.push({
+      code: String(row?.status) === "failed"
+        ? "READABLE_TRANSCRIPT_FAILED_RAW_ONLY"
+        : "READABLE_TRANSCRIPT_NOT_READY_RAW_ONLY",
+      error_code: row?.error_code == null ? null : String(row.error_code),
+    });
+    return base;
+  }
+  const candidate = parseJson(String(row.content_json), null);
+  const validation = validateReadableTranscriptOutput(candidate, {
+    eventId: base.new_event.event_id,
+    segments: base.new_event.transcript_segments,
+  });
+  if (!validation.valid || !validation.output) {
+    warnings.push({ code: "READABLE_TRANSCRIPT_INVALID_RAW_ONLY" });
+    return base;
+  }
+  return {
+    ...base,
+    new_event: {
+      ...base.new_event,
+      readable_transcript_segments: validation.output.segments.map((segment) => ({
+        readableSegmentKey: segment.readable_key,
+        sourceSegmentIds: [...segment.source_segment_ids],
+        speaker: segment.speaker,
+        startMs: segment.start_ms,
+        endMs: segment.end_ms,
+        readableText: segment.readable_text,
+        requiresAttention: segment.needs_human_check,
+      })),
+    },
+  };
+}
+
+async function releaseRunForReadableTranscriptPoll(
+  run: Row,
+  owner: string,
+  dispatchOutboxOwner: string | undefined,
+): Promise<ExtractionProcessResult> {
+  const timestamp = now();
+  const nextPollAt = plusMilliseconds(timestamp, 5_000);
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) AND (
+           ? IS NULL OR EXISTS (
+             SELECT 1 FROM queue_outbox
+              WHERE run_id = ? AND status = 'sending' AND lease_owner = ?
+           )
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        run.id,
+        owner,
+        dispatchOutboxOwner ?? null,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        timestamp,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                current_queued_at = ?, error_code = NULL,
+                error_details_json = '{"readable_transcript_pending":true}',
+                updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(timestamp, timestamp, run.id, owner),
+    getD1()
+      .prepare(
+        `UPDATE projects
+            SET scenario_lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
+            AND scenario_assessment_run_id = ?`,
+      )
+      .bind(
+        plusMilliseconds(timestamp, EXTRACTION_RUN_LEASE_MS + 5 * 60_000),
+        timestamp,
+        run.project_id,
+        run.workspace_id,
+        run.id,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'READABLE_TRANSCRIPT_PENDING', updated_at = ?
+          WHERE run_id = ? AND status = 'sending'
+            AND (? IS NULL OR lease_owner = ?)`,
+      )
+      .bind(
+        nextPollAt,
+        timestamp,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        dispatchOutboxOwner ?? null,
+      ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return {
+    runId: String(run.id),
+    status: "background_pending",
+    persistedClaims: 0,
+    occurrenceCandidates: 0,
+    warningCount: 0,
+    errorCode: "READABLE_TRANSCRIPT_PENDING",
+  };
 }
 
 function prepareEvidence(
@@ -1627,10 +1782,17 @@ export async function processExtractionRun(
       });
       completedUsage = inventoryStage.usage;
 
+      const verificationContext = await contextWithReadableTranscript(
+        leased,
+        input.contextPack,
+        pipelineWarnings,
+      );
+
       const verifyInputHash = await hashText(JSON.stringify({
         run_input_hash: leased.input_hash,
         context_snapshot_hash: input.contextSnapshotHash,
         inventory: inventoryStage.output,
+        readable_transcript_segments: verificationContext.new_event.readable_transcript_segments,
         stage: "verify",
         prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
         schema: VERIFICATION_SCHEMA_VERSION,
@@ -1657,10 +1819,10 @@ export async function processExtractionRun(
           validate: (value) => validateVerificationOutput(
             value,
             inventoryStage.output,
-            input.contextPack,
+            verificationContext,
           ).output,
           invoke: (stageOptions) => verifierProvider.verifyClaims(
-            input.contextPack,
+            verificationContext,
             inventoryStage.output,
             { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
           ),
@@ -1681,7 +1843,7 @@ export async function processExtractionRun(
       let assessment = assessVerificationEscalation(
         inventoryStage.output,
         acceptedVerification ?? {},
-        input.contextPack,
+        verificationContext,
       );
       if (assessment.required) {
         const escalatedProvider = createModelProvider(getBindings(), {
@@ -1712,10 +1874,10 @@ export async function processExtractionRun(
             validate: (value) => validateVerificationOutput(
               value,
               inventoryStage.output,
-              input.contextPack,
+              verificationContext,
             ).output,
             invoke: (stageOptions) => escalatedProvider.verifyClaims(
-              input.contextPack,
+              verificationContext,
               inventoryStage.output,
               {
                 ...stageOptions,
@@ -1739,7 +1901,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               acceptedVerification,
               escalatedStage.output,
-              input.contextPack,
+              verificationContext,
             );
             acceptedVerification = selection.output;
             assessment = selection.assessment;
@@ -1754,7 +1916,7 @@ export async function processExtractionRun(
             assessment = assessVerificationEscalation(
               inventoryStage.output,
               acceptedVerification,
-              input.contextPack,
+              verificationContext,
             );
           }
         } catch (error) {
@@ -1827,6 +1989,16 @@ export async function processExtractionRun(
       String(leased.model_params_json ?? "{}"),
       {},
     );
+    if (
+      frozenModelParams.two_pass_pipeline === true &&
+      error instanceof ReadableTranscriptPendingError
+    ) {
+      return releaseRunForReadableTranscriptPoll(
+        leased,
+        owner,
+        options?.dispatchOutboxOwner,
+      );
+    }
     if (
       frozenModelParams.two_pass_pipeline === true &&
       error instanceof ModelBackgroundPendingError

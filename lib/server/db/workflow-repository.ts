@@ -9,6 +9,7 @@ import type { RequestScope } from "@/lib/server/http/context";
 import type {
   ExtractionModelStageName,
   ExtractionRunStatus,
+  EventAiArtifactRunRecord,
   MaterialStatus,
   TranscriptionRunStatus,
   WorkflowSnapshotRecord,
@@ -22,6 +23,35 @@ function integer(row: Row, key: string): number {
 
 function nullableText(row: Row, key: string): string | null {
   return row[key] == null ? null : String(row[key]);
+}
+
+function artifactRun(row: Row, prefix: "summary" | "readable"): EventAiArtifactRunRecord | null {
+  const runId = nullableText(row, `${prefix}_run_id`);
+  if (!runId) return null;
+  return {
+    id: runId,
+    project_id: String(row[`${prefix}_project_id`]),
+    event_id: String(row[`${prefix}_event_id`]),
+    extraction_run_id: String(row[`${prefix}_extraction_run_id`]),
+    kind: String(row[`${prefix}_kind`]) as EventAiArtifactRunRecord["kind"],
+    status: String(row[`${prefix}_status`]) as EventAiArtifactRunRecord["status"],
+    provider: String(row[`${prefix}_provider`]),
+    model: String(row[`${prefix}_model`]),
+    reasoning_effort: String(row[`${prefix}_reasoning_effort`]),
+    prompt_version: String(row[`${prefix}_prompt_version`]),
+    schema_version: String(row[`${prefix}_schema_version`]),
+    attempt_no: integer(row, `${prefix}_attempt_no`),
+    provider_request_id: nullableText(row, `${prefix}_provider_request_id`),
+    input_tokens: row[`${prefix}_input_tokens`] == null ? null : integer(row, `${prefix}_input_tokens`),
+    output_tokens: row[`${prefix}_output_tokens`] == null ? null : integer(row, `${prefix}_output_tokens`),
+    cached_tokens: row[`${prefix}_cached_tokens`] == null ? null : integer(row, `${prefix}_cached_tokens`),
+    error_code: nullableText(row, `${prefix}_error_code`),
+    queued_at: String(row[`${prefix}_queued_at`]),
+    started_at: nullableText(row, `${prefix}_started_at`),
+    finished_at: nullableText(row, `${prefix}_finished_at`),
+    created_at: String(row[`${prefix}_created_at`]),
+    updated_at: String(row[`${prefix}_updated_at`]),
+  };
 }
 
 export async function getWorkflowSnapshot(
@@ -67,6 +97,50 @@ export async function getWorkflowSnapshot(
               tr.error_code AS transcription_error_code,
               tr.attempt_no AS transcription_attempt_no,
               COALESCE(tqo.attempt, 0) AS transcription_dispatch_attempt,
+              sr.id AS summary_run_id,
+              sr.project_id AS summary_project_id,
+              sr.event_id AS summary_event_id,
+              sr.extraction_run_id AS summary_extraction_run_id,
+              sr.kind AS summary_kind,
+              sr.status AS summary_status,
+              sr.provider AS summary_provider,
+              sr.model AS summary_model,
+              sr.reasoning_effort AS summary_reasoning_effort,
+              sr.prompt_version AS summary_prompt_version,
+              sr.schema_version AS summary_schema_version,
+              sr.attempt_no AS summary_attempt_no,
+              sr.provider_request_id AS summary_provider_request_id,
+              sr.input_tokens AS summary_input_tokens,
+              sr.output_tokens AS summary_output_tokens,
+              sr.cached_tokens AS summary_cached_tokens,
+              sr.error_code AS summary_error_code,
+              sr.queued_at AS summary_queued_at,
+              sr.started_at AS summary_started_at,
+              sr.finished_at AS summary_finished_at,
+              sr.created_at AS summary_created_at,
+              sr.updated_at AS summary_updated_at,
+              rr.id AS readable_run_id,
+              rr.project_id AS readable_project_id,
+              rr.event_id AS readable_event_id,
+              rr.extraction_run_id AS readable_extraction_run_id,
+              rr.kind AS readable_kind,
+              rr.status AS readable_status,
+              rr.provider AS readable_provider,
+              rr.model AS readable_model,
+              rr.reasoning_effort AS readable_reasoning_effort,
+              rr.prompt_version AS readable_prompt_version,
+              rr.schema_version AS readable_schema_version,
+              rr.attempt_no AS readable_attempt_no,
+              rr.provider_request_id AS readable_provider_request_id,
+              rr.input_tokens AS readable_input_tokens,
+              rr.output_tokens AS readable_output_tokens,
+              rr.cached_tokens AS readable_cached_tokens,
+              rr.error_code AS readable_error_code,
+              rr.queued_at AS readable_queued_at,
+              rr.started_at AS readable_started_at,
+              rr.finished_at AS readable_finished_at,
+              rr.created_at AS readable_created_at,
+              rr.updated_at AS readable_updated_at,
               COALESCE((SELECT COUNT(*) FROM claims c
                 WHERE c.extraction_run_id = e.active_run_id
                   AND c.workspace_id = e.workspace_id), 0) +
@@ -93,6 +167,18 @@ export async function getWorkflowSnapshot(
             ORDER BY latest.created_at DESC LIMIT 1
          )
          LEFT JOIN transcription_queue_outbox tqo ON tqo.run_id = tr.id
+         LEFT JOIN event_ai_artifact_runs sr ON sr.id = (
+           SELECT latest.id FROM event_ai_artifact_runs latest
+            WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
+              AND latest.kind = 'summary'
+            ORDER BY latest.created_at DESC LIMIT 1
+         )
+         LEFT JOIN event_ai_artifact_runs rr ON rr.id = (
+           SELECT latest.id FROM event_ai_artifact_runs latest
+            WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
+              AND latest.kind = 'readable_transcript'
+            ORDER BY latest.created_at DESC LIMIT 1
+         )
         WHERE e.project_id = ? AND e.workspace_id = ?
         ORDER BY e.sequence_no ASC`,
     )
@@ -163,6 +249,10 @@ export async function getWorkflowSnapshot(
             updated_at: String(row.extraction_updated_at),
           }
         : null,
+      ai_artifacts: {
+        summary: artifactRun(row, "summary"),
+        readable_transcript: artifactRun(row, "readable"),
+      },
       pending_claim_count: pendingClaimCount,
       pending_occurrence_count: pendingOccurrenceCount,
       candidate_count: candidateCount,

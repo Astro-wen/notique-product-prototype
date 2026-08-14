@@ -14,6 +14,16 @@
 - 离线评测：固定公式计算 Recall、Precision、Evidence、Citation、关系、重提、稳定性和 Brief 指标，并单独判断样本量是否达到正式门槛
 - ModelProvider 边界：OpenAI 兼容接口已经接好。未配置密钥时明确失败，不会生成占位 Claim
 - 后台任务：D1 Outbox、租约、重试、失败收口和每分钟定时 Sweep 已接好；OpenAI 长模型阶段可以按已保存的 Background Response ID 恢复，也可以通过受保护的内部接口手动触发
+- 阅读辅助：原始 Transcript 永久保留；Luna `high` 独立生成带原始引用的 AI 摘要和 100% Segment 映射的易读逐字稿。长逐字稿按固定边界分块续跑，任何遗漏、重复、乱序或敏感数字变化都会整份回退 raw-only
+- 项目管理：项目可移到回收站、恢复或永久删除；永久删除先清 R2 文件再删 D1，运行中项目不能删除
+
+## 用户看到的 Transcript 三层
+
+1. **AI 摘要**：用于快速读重点，每条重点都有原始 Segment 和逐字支持句。
+2. **易读逐字稿**：完整内容的可读版本，补标点和分段，并显示每处修改；不能代替 Evidence。
+3. **原始逐字稿**：不可覆盖的审计来源，所有 Claim 引文、时间点和音频播放都回到这里。
+
+Summary Agent、Transcript Refiner 和事实识别共用现有 `AI_API_KEY`。前两者使用 Luna `high`，事实盘点 Agent A 保持 Luna `xhigh`，事实核对 Agent B 保持 Luna `high`。
 
 ## 本地运行
 

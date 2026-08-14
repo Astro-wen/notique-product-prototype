@@ -24,6 +24,16 @@ export type ContextPackAsset = {
   modelUrl: string;
 };
 
+export type ReadableTranscriptContextSegment = {
+  readableSegmentKey: string;
+  sourceSegmentIds: string[];
+  speaker: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  readableText: string;
+  requiresAttention: boolean;
+};
+
 export type ContextPack = {
   schema_version: typeof CONTEXT_PACK_SCHEMA_VERSION;
   project: {
@@ -48,6 +58,12 @@ export type ContextPack = {
   new_event: {
     event_id: string;
     transcript_segments: TranscriptSegment[];
+    /**
+     * Optional reading aid for the verification stage. It is never an
+     * authoritative Evidence source; every final citation still resolves
+     * against transcript_segments above.
+     */
+    readable_transcript_segments: ReadableTranscriptContextSegment[];
     photos: ContextPackAsset[];
     documents: ContextPackAsset[];
   };
@@ -147,6 +163,7 @@ export function buildContextPack(input: {
     new_event: {
       event_id: input.eventId,
       transcript_segments: input.transcriptSegments.map((segment) => ({ ...segment })),
+      readable_transcript_segments: [],
       photos: [...(input.photos ?? [])],
       documents: [...(input.documents ?? [])],
     },

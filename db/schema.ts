@@ -542,6 +542,149 @@ export const transcriptionQueueOutbox = sqliteTable(
   ],
 );
 
+export const eventAiArtifactRuns = sqliteTable(
+  "event_ai_artifact_runs",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    extractionRunId: text("extraction_run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["summary", "readable_transcript"] }).notNull(),
+    status: text("status", {
+      enum: ["queued", "processing", "succeeded", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    inputHash: text("input_hash").notNull(),
+    inputManifestJson: text("input_manifest_json").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    reasoningEffort: text("reasoning_effort").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    providerRequestId: text("provider_request_id"),
+    validatedOutputJson: text("validated_output_json"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cachedTokens: integer("cached_tokens"),
+    attemptNo: integer("attempt_no").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    errorCode: text("error_code"),
+    errorDetailsJson: text("error_details_json"),
+    queuedAt: text("queued_at").notNull(),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifact_runs_idempotency").on(
+      table.eventId,
+      table.kind,
+      table.idempotencyKey,
+    ),
+    index("idx_event_ai_artifact_runs_dispatch").on(
+      table.status,
+      table.nextAttemptAt,
+      table.leaseExpiresAt,
+    ),
+    index("idx_event_ai_artifact_runs_extraction").on(table.extractionRunId, table.kind),
+  ],
+);
+
+export const eventAiArtifacts = sqliteTable(
+  "event_ai_artifacts",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => eventAiArtifactRuns.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["summary", "readable_transcript"] }).notNull(),
+    artifactVersion: integer("artifact_version").notNull(),
+    inputHash: text("input_hash").notNull(),
+    contentJson: text("content_json").notNull(),
+    derivedAssetId: text("derived_asset_id"),
+    derivedAssetVersionId: text("derived_asset_version_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifacts_input").on(table.eventId, table.kind, table.inputHash),
+    uniqueIndex("uq_event_ai_artifacts_run").on(table.runId),
+    index("idx_event_ai_artifacts_event_kind").on(table.eventId, table.kind, table.createdAt),
+  ],
+);
+
+export const eventAiArtifactChunks = sqliteTable(
+  "event_ai_artifact_chunks",
+  {
+    id: text("id").primaryKey(),
+    artifactRunId: text("artifact_run_id")
+      .notNull()
+      .references(() => eventAiArtifactRuns.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    inputHash: text("input_hash").notNull(),
+    status: text("status", { enum: ["queued", "processing", "succeeded", "failed"] })
+      .notNull()
+      .default("queued"),
+    providerRequestId: text("provider_request_id"),
+    validatedOutputJson: text("validated_output_json"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cachedTokens: integer("cached_tokens"),
+    attemptNo: integer("attempt_no").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifact_chunks_order").on(table.artifactRunId, table.chunkIndex),
+    index("idx_event_ai_artifact_chunks_status").on(table.artifactRunId, table.status),
+  ],
+);
+
+export const readableSegmentSources = sqliteTable(
+  "readable_segment_sources",
+  {
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => eventAiArtifacts.id, { onDelete: "cascade" }),
+    readableSegmentId: text("readable_segment_id")
+      .notNull()
+      .references(() => textSegments.id, { onDelete: "cascade" }),
+    sourceSegmentId: text("source_segment_id")
+      .notNull()
+      .references(() => textSegments.id, { onDelete: "cascade" }),
+    sourceOrder: integer("source_order").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_readable_segment_sources_mapping").on(
+      table.artifactId,
+      table.readableSegmentId,
+      table.sourceSegmentId,
+    ),
+    index("idx_readable_segment_sources_source").on(table.sourceSegmentId),
+  ],
+);
+
 export const claims = sqliteTable(
   "claims",
   {

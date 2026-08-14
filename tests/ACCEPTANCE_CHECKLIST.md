@@ -137,13 +137,17 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 250 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、生产 Bundle 和发布包密钥扫描。
+- `npm test` 通过，合计 259 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、AI 摘要、易读逐字稿分块恢复、项目回收站、生产 Bundle 和发布包密钥扫描。
 - 独立发布审计没有发现 P0/P1。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
 - 四个资源创建接口均要求 `Idempotency-Key`。Project、Event、Transcript Import 和 Asset Init 会把 Request Hash 与 Response 一起写入 D1。同 Key 同 Body 返回原结果，同 Key 异 Body 返回 409。
 - Transcript Item 上传通过 `pending` 到 `uploaded` 的条件更新决定唯一赢家。Finalize 后同内容可重放，不同内容返回 409，上传路径没有把 `finalized` 改回 `uploaded` 的 SQL。
+- 原始 Transcript、易读 Transcript 和 AI Summary 已分层。原稿不可覆盖且仍是唯一正式 Evidence 来源；Summary 每条重点必须复制同一 Event 原文；易读稿必须 100% 映射原始 Segment、无遗漏、无重复、顺序不变，并保护金额、日期、数量、尺寸与否定词。
+- 长易读稿按固定 120 Segment / 45,000 字符上限分块。每块有独立输入 Hash、Background Response ID、Attempt、Token 和通过验证的输出；中断后从同一 Response 或下一未完成块继续，最终合并仍要通过全稿合同。
+- 项目删除先 soft delete。运行中的转写、提取或阅读辅助任务会阻止删除；恢复保留 Event、材料、Ledger、Evidence 和报告；永久删除使用持久 purge lock，先清 R2 再删 D1，清理失败时保留在回收站安全重试。
+- 本地真实浏览器已走完 Transcript 三视图、桌面/390px 手机单一项目与沟通选择器、无横向溢出，以及空项目“移到回收站 → 恢复 → 永久删除”。这不是正式 Sites 或付费模型质量验收。
 - Outbox 遇到已持久化的 Terminal Failed Run 会确认消息，避免重复调用模型。遇到 `lease_not_acquired` 会先重读 Run；Run 仍是 Queued 或不存在时保留重试，只有 Processing 或 Terminal 状态才确认消息。
 - 生产 Worker 配置包含每分钟一次的 Sweep/Dispatch Cron。只有明确的 `APP_ENV=local` 会启用本地身份，缺失或拼错按 Production 处理。
 - 审核页会在第一次打开有待核对内容的 Project 时创建服务端计时 Session。计时同时覆盖 Pending Claim 和 Pending Occurrence，刷新或关闭页面不会重置；队列清空后由服务端保存完成时间和总耗时。当前只证明计量工具可用，仍需真人完成一次审核后才能判断两分钟目标。
