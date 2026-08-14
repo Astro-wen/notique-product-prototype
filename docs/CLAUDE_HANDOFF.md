@@ -66,12 +66,12 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 10. Preference 数据提供当前值、条件、决策人、首次出现、最近确认和历史变化。
 11. Summary Agent 与 Transcript Refiner 均使用 Luna `high` 和 OpenAI Background Responses；它们与事实识别并行、独立失败和独立重试。
 12. 易读稿对原始 Segment 做 100% 映射，长会议按最多 120 段或约 45,000 字符分块续跑；最终全局校验遗漏、重复、顺序、金额、日期、数量和否定词。
-13. Agent A 继续 raw-only；Agent B 只能把易读稿当阅读辅助，正式 Evidence 仍引用原始 Segment。
+13. Agent A 继续 raw-only；Agent A 与 readable 并行启动，Agent B 在 inventory 成功后等待 readable terminal，复用 inventory 而不重复付费。Readable failed 才 raw-only fallback；正式 Evidence 仍引用原始 Segment。
 14. 项目支持 soft delete、回收站恢复和永久删除。永久删除使用持久 purge lock，并先删 R2 再删 D1，避免恢复和清理并发造成半删除状态。
 
-第 11–14 项目前只存在于本地待发布工作树：空库迁移、生产构建、敏感信息审计和 `npm test` 259/259 通过；本地已实际验证桌面与 390px 手机布局、Transcript 三视图，以及项目删除、恢复和永久删除。尚未发布到 Sites v17，也没有付费生成真实 Summary/易读稿，不能写成 live 已通过。
+第 11–14 项已经发布为 Sites v18：空库迁移、生产构建、敏感信息审计和 `npm test` 259/259 通过；正式站已验证桌面与 390px 布局、Transcript 三视图，以及空项目删除、恢复和永久删除。尚未付费生成真实 Summary/易读稿，因此只能写成“live 工程与交互通过、模型质量待验收”。
 
-上述代码已经发布为 Sites v17。桌面端已用现有 Verified 数据完成线上只读验收：
+上述代码已经更新为 Sites v18。桌面端继续使用现有 Verified 数据完成线上只读验收：
 
 1. Timeline 显示纵向轨道、节点、Speaker 和 `mm:ss` 时间点。
 2. 从 Timeline 打开已确认 Claim 后，URL 保留 `origin=results` 和 `originTab=timeline`，页面显示“返回时间线”，且不出现连续审核队列。
@@ -84,7 +84,7 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 
 Extraction 的长模型请求已经改用 OpenAI Responses Background mode。每个阶段先以 `background: true` 创建 Response，把 Response ID 持久化，再由同一 Outbox 任务通过 `GET /responses/:id` 恢复查询；`queued` 或 `in_progress` 不会再次 POST 一个付费 Response。这样不会要求一次 Cloudflare 请求一直等待完整的 Luna `xhigh` 推理，也不会因为重复唤醒创建第二个模型任务。每分钟 Cron 仍是最后兜底。
 
-Sites v17 发布后尚未通过这套新 Background 架构发起新的付费 Run。当前只能写“代码、自动测试和桌面只读线上验收通过”，不能写成“线上付费处理已通过”。
+Sites v18 发布后尚未通过这套新 Background 架构发起新的付费 Run。当前只能写“代码、自动测试、三层 Transcript UI、项目管理和桌面只读线上验收通过”，不能写成“线上付费处理已通过”。
 
 ### 3.2 速度问题的准确解释
 
@@ -111,7 +111,7 @@ AMI `ES2002a` 已经跑完一次完整 Notique 流程，且 8 条 Ground Truth �
 - 完整应用：[https://notique-evidence-workspace.uclae2e12.chatgpt.site/](https://notique-evidence-workspace.uclae2e12.chatgpt.site/)
 - GitHub：[https://github.com/Astro-wen/notique-product-prototype](https://github.com/Astro-wen/notique-product-prototype)
 - GitHub Pages 静态入口：[https://astro-wen.github.io/notique-product-prototype/](https://astro-wen.github.io/notique-product-prototype/)
-- 线上代码基线：GitHub `main` 提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`
+- Sites v18 源码基线：`1202a5d2778157e11571e3deb752a65007d5087b`。GitHub `main` 仍为 `9751edfb7fd4ab8193cb9aa72134a5c9296d57b1`，本机 GitHub 登录失效后尚未同步。
 
 GitHub Pages 只是跳转页，不能处理上传、数据库或 AI 请求。完整交互必须在 ChatGPT Sites 运行。
 
@@ -261,7 +261,7 @@ Raw final 10 的另外四条也能在 Transcript 找到依据，但不在预先�
 
 1. 查看 `git status`，保留其他 Agent 或 Aaron 的未提交改动。
 2. 在真实手机浏览器完成导航、Evidence、Timeline、Preference、刷新和连续审核验收；不要再用未生效的 viewport override 代替真人手机结果。
-3. 在有明确预算时，通过 Sites v17 发起一次新的付费 Run，验证 Background Response 创建、ID 持久化、恢复查询、重复唤醒和阶段计时；不能用只读 QA 代替。
+3. 在有明确预算时，通过 Sites v18 发起一次新的付费 Run，验证 Summary、易读稿、Background Response 创建、ID 持久化、恢复查询、重复唤醒和阶段计时；不能用只读 QA 代替。
 4. 使用同一 AMI 样本做付费复跑时，保持 Ground Truth 冻结，并单独记录新结果，不覆盖历史分数。
 5. 找一名未看过 Ground Truth 的用户完成整套审核，记录用时、修改、拒绝和补漏。
 6. 每次后续改动继续完成 typecheck、lint、build、全量测试、Migration、`git diff --check` 和发布包敏感信息审计。
@@ -269,10 +269,10 @@ Raw final 10 的另外四条也能在 Transcript 找到依据，但不在预先�
 
 ## 9. 当前发布记录与后续检查
 
-1. GitHub `main` 已发布提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`。
-2. Sites v17 已发布到原有 URL，没有创建第二个站点。
+1. Sites v18 已保存并发布源码提交 `1202a5d2778157e11571e3deb752a65007d5087b`；GitHub `main` 尚待重新登录后同步。
+2. Sites v18 已发布到原有 URL，没有创建第二个站点。
 3. 工程测试 250 项全绿，独立审计没有发现 P0/P1。
-4. 桌面只读线上 QA 已通过；手机真人 QA 和 v17 新付费 Run 仍未完成。
+4. 桌面与 390px 正式站 QA 已通过；实体手机真人 QA 和 v18 新付费 Run 仍未完成。
 
 后续改动继续执行：
 
@@ -306,10 +306,10 @@ npm test
 ## 11. 当前最重要的诚实结论
 
 1. Verified-only、证据追溯和人工审核链路已经是可靠的工程底座。
-2. Sites v17 已上线原有公开地址；桌面只读导航、Evidence、Timeline、报告返回和刷新恢复已经通过线上验收。
+2. Sites v18 已上线原有公开地址；桌面只读导航、Transcript 三视图、项目回收站、Evidence、Timeline、报告返回和刷新恢复已经通过线上验收。
 3. 10 分 47 秒主要不是 Luna 思考时间；真正模型阶段约 1 分 36 秒。
 4. Claim/Relation 准确率、同输入稳定性和真人两分钟审核仍未通过完整验收。
 5. AMI 已完成第一次真实多人音频运行：关键事实转写 8/8，但 raw AI 初稿只命中 6/8、Critical 2/4，历史 Evidence 安全门后为 4/8、Critical 1/4；没有进行人工确认。
-6. 省略号 Evidence 修复已经实现，但尚未做付费 AMI 复跑；v17 也尚未用新 Background 架构发起新付费 Run，不能宣称 Recall 或线上付费处理已通过。
+6. 省略号 Evidence 修复已经实现，但尚未做付费 AMI 复跑；v18 也尚未用新 Summary/Refiner/Background 架构发起新付费 Run，不能宣称 Recall、易读质量或线上付费处理已通过。
 7. 手机只有样式与自动化结果，真实手机浏览器验收未完成。
 8. 当前产品可以称为“可继续测试的 MVP”，不能称为“已经完成 Concept Validation”。

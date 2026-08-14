@@ -77,14 +77,14 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 1. 原始逐字稿与音频永久保留，AI 无权覆盖；正式 Evidence 仍只引用原始 Segment。
 2. Transcript Refiner 使用 Luna `high` 生成完整易读稿，只改善标点、分段、卡顿和高度明确的识别错误。金额、日期、数量、否定、责任与条件都受程序硬检查。
 3. Summary Agent 使用 Luna `high` 生成章节和重点，每条重点必须引用同一 Event 的原始 Segment，并复制一段真实原话。
-4. Agent A 继续只读原稿；Agent B 可以参考通过映射校验的易读稿。易读稿失败时，事实识别诚实退回 raw-only。
+4. Agent A 继续只读原稿并与易读稿并行；Agent B 等易读稿成功或明确失败后再继续，不会因为它慢几秒就静默跳过，也不会重跑已完成的 Agent A。易读稿失败时，事实识别诚实退回 raw-only。
 5. 长逐字稿会按原顺序分块续跑，最终只有在 100% 原始 Segment 无遗漏、无重复、顺序不变时才生成完整易读版本。
 
-当前判断：工程和本地交互已完成，259 项自动化通过；付费质量验收与 Sites 发布尚未完成。
+当前判断：工程、259 项自动化和 Sites v18 正式站交互已完成；付费 Summary、易读稿和事实质量验收尚未完成。
 
 ### 3.6 项目回收站
 
-项目可移入回收站并完整恢复。运行中的项目不能删除；永久删除要求输入完整名称，先清理全部文件再级联删除数据库。方案使用持久删除锁防止“正在清文件时又恢复”的竞态。本地真实交互已跑通，正式站待发布后复验。
+项目可移入回收站并完整恢复。运行中的项目不能删除；永久删除要求输入完整名称，先清理全部文件再级联删除数据库。方案使用持久删除锁防止“正在清文件时又恢复”的竞态。本地与 Sites v18 均已用空测试项目跑通，测试项目最后已清理。
 
 ## 4. 本轮修复了什么
 
@@ -102,7 +102,7 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 6. 用户阅读 Claim、Evidence 或报告时，后台工作流不能抢走页面。
 7. 报告中的 Verified Claim 使用只读阅读模式，不显示无关审核队列。
 
-这部分已随 Sites v17 发布。桌面端的时间线只读路径、页面返回、浏览器返回、报告返回和刷新恢复已经在线验收；真实手机浏览器仍未验收。
+这部分已随 Sites v18 发布。桌面端的时间线只读路径、页面返回、浏览器返回、报告返回和刷新恢复已经在线验收；390px 正式站响应式布局通过，真实实体手机完整流程仍未验收。
 
 ### 4.2 排队和计时
 
@@ -117,9 +117,9 @@ Eric 想要的不是一次性的会议摘要，而是一份会随着多次沟通
 5. 首次排队、本轮排队、材料准备、Agent A、Agent B、加强复核、写入和总时间分别显示。
 6. workflow snapshot 一次返回页面需要的项目状态和唯一下一步，减少请求风暴。
 
-目标是正常 `queued → processing` P95 小于 10 秒，最后兜底小于 130 秒。这个目标只有在 Sites v17 用新后台架构跑新的付费 Run 后才能确认。
+目标是正常 `queued → processing` P95 小于 10 秒，最后兜底小于 130 秒。这个目标只有在 Sites v18 用新后台架构跑新的付费 Run 后才能确认。
 
-Sites v17 发布后尚未通过新的 OpenAI Background Responses 架构发起付费 Run。本轮线上检查使用已有记录，因此不能把桌面只读 QA 写成 live paid QA，也不能据此更新 P95。
+Sites v18 发布后尚未通过新的 OpenAI Background Responses 架构发起付费 Run。本轮线上检查使用已有记录，因此不能把桌面只读 QA 写成 live paid QA，也不能据此更新 P95。
 
 ### 4.3 AI 初稿和 Evidence
 
@@ -147,11 +147,11 @@ Sites v17 发布后尚未通过新的 OpenAI Background Responses 架构发起�
 
 Preference 同时保留当前值和历史变化，显示条件、决策人、首次出现和最近确认。它仍然使用通用结构，没有把房地产话术硬编码进生产逻辑。
 
-Evidence 和 Timeline 已在 Sites v17 完成桌面只读验收；Preference 的代码与自动化已完成，但仍需用确实带历史变化的数据做线上验收。手机端只有样式与自动化结果，尚未在真实手机浏览器验收。
+Evidence 和 Timeline 已在 Sites v18 完成桌面只读验收；Preference 的代码与自动化已完成，但仍需用确实带历史变化的数据做线上验收。390px 正式站布局已通过，实体手机完整流程尚未验收。
 
-### 4.5 Sites v17 发布和桌面只读验收
+### 4.5 Sites v18 发布和正式站验收
 
-本轮已发布到原来的公开测试站，GitHub `main` 基线为提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`。桌面端使用已有 Verified 数据完成了以下检查：
+本轮已发布到原来的公开测试站。Sites v18 源码为 `1202a5d2778157e11571e3deb752a65007d5087b`；GitHub `main` 仍为 `9751edfb7fd4ab8193cb9aa72134a5c9296d57b1`，待本机重新登录后同步。桌面端使用已有 Verified 数据完成了以下检查：
 
 1. Timeline 显示纵向轨道和节点，每个节点可见 Speaker 与 `mm:ss` 时间点。
 2. 从 Timeline 打开已确认 Claim 后，URL 保留 `origin=results` 和 `originTab=timeline`；页面显示“返回时间线”，不出现连续审核队列。
@@ -168,11 +168,11 @@ Evidence 和 Timeline 已在 Sites v17 完成桌面只读验收；Preference 的
 |---|---|---|
 | AI 初稿要在人工以前单独看 | 已完成并有一次真实多人音频结果 | 未确认 Scenario/Claim；原始初稿命中 6/8，安全门后命中 4/8 |
 | 每条信息回到精确原文 | 部分通过 | 落库引文 6/6 逐字回填；两条任务记录最后只剩职位介绍，语义支持不足 |
-| 原句要突出并展示前后文 | Sites v17 桌面只读验收通过 | 精确 mark、默认前两段后两段、音频前约 3 秒均已确认；手机待验收 |
+| 原句要突出并展示前后文 | Sites v18 桌面只读验收通过 | 精确 mark、默认前两段后两段、音频前约 3 秒均已确认；实体手机待验收 |
 | 人可以确认、修改、拒绝和补漏 | 已完成 | 不同动作都会改变后续 Verified Ledger |
 | Relation 由人决定 | 已完成 | 未审核 Relation 不能改变生命周期 |
 | 后续沟通继承已确认记忆 | 已完成工程链路 | 已在受控多 Event 案例跑通 |
-| Timeline 真正显示变化 | Sites v17 桌面只读验收通过 | 已看到纵向节点、Speaker 和 `mm:ss`；手机待验收 |
+| Timeline 真正显示变化 | Sites v18 桌面只读验收通过 | 已看到纵向节点、Speaker 和 `mm:ss`；实体手机待验收 |
 | Preference 可看当前和历史 | 代码和自动化已完成 | 仍需用带历史变化的数据做线上验收；真实连续客户旅程尚未证明 |
 | 操作简单、返回稳定、刷新能恢复 | 桌面只读路径已通过 | 页面箭头、浏览器 Back、报告返回和深层刷新均正确；完整审核与手机流程仍待真人完成 |
 | 处理速度更快 | 单次真实 Run 的排队已通过目标 | 转写与 Extraction 排队分别为 10 ms、9 ms；仍需多次 Run 才能计算 P95 |
@@ -337,10 +337,10 @@ AMI 是公开许可的真实多人语音，但会议内容来自受控产品设�
 
 ## 10. 当前公开部署
 
-1. 完整交互应用：Sites v17，<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
-2. GitHub：<https://github.com/Astro-wen/notique-product-prototype>，`main` 提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`
+1. 完整交互应用：Sites v18，<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
+2. GitHub：<https://github.com/Astro-wen/notique-product-prototype>，`main` 仍为 `9751edfb7fd4ab8193cb9aa72134a5c9296d57b1`；Sites v18 源码为 `1202a5d2778157e11571e3deb752a65007d5087b`
 3. GitHub Pages 只负责跳转到 Sites，不承担 API、数据库、文件上传或模型任务。
-4. 桌面只读线上 QA 已通过；手机真人 QA 和 v17 新付费 Run 仍未完成。
+4. 桌面与 390px 正式站 QA 已通过；实体手机真人 QA 和 v18 新付费 Run 仍未完成。
 
 当前 Sites 适合用公开许可、合成或脱敏材料做 MVP 测试。测试者可能共用一个测试 Workspace、项目数据和模型额度。正式给不同客户使用以前，必须补 Workspace、权限和费用隔离。
 
