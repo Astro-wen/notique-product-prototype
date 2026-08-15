@@ -157,7 +157,7 @@ export async function sourceSegmentsForArtifactRun(runId: string): Promise<{
     return versionDelta || Number(left.ordinal) - Number(right.ordinal);
   });
   const glossaryRows = await all(
-    `SELECT canonical_value, variants_json, category
+    `SELECT canonical_value, aliases_json, category
        FROM glossary_entries
       WHERE project_id = ? AND deleted_at IS NULL AND is_active = 1
       ORDER BY canonical_value`,
@@ -180,7 +180,7 @@ export async function sourceSegmentsForArtifactRun(runId: string): Promise<{
     })),
     glossary: glossaryRows.map((row) => ({
       term: String(row.canonical_value),
-      meaning: parseJson<string[]>(String(row.variants_json ?? "[]"), []).join(", ") || String(row.canonical_value),
+      meaning: parseJson<string[]>(String(row.aliases_json ?? "[]"), []).join(", ") || String(row.canonical_value),
       category: String(row.category),
       claimVersionId: null,
     })),

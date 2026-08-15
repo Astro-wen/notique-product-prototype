@@ -177,6 +177,8 @@ test("artifact jobs use durable Background Responses and independent retries", a
   assert.match(repository, /Complete fact analysis is required before this reading aid can be generated/);
   assert.match(repository, /er\.status IN \('succeeded','completed','completed_with_warnings'\)/);
   assert.match(repository, /listEventAiArtifactRunDebug/);
+  assert.match(repository, /SELECT canonical_value, aliases_json, category/);
+  assert.doesNotMatch(repository, /variants_json/);
   assert.match(repository, /mutation_guards[\s\S]*event_ai_artifact_runs[\s\S]*lease_owner/);
   assert.match(repository, /status = 'processing' AND lease_owner = \?/);
   assert.match(jobs, /chunkReadableTranscriptSource/);
