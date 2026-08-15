@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -226,10 +227,11 @@ test("artifact retry refreshes the panel so polling and durable wake start immed
 });
 
 test("Agent A remains raw-only while Agent B gets a mapped readability aid", async () => {
-  const [processor, provider, context] = await Promise.all([
+  const [processor, provider, context, coreRepository] = await Promise.all([
     readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/server/ai/model-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/domain/context-pack.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
   ]);
   assert.match(processor, /inventoryProvider\.inventoryClaims\(\s*inventoryContext/);
   assert.match(processor, /draft_context: \{ enabled: false, claims: \[\] \}/);
@@ -241,6 +243,78 @@ test("Agent A remains raw-only while Agent B gets a mapped readability aid", asy
   assert.match(processor, /verifierProvider\.verifyClaims\(\s*verificationContext/);
   assert.match(provider, /not Evidence[\s\S]*authoritative raw transcript_segments IDs/i);
   assert.match(context, /readable_transcript_segments/);
+  assert.match(coreRepository, /metadata\.analysis_source === false \|\| metadata\.artifact_kind === "readable_transcript"/);
+  assert.match(coreRepository, /AI-readable transcripts cannot replace raw source material for fact extraction/);
+});
+
+test("raw Transcript listing and human-added Evidence exclude readable derived segments", async () => {
+  const repository = await readFile(
+    new URL("../lib/server/db/ai-draft-repository.ts", import.meta.url),
+    "utf8",
+  );
+  const predicateMatch = repository.match(
+    /const RAW_TRANSCRIPT_ASSET_PREDICATE = `([\s\S]*?)`;/,
+  );
+  assert.ok(predicateMatch, "the raw Transcript boundary must be a shared SQL predicate");
+  const predicate = predicateMatch[1];
+
+  assert.match(predicate, /a\.kind = 'transcript'/);
+  assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.analysis_source'\)/);
+  assert.match(predicate, /<> 0/);
+  assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.artifact_kind'\)/);
+  assert.match(predicate, /<> 'readable_transcript'/);
+
+  const listBlock = repository.slice(
+    repository.indexOf("export async function listEventTranscriptSegments"),
+    repository.indexOf("export async function createManualClaim"),
+  );
+  const manualBlock = repository.slice(
+    repository.indexOf("export async function createManualClaim"),
+  );
+  for (const block of [listBlock, manualBlock]) {
+    assert.match(block, /JOIN assets a ON a\.id = ts\.asset_id/);
+    assert.match(block, /\$\{RAW_TRANSCRIPT_ASSET_PREDICATE\}/);
+  }
+  assert.match(manualBlock, /selected passages are not raw Transcript evidence/);
+
+  // D1 uses SQLite semantics. Execute the exact production predicate against
+  // raw, readable, legacy-marked, and non-Transcript segment owners.
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE assets (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      metadata_json TEXT NOT NULL
+    );
+    CREATE TABLE text_segments (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL
+    );
+    INSERT INTO assets VALUES
+      ('raw-default', 'transcript', '{}'),
+      ('raw-explicit', 'transcript', '{"analysis_source":true}'),
+      ('readable-false', 'transcript', '{"analysis_source":false,"artifact_kind":"readable_transcript"}'),
+      ('readable-kind', 'transcript', '{"analysis_source":true,"artifact_kind":"readable_transcript"}'),
+      ('text-file', 'text', '{}');
+    INSERT INTO text_segments VALUES
+      ('seg-raw-default', 'raw-default', 'evt', 'ws', 0),
+      ('seg-raw-explicit', 'raw-explicit', 'evt', 'ws', 1),
+      ('seg-readable-false', 'readable-false', 'evt', 'ws', 2),
+      ('seg-readable-kind', 'readable-kind', 'evt', 'ws', 3),
+      ('seg-text-file', 'text-file', 'evt', 'ws', 4);
+  `);
+  const rows = database.prepare(`
+    SELECT ts.id
+      FROM text_segments ts
+      JOIN assets a ON a.id = ts.asset_id
+     WHERE ts.event_id = ? AND ts.workspace_id = ?
+       AND ${predicate}
+     ORDER BY ts.ordinal
+  `).all("evt", "ws");
+  assert.deepEqual(rows.map((row) => row.id), ["seg-raw-default", "seg-raw-explicit"]);
 });
 
 test("project deletion is reversible, blocks active jobs, and deletes R2 before D1", async () => {

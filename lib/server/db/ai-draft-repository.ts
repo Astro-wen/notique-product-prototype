@@ -15,6 +15,16 @@ import type {
 
 type Row = Record<string, unknown>;
 
+// A readable transcript is persisted as a transcript-shaped derived asset so
+// that it can keep segment/time mappings. It is a reading aid, never a source
+// transcript or formal Evidence. Keep this predicate on every user-selectable
+// raw Transcript query in this repository.
+const RAW_TRANSCRIPT_ASSET_PREDICATE = `
+  a.kind = 'transcript'
+  AND COALESCE(json_extract(a.metadata_json, '$.analysis_source'), 1) <> 0
+  AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+`;
+
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
@@ -157,10 +167,13 @@ export async function listEventTranscriptSegments(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Event was not found.");
   }
   const rows = await all(
-    `SELECT id, event_id, asset_version_id, ordinal, speaker, start_ms, end_ms, text_raw
-       FROM text_segments
-      WHERE event_id = ? AND workspace_id = ?
-      ORDER BY asset_version_id, ordinal`,
+    `SELECT ts.id, ts.event_id, ts.asset_version_id, ts.ordinal, ts.speaker,
+            ts.start_ms, ts.end_ms, ts.text_raw
+       FROM text_segments ts
+       JOIN assets a ON a.id = ts.asset_id
+      WHERE ts.event_id = ? AND ts.workspace_id = ?
+        AND ${RAW_TRANSCRIPT_ASSET_PREDICATE}
+      ORDER BY ts.asset_version_id, ts.ordinal`,
     [eventId, scope.workspaceId],
   );
   return rows.map((row) => ({
@@ -212,15 +225,21 @@ export async function createManualClaim(
   }
   const uniqueSegmentIds = [...new Set(input.segment_ids)];
   const segmentRows = await all(
-    `SELECT id, asset_version_id, speaker, start_ms, end_ms, text_raw
-       FROM text_segments
-      WHERE workspace_id = ? AND project_id = ? AND event_id = ?
-        AND id IN (${uniqueSegmentIds.map(() => "?").join(",")})
-      ORDER BY asset_version_id, ordinal`,
+    `SELECT ts.id, ts.asset_version_id, ts.speaker, ts.start_ms, ts.end_ms, ts.text_raw
+       FROM text_segments ts
+       JOIN assets a ON a.id = ts.asset_id
+      WHERE ts.workspace_id = ? AND ts.project_id = ? AND ts.event_id = ?
+        AND ts.id IN (${uniqueSegmentIds.map(() => "?").join(",")})
+        AND ${RAW_TRANSCRIPT_ASSET_PREDICATE}
+      ORDER BY ts.asset_version_id, ts.ordinal`,
     [scope.workspaceId, String(event.project_id), eventId, ...uniqueSegmentIds],
   );
   if (segmentRows.length !== uniqueSegmentIds.length) {
-    throw new ApiFault(400, "EVIDENCE_SCOPE_INVALID", "One or more selected Transcript passages do not belong to this Event.");
+    throw new ApiFault(
+      400,
+      "EVIDENCE_SCOPE_INVALID",
+      "One or more selected passages are not raw Transcript evidence for this Event.",
+    );
   }
 
   const claimId = id("clm");
