@@ -47,7 +47,9 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(source, /recentProjectStorageKey = "notique\.ui\.recent-project-id"/);
   assert.match(source, /storeId\(recentEventStorageKey\(projectId\), nextEvent\.id\)/);
   assert.match(source, /key=\{project\?\.id \?\? "none"\}/);
-  assert.match(source, /onResult=\{\(\) => void loadView\("brief-card"\)\}/);
+  assert.match(source, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);
+  assert.match(source, /projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\)/);
+  assert.match(source, /onClick=\{\(\) => onResult\("client-progress"\)\}>打开客户概览/);
   assert.match(source, /await openClaim\(nextId, "review", undefined, "replace"\)/);
   assert.match(source, /await finishGuidedReview\(\)/);
   const finishGuidedReview = source.slice(

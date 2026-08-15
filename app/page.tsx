@@ -1101,7 +1101,10 @@ function TimelineView({ data, events, onOpenClaim }: { data: unknown; events: Ev
       const event = isRecord(group.event) ? group.event : {};
       const eventId = firstString(event, ["id"]);
       return <TimelineEventGroup key={eventId || index} group={group} index={index} moments={moments} eventRecord={events.find((item) => item.id === eventId)} onOpenClaim={onOpenClaim} />;
-    })}</div> : <EmptyState title="这个筛选下还没有变化" body="切换到“全部”可查看其他已经确认的时间线节点。" />}
+    })}</div> : <EmptyState
+      title={filter === "all" ? "时间线还没有内容" : "这个筛选下还没有变化"}
+      body={filter === "all" ? "核对并确认内容后，变化会出现在这里。" : "切换到“全部”可查看其他已经确认的时间线节点。"}
+    />}
   </div>;
 }
 
@@ -1163,7 +1166,7 @@ function buyerOverviewSectionFor(item: Record<string, unknown>): BuyerOverviewSe
   const type = firstString(item, ["type", "claim_type"]) || "";
   const text = firstString(item, ["statement", "title", "text", "summary"]) || "";
   const dealbreaker = /deal.?breaker|must not|cannot accept|won't accept|unacceptable|绝不|不能接受|无法接受|排除/i.test(text);
-  const explicitDecisionMaker = /\bdecision[- ]makers?\b|\bboth\b.{0,40}\b(?:must|need to) approve\b|\bjoint (?:buyer )?approval\b|\bcannot commit for both\b|\bfinal (?:approval|decision) (?:belongs to|rests with)\b|决策人|共同批准|双方(?:都)?(?:需要|必须)批准|共同决定|最终决定权/i.test(text);
+  const explicitDecisionMaker = /\bdecision[- ]makers?\b|\bboth\b.{0,40}\b(?:must|need to) approve\b|\b(?:must|need(?:s)? to)\s+both\s+approve\b|\bjoint (?:buyer )?approval\b|\bcannot commit (?:for|on behalf of) both(?:\s+buyers?)?\b|\bfinal (?:approval|decision) (?:belongs to|rests with)\b|决策人|共同批准|双方(?:都)?(?:需要|必须)批准|共同决定|最终决定权/i.test(text);
   const nextActionSignal = /\b(?:next step|follow[- ]?up)\b|\b(?:will|needs? to|must|plans? to|is going to)\s+(?:send|provide|confirm|verify|check|ask|schedule|book|order|purchase|submit|sign|call|contact|follow up|review|inspect|update|obtain|upload|arrange|deliver|prepare|complete|move)\b|下一步|(?:将|需要)(?:发送|提供|确认|核实|检查|询问|安排|预约|提交|签署|联系|跟进|购买|准备|完成)/i.test(text);
   const concreteProperty = /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Court|Ct\.?|Lane|Ln\.?|Drive|Dr\.?|Boulevard|Blvd\.?|Way)\b/.test(text)
     || /\b[A-Z][A-Za-z0-9.'-]+(?:\s+[A-Z][A-Za-z0-9.'-]+){0,2}\s+(?:Street|Avenue|Road|Court|Lane|Drive|Boulevard|Way)\b/.test(text)
@@ -3765,7 +3768,7 @@ export default function Home() {
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
           onReview={() => void enterAiDraft()}
-          onResult={() => void loadView("brief-card")}
+          onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
           onRetryArtifact={retryEventAiArtifact}
           transcriptFocusRequest={transcriptFocusRequest}
@@ -3921,7 +3924,7 @@ type SimpleTestScreenProps = {
   onRetryTranscription: (audioAssetId: string) => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onReview: () => void;
-  onResult: () => void;
+  onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   transcriptFocusRequest: TranscriptFocusRequest | null;
@@ -4633,7 +4636,7 @@ function SimpleTestScreen({
                 <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
                 <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}{typeof item.attempt === "number" && item.attempt > 0 && !item.label.includes("第 ") ? ` · 第 ${item.attempt} 次` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
               </div>}
-              {projectWorkflow.phase !== "empty" && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? onResult : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
+              {projectWorkflow.phase !== "empty" && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
             <section className="materials-section">
@@ -4683,7 +4686,7 @@ function SimpleTestScreen({
 
           {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewReady ? "优先检查金额、日期、责任人、矛盾和低置信内容。" : workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div>{workflowReviewReady && <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重要内容</button>}</div></div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">Verified Ledger</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "报告只使用人工确认后的内容"}</h3><p>{analysisDone ? "Folder Summary、Timeline、Decision、Preferences、Questions、Risks、Agenda 和 Brief 都从同一份确认记录生成。" : "先完成分析和核对，再查看一致的项目报告。"}</p></div><button className="button primary" disabled={!analysisDone || Boolean(busy)} onClick={onResult}>查看全部报告</button></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{analysisDone ? "客户概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从客户概览了解预算、偏好、决策人和下一步。"}</p></div><button className="button primary" disabled={!analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开客户概览</button></div></div>}
         </article>
       </section>
 

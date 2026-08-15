@@ -35,6 +35,8 @@ test("buyer overview executes the production classifier against Morgan and Oak c
   const classify = executablePageFunction("buyerOverviewSectionFor", "BuyerOverviewGrid", { firstString });
 
   assert.equal(classify(claim(realtor, "gt-r1-joint-offer-approval")), "people");
+  assert.equal(classify({ type: "decision", statement: "Lena Morgan cannot commit on behalf of both buyers." }), "people");
+  assert.equal(classify({ type: "decision", statement: "Lena Morgan and Evan Morgan must both approve any offer." }), "people");
   assert.equal(classify(claim(oak, "gt-e1-cabinets-stay")), "preferences", "a decision is not automatically a decision-maker");
   assert.equal(classify(claim(realtor, "gt-r1-bedrooms-three")), "requirements");
   assert.equal(classify(claim(oak, "gt-e3-moisture-recheck")), "requirements", "a hard requirement wins over action-like wording");

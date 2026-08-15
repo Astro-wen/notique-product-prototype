@@ -258,7 +258,7 @@ test("raw Transcript listing and human-added Evidence exclude readable derived s
   assert.ok(predicateMatch, "the raw Transcript boundary must be a shared SQL predicate");
   const predicate = predicateMatch[1];
 
-  assert.match(predicate, /a\.kind = 'transcript'/);
+  assert.match(predicate, /a\.kind IN \('transcript', 'text'\)/);
   assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.analysis_source'\)/);
   assert.match(predicate, /<> 0/);
   assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.artifact_kind'\)/);
@@ -298,13 +298,15 @@ test("raw Transcript listing and human-added Evidence exclude readable derived s
       ('raw-explicit', 'transcript', '{"analysis_source":true}'),
       ('readable-false', 'transcript', '{"analysis_source":false,"artifact_kind":"readable_transcript"}'),
       ('readable-kind', 'transcript', '{"analysis_source":true,"artifact_kind":"readable_transcript"}'),
-      ('text-file', 'text', '{}');
+      ('text-file', 'text', '{}'),
+      ('photo-file', 'photo', '{}');
     INSERT INTO text_segments VALUES
       ('seg-raw-default', 'raw-default', 'evt', 'ws', 0),
       ('seg-raw-explicit', 'raw-explicit', 'evt', 'ws', 1),
       ('seg-readable-false', 'readable-false', 'evt', 'ws', 2),
       ('seg-readable-kind', 'readable-kind', 'evt', 'ws', 3),
-      ('seg-text-file', 'text-file', 'evt', 'ws', 4);
+      ('seg-text-file', 'text-file', 'evt', 'ws', 4),
+      ('seg-photo-file', 'photo-file', 'evt', 'ws', 5);
   `);
   const rows = database.prepare(`
     SELECT ts.id
@@ -314,7 +316,11 @@ test("raw Transcript listing and human-added Evidence exclude readable derived s
        AND ${predicate}
      ORDER BY ts.ordinal
   `).all("evt", "ws");
-  assert.deepEqual(rows.map((row) => row.id), ["seg-raw-default", "seg-raw-explicit"]);
+  assert.deepEqual(rows.map((row) => row.id), [
+    "seg-raw-default",
+    "seg-raw-explicit",
+    "seg-text-file",
+  ]);
 });
 
 test("project deletion is reversible, blocks active jobs, and deletes R2 before D1", async () => {

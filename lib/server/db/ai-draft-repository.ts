@@ -20,7 +20,7 @@ type Row = Record<string, unknown>;
 // transcript or formal Evidence. Keep this predicate on every user-selectable
 // raw Transcript query in this repository.
 const RAW_TRANSCRIPT_ASSET_PREDICATE = `
-  a.kind = 'transcript'
+  a.kind IN ('transcript', 'text')
   AND COALESCE(json_extract(a.metadata_json, '$.analysis_source'), 1) <> 0
   AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
 `;
