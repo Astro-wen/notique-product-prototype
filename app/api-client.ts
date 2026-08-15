@@ -42,6 +42,10 @@ import type {
   ListDeletedProjectsResponse,
   ProjectDeletePreviewResponse,
   ProjectMutationResponse,
+  DraftMemoryResponse,
+  DraftLinkVerdictResponse,
+  ProjectActionsResponse,
+  CompleteProjectActionResponse,
   PermanentProjectDeleteResponse,
   EventAiArtifactsResponse,
   EventAiArtifactRecord,
@@ -55,6 +59,7 @@ import type {
   ScenarioVerdictResponse,
   ReviewSessionResponse,
   WithdrawClaimRequest,
+  WorkflowEventStatusSummaryRecord,
   WorkflowSnapshotRecord,
 } from "../lib/shared/api-types";
 
@@ -68,12 +73,30 @@ export type RelationTarget = ManualRelationTargetRecord;
 export type RelationType = ManualRelationType;
 export type TranscriptSegment = EventTranscriptSegmentRecord;
 export type AiDraftAssessment = AiDraftAssessmentRecord;
-export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project"> & {
+export type WorkflowEventStatusSummary = {
+  materialCount: number;
+  materialReadyCount: number;
+  materialProcessingCount: number;
+  materialFailedCount: number;
+  transcriptionStatus: WorkflowEventStatusSummaryRecord["transcription_status"];
+  extractionStatus: WorkflowEventStatusSummaryRecord["extraction_status"];
+  pendingCount: number;
+  candidateCount: number;
+  summaryStatus: WorkflowEventStatusSummaryRecord["summary_status"];
+  readableTranscriptStatus: WorkflowEventStatusSummaryRecord["readable_transcript_status"];
+};
+export type WorkflowEventSummary = WorkflowSnapshotRecord["events"][number] & {
+  statusSummary: WorkflowEventStatusSummary;
+};
+export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project" | "events"> & {
   project: Project;
+  events: WorkflowEventSummary[];
 };
 export type EventAiArtifactRun = EventAiArtifactRunRecord;
 export type EventAiArtifact = EventAiArtifactRecord;
 export type ProjectDeletePreview = ProjectDeletePreviewResponse["data"]["preview"];
+export type DraftMemory = DraftMemoryResponse["data"]["draft_memory"];
+export type ProjectAction = ProjectActionsResponse["data"]["actions"][number];
 
 export type RunReview = {
   claims: Claim[];
@@ -331,6 +354,8 @@ export type ImportSession = {
 };
 
 export type ProjectViewName =
+  | "client-progress"
+  | "actions"
   | "folder-summary"
   | "timeline"
   | "decisions"
@@ -750,6 +775,57 @@ function requireId<T extends { id: string }>(value: T, label: string): T {
   return value;
 }
 
+export function normalizeWorkflowEventSummary(
+  event: WorkflowSnapshotRecord["events"][number],
+): WorkflowEventSummary {
+  const summary = event.status_summary;
+  if (!summary) invalidContract("The workflow snapshot is missing an Event status summary.");
+  const numericFields = [
+    summary.material_count,
+    summary.material_ready_count,
+    summary.material_processing_count,
+    summary.material_failed_count,
+    summary.pending_count,
+    summary.candidate_count,
+  ];
+  if (numericFields.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    invalidContract("The workflow snapshot contains an invalid Event status count.");
+  }
+  const transcriptionStatus = event.transcription?.status ?? null;
+  const extractionStatus = event.extraction?.status ?? null;
+  const summaryStatus = event.ai_artifacts.summary?.status ?? null;
+  const readableTranscriptStatus = event.ai_artifacts.readable_transcript?.status ?? null;
+  if (
+    summary.material_count !== event.materials.total ||
+    summary.material_ready_count !== event.materials.ready ||
+    summary.material_processing_count !== event.materials.processing ||
+    summary.material_failed_count !== event.materials.failed ||
+    summary.transcription_status !== transcriptionStatus ||
+    summary.extraction_status !== extractionStatus ||
+    summary.pending_count !== event.pending_claim_count + event.pending_occurrence_count ||
+    summary.candidate_count !== event.candidate_count ||
+    summary.summary_status !== summaryStatus ||
+    summary.readable_transcript_status !== readableTranscriptStatus
+  ) {
+    invalidContract("The workflow snapshot returned conflicting Event states.");
+  }
+  return {
+    ...event,
+    statusSummary: {
+      materialCount: summary.material_count,
+      materialReadyCount: summary.material_ready_count,
+      materialProcessingCount: summary.material_processing_count,
+      materialFailedCount: summary.material_failed_count,
+      transcriptionStatus: summary.transcription_status,
+      extractionStatus: summary.extraction_status,
+      pendingCount: summary.pending_count,
+      candidateCount: summary.candidate_count,
+      summaryStatus: summary.summary_status,
+      readableTranscriptStatus: summary.readable_transcript_status,
+    },
+  };
+}
+
 function dataValue(body: unknown, keys: string[]): unknown {
   const data = unwrap(body);
   if (!isRecord(data)) invalidContract("The server returned an invalid success envelope.");
@@ -782,8 +858,12 @@ export const api = {
     return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
   },
 
-  async createProject(input: { name: string; description?: string }, idempotencyKey: string): Promise<Project> {
-    const payload: CreateProjectRequest = { name: input.name };
+  async createProject(input: {
+    name: string;
+    description?: string;
+    profile?: "real_estate_buyer_journey";
+  }, idempotencyKey: string): Promise<Project> {
+    const payload: CreateProjectRequest = { name: input.name, profile: input.profile };
     const body = await request<CreateProjectResponse>("/api/v1/projects", { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: jsonBody(payload) });
     return requireId(normalizeProject(body.data.project), "project");
   },
@@ -874,7 +954,53 @@ export const api = {
     return {
       ...snapshot,
       project: requireId(normalizeProject(snapshot.project), "project"),
+      events: snapshot.events.map(normalizeWorkflowEventSummary),
     };
+  },
+
+  async getDraftMemory(projectId: Id): Promise<DraftMemory> {
+    const body = await request<DraftMemoryResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/draft-memory`,
+      { cache: "no-store" },
+    );
+    return body.data.draft_memory;
+  },
+
+  async getProjectActions(projectId: Id): Promise<ProjectAction[]> {
+    const body = await request<ProjectActionsResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/actions`,
+      { cache: "no-store" },
+    );
+    return body.data.actions;
+  },
+
+  async decideDraftLink(
+    linkId: Id,
+    action: "accept" | "reject",
+    baseContextVersion: number,
+    idempotencyKey: string,
+  ) {
+    const body = await request<DraftLinkVerdictResponse>(
+      `/api/v1/draft-links/${encodeURIComponent(linkId)}/verdict`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ action, base_context_version: baseContextVersion }),
+      },
+    );
+    return body.data.draft_link;
+  },
+
+  async completeProjectAction(claimId: Id, idempotencyKey: string) {
+    const body = await request<CompleteProjectActionResponse>(
+      `/api/v1/actions/${encodeURIComponent(claimId)}/complete`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    return body.data.completion;
   },
 
   async getReviewSession(projectId: Id): Promise<ReviewSession | null> {

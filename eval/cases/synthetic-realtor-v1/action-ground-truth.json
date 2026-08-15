@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "notique-realtor-action-ground-truth.v1",
+  "dataset": "synthetic-realtor-v1-actions",
+  "fixtureId": "synthetic-realtor-v1",
+  "frozenBeforeAbRuns": true,
+  "actions": [
+    {
+      "id": "action-r1-confirm-budget",
+      "eventId": "event-01-buyer-consultation",
+      "statement": "Priya will confirm whether the price cap is $1.15 million or $1.5 million with both buyers before filtering listings by price.",
+      "owner": "Priya Shah",
+      "dueAt": null,
+      "deadlineCondition": "before filtering by price",
+      "acceptableEvidenceIds": ["tx-r1:seg:5"],
+      "timestampMs": 80000
+    },
+    {
+      "id": "action-r3-ask-roof-inspection-or-credit",
+      "eventId": "event-03-harbor-showing",
+      "statement": "Ask whether the Harbor Court seller will provide a roof inspection or a credit for the 17-year-old roof.",
+      "owner": null,
+      "dueAt": null,
+      "deadlineCondition": null,
+      "acceptableEvidenceIds": ["tx-r3:seg:10"],
+      "timestampMs": 182000
+    }
+  ],
+  "rules": [
+    "Only an explicitly stated future action is included.",
+    "A speaker saying 'I will' establishes an owner; collective 'we still need to' does not identify one person.",
+    "No calendar due date may be invented. A stated ordering condition is preserved as a deadline condition.",
+    "Open questions are not duplicated as actions unless the transcript also states a concrete follow-up action."
+  ],
+  "limitations": [
+    "This is a single-author synthetic development fixture, not double-annotated real-customer Ground Truth."
+  ]
+}

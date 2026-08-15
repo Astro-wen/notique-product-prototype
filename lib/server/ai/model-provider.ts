@@ -220,7 +220,7 @@ function extractionJsonSchema() {
               type: "string",
               enum: [
                 "budget", "preference", "requirement", "decision", "concern", "risk",
-                "open_question", "person_role", "timing", "property_fact", "material",
+                "open_question", "person_role", "timing", "property_fact", "next_action", "material",
                 "measurement", "other",
               ],
             },
@@ -366,7 +366,7 @@ function verificationJsonSchema() {
     additionalProperties: false,
     required: [
       "schema_version", "event_id", "scenario_assessment", "claims",
-      "candidate_dispositions", "quality_review",
+      "candidate_dispositions", "draft_link_candidates", "quality_review",
     ],
     properties: {
       schema_version: { type: "string", enum: [VERIFICATION_SCHEMA_VERSION] },
@@ -392,6 +392,26 @@ function verificationJsonSchema() {
               items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
             },
             reason: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.explanationLength },
+          },
+        },
+      },
+      draft_link_candidates: {
+        type: "array",
+        maxItems: TWO_STAGE_EXTRACTION_LIMITS.draftLinks,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "final_claim_key", "target_draft_claim_id", "target_draft_claim_version_id",
+            "type", "reason", "confidence",
+          ],
+          properties: {
+            final_claim_key: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
+            target_draft_claim_id: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
+            target_draft_claim_version_id: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
+            type: { type: "string", enum: ["same", "changed", "conflicting", "possibly_answered"] },
+            reason: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.explanationLength },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
           },
         },
       },
@@ -916,8 +936,12 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "Every inventory key must receive exactly one disposition. included or merged must map to exactly one final client_claim_key; dropped items must map to none and require a specific reason.",
       "You may add a missed final claim only when it has valid source evidence in the Context Pack.",
       "Use reaffirmed only for a semantically identical existing atomic fact. Split any new value, date, condition, assignment, decision, resolution, risk, or next step into a new claim.",
+      "For a real-estate buyer journey, actively check budget and financing, target areas, must-haves, preferences and conditions, dealbreakers, decision makers, purchase timing, property feedback, open questions, and next actions. Do not invent an item to fill a category.",
+      "Use type next_action only for a concrete future action. Put an explicitly stated owner and due date/deadline in normalized_value when present; leave them absent when the source does not say.",
       "Use supersedes for a changed current value; resolves for a final answer or satisfied prerequisite; contradicts for incompatible active facts that remain unresolved; informed_by for context only.",
       "A relation target must copy an exact claim_id and claim_version_id from verified_context or recent_history. If no exact target exists, return no relation; never invent a target ID.",
+      "draft_context contains unreviewed suggestions only. It may help detect continuity, but it is not Evidence, cannot be used for reaffirmed, and cannot be a formal relation target or change any lifecycle.",
+      "When a final claim may relate to a draft_context item, emit a draft_link_candidate using the exact draft claim/version IDs and one of same, changed, conflicting, or possibly_answered. Return an empty array when no safe draft link exists.",
       "Atomicity is a hard requirement even when the ten-claim cap forces a supported fact to be lower_priority. Never merge separate amounts, dates, approvals, assignments, risks, questions, or lifecycle changes just to fit more facts into ten claims.",
       "Report unresolved conflicts, compound final claims, and questionable reaffirmed classifications in quality_review instead of hiding them.",
       ...(options?.qualityFeedback?.length

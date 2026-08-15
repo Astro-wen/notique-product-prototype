@@ -15,6 +15,14 @@ async function loadWorkflow() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+async function loadApiClient() {
+  const source = await readFile(path.join(root, "app/api-client.ts"), "utf8");
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
+
 function workflowEvent(overrides = {}) {
   return {
     id: "evt_1",
@@ -57,6 +65,8 @@ test("project workflow ignores empty placeholders and starts the first material-
     currentEventTitle: "现场沟通",
     currentRunId: undefined,
     ignoredEmptyCount: 1,
+    pendingTotal: 0,
+    trustState: "trusted",
   });
 });
 
@@ -101,7 +111,7 @@ test("a successful Run with no Claim or Occurrence blocks later Events as empty 
   assert.equal(plan.currentPosition, 1);
 });
 
-test("a successful Event pauses for review before later Events can use its context", async () => {
+test("a successful Event can leave draft review pending while the next Event becomes ready", async () => {
   const { planProjectWorkflow } = await loadWorkflow();
   const waitingReview = planProjectWorkflow({
     events: [
@@ -110,9 +120,11 @@ test("a successful Event pauses for review before later Events can use its conte
     ],
     needsScenarioConfirmation: false,
   });
-  assert.equal(waitingReview.phase, "waiting_review");
-  assert.equal(waitingReview.currentEventId, "evt_1");
-  assert.equal(waitingReview.completed, 0);
+  assert.equal(waitingReview.phase, "ready");
+  assert.equal(waitingReview.currentEventId, "evt_2");
+  assert.equal(waitingReview.completed, 1);
+  assert.equal(waitingReview.pendingTotal, 2);
+  assert.equal(waitingReview.trustState, "draft_ready");
 
   const readyForSecond = planProjectWorkflow({
     events: [
@@ -125,6 +137,7 @@ test("a successful Event pauses for review before later Events can use its conte
   assert.equal(readyForSecond.currentEventId, "evt_2");
   assert.equal(readyForSecond.completed, 1);
   assert.equal(readyForSecond.currentPosition, 2);
+  assert.equal(readyForSecond.trustState, "trusted");
 });
 
 test("an earlier material-bearing Event blocks later Events until its material is ready", async () => {
@@ -214,6 +227,101 @@ test("workflow snapshot derives one truthful display state from material and job
   );
 });
 
+test("workflow Event adapter exposes one status summary and rejects conflicting selected state", async () => {
+  const { normalizeWorkflowEventSummary } = await loadApiClient();
+  const event = {
+    id: "evt_1",
+    title: "Buyer intake",
+    occurred_at: "2026-08-15T12:00:00.000Z",
+    sequence_no: 1,
+    material_status: "ready",
+    display_status: "needs_attention",
+    materials: { total: 3, ready: 2, processing: 0, failed: 1 },
+    transcription: {
+      run_id: "tr_1",
+      status: "failed",
+      error_code: "TRANSCRIPTION_OUTPUT_INVALID",
+      processing_attempt_no: 1,
+      dispatch_attempt_no: 1,
+    },
+    extraction: {
+      run_id: "run_1",
+      status: "completed_with_warnings",
+      stage: "verify",
+      error_code: null,
+      processing_attempt_no: 1,
+      dispatch_attempt_no: 1,
+      created_at: "2026-08-15T12:00:00.000Z",
+      queued_at: "2026-08-15T12:00:00.000Z",
+      first_queued_at: "2026-08-15T12:00:00.000Z",
+      current_queued_at: "2026-08-15T12:00:00.000Z",
+      started_at: "2026-08-15T12:00:01.000Z",
+      first_started_at: "2026-08-15T12:00:01.000Z",
+      current_started_at: "2026-08-15T12:00:01.000Z",
+      finished_at: "2026-08-15T12:01:00.000Z",
+      updated_at: "2026-08-15T12:01:00.000Z",
+    },
+    ai_artifacts: {
+      summary: { status: "failed" },
+      readable_transcript: { status: "succeeded" },
+    },
+    pending_claim_count: 2,
+    pending_occurrence_count: 1,
+    candidate_count: 5,
+    status_summary: {
+      material_count: 3,
+      material_ready_count: 2,
+      material_processing_count: 0,
+      material_failed_count: 1,
+      transcription_status: "failed",
+      extraction_status: "completed_with_warnings",
+      pending_count: 3,
+      candidate_count: 5,
+      summary_status: "failed",
+      readable_transcript_status: "succeeded",
+    },
+  };
+  const normalized = normalizeWorkflowEventSummary(event);
+  assert.deepEqual(normalized.statusSummary, {
+    materialCount: 3,
+    materialReadyCount: 2,
+    materialProcessingCount: 0,
+    materialFailedCount: 1,
+    transcriptionStatus: "failed",
+    extractionStatus: "completed_with_warnings",
+    pendingCount: 3,
+    candidateCount: 5,
+    summaryStatus: "failed",
+    readableTranscriptStatus: "succeeded",
+  });
+  assert.throws(
+    () => normalizeWorkflowEventSummary({
+      ...event,
+      status_summary: { ...event.status_summary, summary_status: "succeeded" },
+    }),
+    /conflicting Event states/,
+  );
+});
+
+test("workflow snapshot reading aids follow the active extraction and newest terminal retry", async () => {
+  const repository = await readFile(
+    path.join(root, "lib/server/db/workflow-repository.ts"),
+    "utf8",
+  );
+  for (const kind of ["summary", "readable_transcript"]) {
+    const start = repository.indexOf(`AND latest.kind = '${kind}'`);
+    assert.ok(start >= 0, `missing ${kind} snapshot join`);
+    const selection = repository.slice(start, start + 260);
+    assert.match(selection, /latest\.extraction_run_id = e\.active_run_id/);
+    assert.match(selection, /ORDER BY latest\.created_at DESC, latest\.id DESC LIMIT 1/);
+  }
+  assert.match(repository, /summary_status: summaryRun\?\.status \?\? null/);
+  assert.match(
+    repository,
+    /readable_transcript_status: readableTranscriptRun\?\.status \?\? null/,
+  );
+});
+
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   assert.doesNotMatch(page, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
@@ -243,6 +351,6 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   assert.doesNotMatch(simpleScreen, /onRetryRunStatus/);
   assert.match(simpleScreen, /onClick=\{onProjectWorkflowAction\}/);
   assert.match(simpleScreen, /issueRetry[\s\S]*onProjectWorkflowAction/);
-  assert.match(simpleScreen, /workflowReviewReady = projectWorkflow\.phase === "waiting_review"/);
-  assert.match(simpleScreen, /disabled=\{!workflowReviewReady \|\| Boolean\(busy\)\}/);
+  assert.match(simpleScreen, /workflowReviewReady = pendingCount > 0 && analysisDone && !needsScenario/);
+  assert.match(simpleScreen, /\{workflowReviewReady && <button[\s\S]*核对重要内容/);
 });

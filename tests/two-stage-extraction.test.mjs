@@ -73,6 +73,7 @@ function verification(overrides = {}) {
       final_claim_keys: ["claim-1"],
       reason: "Retained as a material atomic fact.",
     }],
+    draft_link_candidates: [],
     quality_review: {
       unresolved_conflict_keys: [],
       compound_claim_keys: [],
@@ -82,9 +83,9 @@ function verification(overrides = {}) {
   };
 }
 
-function context(scenario) {
+function context(scenario, draftClaims = []) {
   return {
-    schema_version: "context-pack.v2",
+    schema_version: "context-pack.v3",
     project: { id: "project-1", scenario, locale: "en-US", context_version: 1 },
     verified_context: {
       glossary: [],
@@ -93,7 +94,14 @@ function context(scenario) {
       open_questions: [],
       active_risks: [],
     },
-    new_event: { event_id: "event-1", transcript_segments: [], photos: [], documents: [] },
+    draft_context: { enabled: draftClaims.length > 0, claims: draftClaims },
+    new_event: {
+      event_id: "event-1",
+      transcript_segments: [],
+      readable_transcript_segments: [],
+      photos: [],
+      documents: [],
+    },
   };
 }
 
@@ -177,6 +185,57 @@ test("final extraction helper removes verifier bookkeeping and preserves schema 
     scenario_assessment: null,
     claims: verified.claims,
   });
+});
+
+test("draft links are bounded hints and can never become formal relation targets", () => {
+  const draft = {
+    claimId: "draft-old",
+    claimVersionId: "draft-old-v1",
+    eventId: "event-old",
+    eventSequenceNo: 1,
+    type: "preference",
+    statement: "The buyer prefers a quiet street.",
+    confidence: 0.82,
+    evidenceRefIds: ["evidence-old"],
+  };
+  const linked = verification({
+    draft_link_candidates: [{
+      final_claim_key: "claim-1",
+      target_draft_claim_id: draft.claimId,
+      target_draft_claim_version_id: draft.claimVersionId,
+      type: "changed",
+      reason: "The new preference may replace the earlier unreviewed preference.",
+      confidence: 0.91,
+    }],
+  });
+  const validated = validateVerificationOutput(
+    linked,
+    inventory(),
+    context("real_estate_buyer_journey", [draft]),
+  );
+  assert.equal(validated.valid, true);
+  assert.deepEqual(toFinalExtractClaimsOutput(linked).claims, linked.claims);
+  assert.equal("draft_link_candidates" in toFinalExtractClaimsOutput(linked), false);
+
+  const formalRelation = verification({
+    claims: [finalClaim({
+      relations: [{
+        type: "supersedes",
+        target_claim_id: draft.claimId,
+        target_claim_version_id: draft.claimVersionId,
+        reason: "A draft must not be a formal relation target.",
+        confidence: 0.99,
+      }],
+    })],
+  });
+  assert.equal(
+    validateVerificationOutput(
+      formalRelation,
+      inventory(),
+      context("real_estate_buyer_journey", [draft]),
+    ).valid,
+    false,
+  );
 });
 
 test("all five disposition outcomes are accepted with exact mapping rules", () => {

@@ -415,7 +415,16 @@ test("simple flow supports audio-first setup and preserves a transcription start
   assert.match(beginSimple, /return \{ project: created, event: null \}/);
   assert.match(beginSimple, /async function beginSimpleTest\(/);
   assert.match(beginSimple, /if \(openTranscriptAfterCreate\) setShowImport\(true\)/);
-  assert.match(page, /onStartOwn=\{\(\) => void beginSimpleTest\(\)\}/);
+  assert.match(
+    page,
+    /onStartOwn=\{\(\) => \{ setSimpleFlow\(true\); setShowNewProject\(true\); \}\}/,
+    "the named buyer-project flow must open the form instead of silently creating a test record",
+  );
+  assert.match(
+    page,
+    /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/,
+    "a buyer project created from the core workspace must remain in the guided workspace",
+  );
   assert.match(page, /else void beginSimpleTest\(true\)/);
   assert.match(page, /Transcript 会成为第一条沟通/);
 

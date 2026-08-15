@@ -11,8 +11,17 @@ const {
   isCoreWorkflowRoute,
   isReadonlyClaimRoute,
   parseAppRoute,
+  requestOwnerIsCurrent,
   serializeAppRoute,
 } = await import(moduleUrl);
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 test("route query round-trips a report claim and its exact origin", () => {
   const route = {
@@ -46,6 +55,12 @@ test("review and event claims have deterministic fallback destinations", () => {
   assert.equal(fallbackBackRoute({ view: "run-debug", projectId: "p", eventId: "e", runId: "r" }).view, "event");
 });
 
+test("a claim opened from the AI summary returns to the same core workspace", () => {
+  const route = { view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "simple" };
+  assert.deepEqual(fallbackBackRoute(route), { view: "simple", projectId: "p", eventId: "e" });
+  assert.equal(backLabelForRoute(route), "返回 AI 摘要");
+});
+
 test("only the core workspace is eligible for guided auto-navigation", () => {
   assert.equal(isCoreWorkflowRoute({ view: "simple", projectId: "p" }), true);
   for (const view of ["draft", "review", "claim", "results", "event", "run-debug"]) {
@@ -70,5 +85,56 @@ test("a new project selection invalidates an older workflow snapshot", () => {
     source.indexOf("const loadSimpleProject = useCallback"),
     source.indexOf("const loadEvent = useCallback"),
   );
-  assert.match(loadSimpleProject, /projectWorkflowRefreshToken\.current \+= 1/);
+  assert.match(loadSimpleProject, /invalidateProjectSelectionRequests\(\)/);
+});
+
+test("a delayed project response cannot overwrite the newer selection", async () => {
+  let current = {
+    projectId: "project-a",
+    projectEpoch: 1,
+    eventId: "event-a",
+    eventEpoch: 1,
+  };
+  let visible = "";
+  const slowA = deferred();
+  const ownerA = { ...current };
+  const commit = async (owner, result) => {
+    const value = await result;
+    if (requestOwnerIsCurrent(owner, current)) visible = value;
+  };
+
+  const pendingA = commit(ownerA, slowA.promise);
+  current = {
+    projectId: "project-b",
+    projectEpoch: 2,
+    eventId: "event-b",
+    eventEpoch: 2,
+  };
+  await commit({ ...current }, Promise.resolve("project-b claims"));
+  slowA.resolve("project-a claims");
+  await pendingA;
+
+  assert.equal(visible, "project-b claims");
+});
+
+test("a delayed event response cannot overwrite a newer event in the same project", async () => {
+  let current = {
+    projectId: "project-a",
+    projectEpoch: 4,
+    eventId: "event-1",
+    eventEpoch: 7,
+  };
+  let visible = "";
+  const slowEvent = deferred();
+  const ownerEvent1 = { ...current };
+  const pendingEvent1 = slowEvent.promise.then((value) => {
+    if (requestOwnerIsCurrent(ownerEvent1, current)) visible = value;
+  });
+
+  current = { ...current, eventId: "event-2", eventEpoch: 8 };
+  if (requestOwnerIsCurrent({ ...current }, current)) visible = "event-2 review";
+  slowEvent.resolve("event-1 review");
+  await pendingEvent1;
+
+  assert.equal(visible, "event-2 review");
 });

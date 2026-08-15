@@ -5,7 +5,8 @@
   "compatibility_date": "2026-05-22",
   "vars": {
     "APP_ENV": "production",
-    "AUTH_GATEWAY": "chatgpt"
+    "AUTH_GATEWAY": "chatgpt",
+    "AI_DRAFT_CONTEXT": "0"
   },
   "triggers": {
     "crons": ["* * * * *"]

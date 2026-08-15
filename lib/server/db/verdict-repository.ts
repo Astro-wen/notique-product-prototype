@@ -536,6 +536,13 @@ export async function applyClaimVerdict(
           .bind(input.base_version_id),
         db
           .prepare(
+            `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+              WHERE status = 'proposed'
+                AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+          )
+          .bind(timestamp, input.base_version_id, input.base_version_id),
+        db
+          .prepare(
             `INSERT INTO verdicts
              (id, workspace_id, project_id, claim_id, action, base_version_id,
               user_id, explanation, created_at)
@@ -553,7 +560,9 @@ export async function applyClaimVerdict(
           ),
         db
           .prepare(
-            `UPDATE projects SET ledger_version = ledger_version + 1, updated_at = ?
+            `UPDATE projects
+                SET ledger_version = ledger_version + 1,
+                    context_version = context_version + 1, updated_at = ?
               WHERE id = ? AND workspace_id = ?`,
           )
           .bind(timestamp, existing.project_id, scope.workspaceId),
@@ -876,6 +885,13 @@ export async function applyClaimVerdict(
                 AND (source_claim_version_id = ? OR target_claim_version_id = ?)`,
           )
           .bind(input.base_version_id, input.base_version_id),
+        db
+          .prepare(
+            `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+              WHERE status = 'proposed'
+                AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+          )
+          .bind(timestamp, input.base_version_id, input.base_version_id),
         ...relationMutations.map(({ row, retained, replacementId }) =>
           db
             .prepare(
@@ -1046,8 +1062,15 @@ export async function withdrawClaim(
           `UPDATE claim_relations SET status = 'inactive'
             WHERE status = 'active'
               AND (source_claim_version_id = ? OR target_claim_version_id = ?)`,
+          )
+          .bind(input.baseVersionId, input.baseVersionId),
+      db
+        .prepare(
+          `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+            WHERE status = 'proposed'
+              AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
         )
-        .bind(input.baseVersionId, input.baseVersionId),
+        .bind(timestamp, input.baseVersionId, input.baseVersionId),
       db
         .prepare(
           `INSERT INTO verdicts
@@ -1233,6 +1256,18 @@ export async function applyBatchVerdicts(
                       AND status = 'proposed'`,
                 )
                 .bind(scope.workspaceId, item.base_version_id),
+              db
+                .prepare(
+                  `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+                    WHERE workspace_id = ? AND status = 'proposed'
+                      AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+                )
+                .bind(
+                  timestamp,
+                  scope.workspaceId,
+                  item.base_version_id,
+                  item.base_version_id,
+                ),
             ]
           : []),
         db
@@ -1255,20 +1290,16 @@ export async function applyBatchVerdicts(
           ),
       ]),
       ...[...new Set(rows.map((row) => String(row.project_id)))].flatMap((projectId) => {
-        const changesContext = input.verdicts.some(
-          (item, index) =>
-            String(rows[index].project_id) === projectId && item.action === "confirm",
-        );
         return [
           ...lifecycleRecalculationStatements(projectId, timestamp),
           db
             .prepare(
               `UPDATE projects
                   SET ledger_version = ledger_version + 1,
-                      context_version = context_version + ?, updated_at = ?
+                      context_version = context_version + 1, updated_at = ?
                 WHERE id = ? AND workspace_id = ?`,
             )
-            .bind(changesContext ? 1 : 0, timestamp, projectId, scope.workspaceId),
+            .bind(timestamp, projectId, scope.workspaceId),
         ];
       }),
       mutationReplayStatement(
@@ -1343,7 +1374,7 @@ export async function applyOccurrenceVerdict(
   }
   const allowedClaimTypes = new Set([
     "budget", "preference", "requirement", "decision", "concern", "risk",
-    "open_question", "person_role", "timing", "property_fact", "material",
+    "open_question", "person_role", "timing", "property_fact", "next_action", "material",
     "measurement", "other",
   ]);
   const conversionClaims = input.action === "convert_to_new_claim" ? input.newClaims ?? [] : [];

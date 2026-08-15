@@ -767,9 +767,14 @@ export function buildRisks(ledger: ProjectLedger) {
 export const RE_BUYER_SLOTS = [
   "budget",
   "financing",
+  "target_areas",
   "timeline",
   "decision_makers",
   "must_haves",
+  "preferences",
+  "dealbreakers",
+  "property_feedback",
+  "next_actions",
 ] as const;
 export type ReBuyerSlot = (typeof RE_BUYER_SLOTS)[number];
 
@@ -778,7 +783,7 @@ function normalizedSlot(claim: ClaimWithVersion) {
   return typeof value === "string" ? value : null;
 }
 
-function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot) {
+function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot): boolean {
   if (
     claim.type === "risk" ||
     claim.type === "concern" ||
@@ -789,7 +794,29 @@ function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot) {
   if (slot === "budget") return claim.type === "budget";
   if (slot === "timeline") return claim.type === "timing";
   if (slot === "decision_makers") return claim.type === "person_role";
-  if (slot === "must_haves") return claim.type === "requirement";
+  if (slot === "preferences") return claim.type === "preference";
+  if (slot === "next_actions") return claim.type === "next_action";
+  if (slot === "target_areas") {
+    return /\b(?:area|neighbou?rhood|location|district|school district|city|town)\b|区域|地段|学区|城市|社区/i.test(
+      claim.version.statement,
+    );
+  }
+  if (slot === "dealbreakers") {
+    return /\b(?:deal\s*breaker|must not|cannot accept|won't accept|would not accept|exclude)\b|绝不|不能接受|无法接受|排除/i.test(
+      claim.version.statement,
+    );
+  }
+  if (slot === "must_haves") {
+    return claim.type === "requirement" && !matchesSlot(claim, "dealbreakers");
+  }
+  if (slot === "property_feedback") {
+    return (
+      (claim.type === "preference" || claim.type === "property_fact") &&
+      /\b(?:property|home|house|listing|unit|apartment|condo|viewing|tour)\b|房源|房子|住宅|公寓|看房/i.test(
+        claim.version.statement,
+      )
+    );
+  }
   if (slot === "financing") {
     return /financ|mortgage|pre.?approv|贷款|融资|按揭/i.test(claim.version.statement);
   }

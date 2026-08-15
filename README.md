@@ -16,6 +16,9 @@
 - 后台任务：D1 Outbox、租约、重试、失败收口和每分钟定时 Sweep 已接好；OpenAI 长模型阶段可以按已保存的 Background Response ID 恢复，也可以通过受保护的内部接口手动触发
 - 阅读辅助：原始 Transcript 永久保留；Luna `high` 独立生成带原始引用的 AI 摘要和 100% Segment 映射的易读逐字稿。长逐字稿按固定边界分块续跑，任何遗漏、重复、乱序或敏感数字变化都会整份回退 raw-only
 - 项目管理：项目可移到回收站、恢复或永久删除；永久删除先清 R2 文件再删 D1，运行中项目不能删除
+- 买方客户旅程：新建项目时固定为房地产买方场景，持续追踪预算、融资、区域、硬性要求、偏好、不能接受项、决策人、房源反馈、未决问题和下一步行动
+- 双层记忆：AI 草稿可以先读、稍后核对；只有人工确认内容进入可信报告。可选的跨沟通草稿上下文默认关闭，并且不能直接改变任何已确认事实
+- 站内行动：`next_action` 可以从 AI 建议变为人工确认的行动，并在完成时留下可追溯的完成记录；不连接 CRM、日历或邮件
 
 ## 用户看到的 Transcript 三层
 
@@ -49,11 +52,14 @@ AI_MODEL=<固定版本的多模态模型>
 AI_REASONING_EFFORT=xhigh
 AI_VERIFIER_REASONING_EFFORT=high
 AI_TWO_PASS_PIPELINE=1
+AI_DRAFT_CONTEXT=0
 AI_API_KEY=<服务端 Secret>
 INTERNAL_JOB_TOKEN=<高强度随机 Secret>
 ```
 
-OpenAI 的正式提取路径使用 Responses API。当前双阶段合同是 Prompt v8.2 / Schema v3：
+OpenAI 的正式提取路径使用 Responses API。当前新 Run 的双阶段合同是 Prompt v9：
+Context Pack v3、Agent A Inventory v3、Agent B Verification v4，最终 Claim 输出继续使用
+claim-extraction v3。Prompt v8.2 与更早 Run 只作为历史审计，不会混进新合同：
 Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实，Agent B 默认用
 `AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系；确定性检查
 发现关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 时，Agent B 才升级到
@@ -72,9 +78,11 @@ Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实
 都会单独保存，成功的 Agent A 阶段可在同一 Run 重试时复用。全部执行参数都会写入 Run
 输入指纹，参数改变后必须创建新 Run，不能混用旧结果。
 
-Prompt v8.2 保持 Agent A `xhigh` 和 Agent B `high` 不变，把两阶段共用的证据上下文放到
-稳定前缀并使用同一缓存标识，减少第二阶段重复读取长材料。核心测试页会显示排队、材料准备、
-事实盘点、查漏纠错、加强复核和结果保存的服务器真实耗时，报告页也会显示读取耗时。
+Prompt v9 保持 Agent A `xhigh` 和 Agent B `high` 不变。Agent A 仍只读本次原始材料；
+Agent B 可以在功能开关启用时读取之前沟通中有合法原始 Evidence 的 AI 草稿，但这些草稿
+不是正式 Evidence、不能成为正式 Relation 目标，也不能关闭、取代或再次确认任何旧 Claim。
+模型只可提出独立的 Draft Link，等两端都被人确认后，再由用户决定是否建立正式关系。
+`AI_DRAFT_CONTEXT=0` 是本地与生产默认值；完成固定 Realtor 对照测试前不得改为 `1`。
 
 `AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
 
@@ -130,16 +138,17 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 不需要先理解 Project、Run 或 Ledger。普通用户只需要记住这条循环：
 
 ```text
-添加材料 → AI 初稿 → 人工核对 → 项目记忆 → 下一次沟通 → 会前速览
+添加材料 → AI 初稿立即可读 → 重要内容可选核对 → 下一次沟通 → 客户进展 / 下一步 / 时间线
 ```
 
 1. 选择或建立项目，再选择当前沟通。
 2. 上传 Transcript、照片、PDF 或自己的录音；也可以直接使用浏览器录音。MP3、M4A、WAV、WebM、MP4、MPEG 和 MPGA 均可，单个录音上限 25 MB。
 3. 录音完成转写、材料显示“可以分析”后，点击一次“开始分析”。刷新不会建立第二个付费任务。
 4. 第一次分析先确认使用场景，然后阅读整场 AI 初稿。点击重点可以查看放大的目标句、精确高亮和前后两段原文。
-5. 进入连续核对，对 Claim、Occurrence 和 Relation 做确认、修改或不采纳。保存后自动进入下一条。
-6. 本次清空后，系统自动准备下一次沟通；只有用户点击一次，才会开始下一次付费分析。
-7. 整组完成后查看会前速览、真正的变化时间线、当前偏好和历史变化。所有正式结果只读取已经确认的记录。
+5. 优先核对金额、日期、责任人、矛盾、低置信内容和关系；其他草稿可以稍后处理。保存后自动进入下一条。
+6. 不清空 Pending 也可以准备下一次沟通；只有用户点击一次，才会开始下一次付费分析。未核对草稿不会进入可信报告。
+7. 在“客户进展”同时查看标明可信状态的 AI 当前理解与 Verified-only 可信记忆；在“下一步行动”确认、修改、不采纳或完成行动。
+8. Timeline、Brief 和正式报告继续只读取已经人工确认的记录。
 
 页面地址会保存项目、沟通、当前栏目和记录。时间线打开证据后会“返回时间线”，审核记录会“返回审核列表”；刷新后也会从服务器恢复。
 
@@ -150,10 +159,11 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 ## Eric 一键演示
 
 普通测试界面支持先导入一到十份 Transcript，再从“开始处理全部沟通”进入整组流程。
-系统按 Project 中的沟通顺序一次处理一条，首次结果会停下来确认 Scenario，每次结果
-会停下来人工核对。待审核内容清空后，按钮会变成“继续处理下一次沟通”，确保后续
-分析只继承已经确认的内容。页面刷新后会继续读取服务器中的 Run，不会重复发起模型
-请求。
+系统按 Project 中的沟通顺序一次处理一条。新的买方客户项目会直接固定场景，不再让 AI
+猜 Scenario；历史项目仍保留原来的 Scenario 确认流程。每次结果先生成可立即阅读的 AI
+草稿，用户可以核对重点，也可以稍后继续下一次沟通。默认关闭草稿上下文时，后续分析仍
+只继承可信记忆；灰度开启后也只把旧草稿当成带明显标记的理解线索，绝不直接写入正式状态。
+页面刷新后会继续读取服务器中的 Run，不会重复发起模型请求。
 
 先按上面的步骤启动本地服务。另开一个终端运行下面这条命令：
 

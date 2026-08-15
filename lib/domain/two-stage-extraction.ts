@@ -12,15 +12,16 @@ import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtract
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 
-export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.2" as const;
+export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
-export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v3" as const;
+export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
 
 export const TWO_STAGE_EXTRACTION_LIMITS = {
   inventoryCandidates: 24,
   finalClaims: MODEL_CONTRACT_LIMITS.claims,
   dispositionReasonLength: MODEL_CONTRACT_LIMITS.explanationLength,
   qualityFlags: 24,
+  draftLinks: 24,
 } as const;
 
 export type InventoryCandidate = {
@@ -56,12 +57,24 @@ export type InventoryDisposition = {
   reason: string;
 };
 
+export type DraftLinkType = "same" | "changed" | "conflicting" | "possibly_answered";
+
+export type DraftLinkCandidate = {
+  final_claim_key: string;
+  target_draft_claim_id: string;
+  target_draft_claim_version_id: string;
+  type: DraftLinkType;
+  reason: string;
+  confidence: number;
+};
+
 export type VerificationOutput = {
   schema_version: typeof VERIFICATION_SCHEMA_VERSION;
   event_id: string;
   scenario_assessment: ExtractClaimsOutput["scenario_assessment"];
   claims: ExtractClaimsOutput["claims"];
   candidate_dispositions: InventoryDisposition[];
+  draft_link_candidates: DraftLinkCandidate[];
   quality_review: {
     unresolved_conflict_keys: string[];
     compound_claim_keys: string[];
@@ -297,7 +310,7 @@ export function validateVerificationOutput(
 ): ContractValidation<VerificationOutput> {
   const issues: ModelContractIssue[] = [];
   if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
-  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "quality_review"], "$", issues);
+  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review"], "$", issues);
   if (value.schema_version !== VERIFICATION_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
   }
@@ -320,12 +333,14 @@ export function validateVerificationOutput(
   }
   const claims = Array.isArray(value.claims) ? value.claims : [];
   const finalKeys = new Set<string>();
+  const newFinalKeys = new Set<string>();
   claims.forEach((claim, index) => {
     if (!record(claim) || typeof claim.client_claim_key !== "string") return;
     if (finalKeys.has(claim.client_claim_key)) {
       issues.push({ path: `$.claims[${index}].client_claim_key`, message: "Duplicate final claim key." });
     }
     finalKeys.add(claim.client_claim_key);
+    if (claim.disposition === "new") newFinalKeys.add(claim.client_claim_key);
   });
 
   const inventoryKeys = new Set(inventory.candidates.map((candidate) => candidate.inventory_key));
@@ -382,6 +397,50 @@ export function validateVerificationOutput(
       issues.push({ path: "$.candidate_dispositions", message: `Missing disposition for inventory key ${candidate.inventory_key}.` });
     }
   });
+
+  const availableDraftTargets = new Map(
+    (context?.draft_context?.claims ?? []).map((claim) => [claim.claimId, claim]),
+  );
+  if (!Array.isArray(value.draft_link_candidates) || value.draft_link_candidates.length > TWO_STAGE_EXTRACTION_LIMITS.draftLinks) {
+    issues.push({
+      path: "$.draft_link_candidates",
+      message: `Expected an array with at most ${TWO_STAGE_EXTRACTION_LIMITS.draftLinks} draft links.`,
+    });
+  } else {
+    const seenDraftLinks = new Set<string>();
+    value.draft_link_candidates.forEach((link, index) => {
+      const path = `$.draft_link_candidates[${index}]`;
+      if (!record(link)) {
+        issues.push({ path, message: "Expected an object." });
+        return;
+      }
+      exactKeys(link, ["final_claim_key", "target_draft_claim_id", "target_draft_claim_version_id", "type", "reason", "confidence"], path, issues);
+      boundedString(link.final_claim_key, `${path}.final_claim_key`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.target_draft_claim_id, `${path}.target_draft_claim_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.target_draft_claim_version_id, `${path}.target_draft_claim_version_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.reason, `${path}.reason`, issues, MODEL_CONTRACT_LIMITS.explanationLength);
+      if (!new Set<DraftLinkType>(["same", "changed", "conflicting", "possibly_answered"]).has(link.type as DraftLinkType)) {
+        issues.push({ path: `${path}.type`, message: "Unsupported draft link type." });
+      }
+      if (typeof link.confidence !== "number" || !Number.isFinite(link.confidence) || link.confidence < 0 || link.confidence > 1) {
+        issues.push({ path: `${path}.confidence`, message: "Expected a confidence from 0 to 1." });
+      }
+      if (typeof link.final_claim_key === "string" && !finalKeys.has(link.final_claim_key)) {
+        issues.push({ path: `${path}.final_claim_key`, message: "Unknown final claim key." });
+      } else if (typeof link.final_claim_key === "string" && !newFinalKeys.has(link.final_claim_key)) {
+        issues.push({ path: `${path}.final_claim_key`, message: "A draft link must originate from a new final claim." });
+      }
+      const target = typeof link.target_draft_claim_id === "string"
+        ? availableDraftTargets.get(link.target_draft_claim_id)
+        : undefined;
+      if (!target || target.claimVersionId !== link.target_draft_claim_version_id) {
+        issues.push({ path: `${path}.target_draft_claim_id`, message: "Draft link target is not present in draft_context." });
+      }
+      const uniqueKey = `${link.final_claim_key}\u0000${link.target_draft_claim_id}\u0000${link.type}`;
+      if (seenDraftLinks.has(uniqueKey)) issues.push({ path, message: "Duplicate draft link candidate." });
+      seenDraftLinks.add(uniqueKey);
+    });
+  }
 
   if (!record(value.quality_review)) {
     issues.push({ path: "$.quality_review", message: "Expected an object." });

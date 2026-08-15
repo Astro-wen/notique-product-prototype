@@ -164,20 +164,22 @@ export async function getWorkflowSnapshot(
          LEFT JOIN transcription_runs tr ON tr.id = (
            SELECT latest.id FROM transcription_runs latest
             WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
-            ORDER BY latest.created_at DESC LIMIT 1
+            ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
          )
          LEFT JOIN transcription_queue_outbox tqo ON tqo.run_id = tr.id
          LEFT JOIN event_ai_artifact_runs sr ON sr.id = (
            SELECT latest.id FROM event_ai_artifact_runs latest
             WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
               AND latest.kind = 'summary'
-            ORDER BY latest.created_at DESC LIMIT 1
+              AND latest.extraction_run_id = e.active_run_id
+            ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
          )
          LEFT JOIN event_ai_artifact_runs rr ON rr.id = (
            SELECT latest.id FROM event_ai_artifact_runs latest
             WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
               AND latest.kind = 'readable_transcript'
-            ORDER BY latest.created_at DESC LIMIT 1
+              AND latest.extraction_run_id = e.active_run_id
+            ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
          )
         WHERE e.project_id = ? AND e.workspace_id = ?
         ORDER BY e.sequence_no ASC`,
@@ -194,16 +196,23 @@ export async function getWorkflowSnapshot(
     const extractionStatus = nullableText(row, "extraction_status");
     const extractionStage = nullableText(row, "extraction_stage") as ExtractionModelStageName | null;
     const transcriptionStatus = nullableText(row, "transcription_status");
+    const materialTotal = integer(row, "material_total");
+    const materialReady = integer(row, "material_ready");
+    const materialProcessing = integer(row, "material_processing");
+    const materialFailed = integer(row, "material_failed");
+    const pendingCount = pendingClaimCount + pendingOccurrenceCount;
+    const summaryRun = artifactRun(row, "summary");
+    const readableTranscriptRun = artifactRun(row, "readable");
     const values = {
       materialStatus,
-      materialTotal: integer(row, "material_total"),
-      materialProcessing: integer(row, "material_processing"),
-      materialFailed: integer(row, "material_failed"),
+      materialTotal,
+      materialProcessing,
+      materialFailed,
       transcriptionStatus,
       extractionStatus,
       extractionStage,
       scenarioStatus: project.scenario_status,
-      pendingCount: pendingClaimCount + pendingOccurrenceCount,
+      pendingCount,
       candidateCount,
     };
     const transcriptionRunId = nullableText(row, "transcription_run_id");
@@ -215,11 +224,23 @@ export async function getWorkflowSnapshot(
       sequence_no: integer(row, "sequence_no"),
       material_status: materialStatus,
       display_status: deriveProjectWorkflowDisplayStatus(values),
+      status_summary: {
+        material_count: materialTotal,
+        material_ready_count: materialReady,
+        material_processing_count: materialProcessing,
+        material_failed_count: materialFailed,
+        transcription_status: transcriptionStatus as TranscriptionRunStatus | null,
+        extraction_status: extractionStatus as ExtractionRunStatus | null,
+        pending_count: pendingCount,
+        candidate_count: candidateCount,
+        summary_status: summaryRun?.status ?? null,
+        readable_transcript_status: readableTranscriptRun?.status ?? null,
+      },
       materials: {
-        total: values.materialTotal,
-        ready: integer(row, "material_ready"),
-        processing: values.materialProcessing,
-        failed: values.materialFailed,
+        total: materialTotal,
+        ready: materialReady,
+        processing: materialProcessing,
+        failed: materialFailed,
       },
       transcription: transcriptionRunId && transcriptionStatus
         ? {
@@ -250,8 +271,8 @@ export async function getWorkflowSnapshot(
           }
         : null,
       ai_artifacts: {
-        summary: artifactRun(row, "summary"),
-        readable_transcript: artifactRun(row, "readable"),
+        summary: summaryRun,
+        readable_transcript: readableTranscriptRun,
       },
       pending_claim_count: pendingClaimCount,
       pending_occurrence_count: pendingOccurrenceCount,
@@ -287,6 +308,8 @@ export async function getWorkflowSnapshot(
     empty_output: "inspect_material",
     waiting_scenario: "confirm_scenario",
     waiting_review: "review",
+    draft_ready: "open_draft",
+    partially_reviewed: "open_draft",
     complete: "open_brief",
   } as const;
 
@@ -296,6 +319,8 @@ export async function getWorkflowSnapshot(
       phase: plan.phase,
       total: plan.total,
       completed: plan.completed,
+      trust_state: plan.trustState,
+      pending_total: plan.pendingTotal,
       current_position: plan.currentPosition,
       current_event_id: plan.currentEventId ?? null,
       current_run_id: plan.currentRunId ?? null,

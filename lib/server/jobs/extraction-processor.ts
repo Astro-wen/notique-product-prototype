@@ -35,6 +35,7 @@ import {
   validateVerificationOutput,
   type InventoryOutput,
   type VerificationOutput,
+  type DraftLinkCandidate,
 } from "@/lib/domain/two-stage-extraction";
 import {
   createModelProvider,
@@ -45,6 +46,7 @@ import {
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
 import { loadProjectLedger } from "@/lib/server/db/ledger-repository";
+import { listProjectDraftMemory } from "@/lib/server/db/buyer-journey-repository";
 import {
   getLatestExtractionModelStage,
   supersedeProcessingExtractionModelStage,
@@ -635,6 +637,25 @@ async function loadContextInput(run: Row): Promise<{
     };
   }));
   const ledgerPromise = loadProjectLedger(scope, String(run.project_id));
+  const frozenModelParams = parseJson<Record<string, unknown>>(
+    String(run.model_params_json ?? "{}"),
+    {},
+  );
+  const draftContextEnabled = frozenModelParams.draft_context === true;
+  const draftContextManifest = Array.isArray(frozenModelParams.draft_context_manifest)
+    ? frozenModelParams.draft_context_manifest.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const row = item as Record<string, unknown>;
+        return typeof row.claim_id === "string" && typeof row.claim_version_id === "string"
+          ? [{ claim_id: row.claim_id, claim_version_id: row.claim_version_id }]
+          : [];
+      })
+    : [];
+  const draftMemoryPromise = draftContextEnabled
+    ? listProjectDraftMemory(scope, String(run.project_id), {
+        frozenClaims: draftContextManifest,
+      })
+    : Promise.resolve({ claims: [], links: [] });
   const glossaryRowsPromise = all(
     `SELECT ge.canonical_value, ge.aliases_json, ge.category, ge.source_type,
             ge.source_claim_version_id
@@ -656,10 +677,11 @@ async function loadContextInput(run: Row): Promise<{
         )`,
     [run.project_id, run.workspace_id],
   );
-  const [photos, ledger, glossaryRows] = await Promise.all([
+  const [photos, ledger, glossaryRows, draftMemory] = await Promise.all([
     photosPromise,
     ledgerPromise,
     glossaryRowsPromise,
+    draftMemoryPromise,
   ]);
   const glossary = glossaryRows.flatMap((row) => {
     const canonical = String(row.canonical_value).trim();
@@ -683,6 +705,18 @@ async function loadContextInput(run: Row): Promise<{
     photos,
     documents: [],
     glossary,
+    draftContextEnabled,
+    draftClaims: draftMemory.claims
+      .map((claim) => ({
+      claimId: claim.claim_id,
+      claimVersionId: claim.claim_version_id,
+      eventId: claim.event_id,
+      eventSequenceNo: claim.event_sequence_no,
+      type: claim.type as ClaimWithVersion["type"],
+      statement: claim.statement,
+      confidence: claim.confidence,
+      evidenceRefIds: claim.evidence_ref_ids,
+      })),
   });
   const snapshotContext = contextSnapshotView(contextPack);
   const contextSnapshotJson = JSON.stringify(snapshotContext);
@@ -1204,6 +1238,7 @@ async function persistModelOutput(
     providerRequestId: string | null;
   },
   pipelineWarnings: Array<Record<string, unknown>> = [],
+  draftLinkCandidates: DraftLinkCandidate[] = [],
 ): Promise<ExtractionProcessResult> {
   const validatedOutputJson = JSON.stringify(output);
   const validatedOutputBytes = new TextEncoder().encode(validatedOutputJson).byteLength;
@@ -1346,6 +1381,54 @@ async function persistModelOutput(
             relation.confidence,
             timestamp,
           ),
+      ),
+    );
+  }
+  const newClaimByClientKey = new Map(
+    prepared.newClaims.map((candidate) => [candidate.model.client_claim_key, candidate]),
+  );
+  for (const link of draftLinkCandidates) {
+    const source = newClaimByClientKey.get(link.final_claim_key);
+    if (!source) {
+      prepared.warnings.push({
+        code: "DRAFT_LINK_SOURCE_NOT_PERSISTED",
+        final_claim_key: link.final_claim_key,
+      });
+      continue;
+    }
+    statements.push(
+      db.prepare(
+        `INSERT INTO draft_link_candidates (
+          id, workspace_id, project_id, extraction_run_id,
+          source_claim_id, source_claim_version_id,
+          target_draft_claim_id, target_draft_claim_version_id,
+          type, reason, confidence, status, created_at, updated_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM claims target
+            WHERE target.id = ? AND target.workspace_id = ?
+              AND target.project_id = ? AND target.current_version_id = ?
+              AND target.review_status = 'pending' AND target.lifecycle_status = 'active'
+         )`,
+      ).bind(
+        id("dlink"),
+        run.workspace_id,
+        run.project_id,
+        run.id,
+        source.claimId,
+        source.versionId,
+        link.target_draft_claim_id,
+        link.target_draft_claim_version_id,
+        link.type,
+        link.reason,
+        link.confidence,
+        timestamp,
+        timestamp,
+        link.target_draft_claim_id,
+        run.workspace_id,
+        run.project_id,
+        link.target_draft_claim_version_id,
       ),
     );
   }
@@ -1747,6 +1830,7 @@ export async function processExtractionRun(
         : undefined;
     const pipelineEnabled = frozenModelParams.two_pass_pipeline === true;
     let finalOutput: ExtractClaimsOutput;
+    let acceptedDraftLinks: DraftLinkCandidate[] = [];
     let finalUsage: ModelUsage;
     const pipelineWarnings: Array<Record<string, unknown>> = [];
 
@@ -1765,6 +1849,10 @@ export async function processExtractionRun(
         prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
         schema: INVENTORY_SCHEMA_VERSION,
       }));
+      const inventoryContext: ContextPack = {
+        ...input.contextPack,
+        draft_context: { enabled: false, claims: [] },
+      };
       const inventoryStage = await runModelStage<InventoryOutput>({
         run: leased,
         stage: "inventory",
@@ -1776,7 +1864,7 @@ export async function processExtractionRun(
         inputHash: inventoryInputHash,
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (stageOptions) => inventoryProvider.inventoryClaims(
-          input.contextPack,
+          inventoryContext,
           { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
         ),
       });
@@ -1948,6 +2036,7 @@ export async function processExtractionRun(
         });
       }
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
+      acceptedDraftLinks = acceptedVerification.draft_link_candidates;
       finalUsage = completedUsage ?? aggregateUsage(usages);
     } else {
       const provider = createModelProvider(getBindings(), {
@@ -1983,6 +2072,7 @@ export async function processExtractionRun(
       input.segments,
       finalUsage,
       pipelineWarnings,
+      acceptedDraftLinks,
     );
   } catch (error) {
     const frozenModelParams = parseJson<Record<string, unknown>>(

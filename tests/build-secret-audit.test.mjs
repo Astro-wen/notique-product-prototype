@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import {
   auditBuildPackage,
   cleanForbiddenPackagePaths,
   isForbiddenPackagePath,
+  sanitizeGeneratedWranglerConfig,
 } from "../scripts/lib/build-secret-audit.mjs";
 
 async function exists(path) {
@@ -79,8 +80,68 @@ test("audit reports token-like content without returning the matched value", asy
   assert.equal(JSON.stringify(result).includes(dummyToken), false);
 });
 
+test("audit rejects developer home absolute paths without returning the path", async (t) => {
+  const packageDirectory = await mkdtemp(join(tmpdir(), "notique-package-audit-"));
+  t.after(() => rm(packageDirectory, { force: true, recursive: true }));
+
+  await mkdir(join(packageDirectory, "server"), { recursive: true });
+  const macPath = "/Users/example/work/notique/wrangler.jsonc";
+  const linuxPath = "/home/example/work/notique/wrangler.jsonc";
+  const rootPath = "/root/work/notique/wrangler.jsonc";
+  const windowsPath = String.raw`C:\Users\example\work\notique\wrangler.jsonc`;
+  await writeFile(
+    join(packageDirectory, "server", "unsafe.json"),
+    JSON.stringify({ macPath, linuxPath, rootPath, windowsPath }),
+  );
+
+  const result = await auditBuildPackage(packageDirectory);
+  assert.deepEqual(result.contentFindings, [
+    { path: "server/unsafe.json", rule: "developer-home-absolute-path" },
+  ]);
+  assert.equal(JSON.stringify(result).includes(macPath), false);
+  assert.equal(JSON.stringify(result).includes(linuxPath), false);
+  assert.equal(JSON.stringify(result).includes(rootPath), false);
+  assert.equal(JSON.stringify(result).includes(windowsPath), false);
+});
+
+test("clean build sanitizes local Wrangler source paths from generated metadata", async (t) => {
+  const packageDirectory = await mkdtemp(join(tmpdir(), "notique-package-audit-"));
+  t.after(() => rm(packageDirectory, { force: true, recursive: true }));
+
+  await mkdir(join(packageDirectory, "server"), { recursive: true });
+  const generatedConfigPath = join(packageDirectory, "server", "wrangler.json");
+  await writeFile(
+    generatedConfigPath,
+    JSON.stringify({
+      configPath: "/Users/example/work/notique/wrangler.jsonc",
+      userConfigPath: "/Users/example/work/notique/wrangler.jsonc",
+      name: "notique-evidence-poc",
+      main: "index.js",
+    }),
+  );
+
+  assert.deepEqual(await sanitizeGeneratedWranglerConfig(packageDirectory), [
+    "configPath",
+    "userConfigPath",
+  ]);
+  assert.deepEqual(JSON.parse(await readFile(generatedConfigPath, "utf8")), {
+    name: "notique-evidence-poc",
+    main: "index.js",
+  });
+  assert.deepEqual(await sanitizeGeneratedWranglerConfig(packageDirectory), []);
+  assert.deepEqual(await auditBuildPackage(packageDirectory), {
+    forbiddenPaths: [],
+    contentFindings: [],
+  });
+});
+
 test("the generated dist package is free of forbidden files and token-like content", async () => {
   const packageDirectory = fileURLToPath(new URL("../dist", import.meta.url));
+  const generatedWranglerConfig = JSON.parse(
+    await readFile(join(packageDirectory, "server", "wrangler.json"), "utf8"),
+  );
+  assert.equal(Object.hasOwn(generatedWranglerConfig, "configPath"), false);
+  assert.equal(Object.hasOwn(generatedWranglerConfig, "userConfigPath"), false);
   assert.deepEqual(await auditBuildPackage(packageDirectory), {
     forbiddenPaths: [],
     contentFindings: [],

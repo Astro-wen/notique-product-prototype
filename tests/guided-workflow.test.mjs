@@ -54,14 +54,17 @@ test("the page connects guided navigation without weakening review gates", () =>
     source.indexOf("async function finishGuidedReview"),
     source.indexOf("async function continueAfterReviewSummary"),
   );
-  assert.match(finishGuidedReview, /loadView\("brief-card", project\.id, "replace"\)/);
-  assert.match(finishGuidedReview, /loadSimpleProject\(project\.id, snapshot\.plan\.currentEventId, "replace"\)/);
+  assert.match(finishGuidedReview, /loadView\("brief-card", projectId, "replace"\)/);
+  assert.match(finishGuidedReview, /loadSimpleProject\(projectId, snapshot\.plan\.currentEventId, "replace"\)/);
+  assert.match(finishGuidedReview, /if \(!isCurrentRequestOwner\(owner\)\) return/);
   assert.doesNotMatch(finishGuidedReview, /setScreen\("review-summary"\)/);
   assert.match(source, /reviewClaims=\{isReadonlyClaimRoute\(route\) \? \[\] : claims\}/);
   assert.match(source, /relationsReviewed/);
   assert.equal((source.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
   assert.doesNotMatch(source, /<em>\{itemDisplayStatus\.label\}<\/em>/);
-  assert.match(source, /item\.id === event\?\.id \? \(run \?\? displayItem\.latestRun\)/);
+  assert.match(source, /const itemSummary = eventWorkflowSummaries\[item\.id\]/);
+  assert.match(source, /const itemDisplayStatus = workflowEventDisplayStatus\(itemSummary\)/);
+  assert.match(source, /const materialCount = itemSummary\?\.statusSummary\.materialCount/);
   assert.doesNotMatch(source, /Luna Max|旧的 max/);
 });
 

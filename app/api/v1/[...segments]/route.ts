@@ -60,6 +60,12 @@ import {
 import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
 import {
+  completeProjectAction,
+  applyDraftLinkVerdict,
+  listProjectActions,
+  listProjectDraftMemory,
+} from "@/lib/server/db/buyer-journey-repository";
+import {
   completeReviewSession,
   getReviewSession,
   startReviewSession,
@@ -115,6 +121,7 @@ const CLAIM_TYPES = [
   "person_role",
   "timing",
   "property_fact",
+  "next_action",
   "material",
   "measurement",
   "other",
@@ -339,6 +346,12 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
       id,
     );
   }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "draft-memory") {
+    return ok({ draft_memory: await listProjectDraftMemory(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "actions") {
+    return ok({ actions: await listProjectActions(scope, segments[1]) }, id);
+  }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "events") {
     return ok({ events: await listEvents(scope, segments[1]) }, id);
   }
@@ -476,6 +489,35 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  if (segments.length === 3 && segments[0] === "draft-links" && segments[2] === "verdict") {
+    const body = await jsonObject(request);
+    return ok(
+      {
+        draft_link: await applyDraftLinkVerdict(
+          scope,
+          segments[1],
+          {
+            action: enumValue(body.action, "action", ["accept", "reject"] as const),
+            baseContextVersion: nonNegativeInteger(
+              body.base_context_version,
+              "base_context_version",
+            ),
+          },
+          idempotencyKey(request),
+        ),
+      },
+      id,
+      201,
+    );
+  }
+  if (segments.length === 3 && segments[0] === "actions" && segments[2] === "complete") {
+    await jsonObject(request);
+    return ok(
+      { completion: await completeProjectAction(scope, segments[1], idempotencyKey(request)) },
+      id,
+      201,
+    );
+  }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "manual-claims") {
     const body = await jsonObject(request);
     const input: CreateManualClaimRequest = {
@@ -552,6 +594,9 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
     const body = await jsonObject(request);
     const project = await createProject(scope, {
       name: requiredString(body.name, "name", { max: 200 }),
+      profile: body.profile === undefined
+        ? undefined
+        : enumValue(body.profile, "profile", ["real_estate_buyer_journey"] as const),
       locale:
         body.locale === undefined
           ? "en-US"

@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
 const FORBIDDEN_BASENAME_PATTERNS = [
@@ -22,7 +22,14 @@ const SECRET_CONTENT_PATTERNS = [
       /\b[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)\s*[:=]\s*["'][^"'\r\n]{12,}["']/,
   },
   { name: "basic-auth-url", pattern: /https?:\/\/[^\s/:@]+:[^\s/@]{8,}@/i },
+  {
+    name: "developer-home-absolute-path",
+    pattern:
+      /(?:^|[^A-Za-z0-9])(?:\/(?:Users|home)\/[^/\s"'<>]+(?:\/[^\\\s"'<>]*)?|\/root(?:\/[^\\\s"'<>]*)?|[A-Za-z]:\\{1,2}Users\\{1,2}[^\\\s"'<>]+(?:\\{1,2}[^\\\s"'<>]*)?)/m,
+  },
 ];
+
+const GENERATED_WRANGLER_INTERNAL_FIELDS = ["configPath", "userConfigPath"];
 
 function normalizeRelativePath(root, filePath) {
   return relative(root, filePath).split(sep).join("/");
@@ -112,6 +119,32 @@ export async function cleanForbiddenPackagePaths(packageDirectory) {
   }
 
   return forbiddenPaths;
+}
+
+export async function sanitizeGeneratedWranglerConfig(packageDirectory) {
+  const configPath = resolve(packageDirectory, "server", "wrangler.json");
+  let text;
+
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const config = JSON.parse(text);
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new TypeError("Generated server/wrangler.json must contain a JSON object.");
+  }
+
+  const removedFields = GENERATED_WRANGLER_INTERNAL_FIELDS.filter((field) =>
+    Object.hasOwn(config, field),
+  );
+  if (removedFields.length === 0) return [];
+
+  for (const field of removedFields) delete config[field];
+  await writeFile(configPath, `${JSON.stringify(config)}\n`, "utf8");
+  return removedFields;
 }
 
 export async function auditBuildPackage(packageDirectory) {

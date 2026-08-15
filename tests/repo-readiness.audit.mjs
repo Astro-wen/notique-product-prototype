@@ -1462,8 +1462,13 @@ test("Project and Event review counts stay separate from verified-only views", a
   assert.match(page, /尚未进入本页结果/);
   assert.match(
     page,
-    /runComplete\.has\(latest\.status\)[\s\S]{0,700}api\.getProject\(project\.id\)[\s\S]{0,350}api\.getEvent\(event\.id\)/,
+    /runComplete\.has\(latest\.status\)[\s\S]{0,500}await loadClaimsForRun\(latest\.id\)/,
     "terminal Run polling must refresh Project scenario state and Event review counts",
+  );
+  assert.match(
+    page,
+    /Promise\.all\(\[[\s\S]{0,180}api\.getProject\(projectId\)[\s\S]{0,100}api\.getEvent\(eventId\)[\s\S]{0,180}pollIsCurrent\(\)[\s\S]{0,220}setProject\(refreshedProject\)[\s\S]{0,100}setEvent\(refreshedEvent\)[\s\S]{0,100}setRun\(latest\)/,
+    "terminal Run Project, Event, and Run refreshes must be fenced and committed together",
   );
   assert.match(page, /pendingClaimCount \+ event\.pendingOccurrenceCount/);
   assert.doesNotMatch(page, /accept=\{`[^`]*\.pdf/);
@@ -1552,7 +1557,7 @@ test("AI draft stays outside the ledger and human missed facts require canonical
     "AI 会议信息初稿",
     "这份初稿基本可用",
     "AI 漏掉了重要信息",
-    "开始核对和修正",
+    "核对重要内容",
     "本轮核对完成",
   ]) {
     assert.match(page, new RegExp(label), `guided draft UI is missing ${label}`);

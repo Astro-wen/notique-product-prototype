@@ -137,10 +137,12 @@
 
 ## 当前自动化证据
 
-- `npm test` 通过，合计 259 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent v8.2/v3 合同、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、AI 摘要、易读逐字稿分块恢复、项目回收站、生产 Bundle 和发布包密钥扫描。
+- `npm test` 通过，合计 265 项。测试包含生产构建、领域规则、迁移、Eval Runner 算法、Production Run 导出一致性、Repository 契约、多模态上传边界、Glossary、Occurrence 转换、Evidence Review、人工 Relation 决策门、双 Agent Prompt v9 / Context v3 / Inventory v3 / Verification v4 合同、Draft Link 隔离、可选核对与三层信任状态、买方覆盖字段、站内行动、OpenAI Background Responses 阶段恢复、定向调度与短租约中断恢复、分段计时、单 Event Smoke 导入、自然语言 Scenario Gap、Timeline、服务端审核计时、音频上传和转写、浏览器直接录音、三行业一键 Eric 演示、整组沟通顺序工作流、导航历史恢复、AI 初稿、Evidence 前后文与精确高亮、遗漏补充、风险优先审核、连续审核导航、AI 摘要、易读逐字稿分块恢复、项目回收站、生产 Bundle 和发布包密钥扫描。
 - 独立发布审计没有发现 P0/P1。
 - `npx tsc --noEmit` 通过，没有忽略 TypeScript 错误。
 - `npm run lint` 通过。
+- v19 新增本地 API fixture 的真实 Playwright 流程，所有未明确放行的写请求都会被浏览器层阻止。2026-08-15 的 Chromium 全量结果为 15 通过、1 个按项目预期跳过；其中桌面与 Pixel 7 两种尺寸的 v19 专项为 10/10 通过，覆盖 Project A 的延迟 Snapshot/Claims 不得覆盖 Project B、Summary → Claim → 返回原滚动来源、Timeline → readonly Claim → 返回 Timeline、正式“下一步”不显示 Pending/Rejected，以及仅在本地 allowlist 内执行行动完成与回收站恢复。
+- WebKit 项目在写入长期配置前做了实际可用性探测。与 Playwright 1.62.1 匹配的 WebKit 2251 在本机 macOS 14 arm64 只能使用 frozen build，创建页面即报 `Page.overrideSetting: Unknown setting: PushAPIEnabled`，因此没有把一个必然失败的 WebKit 项目留在配置中；刚下载的单一 WebKit 2251 缓存也已删除。需要在受支持的较新 macOS 或 CI runner 上重新安装并启用 WebKit，不能把这次不兼容写成 Safari 已通过。
 - 空 SQLite 数据库可顺序应用全部 D1 Migration，且 `foreign_key_check` 为零。
 - 四个资源创建接口均要求 `Idempotency-Key`。Project、Event、Transcript Import 和 Asset Init 会把 Request Hash 与 Response 一起写入 D1。同 Key 同 Body 返回原结果，同 Key 异 Body 返回 409。
 - Transcript Item 上传通过 `pending` 到 `uploaded` 的条件更新决定唯一赢家。Finalize 后同内容可重放，不同内容返回 409，上传路径没有把 `finalized` 改回 `uploaded` 的 SQL。
@@ -158,7 +160,7 @@
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
 - 较长或多人抢话的录音改用 OpenAI 的逐段流式返回，避免把整篇逐字稿塞进一个容易截断的 JSON。模型片段若因重叠说话而乱序，系统会在保留原始时间点的前提下稳定排序。流式结果缺少最终完成事件时仍会拒绝写入，避免把不完整逐字稿当成正式材料；失败页会显示后台保存的具体校验原因。
 - Evidence 文件读取支持单一 Byte Range，覆盖完整响应、指定起止、开放结束、后缀范围和越界 416。浏览器音频播放可以从时间点继续读取，同时保持 Workspace 和 Project 范围校验。
-- 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。第一次会停下来让用户确认 Scenario，每次生成候选后会停下来让用户核对；待审核内容清空后才允许继续下一次，所以后续 Context 只继承已经确认的记录。已有 Run 只会继续轮询，不会重复提交。零候选、未就绪材料和旧的单条分析入口都不能绕过这条顺序。
+- 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。新买方项目直接固定场景；历史项目仍会停下来确认 Scenario。生成候选后 AI 草稿立即可读，Pending 不再阻止下一次沟通，但每次新的付费分析仍须用户点击。默认只继承 Verified Context；灰度 Draft Context 不能成为正式 Evidence、Relation target 或生命周期变化。
 - 引导式页面只在浏览器保存最近 Project ID、Event ID 和“已开始整组处理”的导航意图，不保存 Claim、Evidence、Verdict 或报告。刷新后会从服务器恢复真实 Run、Scenario 和待核对数量。分析完成会直接进入 Scenario 或第一条审核；单条确认、拒绝或修改后自动进入下一条；本次清空后只准备下一次沟通，必须由用户再点击一次才产生下一次模型请求；整组完成后自动打开会前速览。
 - 连续审核桌面端使用“队列、Evidence、决定”三栏。手机端队列变为横向选择区。Relation 继续要求逐条接受或拒绝，Evidence 不完整时确认和修改继续锁定；批量处理被收进次级区域，没有削弱服务端 Evidence attestation。后台等待超时显示“仍在后台运行”，其“检查状态”动作只读取原 Run。
 - 分析完成后会先显示按业务主题分组的 AI 会议信息初稿，再进入逐条审核。用户对“初稿基本可用”的第一印象单独保存，不能改变任何 Claim 的 Verified 状态。人工可以从当前 Event 的完整 Transcript 中选择一到八段原文，补回 AI 漏掉的事实；新记录标记为人工补充、保持 Pending，并复用同一套 Evidence 和 Relation 审核门。
@@ -169,7 +171,7 @@
 - `npm run demo:eric -- --fixture=contractor|realtor|insurance --accept-fixture-scenario --confirm-reviewed-fixture` 会通过正式本地 API 运行仓库白名单中的固定行业案例，默认使用 Oak Street contractor。manifest 预先写明 Scenario 的必要概念，且 `scenario.expected` 与 `scenario.semanticAcceptance` 两个字段不会进入模型输入。模型返回自然语言候选后，脚本只确认唯一一个覆盖全部必要概念的候选原文；零个或多个候选通过都会失败，置信度不会替代语义验收。遇到空结果、错误 Scenario、脏队列或 dispatch 网络结果不明会明确失败或恢复，不会把空页面写成成功。脚本保存 fixture ID、路径、SHA256、隔离后的幂等关联值、Run ID、API Request ID、Provider Request ID、语义匹配记录和八份结果。任意 manifest 路径会在网络请求前被拒绝；自动确认只允许三套合成回归案例，不能算作真人审核或 Concept Validation 证据。
 - 14.559 秒双说话人合成 WAV 已通过正式 Audio Asset、R2、Transcription Outbox 和 OpenAI Audio Transcriptions API 跑通。`gpt-4o-transcribe-diarize` 生成 3 个有说话人和毫秒时间戳的 Segment，并创建与原始音频版本绑定的派生 Transcript Asset。
 - 早期派生 Transcript 曾通过 production extraction path 完成过一次旧 Prompt 单阶段验证。Run `run_9e2a97559e644b2eb5b4ad9442c79db1` 生成 5 条有 canonical Evidence 的候选；场景与五条记录经人工核对后写入 Verified Ledger。Project 的 Pending 数量为零，Folder Summary、Timeline、Decision、Open Questions、Agenda 和 Brief 均能读取确认后的内容。详细记录见 `work/audio-transcription-e2e/REPORT.md`。这只证明音频入口的早期工程闭环；当前生产合同已经统一为 Agent A Luna `xhigh`、Agent B Luna `high`，旧 Run 不作为当前质量证据。
-- 当前代码已锁定 `claim-extraction-prompt.v8.2` 和 `claim-extraction.v3`。Agent A 最多盘点 24 条内部原子事实，Agent B 必须逐条说明 `included / merged / duplicate / unsupported / lower_priority`，最终仍最多 10 条。关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 会确定性触发 xhigh 加强复核。旧 Prompt 或旧 Schema 的排队任务会在调用模型前失败。v8.2 没有降低 xhigh/high 质量设置，只把共有证据上下文放到稳定前缀并使用同一缓存标识；Prompt v8.1 的质量结果继续作为历史基线，v8.2 尚待同样本付费复测。
+- 当前新 Run 已锁定 `claim-extraction-prompt.v9`、`context-pack.v3`、`claim-inventory.v3`、`claim-verification.v4` 和最终 `claim-extraction.v3`。Agent A 最多盘点 24 条内部原子事实；Agent B 必须逐条说明去向，最终仍最多 10 条。Draft Link 只能作为不可信提示，不能伪装成正式 Relation。旧 v8.2/v7 Run 继续可读和审计，但不能混入 v9 质量结论。
 - 当前执行强度只允许 Agent A 使用 Luna `xhigh`、Agent B 使用 Luna `high`，升级复核使用 `xhigh`。`max` 已从可接受配置中移除；缺失或误填的第一轮配置回到 `xhigh`，第二轮回到 `high`。连续十分钟没有完成记录的模型阶段会触发恢复检查；旧 `max` Run 不会被原地复用，避免以错误配置继续消耗时间。
 - 已确认、仍处于 Active 状态且带结构化歧义的 Claim 会进入 Agenda，并显示追问、原因和候选答案。Pending 歧义不会进入 Agenda。普通 Open Question、未解决矛盾和 Scenario Gap 仍按各自来源生成，结果页不从原始 Transcript 临时补内容。
 - 三个合成场景已确定性合并为一个 Transcript-only 开发包，共 3 个 Scenario、11 个 Event。每个 Event 固定有 5 到 10 条 material Ground Truth。原始 Contractor 压力样本每个 Event 分别有 15、15、17 条 material Ground Truth，超过十条模型输出上限，理论最高 Recall 只有 66.7%、66.7% 和 58.8%，不能直接用于正式 80% Recall 判定。合并脚本使用提交在代码中的固定 `single-author-review-priority-v1` 投影，在看到模型结果前为 Contractor 三个 Event 各选定 10 条审核重点，并记录源文件哈希和所选 ID。这个开发包仍是单人标注，`sample_eligible=false`。
@@ -231,9 +233,37 @@
 - [x] 报告已注明：这是真实多人语音，但内容来自受控产品设计场景；它不能单独证明房地产、销售或跨沟通 Preference progression。
 - [ ] 使用同一冻结输入重复三次并通过语义稳定性门；本次只有一个独立 Run。
 
-## K. 真实模型阶段的当前结论
+## K. 买方客户旅程、可选核对与双层记忆
 
-工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前代码版本是双 Agent Prompt v8.2、Schema v3。Prompt v8 与 v8.1 Contractor 单 Event Smoke 均已运行，v8.1 仍未通过 Recall 与优先级硬门；v8.2 现在新增一份运行前冻结 Ground Truth 的 AMI 公开许可多人音频结果，同样未通过 Material Recall、Critical Recall 和 Evidence 硬门。三行业连续 Event 仍属于 Prompt v7 历史结果，下面用于说明新合同必须解决的真实缺口。
+### 本地工程已经完成
+
+- [x] 新建买方客户项目时固定 `real_estate_buyer_journey`，不让模型猜行业。
+- [x] 买方覆盖检查包含预算、融资、目标区域、时间线、决策人、硬性要求、偏好、不能接受项、房源反馈和下一步行动。
+- [x] Workflow 分开表示 `draft_ready / partially_reviewed / trusted`；Pending 不再阻止下一个 Event 进入“等待用户开始分析”。
+- [x] 下一次付费分析仍须用户点击；可选核对不能触发自动 Run。
+- [x] Context Pack v3 分开 Verified、Draft 和本次材料；Draft Context 最多取前十次沟通、100 条有合法原始 Evidence 的当前 AI 草稿，并稳定冻结到 Run 输入指纹。
+- [x] Agent A 始终使用 Raw-only 本次材料；只有 Agent B 可在灰度开启时读取 Draft Context 和易读稿。
+- [x] Draft Claim 不能成为正式 Evidence 或正式 Relation target，不能关闭、取代、解决或再次确认 Verified Claim。
+- [x] `same / changed / conflicting / possibly_answered` 只保存为独立 Draft Link。两端当前版本都经人工确认且用户接受后，才建立正式 Relation。
+- [x] Draft Claim 被拒绝、修改或撤回后，关联 Draft Link 自动失效并保留审计。
+- [x] `next_action` 已加入 Claim 合同；项目行动页区分 AI 建议、已确认、已完成和不采纳。
+- [x] 只有 Active + Verified 行动可以标记完成；完成会创建人工确认的完成记录、正式 `resolves` 关系，并关闭原行动。
+- [x] AI 当前理解与 Verified-only 可信记忆分层显示；Timeline、Brief 和正式报告仍禁止 Pending、Rejected 和 Draft Link 泄漏。
+- [x] `.env.example` 与生产 `wrangler.jsonc` 均明确 `AI_DRAFT_CONTEXT=0`。
+- [x] 当前生产构建、空库 Migration、类型、Lint、发布包敏感信息检查和全部 265 项测试通过。
+
+### 尚未完成，不能写成通过
+
+- [ ] 把当前本地改动提交并发布到现有 Sites；Sites v18 仍不包含本节新增功能。
+- [ ] 用现有四次沟通 Realtor 固定案例，在 v9 合同下分别跑 Draft Context `0` 与 `1`，冻结同一 Ground Truth 后比较 Precision、Recall、Relation、Token 和延迟。
+- [ ] 补一组脱敏的三至五次真实买方连续沟通，在运行模型前冻结预算、偏好、房源反馈、问题解决和下一步行动 Ground Truth。
+- [ ] 达到 Claim Precision ≥95%、Material Recall ≥90%、Critical Recall 100%、Relation Precision/Recall ≥90%、Evidence 硬门 100%，并证明错误正式状态变化为 0。
+- [ ] Draft Context 开启后的 Token 增幅不超过 25%，且可信质量门不下降；否则保持开关关闭。
+- [ ] 真人完成“只核对重要内容 → 稍后继续 → 下一次沟通 → 返回原审核游标 → 完成站内行动”的桌面和手机流程。
+
+## L. 真实模型阶段的当前结论
+
+工程底座和真实模型调用已经成立，产品概念验证尚未通过。当前本地代码版本是 Prompt v9 / Context Pack v3 / Inventory v3 / Verification v4 / final Extraction v3，但尚未做 v9 付费 Run。Prompt v8、v8.1 与 v8.2 的 Contractor/AMI 结果以及 Prompt v7 三行业结果都属于历史证据，只用于说明新合同必须解决的真实缺口，不能当成 v9 成绩。
 
 ### 双 Agent Prompt v8 / v8.1 Contractor Smoke
 
@@ -310,7 +340,7 @@ Realtor Event 2 使用完全相同的输入、Verified Context、模型、Prompt
 - [ ] 建立 Ground Truth 数据集，由专业人员标注 Claim、Evidence、Scenario 和应当拒绝的结论。
 - [ ] 进行 Blind Eval，评审者不知道输出来自哪一版 Prompt 或模型，并按预先固定的指标评分。
 - [ ] 对同一合格输入完成至少三次独立 Run，并通过稳定性门。
-- [ ] 从空 Project 开始，用当前 Prompt v8.2、Schema v3 连续跑完 Event 1、人工审核和后续 Event，建立同版本基线，并记录每阶段耗时与缓存命中。
+- [ ] 从空买方 Project 开始，用 Prompt v9 / Context v3 / Inventory v3 / Verification v4 连续跑完至少三次沟通，分别测试 Draft Context 关闭与开启，建立同版本基线并记录每阶段耗时、Token、Recall、错误继承和缓存命中。
 - [ ] 由第二位标注者独立标注 Realtor 和 Insurance 开发集并完成分歧裁决。
 - [ ] 真实计时验证一次人工审核可以在两分钟内完成。
 - [ ] 通过 live API 验证跨 Workspace、跨 Project 隔离，以及 Verdict、Import、Extraction 的真实并发冲突。

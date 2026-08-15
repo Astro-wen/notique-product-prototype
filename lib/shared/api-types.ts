@@ -490,6 +490,7 @@ export type CreateManualClaimRequest = {
     | "person_role"
     | "timing"
     | "property_fact"
+    | "next_action"
     | "material"
     | "measurement"
     | "other";
@@ -596,6 +597,7 @@ export type OccurrenceConversionClaimInput = {
     | "person_role"
     | "timing"
     | "property_fact"
+    | "next_action"
     | "material"
     | "measurement"
     | "other";
@@ -783,13 +785,71 @@ export type PreferenceViewItemRecord = {
 export type TimelineViewResponse = ApiSuccess<{ view: TimelineEventGroupRecord[] }>;
 export type PreferencesViewResponse = ApiSuccess<{ view: PreferenceViewItemRecord[] }>;
 
-export type CreateProjectRequest = { name: string; locale?: string };
+export type CreateProjectRequest = {
+  name: string;
+  locale?: string;
+  profile?: "real_estate_buyer_journey";
+};
 export type CreateProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
 export type GetProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListDeletedProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
 export type ProjectDeletePreviewResponse = ApiSuccess<{ preview: ProjectDeletePreviewRecord }>;
 export type ProjectMutationResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type DraftMemoryRecord = {
+  claim_id: string;
+  claim_version_id: string;
+  event_id: string;
+  event_title: string;
+  event_sequence_no: number;
+  type: string;
+  statement: string;
+  confidence: number;
+  evidence_ref_ids: string[];
+  created_at: string;
+};
+export type DraftLinkRecord = {
+  id: string;
+  source_claim_id: string;
+  target_draft_claim_id: string;
+  type: "same" | "changed" | "conflicting" | "possibly_answered";
+  reason: string;
+  confidence: number;
+  status: "proposed" | "inactive" | "accepted" | "rejected";
+  source_statement: string;
+  target_statement: string;
+  source_review_status: string;
+  target_review_status: string;
+};
+export type DraftMemoryResponse = ApiSuccess<{
+  draft_memory: {
+    claims: DraftMemoryRecord[];
+    links: DraftLinkRecord[];
+  };
+}>;
+export type DraftLinkVerdictResponse = ApiSuccess<{
+  draft_link: {
+    draftLinkId: string;
+    status: "accepted" | "rejected";
+    formalRelationId: string | null;
+  };
+}>;
+export type ProjectActionRecord = {
+  claim_id: string;
+  claim_version_id: string;
+  statement: string;
+  owner: string | null;
+  due_at: string | null;
+  event_id: string;
+  event_title: string;
+  status: "ai_suggested" | "confirmed" | "completed" | "not_adopted";
+  evidence_ref_ids: string[];
+  completed_by_claim_id: string | null;
+};
+export type ProjectActionsResponse = ApiSuccess<{ actions: ProjectActionRecord[] }>;
+export type CompleteProjectActionResponse = ApiSuccess<{
+  completion: { actionClaimId: string; completionClaimId: string };
+}>;
 export type PermanentProjectDeleteResponse = ApiSuccess<{ project_id: string; permanently_deleted: true }>;
 
 export type CreateEventRequest = {
@@ -849,6 +909,24 @@ export type WorkflowDisplayStatus =
   | "complete"
   | "needs_attention";
 
+/**
+ * Stable list-level state for one Event. This is derived by the workflow
+ * snapshot query, so the selected Event and every unselected Event consume the
+ * same server-owned counts and job states.
+ */
+export type WorkflowEventStatusSummaryRecord = {
+  material_count: number;
+  material_ready_count: number;
+  material_processing_count: number;
+  material_failed_count: number;
+  transcription_status: TranscriptionRunStatus | null;
+  extraction_status: ExtractionRunStatus | null;
+  pending_count: number;
+  candidate_count: number;
+  summary_status: EventAiArtifactRunStatus | null;
+  readable_transcript_status: EventAiArtifactRunStatus | null;
+};
+
 export type WorkflowSnapshotRecord = {
   project: ProjectRecord;
   workflow: {
@@ -860,9 +938,13 @@ export type WorkflowSnapshotRecord = {
       | "empty_output"
       | "waiting_scenario"
       | "waiting_review"
+      | "draft_ready"
+      | "partially_reviewed"
       | "complete";
     total: number;
     completed: number;
+    trust_state: "draft_ready" | "partially_reviewed" | "trusted";
+    pending_total: number;
     current_position: number;
     current_event_id: string | null;
     current_run_id: string | null;
@@ -874,6 +956,7 @@ export type WorkflowSnapshotRecord = {
         | "inspect_material"
         | "confirm_scenario"
         | "review"
+        | "open_draft"
         | "open_brief";
       event_id: string | null;
       run_id: string | null;
@@ -887,6 +970,7 @@ export type WorkflowSnapshotRecord = {
     sequence_no: number;
     material_status: MaterialStatus;
     display_status: WorkflowDisplayStatus;
+    status_summary: WorkflowEventStatusSummaryRecord;
     materials: {
       total: number;
       ready: number;

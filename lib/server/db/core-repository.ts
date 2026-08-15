@@ -234,7 +234,11 @@ async function assertEvent(scope: RequestScope, eventId: string): Promise<Row> {
 
 export async function createProject(
   scope: RequestScope,
-  input: { name: string; locale: string },
+  input: {
+    name: string;
+    locale: string;
+    profile?: "real_estate_buyer_journey";
+  },
   idempotencyKey: string,
 ): Promise<ProjectRecord> {
   const endpointScope = "projects";
@@ -253,10 +257,23 @@ export async function createProject(
       db.prepare(
       `INSERT INTO projects (
         id, workspace_id, name, scenario_status, scenario_candidates_json,
-        scenario_version, locale, ledger_version, context_version,
+        scenario, scenario_version, scenario_confirmed_at, scenario_confirmed_by,
+        locale, ledger_version, context_version,
         next_event_sequence, created_at, updated_at
-      ) VALUES (?, ?, ?, 'unassessed', '[]', 0, ?, 0, 0, 1, ?, ?)`,
-      ).bind(projectId, scope.workspaceId, input.name, input.locale, timestamp, timestamp),
+      ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, 0, 0, 1, ?, ?)`,
+      ).bind(
+        projectId,
+        scope.workspaceId,
+        input.name,
+        input.profile ? "confirmed" : "unassessed",
+        input.profile ?? null,
+        input.profile ? 1 : 0,
+        input.profile ? timestamp : null,
+        input.profile ? scope.actorId : null,
+        input.locale,
+        timestamp,
+        timestamp,
+      ),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -1863,6 +1880,52 @@ export async function createExtractionRun(
   );
   const timeoutMs = normalizeAiTimeoutMs(bindings.AI_TIMEOUT_MS);
   const pipelineEnabled = twoPassPipelineEnabled(bindings.AI_TWO_PASS_PIPELINE);
+  const draftContextEnabled = bindings.AI_DRAFT_CONTEXT === "1";
+  const draftContextManifest = draftContextEnabled
+    ? (await all(
+        `SELECT recent_claims.claim_id, recent_claims.claim_version_id
+           FROM (
+             SELECT c.id AS claim_id,
+                    c.current_version_id AS claim_version_id,
+                    source_event.sequence_no AS event_sequence_no,
+                    c.created_at
+               FROM claims c
+               JOIN events source_event ON source_event.id = c.event_id
+              WHERE c.project_id = ? AND c.workspace_id = ?
+                AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+                AND c.source = 'ai' AND source_event.sequence_no < ?
+                AND source_event.id IN (
+                  SELECT recent_event.id FROM events recent_event
+                   WHERE recent_event.project_id = ? AND recent_event.workspace_id = ?
+                     AND recent_event.sequence_no < ?
+                   ORDER BY recent_event.sequence_no DESC, recent_event.id DESC
+                   LIMIT 10
+                )
+                AND source_event.active_run_id = c.extraction_run_id
+                AND EXISTS (
+                  SELECT 1 FROM evidence_refs er
+                   WHERE er.claim_version_id = c.current_version_id
+                     AND er.structural_validation_status = 'valid'
+                )
+              ORDER BY source_event.sequence_no DESC, c.created_at DESC, c.id DESC
+              LIMIT 100
+           ) AS recent_claims
+          ORDER BY recent_claims.event_sequence_no,
+                   recent_claims.created_at,
+                   recent_claims.claim_id`,
+        [
+          project.id,
+          scope.workspaceId,
+          event.sequence_no,
+          project.id,
+          scope.workspaceId,
+          event.sequence_no,
+        ],
+      )).map((row) => ({
+        claim_id: String(row.claim_id),
+        claim_version_id: String(row.claim_version_id),
+      }))
+    : [];
   const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
   const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
   const readableTranscriptEnabled = hasTranscriptInput && bindings.AI_READABLE_TRANSCRIPT !== "0";
@@ -1913,6 +1976,8 @@ export async function createExtractionRun(
       reasoning_effort: reasoningEffort,
       verifier_reasoning_effort: verifierReasoningEffort,
       two_pass_pipeline: pipelineEnabled,
+      draft_context: draftContextEnabled,
+      draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
       max_output_tokens: maxOutputTokens,
       timeout_ms: timeoutMs,
@@ -1981,6 +2046,8 @@ export async function createExtractionRun(
     reasoning_effort: reasoningEffort,
     verifier_reasoning_effort: verifierReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
+    draft_context: draftContextEnabled,
+    draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,
     event_summary: eventSummaryEnabled,
     readable_transcript: readableTranscriptEnabled,

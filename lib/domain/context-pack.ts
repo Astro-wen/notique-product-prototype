@@ -1,6 +1,6 @@
 import type { ClaimWithVersion, ProjectLedger, TranscriptSegment } from "./types";
 
-export const CONTEXT_PACK_SCHEMA_VERSION = "context-pack.v2" as const;
+export const CONTEXT_PACK_SCHEMA_VERSION = "context-pack.v3" as const;
 
 export type ContextClaim = {
   claimId: string;
@@ -22,6 +22,22 @@ export type ContextPackAsset = {
   assetVersionId: string;
   mimeType: string;
   modelUrl: string;
+};
+
+/**
+ * A prior unreviewed AI candidate. It may help the verifier notice continuity,
+ * but it is deliberately weaker than ContextClaim: it has no lifecycle state
+ * and cannot be cited as Evidence or used as a formal Relation target.
+ */
+export type DraftContextClaim = {
+  claimId: string;
+  claimVersionId: string;
+  eventId: string;
+  eventSequenceNo: number;
+  type: ClaimWithVersion["type"];
+  statement: string;
+  confidence: number;
+  evidenceRefIds: string[];
 };
 
 export type ReadableTranscriptContextSegment = {
@@ -54,6 +70,10 @@ export type ContextPack = {
     recent_history: ContextClaim[];
     open_questions: ContextClaim[];
     active_risks: ContextClaim[];
+  };
+  draft_context: {
+    enabled: boolean;
+    claims: DraftContextClaim[];
   };
   new_event: {
     event_id: string;
@@ -101,6 +121,8 @@ export function buildContextPack(input: {
     sourceKind?: "manual" | "verified_claim";
     claimVersionId: string | null;
   }>;
+  draftClaims?: DraftContextClaim[];
+  draftContextEnabled?: boolean;
 }): ContextPack {
   const event = input.ledger.events.find((candidate) => candidate.id === input.eventId);
   if (!event) throw new Error("CONTEXT_EVENT_OUTSIDE_PROJECT");
@@ -138,6 +160,27 @@ export function buildContextPack(input: {
       sourceKind: entry.sourceKind ?? "verified_claim",
       claimVersionId: entry.claimVersionId,
     }));
+  const orderedDraftClaims = [...(input.draftClaims ?? [])]
+      .filter((claim) => claim.eventId !== input.eventId && claim.evidenceRefIds.length > 0)
+      .sort((left, right) =>
+        left.eventSequenceNo - right.eventSequenceNo ||
+        left.claimVersionId.localeCompare(right.claimVersionId));
+  const recentDraftEventIds = new Set(
+    [...new Map(
+      [...orderedDraftClaims]
+        .reverse()
+        .map((claim) => [claim.eventId, claim.eventSequenceNo] as const),
+    ).entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 10)
+      .map(([eventId]) => eventId),
+  );
+  const draftClaims = input.draftContextEnabled === true
+    ? orderedDraftClaims
+      .filter((claim) => recentDraftEventIds.has(claim.eventId))
+      .slice(-100)
+      .map((claim) => ({ ...claim, evidenceRefIds: [...claim.evidenceRefIds] }))
+    : [];
 
   return {
     schema_version: CONTEXT_PACK_SCHEMA_VERSION,
@@ -159,6 +202,10 @@ export function buildContextPack(input: {
       recent_history: history.map(contextClaim),
       open_questions: openQuestions.map(contextClaim),
       active_risks: activeRisks.map(contextClaim),
+    },
+    draft_context: {
+      enabled: input.draftContextEnabled === true,
+      claims: draftClaims,
     },
     new_event: {
       event_id: input.eventId,

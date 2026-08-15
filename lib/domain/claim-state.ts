@@ -8,7 +8,7 @@ import type {
 
 export const CLAIM_TYPE_VALUES = [
   "budget", "preference", "requirement", "decision", "concern", "risk",
-  "open_question", "person_role", "timing", "property_fact", "material",
+  "open_question", "person_role", "timing", "property_fact", "next_action", "material",
   "measurement", "other",
 ] as const satisfies readonly ClaimType[];
 

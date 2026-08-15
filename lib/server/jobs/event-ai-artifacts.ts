@@ -403,6 +403,10 @@ function minimalContext(input: Awaited<ReturnType<typeof sourceSegmentsForArtifa
       open_questions: [],
       active_risks: [],
     },
+    draft_context: {
+      enabled: false,
+      claims: [],
+    },
     new_event: {
       event_id: String(input.run.event_id),
       transcript_segments: input.segments,

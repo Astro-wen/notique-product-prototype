@@ -193,7 +193,8 @@ test("Agent A remains raw-only while Agent B gets a mapped readability aid", asy
     readFile(new URL("../lib/server/ai/model-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/domain/context-pack.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(processor, /inventoryProvider\.inventoryClaims\(\s*input\.contextPack/);
+  assert.match(processor, /inventoryProvider\.inventoryClaims\(\s*inventoryContext/);
+  assert.match(processor, /draft_context: \{ enabled: false, claims: \[\] \}/);
   assert.match(processor, /contextWithReadableTranscript/);
   assert.match(processor, /\["queued", "processing"\][\s\S]*ReadableTranscriptPendingError/);
   assert.match(processor, /releaseRunForReadableTranscriptPoll/);

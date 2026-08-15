@@ -26,6 +26,7 @@ import {
   buildRisks,
   buildTimeline,
   classifyScenarioSemanticKind,
+  RE_BUYER_SLOTS,
   SCENARIO_SEMANTIC_KINDS,
 } from "../../lib/domain/views.ts";
 import { buildContextPack } from "../../lib/domain/context-pack.ts";
@@ -128,12 +129,12 @@ test("scenario semantics recognize real-estate buyer journeys without enabling u
       scenario: { status: "confirmed", value: scenario, version: 2 },
     }));
     assert.equal(gap.applicable, true, scenario);
-    assert.equal(gap.missingSlots.length, 5, scenario);
+    assert.equal(gap.missingSlots.length, RE_BUYER_SLOTS.length, scenario);
     assert.equal(
       buildNextMeetingAgenda(ledger({
         scenario: { status: "confirmed", value: scenario, version: 2 },
       })).filter((item) => item.sourceKind === "gap").length,
-      5,
+      RE_BUYER_SLOTS.length,
       scenario,
     );
   }
@@ -220,7 +221,7 @@ function contextPackWithTarget({
   },
 } = {}) {
   return {
-    schema_version: "context-pack.v2",
+    schema_version: "context-pack.v3",
     project: { id: "project-1", scenario: "Kitchen renovation", locale: "en-US", context_version: 2 },
     verified_context: {
       glossary: [],
@@ -243,6 +244,7 @@ function contextPackWithTarget({
         evidenceRefIds: ["evidence-existing"],
       }],
     },
+    draft_context: { enabled: false, claims: [] },
     new_event: {
       event_id: "event-1",
       transcript_segments: [],
@@ -952,7 +954,8 @@ test("context pack is verified-only and never includes withdrawn claims", () => 
   assert.deepEqual(pack.verified_context.active_claims.map((item) => item.claimId), ["active"]);
   assert.deepEqual(pack.verified_context.recent_history.map((item) => item.claimId), ["resolved"]);
   assert.deepEqual(pack.verified_context.glossary.map((item) => item.term), ["allowed"]);
-  assert.equal(pack.schema_version, "context-pack.v2");
+  assert.equal(pack.schema_version, "context-pack.v3");
+  assert.deepEqual(pack.draft_context, { enabled: false, claims: [] });
   assert.deepEqual(pack.verified_context.active_claims[0].uncertainty, active.version.uncertainty);
   assert.equal(pack.verified_context.active_claims[0].lifecycleStatus, "active");
   assert.equal(pack.verified_context.active_claims[0].repeatCount, active.repeatCount);
@@ -968,8 +971,8 @@ test("model output contract rejects extra fields and invalid targets", () => {
   }).valid, false);
 });
 
-test("claim extraction prompt contract is v8", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v8.2");
+test("claim extraction prompt contract is v9", () => {
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v9");
 });
 
 test("model uncertainty and additional-evidence flags have one unambiguous contract", () => {

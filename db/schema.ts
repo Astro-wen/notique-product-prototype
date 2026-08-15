@@ -935,6 +935,51 @@ export const aiDraftAssessments = sqliteTable(
   ],
 );
 
+// A draft link is an intentionally non-authoritative hint between two
+// unverified/partially verified memories. It never participates in lifecycle
+// calculation; a formal claim_relations row still requires explicit review.
+export const draftLinkCandidates = sqliteTable(
+  "draft_link_candidates",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    extractionRunId: text("extraction_run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    sourceClaimId: text("source_claim_id")
+      .notNull()
+      .references(() => claims.id, { onDelete: "cascade" }),
+    sourceClaimVersionId: text("source_claim_version_id").notNull(),
+    targetDraftClaimId: text("target_draft_claim_id")
+      .notNull()
+      .references(() => claims.id, { onDelete: "cascade" }),
+    targetDraftClaimVersionId: text("target_draft_claim_version_id").notNull(),
+    type: text("type", {
+      enum: ["same", "changed", "conflicting", "possibly_answered"],
+    }).notNull(),
+    reason: text("reason").notNull(),
+    confidence: real("confidence").notNull(),
+    status: text("status", {
+      enum: ["proposed", "inactive", "accepted", "rejected"],
+    }).notNull().default("proposed"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_draft_link_candidate_pair").on(
+      table.extractionRunId,
+      table.sourceClaimVersionId,
+      table.targetDraftClaimVersionId,
+      table.type,
+    ),
+    index("idx_draft_link_candidates_project_status").on(table.projectId, table.status),
+    index("idx_draft_link_candidates_target").on(table.targetDraftClaimId, table.status),
+  ],
+);
+
 export const verdicts = sqliteTable(
   "verdicts",
   {

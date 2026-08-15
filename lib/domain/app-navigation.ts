@@ -11,6 +11,8 @@ export type AppView =
   | "run-debug";
 
 export type AppResultTab =
+  | "client-progress"
+  | "actions"
   | "folder-summary"
   | "timeline"
   | "decisions"
@@ -34,6 +36,34 @@ export type AppRoute = {
   originTab?: AppResultTab;
 };
 
+/**
+ * Identifies the project/event selection that owned an asynchronous request.
+ * Epochs protect against selecting the same ID twice while an older request is
+ * still in flight; IDs protect against a response landing on another route.
+ */
+export type RequestOwner = {
+  projectId: string;
+  projectEpoch: number;
+  eventId?: string;
+  eventEpoch?: number;
+};
+
+export type CurrentRequestSelection = {
+  projectId?: string;
+  projectEpoch: number;
+  eventId?: string;
+  eventEpoch: number;
+};
+
+export function requestOwnerIsCurrent(
+  owner: RequestOwner,
+  current: CurrentRequestSelection,
+): boolean {
+  if (owner.projectId !== current.projectId || owner.projectEpoch !== current.projectEpoch) return false;
+  if (owner.eventEpoch == null) return true;
+  return owner.eventEpoch === current.eventEpoch && owner.eventId === current.eventId;
+}
+
 export const defaultAppRoute: AppRoute = { view: "simple" };
 
 const appViews = new Set<AppView>([
@@ -50,6 +80,8 @@ const appViews = new Set<AppView>([
 ]);
 
 const resultTabs = new Set<AppResultTab>([
+  "client-progress",
+  "actions",
   "folder-summary",
   "timeline",
   "decisions",
@@ -138,6 +170,7 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
       if (route.origin === "results") {
         return normalizeAppRoute({ view: "results", ...project, ...event, tab: route.originTab ?? "folder-summary", origin: "project" });
       }
+      if (route.origin === "simple") return normalizeAppRoute({ view: "simple", ...project, ...event });
       if (route.origin === "draft") return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
       if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
       if (route.origin === "event") return normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" });
@@ -172,6 +205,7 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
 
 export function backLabelForRoute(route: AppRoute): string {
   const destination = fallbackBackRoute(route);
+  if (route.view === "claim" && route.origin === "simple") return "返回 AI 摘要";
   if (destination.view === "results") {
     if (destination.tab === "timeline") return "返回时间线";
     if (destination.tab === "brief-card") return "返回会前速览";
