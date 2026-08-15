@@ -311,6 +311,28 @@ test("synthetic fixture importer uses only the public API and verifies persisted
   assert.ok(writes.every((request) => request.headers.get("sec-fetch-site") === "same-origin"));
 });
 
+test("synthetic fixture importer forwards an explicit fixed buyer-project profile", async () => {
+  const { manifestPath } = await createFixture();
+  const api = createApiDouble();
+  await importSyntheticFixture({
+    manifestPath,
+    baseUrl: "http://127.0.0.1:3000",
+    fetchImpl: api.fetchImpl,
+    runId: "fixed-buyer-profile",
+    projectProfile: "real_estate_buyer_journey",
+  });
+
+  const request = api.requests.find(
+    (candidate) => candidate.method === "POST" && candidate.pathname === "/api/v1/projects",
+  );
+  assert.ok(request, "the fixture import must create one project");
+  assert.deepEqual(requestJson(request), {
+    name: "[SYNTHETIC] Contractor regression",
+    locale: "en-US",
+    profile: "real_estate_buyer_journey",
+  });
+});
+
 test("synthetic fixture importer can isolate one named Event for a paid smoke test", async () => {
   const { manifestPath } = await createFixture();
   const api = createApiDouble();

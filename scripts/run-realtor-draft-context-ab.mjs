@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildPredictionPackage } from "./lib/export-production-run.mjs";
 import { resolveEricDemoFixture } from "./lib/eric-demo-fixtures.mjs";
 import { runEricDemo } from "./lib/run-eric-demo.mjs";
+import { importSyntheticFixture } from "./import-synthetic-fixture.mjs";
 import {
   REALTOR_AB_ARM_SCHEMA_VERSION,
   REALTOR_AB_CONTRACT,
@@ -24,6 +25,7 @@ import {
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, "..");
 const FIXTURE = resolveEricDemoFixture("realtor");
+const REALTOR_AB_PROJECT_PROFILE = "real_estate_buyer_journey";
 const GROUND_TRUTH_PATH = path.resolve(
   REPOSITORY_ROOT,
   "eval/cases/synthetic-realtor-v1/ground-truth.json",
@@ -32,6 +34,28 @@ const ACTION_GROUND_TRUTH_PATH = path.resolve(
   REPOSITORY_ROOT,
   "eval/cases/synthetic-realtor-v1/action-ground-truth.json",
 );
+
+export function localServerConfiguration(port) {
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("Local A/B server port must be an integer from 1024 to 65535.");
+  }
+  const hostname = "127.0.0.1";
+  return {
+    baseUrl: `http://${hostname}:${port}`,
+    commandArgs: [
+      path.resolve(REPOSITORY_ROOT, "node_modules/vinext/dist/cli.js"),
+      "dev",
+      "--port",
+      String(port),
+      "--hostname",
+      hostname,
+    ],
+  };
+}
+
+export function realtorAbFixtureImportOptions(options) {
+  return { ...options, projectProfile: REALTOR_AB_PROJECT_PROFILE };
+}
 
 function usage() {
   return `Usage:
@@ -129,13 +153,17 @@ async function endpointAvailable(baseUrl) {
 }
 
 async function startServer({ baseUrl, port, statePath, draftContextEnabled, logPath }) {
+  const configuration = localServerConfiguration(port);
+  if (baseUrl !== configuration.baseUrl) {
+    throw new Error("Local A/B health URL must match the server's loopback listener.");
+  }
   if (await endpointAvailable(baseUrl)) {
     throw new Error(`Port ${port} already serves an application; choose a dedicated --port.`);
   }
   const log = createWriteStream(logPath, { flags: "wx" });
   const child = spawn(
     process.execPath,
-    [path.resolve(REPOSITORY_ROOT, "node_modules/vinext/dist/cli.js"), "dev", "--port", String(port)],
+    configuration.commandArgs,
     {
       cwd: REPOSITORY_ROOT,
       env: {
@@ -321,6 +349,7 @@ async function collectArm({
     const demo = await runEricDemo({
       manifestPath: FIXTURE.manifestPath,
       baseUrl,
+      importFixture: (input) => importSyntheticFixture(realtorAbFixtureImportOptions(input)),
       correlationId: `realtor-draft-ab-${arm}-${randomUUID()}`,
       acceptFixtureScenario: true,
       confirmReviewedFixture: false,
@@ -403,7 +432,7 @@ async function collectArm({
       reviewActions: demo.review_actions,
       limitations: [
         "Claims and Occurrences are pending; no Claim/Occurrence/Relation was automatically confirmed.",
-        "The synthetic Scenario was explicitly accepted only to unblock Events 2-4.",
+        "The synthetic project was created with the fixed real-estate buyer journey Scenario so Events 2-4 can run without AI Scenario guessing.",
         "Semantic matching and Evidence support require human adjudication before scoring.",
       ],
     };
@@ -465,7 +494,7 @@ async function main() {
   const actionGroundTruth = JSON.parse(actionGroundTruthBytes.toString("utf8"));
   await mkdir(path.dirname(options.outputPath), { recursive: true });
   await mkdir(options.outputPath, { recursive: false });
-  const baseUrl = `http://127.0.0.1:${options.port}`;
+  const baseUrl = localServerConfiguration(options.port).baseUrl;
 
   const control = await collectArm({
     arm: "control",

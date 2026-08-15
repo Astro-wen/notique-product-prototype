@@ -10,7 +10,11 @@ import {
   validateArmSnapshot,
   validateComparableArms,
 } from "../scripts/lib/realtor-draft-context-ab.mjs";
-import { parseArgs as parseRunArgs } from "../scripts/run-realtor-draft-context-ab.mjs";
+import {
+  localServerConfiguration,
+  parseArgs as parseRunArgs,
+  realtorAbFixtureImportOptions,
+} from "../scripts/run-realtor-draft-context-ab.mjs";
 import { parseArgs as parseScoreArgs } from "../scripts/score-realtor-draft-context-ab.mjs";
 
 const truth = {
@@ -189,6 +193,37 @@ test("CLIs require an explicit paid-call flag and resolve an offline scoring dir
   assert.throws(() => parseRunArgs(["--port=80"]), /1024/);
   const score = parseScoreArgs(["--run-dir=outputs/example"]);
   assert.match(score.outputPath, /outputs\/example\/score\.json$/);
+});
+
+test("A/B uses one explicit IPv4 loopback endpoint and the fixed buyer-project profile", () => {
+  const server = localServerConfiguration(3187);
+  assert.equal(server.baseUrl, "http://127.0.0.1:3187");
+  assert.deepEqual(server.commandArgs.slice(-5), [
+    "dev",
+    "--port",
+    "3187",
+    "--hostname",
+    "127.0.0.1",
+  ]);
+
+  const fixtureOptions = realtorAbFixtureImportOptions({
+    manifestPath: "/fixture/manifest.json",
+    baseUrl: server.baseUrl,
+  });
+  assert.deepEqual(fixtureOptions, {
+    manifestPath: "/fixture/manifest.json",
+    baseUrl: server.baseUrl,
+    projectProfile: "real_estate_buyer_journey",
+  });
+});
+
+test("A/B reports that the buyer Scenario is fixed at project creation", async () => {
+  const source = await readFile(
+    new URL("../scripts/run-realtor-draft-context-ab.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /created with the fixed real-estate buyer journey Scenario/);
+  assert.doesNotMatch(source, /Scenario was explicitly accepted only to unblock/);
 });
 
 test("paid A/B refuses tracked and untracked source drift", async () => {
