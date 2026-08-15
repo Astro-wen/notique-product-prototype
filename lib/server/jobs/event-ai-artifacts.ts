@@ -456,7 +456,7 @@ async function processReadableTranscriptRun(
       idempotencyKey: `notique:${run.id}:readable_transcript:chunk:${chunk.chunk_index}`,
       ...(chunk.provider_request_id ? { resumeProviderResponseId: chunk.provider_request_id } : {}),
       onProviderResponse: (response) => recordReadableProviderResponse(run, owner, chunk, response),
-      promptCacheKey: `notique:${run.extraction_run_id}:readable-transcript:${chunk.chunk_index}`,
+      promptCacheKey: `notique:${run.extraction_run_id}:readable:${chunk.chunk_index}`,
     });
     const validated = validateReadableTranscriptOutput(result.output, {
       eventId: String(run.event_id),

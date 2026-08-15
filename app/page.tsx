@@ -4190,7 +4190,10 @@ function TranscriptArtifactsPanel({
             {matchedClaim && <button className="text-button" onClick={() => onOpenClaim(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
           </article>;
         })}</div>
-      </section>) : <ArtifactFallback kind="summary" run={summaryRun} busy={busy} onRetry={() => onRetryArtifact(event.id, "summary")} onRaw={() => setTab("raw")} />}
+      </section>) : <ArtifactFallback kind="summary" run={summaryRun} busy={busy} onRetry={async () => {
+        await onRetryArtifact(event.id, "summary");
+        await load(true);
+      }} onRaw={() => setTab("raw")} />}
     </div>}
 
     {tab === "readable" && <div className="artifact-panel readable-artifact">
@@ -4205,7 +4208,10 @@ function TranscriptArtifactsPanel({
           <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button>{edits.length > 0 && <button className="text-button" onClick={() => setOpenDiffs((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })}>{openDiffs.has(key) ? "收起差异" : "查看差异"}</button>}</div>
           {openDiffs.has(key) && <div className="readable-diff">{edits.map((edit, editIndex) => <div key={editIndex}><del>{firstString(edit, ["original"]) || "（无）"}</del><span>→</span><ins>{firstString(edit, ["replacement"]) || "（删除）"}</ins><small>{firstString(edit, ["reason"])}</small></div>)}</div>}
         </article>;
-      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={() => onRetryArtifact(event.id, "readable_transcript")} onRaw={() => setTab("raw")} />}
+      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={async () => {
+        await onRetryArtifact(event.id, "readable_transcript");
+        await load(true);
+      }} onRaw={() => setTab("raw")} />}
     </div>}
 
     {tab === "raw" && <div className="artifact-panel raw-artifact">

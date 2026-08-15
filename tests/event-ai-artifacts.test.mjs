@@ -189,6 +189,42 @@ test("artifact jobs use durable Background Responses and independent retries", a
   assert.match(repository, /persistReadableTranscriptChunk/);
 });
 
+test("artifact prompt cache keys stay within the OpenAI 64-character limit", async () => {
+  const jobs = await readFile(
+    new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url),
+    "utf8",
+  );
+  const extractionRunId = `run_${"a".repeat(32)}`;
+  const summaryKey = `notique:${extractionRunId}:event-artifacts`;
+  const readableKey = `notique:${extractionRunId}:readable:0`;
+
+  assert.match(
+    jobs,
+    /promptCacheKey: `notique:\$\{run\.extraction_run_id\}:event-artifacts`/,
+  );
+  assert.match(
+    jobs,
+    /promptCacheKey: `notique:\$\{run\.extraction_run_id\}:readable:\$\{chunk\.chunk_index\}`/,
+  );
+  assert.equal(summaryKey.length, 60);
+  assert.equal(readableKey.length, 55);
+  assert.ok(summaryKey.length <= 64);
+  assert.ok(readableKey.length <= 64);
+});
+
+test("artifact retry refreshes the panel so polling and durable wake start immediately", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(
+    page,
+    /await onRetryArtifact\(event\.id, "summary"\);\s*await load\(true\);/,
+  );
+  assert.match(
+    page,
+    /await onRetryArtifact\(event\.id, "readable_transcript"\);\s*await load\(true\);/,
+  );
+  assert.match(page, /window\.setInterval\(wake, 15_000\)/);
+});
+
 test("Agent A remains raw-only while Agent B gets a mapped readability aid", async () => {
   const [processor, provider, context] = await Promise.all([
     readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
