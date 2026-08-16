@@ -2,6 +2,7 @@ import { getBindings, getD1 } from "@/db";
 import { CONTEXT_PACK_SCHEMA_VERSION, type ContextPack } from "@/lib/domain/context-pack";
 import {
   chunkReadableTranscriptSource,
+  eventAiArtifactContractMismatch,
   mergeReadableTranscriptChunks,
   validateEventSummaryOutput,
   validateReadableTranscriptOutput,
@@ -32,6 +33,18 @@ const ARTIFACT_PROVIDER_TIMEOUT_MS = 25_000;
 const MAX_CREATE_ATTEMPTS = 3;
 const MAX_JOB_AGE_MS = 30 * 60_000;
 
+class StaleArtifactModelContractError extends Error {
+  readonly code = "STALE_ARTIFACT_MODEL_CONTRACT";
+
+  constructor(readonly details: NonNullable<ReturnType<typeof eventAiArtifactContractMismatch>>) {
+    super(
+      `AI artifact Run ${details.kind || "unknown"} froze ${details.actual_prompt_version || "missing prompt"} / ` +
+      `${details.actual_schema_version || "missing schema"}; retry the single artifact to create the current contract.`,
+    );
+    this.name = "StaleArtifactModelContractError";
+  }
+}
+
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
@@ -57,6 +70,9 @@ function transient(error: unknown): boolean {
 }
 
 function safeIssue(error: unknown): Record<string, unknown> {
+  if (error instanceof StaleArtifactModelContractError) {
+    return { message: error.message, ...error.details };
+  }
   if (error instanceof ModelOutputInvalidError) return { issues: error.issues.slice(0, 20) };
   if (error instanceof ModelProviderRequestError) return { message: error.message, status: error.status };
   if (error instanceof Error) return { name: error.name, message: error.message };
@@ -137,9 +153,11 @@ async function failRun(run: Row, owner: string, error: unknown): Promise<void> {
   const timestamp = now();
   const code = error instanceof ModelOutputInvalidError
     ? "MODEL_OUTPUT_INVALID"
-    : error instanceof ModelProviderRequestError
-      ? "MODEL_PROVIDER_REQUEST_FAILED"
-      : "ARTIFACT_PROCESSING_FAILED";
+    : error instanceof StaleArtifactModelContractError
+      ? error.code
+      : error instanceof ModelProviderRequestError
+        ? "MODEL_PROVIDER_REQUEST_FAILED"
+        : "ARTIFACT_PROCESSING_FAILED";
   await getD1()
     .prepare(
       `UPDATE event_ai_artifact_runs
@@ -507,6 +525,8 @@ async function processReadableTranscriptRun(
 
 async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | "pending" | "failed"> {
   try {
+    const contractMismatch = eventAiArtifactContractMismatch(run);
+    if (contractMismatch) throw new StaleArtifactModelContractError(contractMismatch);
     const source = await sourceSegmentsForArtifactRun(String(run.id));
     if (!source.segments.length) throw new Error("ARTIFACT_INPUT_MISSING_TRANSCRIPT");
     const provider = createModelProvider(getBindings(), {

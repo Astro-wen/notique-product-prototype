@@ -23,6 +23,8 @@ export type AppResultTab =
   | "next-meeting-agenda"
   | "brief-card";
 
+export type AppReadingTab = "summary" | "readable" | "raw";
+
 export type AppRouteOrigin = "simple" | "projects" | "project" | "event" | "draft" | "review" | "results";
 
 export type AppRoute = {
@@ -32,8 +34,10 @@ export type AppRoute = {
   claimId?: string;
   runId?: string;
   tab?: AppResultTab;
+  readingTab?: AppReadingTab;
   origin?: AppRouteOrigin;
   originTab?: AppResultTab;
+  originReadingTab?: AppReadingTab;
 };
 
 /**
@@ -93,6 +97,8 @@ const resultTabs = new Set<AppResultTab>([
   "brief-card",
 ]);
 
+const readingTabs = new Set<AppReadingTab>(["summary", "readable", "raw"]);
+
 const routeOrigins = new Set<AppRouteOrigin>([
   "simple",
   "projects",
@@ -115,11 +121,21 @@ export function normalizeAppRoute(route: AppRoute): AppRoute {
   };
 
   if (route.eventId && !["projects", "project"].includes(next.view)) next.eventId = route.eventId;
+  if (next.view === "simple" && route.readingTab && readingTabs.has(route.readingTab)) {
+    next.readingTab = route.readingTab;
+  }
   if (next.view === "results") next.tab = resultTabs.has(route.tab ?? "folder-summary") ? route.tab ?? "folder-summary" : "folder-summary";
   if (next.view === "claim" && route.claimId) {
     next.claimId = route.claimId;
     if (route.origin && routeOrigins.has(route.origin)) next.origin = route.origin;
     if (route.originTab && resultTabs.has(route.originTab)) next.originTab = route.originTab;
+    if (
+      route.origin === "simple"
+      && route.originReadingTab
+      && readingTabs.has(route.originReadingTab)
+    ) {
+      next.originReadingTab = route.originReadingTab;
+    }
   }
   if (next.view === "run-debug" && route.runId) next.runId = route.runId;
   if (next.view !== "claim" && route.origin && routeOrigins.has(route.origin)) next.origin = route.origin;
@@ -132,6 +148,8 @@ export function parseAppRoute(search: string): AppRoute {
   const tab = optionalParam(params, "tab") as AppResultTab | undefined;
   const origin = optionalParam(params, "origin") as AppRouteOrigin | undefined;
   const originTab = optionalParam(params, "originTab") as AppResultTab | undefined;
+  const readingTab = optionalParam(params, "readingTab") as AppReadingTab | undefined;
+  const originReadingTab = optionalParam(params, "originReadingTab") as AppReadingTab | undefined;
   return normalizeAppRoute({
     view: requestedView && appViews.has(requestedView) ? requestedView : "simple",
     projectId: optionalParam(params, "project"),
@@ -139,8 +157,12 @@ export function parseAppRoute(search: string): AppRoute {
     claimId: optionalParam(params, "claim"),
     runId: optionalParam(params, "run"),
     tab: tab && resultTabs.has(tab) ? tab : undefined,
+    readingTab: readingTab && readingTabs.has(readingTab) ? readingTab : undefined,
     origin: origin && routeOrigins.has(origin) ? origin : undefined,
     originTab: originTab && resultTabs.has(originTab) ? originTab : undefined,
+    originReadingTab: originReadingTab && readingTabs.has(originReadingTab)
+      ? originReadingTab
+      : undefined,
   });
 }
 
@@ -151,10 +173,12 @@ export function serializeAppRoute(route: AppRoute): string {
   if (normalized.eventId) params.set("event", normalized.eventId);
   params.set("view", normalized.view);
   if (normalized.tab) params.set("tab", normalized.tab);
+  if (normalized.readingTab) params.set("readingTab", normalized.readingTab);
   if (normalized.claimId) params.set("claim", normalized.claimId);
   if (normalized.runId) params.set("run", normalized.runId);
   if (normalized.origin) params.set("origin", normalized.origin);
   if (normalized.originTab) params.set("originTab", normalized.originTab);
+  if (normalized.originReadingTab) params.set("originReadingTab", normalized.originReadingTab);
   return `?${params.toString()}`;
 }
 
@@ -170,7 +194,14 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
       if (route.origin === "results") {
         return normalizeAppRoute({ view: "results", ...project, ...event, tab: route.originTab ?? "folder-summary", origin: "project" });
       }
-      if (route.origin === "simple") return normalizeAppRoute({ view: "simple", ...project, ...event });
+      if (route.origin === "simple") {
+        return normalizeAppRoute({
+          view: "simple",
+          ...project,
+          ...event,
+          ...(route.originReadingTab ? { readingTab: route.originReadingTab } : {}),
+        });
+      }
       if (route.origin === "draft") return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
       if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
       if (route.origin === "event") return normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" });
@@ -205,7 +236,21 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
 
 export function backLabelForRoute(route: AppRoute): string {
   const destination = fallbackBackRoute(route);
-  if (route.view === "claim" && route.origin === "simple") return "返回 AI 摘要";
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "summary"
+  ) return "返回 AI 摘要";
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "readable"
+  ) return "返回易读逐字稿";
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "raw"
+  ) return "返回原始逐字稿";
   if (destination.view === "results") {
     if (destination.tab === "timeline") return "返回时间线";
     if (destination.tab === "brief-card") return "返回会前速览";
@@ -223,6 +268,13 @@ export function isCoreWorkflowRoute(route: AppRoute): boolean {
   return route.view === "simple";
 }
 
-export function isReadonlyClaimRoute(route: AppRoute): boolean {
-  return route.view === "claim" && route.origin === "results";
+export function isReadonlyClaimRoute(
+  route: AppRoute,
+  reviewStatus?: string,
+): boolean {
+  if (route.view !== "claim") return false;
+  if (route.origin === "results") return true;
+  return route.origin === "simple"
+    && route.originReadingTab === "summary"
+    && (reviewStatus === "verified" || reviewStatus === "rejected");
 }

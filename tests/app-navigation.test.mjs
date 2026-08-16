@@ -55,10 +55,69 @@ test("review and event claims have deterministic fallback destinations", () => {
   assert.equal(fallbackBackRoute({ view: "run-debug", projectId: "p", eventId: "e", runId: "r" }).view, "event");
 });
 
-test("a claim opened from the AI summary returns to the same core workspace", () => {
-  const route = { view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "simple" };
-  assert.deepEqual(fallbackBackRoute(route), { view: "simple", projectId: "p", eventId: "e" });
+test("a claim opened from the AI summary round-trips its reading source", () => {
+  const route = {
+    view: "claim",
+    projectId: "p",
+    eventId: "e",
+    claimId: "c",
+    origin: "simple",
+    originReadingTab: "summary",
+  };
+  assert.deepEqual(parseAppRoute(serializeAppRoute(route)), route);
+  assert.deepEqual(fallbackBackRoute(route), {
+    view: "simple",
+    projectId: "p",
+    eventId: "e",
+    readingTab: "summary",
+  });
   assert.equal(backLabelForRoute(route), "返回 AI 摘要");
+});
+
+test("only reviewed Claims opened from Summary use read-only evidence mode", () => {
+  const summaryRoute = {
+    view: "claim",
+    projectId: "p",
+    eventId: "e",
+    claimId: "c",
+    origin: "simple",
+    originReadingTab: "summary",
+  };
+  assert.equal(isReadonlyClaimRoute(summaryRoute, "verified"), true);
+  assert.equal(isReadonlyClaimRoute(summaryRoute, "rejected"), true);
+  assert.equal(isReadonlyClaimRoute(summaryRoute, "pending"), false);
+  assert.equal(
+    isReadonlyClaimRoute({ ...summaryRoute, originReadingTab: "readable" }, "verified"),
+    false,
+  );
+  assert.equal(
+    isReadonlyClaimRoute({ ...summaryRoute, originReadingTab: undefined }, "verified"),
+    false,
+  );
+});
+
+test("all reading tabs survive a simple-route refresh and unknown values fail safe", () => {
+  for (const readingTab of ["summary", "readable", "raw"]) {
+    const route = { view: "simple", projectId: "p", eventId: "e", readingTab };
+    assert.deepEqual(parseAppRoute(serializeAppRoute(route)), route);
+  }
+  assert.deepEqual(
+    parseAppRoute("?project=p&event=e&view=simple&readingTab=unknown"),
+    { view: "simple", projectId: "p", eventId: "e" },
+  );
+  assert.deepEqual(
+    parseAppRoute("?project=p&event=e&view=claim&claim=c&origin=simple&originReadingTab=unknown"),
+    { view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "simple" },
+  );
+});
+
+test("a Claim deep link without a persisted reading source does not pretend it came from Summary", () => {
+  const route = parseAppRoute("?project=p&event=e&view=claim&claim=c");
+  assert.equal(backLabelForRoute(route), "返回本次沟通");
+  assert.equal(fallbackBackRoute(route).view, "event");
+
+  const legacySimpleOrigin = parseAppRoute("?project=p&event=e&view=claim&claim=c&origin=simple");
+  assert.equal(backLabelForRoute(legacySimpleOrigin), "返回核心工作台");
 });
 
 test("only the core workspace is eligible for guided auto-navigation", () => {
@@ -69,7 +128,10 @@ test("only the core workspace is eligible for guided auto-navigation", () => {
 });
 
 test("invalid deep-link values fall back without retaining unsafe fields", () => {
-  assert.deepEqual(parseAppRoute("?view=random&tab=random&claim=c&origin=random"), { view: "simple" });
+  assert.deepEqual(
+    parseAppRoute("?view=random&tab=random&readingTab=random&claim=c&origin=random&originReadingTab=random"),
+    { view: "simple" },
+  );
 });
 
 test("report tabs replace history and refresh preserves the current app depth", () => {

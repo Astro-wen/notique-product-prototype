@@ -96,10 +96,12 @@ test("Summary opens its Claim and returns to the same Summary URL and scroll sou
   expect(sourceScrollY).toBeGreaterThan(0);
 
   await target.getByRole("button", { name: "核对这条意思" }).click();
-  await expect(page).toHaveURL(/view=claim.*claim=claim-summary-pending.*origin=simple/);
+  await expect(page).toHaveURL(/view=claim.*claim=claim-summary-pending.*origin=simple.*originReadingTab=summary/);
   await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
   await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
   await expect(page.getByRole("heading", { name: "原始证据" })).toBeVisible();
+  await expect(page.getByLabel("连续审核队列")).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
 
   await page.getByLabel("返回 AI 摘要").click();
   await expect(page).toHaveURL(/project=project-a.*event=event-a.*view=simple/);
@@ -108,6 +110,86 @@ test("Summary opens its Claim and returns to the same Summary URL and scroll sou
   await page.waitForTimeout(750);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 2);
+});
+
+test("a reviewed Summary item opens read-only while another pending item remains", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+
+  const reviewed = page.locator(".summary-sentences article").filter({
+    hasText: "经纪人周五前发送三套房源",
+  });
+  await reviewed.getByRole("button", { name: "查看核对结果" }).click();
+
+  await expect(page).toHaveURL(/view=claim.*claim=claim-timeline-verified.*origin=simple.*originReadingTab=summary/);
+  await expect(page.getByText("只读证据模式", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("连续审核队列")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "修改已确认记录" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "撤回已确认记录" })).toHaveCount(0);
+  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+
+  await page.getByLabel("返回 AI 摘要").click();
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+
+  const pending = page.locator(".summary-sentences article").filter({
+    hasText: "预算上限是 120 万美元",
+  });
+  await pending.getByRole("button", { name: "核对这条意思" }).click();
+  await expect(page.getByText("只读证据模式", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("连续审核队列")).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
+  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+});
+
+test("Summary source survives a Claim reload and the page arrow returns to Summary", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^AI 摘要/ }).click();
+
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.getByRole("button", { name: "核对这条意思" }).click();
+  await expect(page).toHaveURL(/view=claim.*origin=simple.*originReadingTab=summary/);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+  await page.getByLabel("返回 AI 摘要").click();
+
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^AI 摘要/ })).toHaveClass(/active/);
+});
+
+test("browser Back and Forward preserve the Summary-to-Claim route", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^AI 摘要/ }).click();
+
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.getByRole("button", { name: "核对这条意思" }).click();
+  await expect(page).toHaveURL(/view=claim.*originReadingTab=summary/);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+
+  await page.goForward();
+  await expect(page).toHaveURL(/view=claim.*originReadingTab=summary/);
+  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+});
+
+test("a direct Claim deep link falls back to its communication without a false Summary label", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=claim&claim=claim-summary-pending");
+  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(page.getByLabel("返回本次沟通")).toBeVisible();
+  await expect(page.getByLabel("返回 AI 摘要")).toHaveCount(0);
+
+  await page.getByLabel("返回本次沟通").click();
+  await expect(page).toHaveURL(/project=project-a.*event=event-a.*view=event/);
 });
 
 test("Timeline opens a verified Claim in read-only mode and returns to Timeline", async ({ page }) => {

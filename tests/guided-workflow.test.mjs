@@ -60,7 +60,9 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(finishGuidedReview, /loadSimpleProject\(projectId, snapshot\.plan\.currentEventId, "replace"\)/);
   assert.match(finishGuidedReview, /if \(!isCurrentRequestOwner\(owner\)\) return/);
   assert.doesNotMatch(finishGuidedReview, /setScreen\("review-summary"\)/);
-  assert.match(source, /reviewClaims=\{isReadonlyClaimRoute\(route\) \? \[\] : claims\}/);
+  assert.match(source, /const claimRouteReadonly = isReadonlyClaimRoute\(route, selectedClaim\?\.reviewStatus\)/);
+  assert.match(source, /reviewClaims=\{claimRouteReadonly \? \[\] : claims\}/);
+  assert.match(source, /pendingOccurrenceCount=\{claimRouteReadonly \? 0 :/);
   assert.match(source, /relationsReviewed/);
   assert.equal((source.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
   assert.doesNotMatch(source, /<em>\{itemDisplayStatus\.label\}<\/em>/);
@@ -73,7 +75,8 @@ test("the page connects guided navigation without weakening review gates", () =>
 test("mobile keeps one event selector and resets the tab when switching events", () => {
   const source = fs.readFileSync("app/page.tsx", "utf8");
   const styles = fs.readFileSync("app/globals.css", "utf8");
-  assert.match(source, /setActiveTab\("materials"\); onUseEvent\(change\.target\.value\)/);
+  assert.match(source, /function selectEvent\(nextEventId: string\)[\s\S]*?setActiveTab\("materials"\);[\s\S]*?onUseEvent\(nextEventId\)/);
+  assert.match(source, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.simple-meeting-rail \{ display: none; \}/);
   assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });

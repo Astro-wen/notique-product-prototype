@@ -11,6 +11,10 @@ import {
   validateInventoryOutput,
   validateVerificationOutput,
 } from "../lib/domain/two-stage-extraction.ts";
+import {
+  canResumeProcessingModelStage,
+  canReuseSucceededModelStage,
+} from "../lib/server/jobs/model-stage-contract.ts";
 
 function evidence() {
   return [{
@@ -104,6 +108,69 @@ function context(scenario, draftClaims = []) {
     },
   };
 }
+
+function persistedVerifyStage(overrides = {}) {
+  return {
+    status: "succeeded",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoning_effort: "high",
+    prompt_version: "claim-extraction-prompt.v9:verify",
+    schema_version: VERIFICATION_SCHEMA_VERSION,
+    input_hash: "verify-hash-with-readable-v1",
+    ...overrides,
+  };
+}
+
+function frozenVerifyInput(overrides = {}) {
+  return {
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "high",
+    promptVersion: "claim-extraction-prompt.v9:verify",
+    schemaVersion: VERIFICATION_SCHEMA_VERSION,
+    inputHash: "verify-hash-with-readable-v1",
+    ...overrides,
+  };
+}
+
+test("a succeeded Agent B stage is reused only for the exact frozen input", () => {
+  const persisted = persistedVerifyStage();
+  const exact = frozenVerifyInput();
+  assert.equal(canReuseSucceededModelStage(persisted, exact), true);
+
+  // Filtering a newly flagged readable segment changes the verifier's input
+  // projection and therefore its input hash. The old paid output must not be
+  // treated as the result of this new Agent B input.
+  assert.equal(canReuseSucceededModelStage(
+    persisted,
+    frozenVerifyInput({ inputHash: "verify-hash-with-filtered-readable-v2" }),
+  ), false);
+
+  for (const [field, value] of [
+    ["provider", "another-provider"],
+    ["model", "another-model"],
+    ["reasoningEffort", "xhigh"],
+    ["promptVersion", "claim-extraction-prompt.v10:verify"],
+    ["schemaVersion", "claim-verification.v5"],
+  ]) {
+    assert.equal(
+      canReuseSucceededModelStage(persisted, frozenVerifyInput({ [field]: value })),
+      false,
+      `${field} mismatch must prevent succeeded-stage reuse`,
+    );
+  }
+});
+
+test("processing resume uses the same frozen match without changing provider-response semantics", () => {
+  const processing = persistedVerifyStage({ status: "processing" });
+  assert.equal(canResumeProcessingModelStage(processing, frozenVerifyInput()), true);
+  assert.equal(canResumeProcessingModelStage(
+    processing,
+    frozenVerifyInput({ inputHash: "different-input" }),
+  ), false);
+  assert.equal(canResumeProcessingModelStage(persistedVerifyStage(), frozenVerifyInput()), false);
+});
 
 test("validates a bounded atomic inventory with evidence", () => {
   const result = validateInventoryOutput(inventory());

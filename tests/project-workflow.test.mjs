@@ -322,12 +322,28 @@ test("workflow snapshot reading aids follow the active extraction and newest ter
   );
 });
 
+test("workflow material counts exclude generated readable transcript assets", async () => {
+  const repository = await readFile(
+    new URL("../lib/server/db/workflow-repository.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    repository,
+    /COALESCE\(json_extract\(metadata_json, '\$\.analysis_source'\), 1\) <> 0/,
+  );
+  assert.match(
+    repository,
+    /COALESCE\(json_extract\(metadata_json, '\$\.artifact_kind'\), ''\) <> 'readable_transcript'/,
+  );
+});
+
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   assert.doesNotMatch(page, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
   assert.match(page, /开始处理全部沟通/);
   assert.match(page, /继续处理下一次沟通/);
-  assert.match(page, /api\.getWorkflowSnapshot\(projectId\)/);
+  assert.match(page, /loadWorkflowSnapshot\(projectId(?:, true)?\)/);
+  assert.match(page, /workflowSnapshotQuery\(projectId\)/);
   assert.match(page, /candidateCount: summary\?\.candidate_count/);
   assert.doesNotMatch(page, /api\.getRunReview\(latestRun\.id\)/);
   assert.match(page, /Claim 和再次出现记录都是 0/);

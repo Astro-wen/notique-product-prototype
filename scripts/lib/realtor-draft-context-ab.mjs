@@ -16,9 +16,9 @@ export const REALTOR_AB_CONTRACT = Object.freeze({
   verifyPrompt: "claim-extraction-prompt.v9:verify",
   verifySchema: "claim-verification.v4",
   verifyEffort: "high",
-  summaryPrompt: "event-summary-prompt.v1",
-  summarySchema: "event-summary.v1",
-  readablePrompt: "readable-transcript-prompt.v1",
+  summaryPrompt: "event-summary-prompt.v2",
+  summarySchema: "event-summary.v2",
+  readablePrompt: "readable-transcript-prompt.v2",
   readableSchema: "readable-transcript.v1",
   artifactEffort: "high",
 });
@@ -147,13 +147,13 @@ function assertRunContract(run, expectedDraftContext) {
     summary.prompt_version === REALTOR_AB_CONTRACT.summaryPrompt &&
       summary.schema_version === REALTOR_AB_CONTRACT.summarySchema &&
       summary.reasoning_effort === REALTOR_AB_CONTRACT.artifactEffort,
-    `Run ${run.runId} Summary contract is not v1/high.`,
+    `Run ${run.runId} Summary contract does not match ${REALTOR_AB_CONTRACT.summaryPrompt} / ${REALTOR_AB_CONTRACT.summarySchema} / ${REALTOR_AB_CONTRACT.artifactEffort}.`,
   );
   invariant(
     readable.prompt_version === REALTOR_AB_CONTRACT.readablePrompt &&
       readable.schema_version === REALTOR_AB_CONTRACT.readableSchema &&
       readable.reasoning_effort === REALTOR_AB_CONTRACT.artifactEffort,
-    `Run ${run.runId} Readable Transcript contract is not v1/high.`,
+    `Run ${run.runId} Readable Transcript contract does not match ${REALTOR_AB_CONTRACT.readablePrompt} / ${REALTOR_AB_CONTRACT.readableSchema} / ${REALTOR_AB_CONTRACT.artifactEffort}.`,
   );
 }
 

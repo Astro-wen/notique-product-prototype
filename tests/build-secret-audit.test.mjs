@@ -135,6 +135,27 @@ test("clean build sanitizes local Wrangler source paths from generated metadata"
   });
 });
 
+test("audit rejects a generated Vinext font reference when the archive omits the font", async (t) => {
+  const packageDirectory = await mkdtemp(join(tmpdir(), "notique-package-audit-"));
+  t.after(() => rm(packageDirectory, { force: true, recursive: true }));
+
+  await mkdir(join(packageDirectory, "server"), { recursive: true });
+  await writeFile(
+    join(packageDirectory, "server", "index.js"),
+    'const font = "/assets/_vinext_fonts/example.woff2";\n',
+  );
+  assert.deepEqual((await auditBuildPackage(packageDirectory)).contentFindings, [
+    { path: "server/index.js", rule: "missing-referenced-vinext-font-asset" },
+  ]);
+
+  await mkdir(join(packageDirectory, "client", "assets", "_vinext_fonts"), { recursive: true });
+  await writeFile(join(packageDirectory, "client", "assets", "_vinext_fonts", "example.woff2"), "font");
+  assert.deepEqual(await auditBuildPackage(packageDirectory), {
+    forbiddenPaths: [],
+    contentFindings: [],
+  });
+});
+
 test("the generated dist package is free of forbidden files and token-like content", async () => {
   const packageDirectory = fileURLToPath(new URL("../dist", import.meta.url));
   const generatedWranglerConfig = JSON.parse(

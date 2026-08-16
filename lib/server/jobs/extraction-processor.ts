@@ -1,6 +1,9 @@
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { buildContextPack, type ContextPack, type ContextPackAsset } from "@/lib/domain/context-pack";
-import { validateReadableTranscriptOutput } from "@/lib/domain/event-ai-artifacts";
+import {
+  readableTranscriptSegmentsForVerification,
+  validateReadableTranscriptOutput,
+} from "@/lib/domain/event-ai-artifacts";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
   isSupportedModelImageMime,
@@ -52,6 +55,11 @@ import {
   supersedeProcessingExtractionModelStage,
   upsertExtractionModelStage,
 } from "@/lib/server/db/extraction-stage-repository";
+import {
+  canResumeProcessingModelStage,
+  canReuseSucceededModelStage,
+  type ModelStageFrozenInput,
+} from "@/lib/server/jobs/model-stage-contract";
 import { parseJson } from "@/lib/server/http/api";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
@@ -260,7 +268,18 @@ async function runModelStage<T>(input: {
   }) => Promise<{ output: T; usage: ModelUsage }>;
 }): Promise<{ output: T; usage: ModelUsage; reused: boolean }> {
   const existing = await getLatestExtractionModelStage(String(input.run.id), input.stage);
-  if (existing?.status === "succeeded") {
+  const frozenInput: ModelStageFrozenInput = {
+    provider: input.provider,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    promptVersion: input.promptVersion,
+    schemaVersion: input.schemaVersion,
+    inputHash: input.inputHash,
+  };
+  const canReuseExisting = Boolean(
+    existing && canReuseSucceededModelStage(existing, frozenInput),
+  );
+  if (existing?.status === "succeeded" && canReuseExisting) {
     const output = input.validate(existing.validated_output);
     if (!output) {
       throw new ProcessingFault(
@@ -271,13 +290,7 @@ async function runModelStage<T>(input: {
     return { output, usage: stageUsage(existing), reused: true };
   }
   const canResumeExisting = Boolean(
-    existing?.status === "processing" &&
-    existing.provider === input.provider &&
-    existing.model === input.model &&
-    existing.reasoning_effort === input.reasoningEffort &&
-    existing.prompt_version === input.promptVersion &&
-    existing.schema_version === input.schemaVersion &&
-    existing.input_hash === input.inputHash,
+    existing && canResumeProcessingModelStage(existing, frozenInput),
   );
   const attempt = canResumeExisting
     ? existing!.attempt
@@ -837,7 +850,11 @@ async function contextWithReadableTranscript(
        FROM event_ai_artifact_runs ar
        LEFT JOIN event_ai_artifacts a ON a.run_id = ar.id
       WHERE ar.extraction_run_id = ? AND ar.kind = 'readable_transcript'
-      ORDER BY ar.created_at DESC LIMIT 1`,
+      /* The first Readable Run is part of this Extraction Run's frozen input.
+         A later user-requested Readable retry may improve the reading UI, but
+         it must not replace an in-flight Agent B input or cause another paid
+         verification Response to be created. */
+      ORDER BY ar.created_at ASC, ar.id ASC LIMIT 1`,
     [run.id],
   );
   if (row && ["queued", "processing"].includes(String(row.status))) {
@@ -861,19 +878,22 @@ async function contextWithReadableTranscript(
     warnings.push({ code: "READABLE_TRANSCRIPT_INVALID_RAW_ONLY" });
     return base;
   }
+  const safeSegments = readableTranscriptSegmentsForVerification(validation.output);
+  const withheldSegmentCount = validation.output.segments.length - safeSegments.length;
+  if (withheldSegmentCount > 0) {
+    warnings.push({
+      code: safeSegments.length === 0
+        ? "READABLE_TRANSCRIPT_ALL_FLAGGED_RAW_ONLY"
+        : "READABLE_TRANSCRIPT_FLAGGED_SEGMENTS_WITHHELD",
+      withheld_segment_count: withheldSegmentCount,
+    });
+  }
+  if (safeSegments.length === 0) return base;
   return {
     ...base,
     new_event: {
       ...base.new_event,
-      readable_transcript_segments: validation.output.segments.map((segment) => ({
-        readableSegmentKey: segment.readable_key,
-        sourceSegmentIds: [...segment.source_segment_ids],
-        speaker: segment.speaker,
-        startMs: segment.start_ms,
-        endMs: segment.end_ms,
-        readableText: segment.readable_text,
-        requiresAttention: segment.needs_human_check,
-      })),
+      readable_transcript_segments: safeSegments,
     },
   };
 }

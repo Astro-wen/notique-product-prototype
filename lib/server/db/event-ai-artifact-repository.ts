@@ -22,6 +22,27 @@ import type {
 
 type Row = Record<string, unknown>;
 
+type ArtifactRunManifestItem = {
+  asset_version_id: string;
+  sha256: string;
+  parser_version: string | null;
+  kind: "transcript" | "photo" | "pdf" | "text";
+};
+
+const ARTIFACT_MANIFEST_KINDS = new Set<ArtifactRunManifestItem["kind"]>([
+  "transcript", "photo", "pdf", "text",
+]);
+
+// Summary and Readable Transcript jobs may read user-pasted text and raw
+// transcripts, but never a readability artifact (or any source explicitly
+// marked as excluded from analysis). Keep this boundary beside the query that
+// supplies the provider and deterministic Summary quote resolver.
+const RAW_ARTIFACT_SOURCE_ASSET_PREDICATE = `
+  a.kind IN ('transcript', 'text')
+  AND COALESCE(json_extract(a.metadata_json, '$.analysis_source'), 1) <> 0
+  AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+`;
+
 export type EventAiArtifactChunkRecord = {
   id: string;
   artifact_run_id: string;
@@ -128,28 +149,101 @@ export async function sourceSegmentsForArtifactRun(runId: string): Promise<{
     `SELECT ar.*, p.locale
        FROM event_ai_artifact_runs ar
        JOIN projects p ON p.id = ar.project_id
-      WHERE ar.id = ? AND p.deleted_at IS NULL`,
+       JOIN extraction_runs er ON er.id = ar.extraction_run_id
+        AND er.workspace_id = ar.workspace_id
+        AND er.project_id = ar.project_id
+        AND er.event_id = ar.event_id
+      WHERE ar.id = ? AND p.workspace_id = ar.workspace_id
+        AND p.deleted_at IS NULL`,
     [runId],
   );
   if (!run) throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "AI artifact run was not found.");
-  const manifest = parseJson<Array<{ asset_version_id?: unknown }>>(
+  const parsedManifest = parseJson<unknown>(
     String(run.input_manifest_json ?? "[]"),
     [],
   );
-  const versionIds = manifest
-    .map((item) => typeof item.asset_version_id === "string" ? item.asset_version_id : "")
-    .filter(Boolean);
+  if (!Array.isArray(parsedManifest) || !parsedManifest.length) {
+    throw new Error("ARTIFACT_INPUT_MANIFEST_INVALID");
+  }
+  const manifest: ArtifactRunManifestItem[] = parsedManifest.map((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("ARTIFACT_INPUT_MANIFEST_INVALID");
+    }
+    const item = candidate as Record<string, unknown>;
+    const keys = Object.keys(item).sort();
+    if (
+      keys.join("\u0000") !== ["asset_version_id", "kind", "parser_version", "sha256"].sort().join("\u0000") ||
+      typeof item.asset_version_id !== "string" || !item.asset_version_id ||
+      typeof item.sha256 !== "string" || !item.sha256 ||
+      !(item.parser_version === null || typeof item.parser_version === "string") ||
+      typeof item.kind !== "string" || !ARTIFACT_MANIFEST_KINDS.has(item.kind as ArtifactRunManifestItem["kind"])
+    ) {
+      throw new Error("ARTIFACT_INPUT_MANIFEST_INVALID");
+    }
+    return {
+      asset_version_id: item.asset_version_id,
+      sha256: item.sha256,
+      parser_version: item.parser_version,
+      kind: item.kind as ArtifactRunManifestItem["kind"],
+    };
+  });
+  const allVersionIds = manifest.map((item) => item.asset_version_id);
+  if (new Set(allVersionIds).size !== allVersionIds.length) {
+    throw new Error("ARTIFACT_INPUT_MANIFEST_INVALID");
+  }
+  const expectedInputHash = await hashText(JSON.stringify({
+    extraction_run_id: run.extraction_run_id,
+    input_manifest: parsedManifest,
+    kind: run.kind,
+    provider: run.provider,
+    model: run.model,
+    effort: run.reasoning_effort,
+    prompt: run.prompt_version,
+    schema: run.schema_version,
+  }));
+  if (expectedInputHash !== String(run.input_hash)) {
+    throw new Error("ARTIFACT_INPUT_HASH_CHANGED");
+  }
+  const manifestRows = await all(
+    `SELECT av.id, av.content_sha256, av.parser_version, a.kind,
+            a.metadata_json, a.workspace_id, a.project_id, a.event_id
+       FROM asset_versions av
+       JOIN assets a ON a.id = av.asset_id
+      WHERE av.id IN (${allVersionIds.map(() => "?").join(",")})
+        AND a.workspace_id = ? AND a.project_id = ? AND a.event_id = ?`,
+    [...allVersionIds, run.workspace_id, run.project_id, run.event_id],
+  );
+  if (manifestRows.length !== allVersionIds.length) {
+    throw new ApiFault(409, "PROJECT_SCOPE_VIOLATION", "AI artifact input references unavailable material.");
+  }
+  const rowByVersionId = new Map(manifestRows.map((row) => [String(row.id), row]));
+  for (const item of manifest) {
+    const row = rowByVersionId.get(item.asset_version_id);
+    if (
+      !row || String(row.content_sha256) !== item.sha256 ||
+      String(row.kind) !== item.kind ||
+      (row.parser_version == null ? null : String(row.parser_version)) !== item.parser_version
+    ) {
+      throw new Error("ARTIFACT_INPUT_MANIFEST_CHANGED");
+    }
+  }
+  const rawManifest = manifest.filter((item) => item.kind === "transcript" || item.kind === "text");
+  const versionIds = rawManifest.map((item) => item.asset_version_id);
   if (!versionIds.length) throw new Error("ARTIFACT_INPUT_MISSING_TRANSCRIPT");
   const rows = await all(
     `SELECT ts.*
        FROM text_segments ts
        JOIN assets a ON a.id = ts.asset_id
-      WHERE ts.event_id = ? AND ts.workspace_id = ?
+      WHERE ts.event_id = ? AND ts.workspace_id = ? AND ts.project_id = ?
         AND ts.asset_version_id IN (${versionIds.map(() => "?").join(",")})
-        AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+        AND ${RAW_ARTIFACT_SOURCE_ASSET_PREDICATE}
       ORDER BY ts.asset_version_id, ts.ordinal`,
-    [run.event_id, run.workspace_id, ...versionIds],
+    [run.event_id, run.workspace_id, run.project_id, ...versionIds],
   );
+  const segmentVersionIds = new Set(rows.map((row) => String(row.asset_version_id)));
+  if (versionIds.some((versionId) => !segmentVersionIds.has(versionId))) {
+    throw new Error("ARTIFACT_INPUT_MISSING_TRANSCRIPT");
+  }
   const versionOrder = new Map(versionIds.map((versionId, index) => [versionId, index]));
   rows.sort((left, right) => {
     const versionDelta = (versionOrder.get(String(left.asset_version_id)) ?? Number.MAX_SAFE_INTEGER) -

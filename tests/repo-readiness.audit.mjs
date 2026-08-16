@@ -74,6 +74,7 @@ test("two-pass model stages are resumable, bounded, and safely exposed", async (
   const repository = await read("lib/server/db/extraction-stage-repository.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
+  const stageContract = await read("lib/server/jobs/model-stage-contract.ts");
   const provider = await read("lib/server/ai/model-provider.ts");
   const migration = await read("drizzle/0010_extraction_model_stages.sql");
 
@@ -101,6 +102,31 @@ test("two-pass model stages are resumable, bounded, and safely exposed", async (
     processor,
     /existing\?\.status === ["']succeeded["'][\s\S]{0,500}reused:\s*true/,
     "a successful paid stage must be reused on the same Run",
+  );
+  assert.match(
+    processor,
+    /canReuseSucceededModelStage\(existing, frozenInput\)/,
+    "succeeded output may be reused only after the processor checks its exact frozen input",
+  );
+  assert.match(
+    processor,
+    /canResumeProcessingModelStage\(existing, frozenInput\)/,
+    "processing resume and succeeded reuse must share the same frozen-input contract",
+  );
+  for (const field of [
+    "provider",
+    "model",
+    "reasoning_effort",
+    "prompt_version",
+    "schema_version",
+    "input_hash",
+  ]) {
+    assert.match(stageContract, new RegExp(`persisted\\.${field}`));
+  }
+  assert.doesNotMatch(
+    provider,
+    /server excludes every readable segment marked requiresAttention/i,
+    "Agent B prompt v9 must not silently acquire new filtered-readable wording",
   );
   assert.match(
     processor,
@@ -1199,9 +1225,11 @@ test("Brief Card resolves deterministic IDs into readable source content", async
     page.indexOf("export default function Home"),
   );
 
+  assert.match(loader, /loadVerifiedView:[\s\S]*?api\.getView\(id, view\)/,
+    "Brief Card's injectable cached loader must still default to the canonical View API");
   for (const view of ["brief-card", "folder-summary", "next-meeting-agenda"]) {
-    assert.match(loader, new RegExp(`api\\.getView\\(projectId, ["']${view}["']\\)`),
-      `Brief Card must read the existing ${view} endpoint`);
+    assert.match(loader, new RegExp(`loadVerifiedView\\(projectId, ["']${view}["']\\)`),
+      `Brief Card must read the existing ${view} endpoint through the cached loader`);
   }
   for (const idField of ["stateClaimId", "riskClaimId", "deltaItemIds", "agendaItemIds"]) {
     assert.match(loader, new RegExp(`\\b${idField}\\b`),

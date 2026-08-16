@@ -918,13 +918,13 @@ export const api = {
     }
   },
 
-  async getEventAiArtifacts(eventId: Id): Promise<{
+  async getEventAiArtifacts(eventId: Id, signal?: AbortSignal): Promise<{
     runs: EventAiArtifactRunRecord[];
     artifacts: EventAiArtifactRecord[];
   }> {
     const body = await request<EventAiArtifactsResponse>(
       `/api/v1/events/${encodeURIComponent(eventId)}/ai-artifacts`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     return body.data;
   },
@@ -945,10 +945,10 @@ export const api = {
     return body.data.artifact_run;
   },
 
-  async getWorkflowSnapshot(projectId: Id): Promise<WorkflowSnapshot> {
+  async getWorkflowSnapshot(projectId: Id, signal?: AbortSignal): Promise<WorkflowSnapshot> {
     const body = await request<GetWorkflowSnapshotResponse>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/workflow-snapshot`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     const snapshot = body.data.workflow_snapshot;
     return {
@@ -958,18 +958,18 @@ export const api = {
     };
   },
 
-  async getDraftMemory(projectId: Id): Promise<DraftMemory> {
+  async getDraftMemory(projectId: Id, signal?: AbortSignal): Promise<DraftMemory> {
     const body = await request<DraftMemoryResponse>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/draft-memory`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     return body.data.draft_memory;
   },
 
-  async getProjectActions(projectId: Id): Promise<ProjectAction[]> {
+  async getProjectActions(projectId: Id, signal?: AbortSignal): Promise<ProjectAction[]> {
     const body = await request<ProjectActionsResponse>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/actions`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     return body.data.actions;
   },
@@ -1613,11 +1613,11 @@ export const api = {
     return requireId(normalizeProject(body.data.project), "scenario verdict");
   },
 
-  async getView(projectId: Id, view: ProjectViewName): Promise<unknown> {
+  async getView(projectId: Id, view: ProjectViewName, signal?: AbortSignal): Promise<unknown> {
     const path = view.startsWith("folder-") || ["timeline", "decisions", "preferences", "open-questions", "risks"].includes(view)
       ? `/api/v1/projects/${encodeURIComponent(projectId)}/views/${view}`
       : `/api/v1/projects/${encodeURIComponent(projectId)}/${view}`;
-    const body = await request<GetVerifiedViewResponse | unknown>(path, { cache: "no-store" });
+    const body = await request<GetVerifiedViewResponse | unknown>(path, { cache: "no-store", signal });
     return dataValue(body, ["view", "gap_check", "agenda", "brief_card"]);
   },
 };

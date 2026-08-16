@@ -110,6 +110,29 @@ async function findSecretContentFindings(packageDirectory) {
   );
 }
 
+async function findMissingReferencedBuildAssets(packageDirectory) {
+  const root = resolve(packageDirectory);
+  const entries = await collectPackageEntries(root);
+  const files = entries.filter((entry) => entry.kind === "file");
+  const existingPaths = new Set(files.map((file) => file.relativePath));
+  const findings = [];
+  const seen = new Set();
+
+  for (const file of files) {
+    const text = (await readFile(file.filePath)).toString("utf8");
+    for (const match of text.matchAll(/\/assets\/(_vinext_fonts\/[^\s"'()?#]+\.woff2)/g)) {
+      const expectedPath = `client/assets/${match[1]}`;
+      if (existingPaths.has(expectedPath)) continue;
+      const key = `${file.relativePath}:${expectedPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({ path: file.relativePath, rule: "missing-referenced-vinext-font-asset" });
+    }
+  }
+
+  return findings;
+}
+
 export async function cleanForbiddenPackagePaths(packageDirectory) {
   const root = resolve(packageDirectory);
   const forbiddenPaths = await findForbiddenPackagePaths(root);
@@ -149,6 +172,9 @@ export async function sanitizeGeneratedWranglerConfig(packageDirectory) {
 
 export async function auditBuildPackage(packageDirectory) {
   const forbiddenPaths = await findForbiddenPackagePaths(packageDirectory);
-  const contentFindings = await findSecretContentFindings(packageDirectory);
+  const contentFindings = [
+    ...(await findSecretContentFindings(packageDirectory)),
+    ...(await findMissingReferencedBuildAssets(packageDirectory)),
+  ].sort((left, right) => `${left.path}:${left.rule}`.localeCompare(`${right.path}:${right.rule}`));
   return { forbiddenPaths, contentFindings };
 }

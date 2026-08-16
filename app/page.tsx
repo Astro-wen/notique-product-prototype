@@ -1,6 +1,8 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Dialog, DropdownMenu } from "radix-ui";
 import {
   isHeifLike,
   MAX_IMAGE_BYTES,
@@ -24,6 +26,14 @@ import {
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
 import { buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
+import {
+  factsReadyForReview,
+  factsStillRunning,
+  matchingSummarySourceIndexes,
+  preferredReadingAid,
+  shouldAutoFocusSummary,
+  type ReadingAidTarget,
+} from "@/lib/domain/summary-first-workflow";
 import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft";
 import { highlightExactPhrase } from "@/lib/domain/text-highlight";
 import {
@@ -36,6 +46,7 @@ import {
   requestOwnerIsCurrent,
   routeForView,
   serializeAppRoute,
+  type AppReadingTab,
   type AppRoute,
   type AppRouteOrigin,
   type AppView,
@@ -68,11 +79,27 @@ import {
   TranscriptionRun,
   TranscriptSegment,
   WorkflowEventSummary,
+  WorkflowSnapshot,
   api,
   normalizeClaim,
   toIssue,
 } from "./api-client";
 import { DirectRecorder } from "./direct-recorder";
+import {
+  draftMemoryQuery,
+  eventArtifactsQuery,
+  notiqueQueryKeys,
+  projectActionsQuery,
+  verifiedViewQuery,
+  workflowSnapshotQuery,
+} from "./notique-queries";
+import {
+  buildReadableWordDiff,
+  mappedRawParagraph,
+  type ReadableDiffRisk,
+  type ReadableWordDiffResult,
+} from "./readable-transcript-diff";
+import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
 
 type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
@@ -131,7 +158,7 @@ type ReviewSummaryDestination = {
   nextEventId?: string;
 };
 
-type TranscriptArtifactTab = "summary" | "readable" | "raw";
+type TranscriptArtifactTab = AppReadingTab;
 
 type TranscriptFocusRequest = {
   id: number;
@@ -139,6 +166,11 @@ type TranscriptFocusRequest = {
   tab: TranscriptArtifactTab;
   restoreScrollY?: number;
 };
+
+type ReadableDiffViewState =
+  | { status: "loading" }
+  | ReadableWordDiffResult
+  | { status: "fallback"; reason: "mapping_incomplete" };
 
 const primaryResultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
   { key: "client-progress", label: "客户概览", short: "概览" },
@@ -205,6 +237,30 @@ function rememberPublicWorkspaceAcknowledgement(): void {
   } catch {
     // A blocked storage API should not hide the warning. The current page can
     // still continue after the user explicitly confirms the modal.
+  }
+}
+
+function summaryFirstNavigationKey(projectId: string, eventId: string, runId: string): string {
+  return `notique.ui.summary-first:${projectId}:${eventId}:${runId}`;
+}
+
+function readSummaryFirstNavigationMark(key: string): "auto" | "user" | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.sessionStorage.getItem(key);
+    return value === "auto" || value === "user" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSummaryFirstNavigationMark(key: string, value: "auto" | "user"): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // This is only a same-tab navigation guard. Server workflow state remains
+    // authoritative if storage is unavailable.
   }
 }
 
@@ -398,9 +454,12 @@ function workflowEventDisplayStatus(summary?: WorkflowEventSummary): {
   return { label: labels[summary.display_status], tone: tones[summary.display_status] };
 }
 
-async function inspectProjectWorkflow(projectId: string): Promise<ProjectWorkflowSnapshot> {
+async function inspectProjectWorkflow(
+  projectId: string,
+  loadWorkflowSnapshot: (id: string) => Promise<WorkflowSnapshot> = (id) => api.getWorkflowSnapshot(id),
+): Promise<ProjectWorkflowSnapshot> {
   const [snapshot, latestEvents] = await Promise.all([
-    api.getWorkflowSnapshot(projectId),
+    loadWorkflowSnapshot(projectId),
     api.listEvents(projectId),
   ]);
   const workflow = snapshot.workflow;
@@ -699,17 +758,53 @@ function StatusBadge({ value }: { value?: string }) {
   return <span className={`status-badge ${tone}`}>{statusLabel(value)}</span>;
 }
 
-function Modal({ title, description, onClose, children, wide = false }: { title: string; description?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+function Modal({
+  title,
+  description,
+  onClose,
+  children,
+  wide = false,
+  dismissible = true,
+  returnFocusSelector,
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+  children: ReactNode;
+  wide?: boolean;
+  dismissible?: boolean;
+  returnFocusSelector?: string;
+}) {
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <section className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
-        <header className="modal-header">
-          <div><h2>{title}</h2>{description && <p>{description}</p>}</div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭">×</button>
-        </header>
-        {children}
-      </section>
-    </div>
+    <Dialog.Root open onOpenChange={(open) => { if (!open && dismissible) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-backdrop" />
+        <Dialog.Content
+          className={`modal ${wide ? "modal-wide" : ""}`}
+          onEscapeKeyDown={(event) => { if (!dismissible) event.preventDefault(); }}
+          onPointerDownOutside={(event) => { if (!dismissible) event.preventDefault(); }}
+          onInteractOutside={(event) => { if (!dismissible) event.preventDefault(); }}
+          onCloseAutoFocus={(event) => {
+            if (!returnFocusSelector) return;
+            const target = document.querySelector<HTMLElement>(returnFocusSelector);
+            if (!target) return;
+            event.preventDefault();
+            target.focus();
+          }}
+        >
+          <header className="modal-header">
+            <div>
+              <Dialog.Title>{title}</Dialog.Title>
+              <Dialog.Description>{description || "完成当前操作，或关闭此对话框返回上一页。"}</Dialog.Description>
+            </div>
+            <Dialog.Close asChild disabled={!dismissible}>
+              <button className="icon-button" aria-label="关闭" disabled={!dismissible}>×</button>
+            </Dialog.Close>
+          </header>
+          {children}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -741,7 +836,7 @@ function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
-  return <Modal title="把项目移到回收站？" description="项目不会立即永久消失，可以随时从回收站恢复。" onClose={busy ? () => undefined : onClose}>
+  return <Modal title="把项目移到回收站？" description="项目不会立即永久消失，可以随时从回收站恢复。" onClose={onClose} dismissible={!busy} returnFocusSelector=".project-menu-trigger">
     <div className="delete-preview">
       <strong>{preview.project_name}</strong>
       <dl><div><dt>沟通</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
@@ -763,7 +858,7 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
 }) {
   const [permanentTarget, setPermanentTarget] = useState<Project | null>(null);
   const [confirmation, setConfirmation] = useState("");
-  return <Modal title="回收站" description="恢复会带回项目的全部材料、核对记录、Evidence 和报告。这里不会自动按天清理。" onClose={busy ? () => undefined : onClose} wide>
+  return <Modal title="回收站" description="恢复会带回项目的全部材料、核对记录、Evidence 和报告。这里不会自动按天清理。" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".project-menu-trigger" wide>
     <div className="trash-list">
       {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
@@ -844,11 +939,14 @@ function findItemById(
   return items.find((item) => firstString(item, keys) === id);
 }
 
-async function loadBriefDisplayData(projectId: string): Promise<BriefDisplayData> {
+async function loadBriefDisplayData(
+  projectId: string,
+  loadVerifiedView: (projectId: string, view: ProjectViewName) => Promise<unknown> = (id, view) => api.getView(id, view),
+): Promise<BriefDisplayData> {
   const [briefValue, summaryValue, agendaValue] = await Promise.all([
-    api.getView(projectId, "brief-card"),
-    api.getView(projectId, "folder-summary"),
-    api.getView(projectId, "next-meeting-agenda"),
+    loadVerifiedView(projectId, "brief-card"),
+    loadVerifiedView(projectId, "folder-summary"),
+    loadVerifiedView(projectId, "next-meeting-agenda"),
   ]);
   if (!isRecord(briefValue)) return {};
 
@@ -1389,6 +1487,15 @@ function BriefGroup({ title, items, kind, empty, onOpenClaim, onSelect, warning 
 }
 
 export default function Home() {
+  const queryClient = useQueryClient();
+  const loadWorkflowSnapshot = useCallback((projectId: string, fresh = false) => queryClient.fetchQuery({
+    ...workflowSnapshotQuery(projectId),
+    staleTime: fresh ? 0 : 2_000,
+  }), [queryClient]);
+  const loadFreshWorkflowSnapshot = useCallback((projectId: string) =>
+    loadWorkflowSnapshot(projectId, true), [loadWorkflowSnapshot]);
+  const invalidateProjectReadModels = useCallback((projectId: string) =>
+    queryClient.invalidateQueries({ queryKey: ["notique", "project", projectId] }), [queryClient]);
   // Keep the first client render identical to SSR. The URL is restored in the
   // mount effect below, after hydration has finished.
   const [route, setRouteState] = useState<AppRoute>({ view: "simple" });
@@ -1490,6 +1597,7 @@ export default function Home() {
   }, [navigateRoute]);
 
   const invalidateNavigationRequests = useCallback(() => {
+    void queryClient.cancelQueries({ queryKey: ["notique"] });
     requestEpochs.current.projects += 1;
     requestEpochs.current.project += 1;
     requestEpochs.current.event += 1;
@@ -1497,9 +1605,10 @@ export default function Home() {
     requestEpochs.current.view += 1;
     requestEpochs.current.claim += 1;
     requestEpochs.current.debug += 1;
-  }, []);
+  }, [queryClient]);
 
   const invalidateProjectSelectionRequests = useCallback(() => {
+    void queryClient.cancelQueries({ queryKey: ["notique"] });
     // Selecting a project owns every piece of project/event-derived UI. A
     // response from the previous selection must not be able to repopulate it.
     projectWorkflowRefreshToken.current += 1;
@@ -1508,16 +1617,17 @@ export default function Home() {
     requestEpochs.current.view += 1;
     requestEpochs.current.claim += 1;
     requestEpochs.current.debug += 1;
-  }, []);
+  }, [queryClient]);
 
   const invalidateEventSelectionRequests = useCallback(() => {
+    void queryClient.cancelQueries({ queryKey: ["notique"] });
     // Event switches keep the project selection, but invalidate every panel
     // whose contents may have been derived from the previous event.
     requestEpochs.current.claims += 1;
     requestEpochs.current.view += 1;
     requestEpochs.current.claim += 1;
     requestEpochs.current.debug += 1;
-  }, []);
+  }, [queryClient]);
 
   const isCurrentRequestOwner = useCallback((owner: RequestOwner) => requestOwnerIsCurrent(owner, {
     projectId: routeRef.current.projectId,
@@ -1572,6 +1682,20 @@ export default function Home() {
     const timer = window.setInterval(() => setReviewClockNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [reviewSession?.id, reviewSession?.status]);
+
+  useEffect(() => {
+    const projectId = project?.id;
+    const eventId = event?.id;
+    if (!projectId || !eventId) return;
+    if (eventWorkflowSummaries[eventId]?.statusSummary.summaryStatus !== "succeeded") return;
+    // The user commonly moves from the newly available Summary to the buyer
+    // overview. Warm those read-only layers without blocking Summary or
+    // starting any model/ledger mutation.
+    void Promise.allSettled([
+      queryClient.prefetchQuery(draftMemoryQuery(projectId)),
+      queryClient.prefetchQuery(verifiedViewQuery(projectId, "folder-summary")),
+    ]);
+  }, [event?.id, eventWorkflowSummaries, project?.id, queryClient]);
 
   const loadProjects = useCallback(async () => {
     const token = requestEpochs.current.projects + 1;
@@ -1701,7 +1825,7 @@ export default function Home() {
       ? current
       : { ...current, phase: "loading", issue: undefined });
     try {
-      const snapshot = await inspectProjectWorkflow(projectId);
+      const snapshot = await inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot);
       if (projectWorkflowRefreshToken.current !== token || !isCurrentRequestOwner(owner)) return null;
       setProject(snapshot.project);
       setProjectWorkflow(snapshot.plan);
@@ -1716,7 +1840,7 @@ export default function Home() {
       });
       return null;
     }
-  }, [isCurrentRequestOwner]);
+  }, [isCurrentRequestOwner, loadFreshWorkflowSnapshot]);
 
   const loadSimpleProject = useCallback(async (
     projectId: string,
@@ -2110,8 +2234,20 @@ export default function Home() {
       }
       pollAttempts.current += 1;
       try {
-        const latest = await api.getRun(runId);
+        const [latest, workflowSnapshot] = await Promise.all([
+          api.getRun(runId),
+          // Summary and readable transcript finish independently from the fact
+          // pipeline. Reuse the server-owned snapshot while this Run is
+          // already being polled so the UI can surface them without starting
+          // another job or inventing a second source of workflow state.
+          loadWorkflowSnapshot(projectId, true).catch(() => null),
+        ]);
         if (!pollIsCurrent()) return;
+        if (workflowSnapshot) {
+          setEventWorkflowSummaries(Object.fromEntries(
+            workflowSnapshot.events.map((item) => [item.id, item]),
+          ));
+        }
         const latestStillRunning = runInProgress.has(latest.status);
         if (latestStillRunning) setRun(latest);
         if (runNeedsRecovery({
@@ -2186,7 +2322,7 @@ export default function Home() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, flash, isCurrentRequestOwner, loadClaimsForRun, project, runPollCycle]);
+  }, [activeExtractionRunId, activeExtractionRunStatus, event?.id, flash, isCurrentRequestOwner, loadClaimsForRun, loadWorkflowSnapshot, project, runPollCycle]);
 
   const syncReviewTiming = useCallback(async (
     latestProject: Project,
@@ -2322,19 +2458,22 @@ export default function Home() {
     setViewIssue(null);
     setViewLoadDurationMs(null);
     try {
+      const loadVerifiedView = (projectId: string, view: ProjectViewName) =>
+        queryClient.fetchQuery(verifiedViewQuery(projectId, view));
+      const keepCurrentProjectContext = project?.id === targetProjectId;
       const [result, nextProject, nextEvents] = await Promise.all([
         tab === "client-progress"
           ? Promise.all([
-              api.getDraftMemory(targetProjectId),
-              api.getView(targetProjectId, "folder-summary"),
+              queryClient.fetchQuery(draftMemoryQuery(targetProjectId)),
+              loadVerifiedView(targetProjectId, "folder-summary"),
             ]).then(([draftMemory, verified]) => ({ draft_memory: draftMemory, verified }))
           : tab === "actions"
-            ? api.getProjectActions(targetProjectId).then((items) => ({ items }))
+            ? queryClient.fetchQuery(projectActionsQuery(targetProjectId)).then((items) => ({ items }))
           : tab === "brief-card"
-          ? loadBriefDisplayData(targetProjectId)
-          : api.getView(targetProjectId, tab),
-        api.getProject(targetProjectId),
-        api.listEvents(targetProjectId),
+          ? loadBriefDisplayData(targetProjectId, loadVerifiedView)
+          : loadVerifiedView(targetProjectId, tab),
+        keepCurrentProjectContext && project ? Promise.resolve(project) : api.getProject(targetProjectId),
+        keepCurrentProjectContext ? Promise.resolve(events) : api.listEvents(targetProjectId),
       ]);
       if (requestEpochs.current.view !== token) return;
       setProject(nextProject);
@@ -2363,7 +2502,7 @@ export default function Home() {
       if (requestEpochs.current.view !== token) return;
       setViewLoadDurationMs(Math.max(0, Math.round(performance.now() - loadStartedAt)));
     }
-  }, [event?.id, navigateRoute, project?.id]);
+  }, [event?.id, events, navigateRoute, project, queryClient]);
 
   const openRunDebug = useCallback(async (
     runId: string,
@@ -2398,6 +2537,7 @@ export default function Home() {
     origin?: AppRouteOrigin,
     projectIdOverride?: string,
     historyMode: "push" | "replace" | "none" = "push",
+    originReadingTab?: AppReadingTab,
   ) {
     const token = requestEpochs.current.claim + 1;
     requestEpochs.current.claim = token;
@@ -2414,8 +2554,8 @@ export default function Home() {
         const targetProjectId = projectIdOverride || project?.id || routeRef.current.projectId;
         if (!targetProjectId || issue.status !== 404) throw error;
         const [summaryView, timelineView] = await Promise.all([
-          api.getView(targetProjectId, "folder-summary"),
-          api.getView(targetProjectId, "timeline"),
+          queryClient.fetchQuery(verifiedViewQuery(targetProjectId, "folder-summary")),
+          queryClient.fetchQuery(verifiedViewQuery(targetProjectId, "timeline")),
         ]);
         if (requestEpochs.current.claim !== token) return;
         listClaim = [...claimsFromVerifiedView(summaryView), ...claimsFromVerifiedView(timelineView)]
@@ -2455,6 +2595,7 @@ export default function Home() {
       claimId: nextClaim.id,
       origin: resolvedOrigin,
       ...(resolvedOrigin === "results" ? { originTab: viewTab } : {}),
+      ...(resolvedOrigin === "simple" && originReadingTab ? { originReadingTab } : {}),
     }, historyMode);
     setEvidence([]);
     setEvidenceState("loading");
@@ -2491,8 +2632,17 @@ export default function Home() {
         eventId: sourceEventId,
         scrollY: window.scrollY,
       };
+      // Persist the reading surface in the current history entry before the
+      // Claim entry is pushed. Browser Back can then restore Summary even
+      // after the Claim page itself has been reloaded.
+      navigateRoute({
+        ...routeRef.current,
+        view: "simple",
+        eventId: sourceEventId,
+        readingTab: "summary",
+      }, "replace");
     }
-    await openClaim(claimId, "simple");
+    await openClaim(claimId, "simple", undefined, "push", "summary");
   }
 
   async function finishGuidedReview() {
@@ -2505,7 +2655,7 @@ export default function Home() {
       eventEpoch: requestEpochs.current.event,
     };
     const [snapshot, latestReviewSession] = await Promise.all([
-      inspectProjectWorkflow(projectId),
+      inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot),
       api.getReviewSession(projectId),
     ]);
     if (!isCurrentRequestOwner(owner)) return;
@@ -2593,7 +2743,7 @@ export default function Home() {
       eventId: routeRef.current.eventId,
       eventEpoch: requestEpochs.current.event,
     };
-    const snapshot = await inspectProjectWorkflow(projectId);
+    const snapshot = await inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot);
     if (!isCurrentRequestOwner(owner)) return;
     setProject(snapshot.project);
     setEvents(snapshot.events);
@@ -2618,13 +2768,19 @@ export default function Home() {
       return;
     }
     if (phase === "waiting_review" || phase === "draft_ready" || phase === "partially_reviewed") {
-      const targetEventId = projectWorkflow.currentEventId || event?.id || routeRef.current.eventId;
-      if (targetEventId) {
-        setTranscriptFocusRequest({ id: Date.now(), eventId: targetEventId, tab: "summary" });
-        flash("分析已完成，正在打开 AI 摘要；重要内容可以现在核对，也可以稍后继续");
-      } else {
-        void enterAiDraft();
-      }
+      // Summary-first navigation is owned by the current workspace surface.
+      // When facts finish, keep the user's reading position and only announce
+      // that review is available.
+      flash("事实识别已经完成；你可以继续阅读，重要内容现在可以核对");
+      return;
+    }
+    const targetEventId = event?.id || routeRef.current.eventId;
+    const targetSummary = targetEventId ? eventWorkflowSummaries[targetEventId] : undefined;
+    if (
+      targetSummary?.statusSummary.summaryStatus === "succeeded"
+      || targetSummary?.statusSummary.readableTranscriptStatus === "succeeded"
+    ) {
+      flash("整组处理已经完成；当前阅读位置已保留，可随时打开会前速览");
       return;
     }
     storeId(workflowIntentStorageKey, null);
@@ -2697,6 +2853,7 @@ export default function Home() {
         edit,
       });
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       setSelectedClaim(updated);
       const updatedClaims = claims.map((item) => item.id === reviewedClaimId ? updated : item);
       setClaims(updatedClaims);
@@ -2776,6 +2933,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       const updated = await api.withdrawClaim(selectedClaim, idempotencyKey, reason);
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       setSelectedClaim(updated);
       setClaims((items) => items.map((item) => item.id === selectedClaim.id ? updated : item));
       flash("这条记录已撤回，仍会保留在历史时间线中");
@@ -2795,6 +2953,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       const updated = await api.batchConfirm(selectedBatch, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       const byId = new Map(updated.map((item) => [item.id, item]));
       setClaims((items) => items.map((item) => byId.get(item.id) ?? item));
       setSelectedClaimIds(new Set());
@@ -2830,6 +2989,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       await api.saveOccurrenceVerdict(candidate, action, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       flash(action === "confirm" ? "已确认这次再次出现，并保存新的原始证据" : "这次再次出现未被采纳");
       const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const remainingClaim = reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
@@ -2864,6 +3024,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       const converted = await api.convertOccurrenceToClaims(candidate, newClaims, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       flash(`已生成 ${converted.length} 条待审核记录，原记录没有改动`);
       const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const firstConverted = reviewSnapshot?.claims.find((item) => converted.some((created) => created.id === item.id));
@@ -2900,6 +3061,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       await api.resolveContradiction(input, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       flash("矛盾已解决，正式结果已按服务器记录刷新");
       await loadView(viewTab);
     } catch (error) {
@@ -2943,6 +3105,7 @@ export default function Home() {
         idempotencyKey,
       );
       mutationKeys.current.delete(fingerprint);
+      await invalidateProjectReadModels(project.id);
       const [latestProject, latestEvents] = await Promise.all([
         api.getProject(project.id),
         api.listEvents(project.id),
@@ -3038,6 +3201,7 @@ export default function Home() {
       mutationKeys.current.set(fingerprint, idempotencyKey);
       const artifactRun = await api.retryEventAiArtifact(eventId, kind, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      await queryClient.invalidateQueries({ queryKey: notiqueQueryKeys.artifacts(eventId), exact: true });
       await api.kickDispatcher({ kind: "artifact", runId: artifactRun.id }).catch(() => undefined);
       flash(kind === "summary" ? "AI 摘要已重新提交" : "易读逐字稿已重新提交");
     } catch (error) {
@@ -3061,6 +3225,7 @@ export default function Home() {
   }
 
   function clearCurrentProjectSelection(projectId: string): void {
+    queryClient.removeQueries({ queryKey: ["notique", "project", projectId] });
     invalidateNavigationRequests();
     projectWorkflowRefreshToken.current += 1;
     storeId(recentProjectStorageKey, null);
@@ -3118,6 +3283,7 @@ export default function Home() {
     setBusyAction(`restore:${target.id}`);
     try {
       const restored = await api.restoreProject(target.id, crypto.randomUUID());
+      await invalidateProjectReadModels(target.id);
       setUndoDeletedProject((current) => current?.id === target.id ? null : current);
       await Promise.all([loadProjects(), loadTrash()]);
       flash(`“${restored.name}”已恢复`);
@@ -3136,6 +3302,7 @@ export default function Home() {
     setBusyAction(`permanent:${target.id}`);
     try {
       await api.permanentlyDeleteProject(target.id, confirmation, crypto.randomUUID());
+      queryClient.removeQueries({ queryKey: ["notique", "project", target.id] });
       setTrashProjects((current) => current.filter((item) => item.id !== target.id));
       flash(`“${target.name}”已永久删除`);
     } catch (error) {
@@ -3237,7 +3404,7 @@ export default function Home() {
     setEventIssue(null);
     try {
       projectWorkflowRefreshToken.current += 1;
-      const snapshot = await inspectProjectWorkflow(projectId);
+      const snapshot = await inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot);
       if (!isCurrentRequestOwner(owner)) return;
       setProject(snapshot.project);
       setEvents(snapshot.events);
@@ -3339,6 +3506,7 @@ export default function Home() {
     try {
       await api.completeProjectAction(claimId, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      await invalidateProjectReadModels(project.id);
       flash("行动已完成，并已保留为一条人工确认的客户进展记录");
       await loadView("actions", project.id, "replace");
     } catch (error) {
@@ -3358,6 +3526,7 @@ export default function Home() {
     try {
       await api.decideDraftLink(linkId, action, project.contextVersion, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
+      await invalidateProjectReadModels(project.id);
       setProject(await api.getProject(project.id));
       flash(action === "accept"
         ? "这条草稿关联已转为人工确认的正式关系"
@@ -3549,6 +3718,7 @@ export default function Home() {
         idempotencyKey,
       );
       mutationKeys.current.delete(fingerprint);
+      if (project) await invalidateProjectReadModels(project.id);
       setShowMissingClaim(false);
       const snapshot = await loadReviewQueue("draft");
       if (snapshot) {
@@ -3612,15 +3782,19 @@ export default function Home() {
 
     const sameProject = project?.id === target.projectId;
     const sameEvent = !target.eventId || event?.id === target.eventId;
-    const restoreSummaryIfNeeded = () => {
+    const restoreReadingTabIfNeeded = () => {
+      if (!target.readingTab) return;
       const context = summaryReturnContext.current;
-      if (!context || (target.eventId && target.eventId !== context.eventId)) return;
-      summaryReturnContext.current = null;
+      const targetEventId = target.eventId || context?.eventId;
+      if (!targetEventId) return;
+      const canRestoreSummaryScroll = target.readingTab === "summary"
+        && context?.eventId === targetEventId;
+      if (canRestoreSummaryScroll) summaryReturnContext.current = null;
       setTranscriptFocusRequest({
         id: Date.now(),
-        eventId: context.eventId,
-        tab: "summary",
-        restoreScrollY: context.scrollY,
+        eventId: targetEventId,
+        tab: target.readingTab,
+        ...(canRestoreSummaryScroll ? { restoreScrollY: context.scrollY } : {}),
       });
     };
     if (sameProject && target.view === "project") {
@@ -3629,7 +3803,7 @@ export default function Home() {
     }
     if (sameProject && sameEvent && (target.view === "simple" || target.view === "event")) {
       navigateRoute(target, "none");
-      if (target.view === "simple") restoreSummaryIfNeeded();
+      if (target.view === "simple") restoreReadingTabIfNeeded();
       return;
     }
     if (sameProject && target.view === "results" && viewTab === (target.tab ?? "folder-summary") && viewState !== "idle") {
@@ -3653,7 +3827,7 @@ export default function Home() {
     await loadSimpleProject(target.projectId, target.eventId, "none");
     if (target.view === "simple") {
       navigateRoute(target, "none");
-      restoreSummaryIfNeeded();
+      restoreReadingTabIfNeeded();
       return;
     }
     if (target.view === "project" || target.view === "event") {
@@ -3676,7 +3850,13 @@ export default function Home() {
       } else if (target.origin === "draft" || target.origin === "review") {
         await loadReviewQueue(target.origin, target.projectId, "none");
       }
-      await openClaim(target.claimId, target.origin, target.projectId, "none");
+      await openClaim(
+        target.claimId,
+        target.origin,
+        target.projectId,
+        "none",
+        target.originReadingTab,
+      );
       navigateRoute(target, "none");
       return;
     }
@@ -3723,6 +3903,8 @@ export default function Home() {
     };
   }, [invalidateNavigationRequests]);
 
+  const claimRouteReadonly = isReadonlyClaimRoute(route, selectedClaim?.reviewStatus);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -3758,6 +3940,7 @@ export default function Home() {
           claims={claims}
           busy={busyAction}
           projectWorkflow={projectWorkflow}
+          readingTab={route.readingTab}
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
@@ -3771,9 +3954,31 @@ export default function Home() {
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
           onRetryArtifact={retryEventAiArtifact}
+          onFocusTranscriptArtifact={(eventId, tab) => {
+            setTranscriptFocusRequest({ id: Date.now(), eventId, tab });
+            if (routeRef.current.view === "simple") {
+              navigateRoute({
+                ...routeRef.current,
+                eventId,
+                readingTab: tab,
+              }, "replace");
+            }
+          }}
+          onClearTranscriptArtifact={() => {
+            setTranscriptFocusRequest(null);
+            if (routeRef.current.view !== "simple" || !routeRef.current.readingTab) return;
+            navigateRoute({ ...routeRef.current, readingTab: undefined }, "replace");
+          }}
           transcriptFocusRequest={transcriptFocusRequest}
           onTranscriptFocusHandled={(requestId) => setTranscriptFocusRequest((current) => current?.id === requestId ? null : current)}
           onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement}
+          externalInteractionActive={showNewProject
+            || showNewEvent
+            || showImport
+            || showPublicWorkspaceConfirmation
+            || Boolean(deletePreview)
+            || showTrash
+            || showMissingClaim}
           onDeleteProject={openProjectDeletePreview}
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
         />}
@@ -3836,7 +4041,7 @@ export default function Home() {
           onAddMissing={() => { setMissingClaimDefaultType("other"); setShowMissingClaim(true); }}
         />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} selected={selectedClaimIds} onBack={navigateBack} onRetry={() => void loadReviewQueue("review", undefined, "replace")} onOpen={(id) => void openClaim(id, "review")} onToggle={(id) => setSelectedClaimIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onBatch={() => void batchConfirm()} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} batchCount={selectedBatch.length} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={isReadonlyClaimRoute(route) ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={isReadonlyClaimRoute(route) ? [] : claims} pendingOccurrenceCount={isReadonlyClaimRoute(route) ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={claimRouteReadonly ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={claimRouteReadonly ? [] : claims} pendingOccurrenceCount={claimRouteReadonly ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onBatchReviewAttest={() => void attestSelectedClaimForBatch()} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "review-summary" && <ReviewCompletionScreen
           project={project}
           session={reviewSession}
@@ -3915,6 +4120,7 @@ type SimpleTestScreenProps = {
   claims: Claim[];
   busy: string | null;
   projectWorkflow: ProjectWorkflowState;
+  readingTab?: TranscriptArtifactTab;
   onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
@@ -3927,26 +4133,15 @@ type SimpleTestScreenProps = {
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onFocusTranscriptArtifact: (eventId: string, tab: TranscriptArtifactTab) => void;
+  onClearTranscriptArtifact: () => void;
   transcriptFocusRequest: TranscriptFocusRequest | null;
   onTranscriptFocusHandled: (requestId: number) => void;
   onRequirePublicWorkspaceAcknowledgement: (action: () => void) => void;
+  externalInteractionActive: boolean;
   onDeleteProject: () => void;
   onOpenTrash: () => void;
 };
-
-function latestArtifactRun(
-  runs: EventAiArtifactRun[],
-  kind: EventAiArtifactRun["kind"],
-): EventAiArtifactRun | undefined {
-  return runs.find((run) => run.kind === kind);
-}
-
-function latestArtifact(
-  artifacts: EventAiArtifact[],
-  kind: EventAiArtifactRun["kind"],
-): EventAiArtifact | undefined {
-  return artifacts.find((artifact) => artifact.kind === kind);
-}
 
 function restoreWindowScrollPosition(targetY: number, onDone: () => void): () => void {
   const target = Math.max(0, targetY);
@@ -4014,6 +4209,7 @@ function TranscriptArtifactsPanel({
   busy,
   onOpenClaim,
   onRetryArtifact,
+  onSelectTab,
   focusRequest,
   onFocusHandled,
 }: {
@@ -4023,9 +4219,11 @@ function TranscriptArtifactsPanel({
   busy: string | null;
   onOpenClaim: (id: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onSelectTab: (tab: TranscriptArtifactTab) => void;
   focusRequest: TranscriptFocusRequest | null;
   onFocusHandled: (requestId: number) => void;
 }) {
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<TranscriptArtifactTab>("readable");
   const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
   const [runs, setRuns] = useState<EventAiArtifactRun[]>([]);
@@ -4034,8 +4232,11 @@ function TranscriptArtifactsPanel({
   const [issue, setIssue] = useState<ApiIssue | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
+  const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadEpoch = useRef(0);
+  const activeDiffEventId = useRef(event.id);
+  const diffLoadsInFlight = useRef(new Set<string>());
   const summaryScrollY = useRef(0);
   const manuallySelectedTab = useRef(false);
   const handledFocusRequestId = useRef<number | null>(null);
@@ -4043,13 +4244,18 @@ function TranscriptArtifactsPanel({
 
   useEffect(() => () => scrollRestoreCleanup.current(), []);
 
+  useEffect(() => {
+    activeDiffEventId.current = event.id;
+    diffLoadsInFlight.current.clear();
+  }, [event.id]);
+
   const load = useCallback(async (quiet = false) => {
     const token = loadEpoch.current + 1;
     loadEpoch.current = token;
     if (!quiet) setState("loading");
     try {
       const [artifactData, segments] = await Promise.all([
-        api.getEventAiArtifacts(event.id),
+        queryClient.fetchQuery(eventArtifactsQuery(event.id)),
         api.listEventTranscriptSegments(event.id),
       ]);
       if (loadEpoch.current !== token) return;
@@ -4065,15 +4271,16 @@ function TranscriptArtifactsPanel({
         setState("error");
       }
     }
-  }, [event.id]);
+  }, [event.id, queryClient]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load().catch(() => undefined), 0);
     return () => {
       window.clearTimeout(timer);
       loadEpoch.current += 1;
+      void queryClient.cancelQueries({ queryKey: eventArtifactsQuery(event.id).queryKey, exact: true });
     };
-  }, [load]);
+  }, [event.id, load, queryClient]);
 
   const artifactRunning = runs.some((run) => run.status === "queued" || run.status === "processing");
   useEffect(() => {
@@ -4092,6 +4299,8 @@ function TranscriptArtifactsPanel({
     if (!ids.length) return;
     const wake = () => {
       ids.forEach((runId) => {
+        // This only wakes the already persisted Artifact Run. It does not
+        // create another Run or another model request.
         void api.kickDispatcher({ kind: "artifact", runId }).catch(() => undefined);
       });
     };
@@ -4100,10 +4309,26 @@ function TranscriptArtifactsPanel({
     return () => window.clearInterval(timer);
   }, [runningRunIds]);
 
-  const summaryRun = latestArtifactRun(runs, "summary");
-  const readableRun = latestArtifactRun(runs, "readable_transcript");
-  const summaryArtifact = latestArtifact(artifacts, "summary");
-  const readableArtifact = latestArtifact(artifacts, "readable_transcript");
+  const rawSegmentIds = useMemo(
+    () => new Set(rawSegments.map((segment) => segment.id)),
+    [rawSegments],
+  );
+  const summaryPair = selectTranscriptArtifactPair({
+    runs,
+    artifacts,
+    kind: "summary",
+    rawSegmentIds,
+  });
+  const readablePair = selectTranscriptArtifactPair({
+    runs,
+    artifacts,
+    kind: "readable_transcript",
+    rawSegmentIds,
+  });
+  const summaryRun = summaryPair.run ?? undefined;
+  const readableRun = readablePair.run ?? undefined;
+  const summaryArtifact = summaryPair.artifact ?? undefined;
+  const readableArtifact = readablePair.artifact ?? undefined;
   const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
@@ -4167,54 +4392,110 @@ function TranscriptArtifactsPanel({
     manuallySelectedTab.current = true;
     if (tab === "summary") summaryScrollY.current = window.scrollY;
     setTab(next);
+    onSelectTab(next);
     if (next === "summary") {
       window.setTimeout(() => window.scrollTo({ top: summaryScrollY.current }), 0);
     }
+  }
+
+  function toggleReadableDiff(
+    key: string,
+    sourceIds: string[],
+    readableText: string,
+  ) {
+    if (openDiffs.has(key)) {
+      setOpenDiffs((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+
+    setOpenDiffs((current) => new Set(current).add(key));
+    if (readableDiffs[key] || diffLoadsInFlight.current.has(key)) return;
+
+    const mappedRaw = mappedRawParagraph(sourceIds, rawSegments);
+    if (mappedRaw.missingIds.length > 0) {
+      setReadableDiffs((current) => ({
+        ...current,
+        [key]: { status: "fallback", reason: "mapping_incomplete" },
+      }));
+      return;
+    }
+
+    const requestEventId = event.id;
+    diffLoadsInFlight.current.add(key);
+    setReadableDiffs((current) => ({ ...current, [key]: { status: "loading" } }));
+    void buildReadableWordDiff(mappedRaw.text, readableText)
+      .then((result) => {
+        if (activeDiffEventId.current !== requestEventId) return;
+        setReadableDiffs((current) => ({ ...current, [key]: result }));
+      })
+      .catch(() => {
+        if (activeDiffEventId.current !== requestEventId) return;
+        setReadableDiffs((current) => ({
+          ...current,
+          [key]: { status: "fallback", reason: "diff_aborted" },
+        }));
+      })
+      .finally(() => diffLoadsInFlight.current.delete(key));
   }
 
   if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className="transcript-workspace" aria-label="逐字稿阅读区">
     <nav className="transcript-subtabs" aria-label="逐字稿版本">
-      <button className={tab === "summary" ? "active" : ""} onClick={() => selectArtifactTab("summary")}>AI 摘要 {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span>未生成</span>}</button>
-      <button className={tab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}</button>
+      <button className={tab === "summary" ? "active" : ""} onClick={() => selectArtifactTab("summary")}>AI 摘要 {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span>未生成</span>}{summaryPair.legacyFallback && <span>历史版本</span>}</button>
+      <button className={tab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       <button className={tab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
     </nav>
     {transcriptionRun?.audioAssetId && <audio ref={audioRef} controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`} />}
 
     {tab === "summary" && <div className="artifact-panel summary-artifact">
+      <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对。请在重要内容核对后，再把它当作可信记忆。</span></aside>
       {summaryArtifact ? summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
         <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
         <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
           const ids = stringValues(item.source_segment_ids);
-          const matchedClaim = claims.find((claim) => claim.evidenceRefs.some((ref) => ref.segmentIds.some((id) => ids.includes(id))));
+          const matchedClaims = matchingSummarySourceIndexes(
+            ids,
+            claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
+          ).map((index) => claims[index]);
+          const matchedClaim = matchedClaims.length === 1 ? matchedClaims[0] : null;
           return <article key={firstString(item, ["item_key"]) || itemIndex}>
-            <button className="summary-sentence" onClick={() => { summaryScrollY.current = window.scrollY; setSelectedSourceIds(new Set(ids)); setTab("raw"); }}><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q><small>查看 {ids.length} 段原文</small></button>
+            <button className="summary-sentence" onClick={() => { summaryScrollY.current = window.scrollY; setSelectedSourceIds(new Set(ids)); selectArtifactTab("raw"); }}><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q><small>查看 {ids.length} 段原文</small></button>
             {matchedClaim && <button className="text-button" onClick={() => onOpenClaim(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
+            {matchedClaims.length > 1 && <details className="summary-related-claims">
+              <summary className="text-button">{matchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{matchedClaims.length}）</summary>
+              <div>{matchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => onOpenClaim(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
+            </details>}
           </article>;
         })}</div>
       </section>) : <ArtifactFallback kind="summary" run={summaryRun} busy={busy} onRetry={async () => {
         await onRetryArtifact(event.id, "summary");
         await load(true);
-      }} onRaw={() => setTab("raw")} />}
+      }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
     {tab === "readable" && <div className="artifact-panel readable-artifact">
       {readableArtifact ? readableSegments.map((segment, index) => {
         const key = firstString(segment, ["readable_key"]) || `readable-${index}`;
+        const diffKey = `${event.id}:${key}`;
         const sourceIds = stringValues(segment.source_segment_ids);
         const edits = recordArray(segment.edits);
+        const readableText = firstString(segment, ["readable_text"]) || "";
         const needsCheck = segment.needs_human_check === true;
         return <article className={needsCheck ? "needs-check" : ""} key={key}>
           <div className="readable-meta"><button onClick={() => playAt(typeof segment.start_ms === "number" ? segment.start_ms : null)}>{formatTimestamp(typeof segment.start_ms === "number" ? segment.start_ms / 1000 : undefined)}</button><strong>{firstString(segment, ["speaker"]) || "说话人未标注"}</strong>{edits.length > 0 && <span>{edits.length} 处整理</span>}{needsCheck && <em>需要留意</em>}</div>
-          <p>{firstString(segment, ["readable_text"]) || ""}</p>
-          <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button>{edits.length > 0 && <button className="text-button" onClick={() => setOpenDiffs((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })}>{openDiffs.has(key) ? "收起差异" : "查看差异"}</button>}</div>
-          {openDiffs.has(key) && <div className="readable-diff">{edits.map((edit, editIndex) => <div key={editIndex}><del>{firstString(edit, ["original"]) || "（无）"}</del><span>→</span><ins>{firstString(edit, ["replacement"]) || "（删除）"}</ins><small>{firstString(edit, ["reason"])}</small></div>)}</div>}
+          <p>{readableText}</p>
+          <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, sourceIds, readableText)}>{openDiffs.has(diffKey) ? "收起差异" : "对比原稿"}</button></div>
+          {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={edits} needsCheck={needsCheck} />}
         </article>;
       }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={async () => {
         await onRetryArtifact(event.id, "readable_transcript");
         await load(true);
-      }} onRaw={() => setTab("raw")} />}
+      }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
     {tab === "raw" && <div className="artifact-panel raw-artifact">
@@ -4222,6 +4503,49 @@ function TranscriptArtifactsPanel({
       {visibleRawSegments.length ? visibleRawSegments.map((segment) => <article className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</button><strong>{segment.speaker || "说话人未标注"}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
   </section>;
+}
+
+const readableDiffRiskLabels: Record<ReadableDiffRisk, string> = {
+  amount_or_date: "金额、日期或数量",
+  negation: "否定语义",
+  responsibility: "责任人或决策人",
+};
+
+function ReadableTranscriptDiff({ state, edits, needsCheck }: {
+  state?: ReadableDiffViewState;
+  edits: Record<string, unknown>[];
+  needsCheck: boolean;
+}) {
+  const hasContextCorrection = edits.some((edit) => firstString(edit, ["kind"]) === "context_correction");
+  if (!state || state.status === "loading") {
+    return <div className="readable-diff loading" aria-live="polite"><span className="spinner" /><span>正在按这一段的原始映射生成完整对比…</span></div>;
+  }
+
+  if (state.status === "fallback") {
+    const fallbackMessage = state.reason === "mapping_incomplete"
+      ? "这一段的原始 Segment 映射不完整，不能安全生成完整对比。"
+      : state.reason === "too_long"
+        ? "这一段超过浏览器安全比较长度。"
+        : state.reason === "empty_source"
+          ? "这一段没有可用的映射原文。"
+          : "完整对比在时间或复杂度上达到安全上限。";
+    return <div className="readable-diff fallback">
+      <p><strong>已回退到 AI 的整理记录</strong><span>{fallbackMessage} 以下内容仅用于阅读，最终仍以原始逐字稿为准。</span></p>
+      {edits.length > 0 ? <div className="readable-edit-list">{edits.map((edit, editIndex) => <div key={editIndex}><del>{firstString(edit, ["original"]) || "（无）"}</del><span>→</span><ins>{firstString(edit, ["replacement"]) || "（删除）"}</ins><small>{firstString(edit, ["reason"])}</small></div>)}</div> : <small>AI 没有提供可回退的整理记录，请直接查看原始逐字稿。</small>}
+    </div>;
+  }
+
+  const hasChangedPart = state.parts.some((part) => part.added || part.removed);
+  return <div className="readable-diff ready">
+    <header><div><strong>原稿 → 易读稿</strong><span>按本段映射的原始 Segment 完整比较；这里只帮助阅读，不是正式 Evidence。</span></div>{state.risks.length > 0 && <div className="readable-diff-risks">{state.risks.map((risk) => <em key={risk}>{readableDiffRiskLabels[risk]}</em>)}</div>}</header>
+    {hasChangedPart ? <p className="readable-word-diff" aria-label="原始逐字稿与易读逐字稿的逐词差异">{state.parts.map((part, index) => {
+      const className = part.risks.length > 0 ? `sensitive ${part.risks.map((risk) => `risk-${risk}`).join(" ")}` : undefined;
+      if (part.added) return <ins className={className} key={index}>{part.value}</ins>;
+      if (part.removed) return <del className={className} key={index}>{part.value}</del>;
+      return <span key={index}>{part.value}</span>;
+    })}</p> : <p className="readable-diff-identical">这一段与映射原文一致，没有文字变化。</p>}
+    {(needsCheck || hasContextCorrection) && <p className="readable-diff-caution">AI 将这一段标为需要留意或涉及上下文修正，请优先对照原始逐字稿和录音。</p>}
+  </div>;
 }
 
 function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
@@ -4254,6 +4578,7 @@ function SimpleTestScreen({
   claims,
   busy,
   projectWorkflow,
+  readingTab,
   onUseProject,
   onUseEvent,
   onStartOwn,
@@ -4266,9 +4591,12 @@ function SimpleTestScreen({
   onResult,
   onOpenClaim,
   onRetryArtifact,
+  onFocusTranscriptArtifact,
+  onClearTranscriptArtifact,
   transcriptFocusRequest,
   onTranscriptFocusHandled,
   onRequirePublicWorkspaceAcknowledgement,
+  externalInteractionActive,
   onDeleteProject,
   onOpenTrash,
 }: SimpleTestScreenProps) {
@@ -4281,6 +4609,9 @@ function SimpleTestScreen({
   const [timingNow, setTimingNow] = useState(() => Date.now());
   const audioFileRef = useRef<HTMLInputElement>(null);
   const photoFileRef = useRef<HTMLInputElement>(null);
+  const interactionScope = useRef("");
+  const userNavigatedFromWaiting = useRef(false);
+  const autoFocusedSummaryKeys = useRef(new Set<string>());
   const sortedProjects = [...projects].sort((left, right) => {
     const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
     const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
@@ -4296,6 +4627,18 @@ function SimpleTestScreen({
   const analysisDone = Boolean(run && runComplete.has(run.status));
   const analysisFailed = Boolean(run && !analysisRunning && !analysisDone);
   const currentEventSummary = event ? eventWorkflowSummaries[event.id] : undefined;
+  const extractionStatus = currentEventSummary?.statusSummary.extractionStatus ?? run?.status ?? null;
+  const summaryStatus = currentEventSummary?.statusSummary.summaryStatus ?? null;
+  const readableTranscriptStatus = currentEventSummary?.statusSummary.readableTranscriptStatus ?? null;
+  const extractionRunId = currentEventSummary?.extraction?.run_id ?? run?.id ?? null;
+  const readingAid = preferredReadingAid({
+    summaryStatus,
+    readableTranscriptStatus,
+    extractionStatus,
+  });
+  const summaryFirstScopeKey = project?.id && event?.id && extractionRunId
+    ? summaryFirstNavigationKey(project.id, event.id, extractionRunId)
+    : null;
   const pendingCount = currentEventSummary
     ? currentEventSummary.statusSummary.pendingCount
     : event
@@ -4315,6 +4658,17 @@ function SimpleTestScreen({
       : undefined;
   const needsScenario = project?.scenarioStatus === "pending_confirmation"
     || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
+  const factsRunningInBackground = factsStillRunning(extractionStatus);
+  const factsCanBeReviewed = factsReadyForReview({
+    extractionStatus,
+    pendingCount,
+    needsScenarioConfirmation: needsScenario,
+  });
+  const readingAidLabel = readingAid === "summary"
+    ? "AI 摘要"
+    : readingAid === "readable"
+      ? "易读逐字稿"
+      : "原始逐字稿";
   const currentDisplayStatus = currentEventSummary
     ? workflowEventDisplayStatus(currentEventSummary)
     : deriveGuidedDisplayStatus({
@@ -4513,12 +4867,94 @@ function SimpleTestScreen({
     || projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed";
+  const materialInteractionActive = showImportChoices
+    || showRecorder
+    || showProjectMenu
+    || externalInteractionActive;
+
+  useEffect(() => {
+    const nextScope = summaryFirstScopeKey ?? `${project?.id ?? "none"}:${event?.id ?? "none"}:no-run`;
+    if (interactionScope.current === nextScope) return;
+    interactionScope.current = nextScope;
+    const storedMark = summaryFirstScopeKey
+      ? readSummaryFirstNavigationMark(summaryFirstScopeKey)
+      : null;
+    userNavigatedFromWaiting.current = storedMark === "user";
+    // An `auto` mark means this tab was already showing Summary before a
+    // refresh. Do not treat it as an in-memory focus in the new page instance:
+    // allowing the normal guarded effect to run once restores that reading
+    // surface. A later explicit tab choice overwrites the mark with `user` and
+    // remains protected from automatic navigation.
+  }, [event?.id, project?.id, summaryFirstScopeKey]);
+
+  useEffect(() => {
+    if (!event?.id || !summaryFirstScopeKey) return;
+    const alreadyFocused = autoFocusedSummaryKeys.current.has(summaryFirstScopeKey);
+    if (!shouldAutoFocusSummary({
+      summaryStatus,
+      extractionStatus,
+      activeWorkspaceTab: activeTab,
+      userNavigated: userNavigatedFromWaiting.current,
+      alreadyFocused,
+      materialInteractionActive,
+    })) return;
+    autoFocusedSummaryKeys.current.add(summaryFirstScopeKey);
+    storeSummaryFirstNavigationMark(summaryFirstScopeKey, "auto");
+    const timer = window.setTimeout(() => {
+      setActiveTab("transcript");
+      onFocusTranscriptArtifact(event.id, "summary");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeTab,
+    event?.id,
+    extractionStatus,
+    materialInteractionActive,
+    onFocusTranscriptArtifact,
+    summaryFirstScopeKey,
+    summaryStatus,
+  ]);
 
   useEffect(() => {
     if (!transcriptFocusRequest || transcriptFocusRequest.eventId !== event?.id) return;
     const timer = window.setTimeout(() => setActiveTab("transcript"), 0);
     return () => window.clearTimeout(timer);
   }, [event?.id, transcriptFocusRequest]);
+
+  function markUserNavigation() {
+    userNavigatedFromWaiting.current = true;
+    if (summaryFirstScopeKey) storeSummaryFirstNavigationMark(summaryFirstScopeKey, "user");
+  }
+
+  function selectWorkspaceTab(next: "materials" | "transcript" | "review" | "results") {
+    markUserNavigation();
+    setActiveTab(next);
+    if (next === "transcript" && event) {
+      onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
+    } else if (next !== "transcript") {
+      onClearTranscriptArtifact();
+    }
+  }
+
+  function selectEvent(nextEventId: string) {
+    interactionScope.current = "";
+    userNavigatedFromWaiting.current = false;
+    setActiveTab("materials");
+    onUseEvent(nextEventId);
+  }
+
+  function openReadingAid(target: ReadingAidTarget) {
+    if (!event) return;
+    markUserNavigation();
+    setActiveTab("transcript");
+    onFocusTranscriptArtifact(event.id, target);
+  }
+
+  function afterProjectMenuCloses(action: () => void) {
+    // Let Radix restore focus to the menu trigger before an action opens a
+    // Dialog. The Dialog can then restore focus to that same trigger on close.
+    window.requestAnimationFrame(action);
+  }
 
   function chooseSupportingFile(change: ChangeEvent<HTMLInputElement>) {
     const file = change.target.files?.[0];
@@ -4558,20 +4994,32 @@ function SimpleTestScreen({
         {events.length > 0 && <>
           <label className="simple-event-select">
             <span>当前沟通</span>
-            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => { setActiveTab("materials"); onUseEvent(change.target.value); }}>
+            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => selectEvent(change.target.value)}>
               {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           </label>
           <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button>
         </>}
-        <div className="project-menu-wrap">
-          <button className="button secondary project-menu-trigger" disabled={Boolean(busy)} onClick={() => setShowProjectMenu((open) => !open)} aria-expanded={showProjectMenu}>项目菜单 ···</button>
-          {showProjectMenu && <div className="project-menu" role="menu">
-            <button role="menuitem" onClick={() => { setShowProjectMenu(false); onStartOwn(); }}>新建买方客户项目</button>
-            <button role="menuitem" onClick={() => { setShowProjectMenu(false); onOpenTrash(); }}>回收站</button>
-            <button role="menuitem" className="danger" disabled={!project} onClick={() => { setShowProjectMenu(false); onDeleteProject(); }}>移到回收站</button>
-          </div>}
-        </div>
+        <DropdownMenu.Root open={showProjectMenu} onOpenChange={setShowProjectMenu}>
+          <div className="project-menu-wrap">
+            <DropdownMenu.Trigger asChild>
+              <button className="button secondary project-menu-trigger" disabled={Boolean(busy)}>项目菜单 ···</button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content className="project-menu" align="end" sideOffset={7} collisionPadding={12}>
+                <DropdownMenu.Item asChild>
+                  <button onClick={() => afterProjectMenuCloses(onStartOwn)}>新建买方客户项目</button>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item asChild>
+                  <button onClick={() => afterProjectMenuCloses(onOpenTrash)}>回收站</button>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item asChild disabled={!project}>
+                  <button className="danger" disabled={!project} onClick={() => afterProjectMenuCloses(onDeleteProject)}>移到回收站</button>
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </div>
+        </DropdownMenu.Root>
       </section>
 
       {needsScenario && (
@@ -4604,7 +5052,7 @@ function SimpleTestScreen({
               const materialCount = itemSummary?.statusSummary.materialCount;
               const itemPending = itemSummary?.statusSummary.pendingCount ?? 0;
               return (
-                <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => { setActiveTab("materials"); onUseEvent(item.id); }}>
+                <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => selectEvent(item.id)}>
                   <span className="meeting-index">{index + 1}</span>
                   <span><strong>{item.title}</strong><small>{formatDate(item.occurredAt || item.createdAt)} · {materialCount == null ? "读取材料状态" : `${materialCount} 份材料`}</small></span>
                   {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <span className={`guided-status ${itemDisplayStatus.tone}`}>{itemDisplayStatus.label}</span>}
@@ -4622,11 +5070,32 @@ function SimpleTestScreen({
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
-            <button className={activeTab === "materials" ? "active" : ""} onClick={() => setActiveTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
-            <button className={activeTab === "transcript" ? "active" : ""} onClick={() => setActiveTab("transcript")}>Transcript {transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
-            <button className={activeTab === "review" ? "active" : ""} onClick={() => setActiveTab("review")}>待核对 {pendingCount > 0 && <span>{pendingCount}</span>}</button>
-            <button className={activeTab === "results" ? "active" : ""} onClick={() => setActiveTab("results")}>结果</button>
+            <button className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
+            <button className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}>Transcript {transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
+            <button className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待核对 {pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            <button className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}>结果</button>
           </nav>
+
+          {factsRunningInBackground && readingAid && <aside className="workflow-reading-banner" aria-live="polite">
+            <span className="workflow-reading-icon">✓</span>
+            <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 原文定位不代表语义已经核对。" : " 原始逐字稿仍是最终核对依据。"}</p></div>
+            {activeTab !== "transcript" && <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : readingAid === "readable" ? "先看易读稿" : "查看原始逐字稿"}</button>}
+          </aside>}
+
+          {!factsRunningInBackground && factsCanBeReviewed && <aside className="workflow-reading-banner ready" aria-live="polite">
+            <span className="workflow-reading-icon">✓</span>
+            <div><strong>事实识别已经完成</strong><p>你可以继续阅读当前摘要，重要内容已经可以核对；系统不会把你从这里跳走。</p></div>
+            <span className="workflow-reading-actions">
+              {readingAid === "raw" && activeTab !== "transcript" && <button className="text-button" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>}
+              <button className="button secondary" onClick={() => { markUserNavigation(); onReview(); }}>核对重要内容</button>
+            </span>
+          </aside>}
+
+          {!factsRunningInBackground && !factsCanBeReviewed && readingAid === "raw" && activeTab !== "transcript" && <aside className="workflow-reading-banner legacy" aria-live="polite">
+            <span className="workflow-reading-icon">T</span>
+            <div><strong>这个旧记录没有 AI 阅读版本</strong><p>原始逐字稿仍然完整保留，可以直接阅读和核对。</p></div>
+            <button className="button secondary" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>
+          </aside>}
 
           {activeTab === "materials" && <div className="meeting-tab-panel">
             {project && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
@@ -4678,6 +5147,10 @@ function SimpleTestScreen({
                 busy={busy}
                 onOpenClaim={onOpenClaim}
                 onRetryArtifact={onRetryArtifact}
+                onSelectTab={(tab) => {
+                  markUserNavigation();
+                  onFocusTranscriptArtifact(event.id, tab);
+                }}
                 focusRequest={transcriptFocusRequest}
                 onFocusHandled={onTranscriptFocusHandled}
               />
@@ -5394,7 +5867,7 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
       <div className="claim-layout">
         {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续审核队列"><header><span className="section-kicker">连续审核</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>Claim 处理完后，还有 {pendingOccurrenceCount} 条“再次出现”记录需要决定。</p>}</aside>}
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>{readonly ? "下面保留这条已确认记录的原句、前后文和来源。" : "确认前，请检查原文是否真的支持这条陈述。"}</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
-        <aside className="panel verdict-panel"><h2>{readonly ? "已确认记录" : edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读证据模式</strong><p>你从已确认结果进入了这条记录。这里仅用于查看原文，不会显示待审核队列或修改操作。</p></div>}{!readonly && (pending || (verified && edit)) && <>
+        <aside className="panel verdict-panel"><h2>{readonly ? (verified ? "已确认记录" : "未采纳记录") : edit && verified ? "修改已确认记录" : pending ? "你的决定" : verified ? "已确认记录" : "处理记录"}</h2><UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读证据模式</strong><p>这条记录已经完成核对。这里仅用于查看原文，不会显示待审核队列或修改操作。</p></div>}{!readonly && (pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
             <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
             <label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>

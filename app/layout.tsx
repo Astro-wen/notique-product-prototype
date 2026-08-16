@@ -1,15 +1,13 @@
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
 import "./globals.css";
-
-const geist = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+import { NotiqueQueryProvider } from "./query-provider";
 
 export const metadata: Metadata = {
   title: "Notique AI · Evidence-backed project records",
   description: "Turn transcripts and supporting materials into reviewable, evidence-linked project records.",
+  icons: {
+    icon: "/favicon.svg",
+  },
   openGraph: {
     title: "Notique AI · Evidence-backed project records",
     description: "Review every important record against its original evidence before it becomes part of a project.",
@@ -28,7 +26,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className={geist.variable}>{children}</body>
+      <body>
+        <NotiqueQueryProvider>{children}</NotiqueQueryProvider>
+      </body>
     </html>
   );
 }

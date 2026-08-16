@@ -21,6 +21,10 @@ import {
   summarizeArm,
   validateComparableArms,
 } from "./lib/realtor-draft-context-ab.mjs";
+import {
+  createGitSourceFreezeGuard,
+  runSourceFrozenAb,
+} from "./lib/git-source-freeze.mjs";
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, "..");
@@ -130,11 +134,15 @@ async function spawnCapture(command, args, { env = process.env, cwd = REPOSITORY
   const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.pipe(log);
   child.stderr.pipe(log);
-  const exitCode = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-  await new Promise((resolve) => log.end(resolve));
+  let exitCode;
+  try {
+    exitCode = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+  } finally {
+    await new Promise((resolve) => log.end(resolve));
+  }
   if (exitCode.code !== 0) {
     throw new Error(`${path.basename(command)} exited with ${exitCode.code ?? exitCode.signal}; see ${logPath}.`);
   }
@@ -183,15 +191,17 @@ async function startServer({ baseUrl, port, statePath, draftContextEnabled, logP
   child.once("exit", (code, signal) => {
     exit = { code, signal };
   });
+  const server = { child, log };
   const started = Date.now();
   while (Date.now() - started < 120_000) {
     if (exit) {
+      await stopServer(server);
       throw new Error(`Local server stopped before readiness (${exit.code ?? exit.signal}); see ${logPath}.`);
     }
-    if (await endpointAvailable(baseUrl)) return { child, log };
+    if (await endpointAvailable(baseUrl)) return server;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  child.kill("SIGTERM");
+  await stopServer(server);
   throw new Error(`Local server was not ready within 120 seconds; see ${logPath}.`);
 }
 
@@ -459,6 +469,13 @@ async function gitValue(args) {
   });
 }
 
+async function readGitSourceState() {
+  const headBefore = await gitValue(["rev-parse", "HEAD"]);
+  const status = await gitValue(["status", "--porcelain", "--untracked-files=all"]);
+  const headAfter = await gitValue(["rev-parse", "HEAD"]);
+  return { headBefore, status, headAfter };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -479,11 +496,8 @@ async function main() {
     return;
   }
 
-  const worktreeChanges = await gitValue(["status", "--porcelain", "--untracked-files=all"]);
-  if (worktreeChanges) {
-    throw new Error("A/B requires a completely clean worktree so both paid arms use one exact release commit.");
-  }
-  const commitSha = await gitValue(["rev-parse", "HEAD"]);
+  const sourceGuard = createGitSourceFreezeGuard({ readState: readGitSourceState });
+  const commitSha = await sourceGuard.freeze("startup");
   const [fixtureBytes, groundTruthBytes, actionGroundTruthBytes] = await Promise.all([
     readFile(FIXTURE.manifestPath),
     readFile(GROUND_TRUTH_PATH),
@@ -496,72 +510,71 @@ async function main() {
   await mkdir(options.outputPath, { recursive: false });
   const baseUrl = localServerConfiguration(options.port).baseUrl;
 
-  const control = await collectArm({
-    arm: "control",
-    enabled: false,
-    armDirectory: path.join(options.outputPath, "control"),
-    baseUrl,
-    port: options.port,
-    fixtureManifest,
-    fixtureBytes,
-    groundTruthBytes,
-    actionGroundTruthBytes,
-    commitSha,
-    options,
+  const manifest = await runSourceFrozenAb({
+    sourceGuard,
+    runArm: (arm) => collectArm({
+      arm,
+      enabled: arm === "treatment",
+      armDirectory: path.join(options.outputPath, arm),
+      baseUrl,
+      port: options.port,
+      fixtureManifest,
+      fixtureBytes,
+      groundTruthBytes,
+      actionGroundTruthBytes,
+      commitSha,
+      options,
+    }),
+    prepareFinal: async ({ control, treatment }) => {
+      const comparable = validateComparableArms(control, treatment);
+      const controlAdjudication = buildAdjudicationTemplate(control, groundTruth, actionGroundTruth);
+      const treatmentAdjudication = buildAdjudicationTemplate(treatment, groundTruth, actionGroundTruth);
+      await Promise.all([
+        writeJson(path.join(options.outputPath, "control-adjudication.json"), controlAdjudication),
+        writeJson(path.join(options.outputPath, "treatment-adjudication.json"), treatmentAdjudication),
+      ]);
+      return {
+        schemaVersion: REALTOR_AB_SCHEMA_VERSION,
+        generatedAt: new Date().toISOString(),
+        commitSha,
+        fixture: {
+          id: fixtureManifest.id,
+          path: path.relative(REPOSITORY_ROOT, FIXTURE.manifestPath),
+          sha256: sha256(fixtureBytes),
+          groundTruthPath: path.relative(REPOSITORY_ROOT, GROUND_TRUTH_PATH),
+          groundTruthSha256: sha256(groundTruthBytes),
+          actionGroundTruthPath: path.relative(REPOSITORY_ROOT, ACTION_GROUND_TRUTH_PATH),
+          actionGroundTruthSha256: sha256(actionGroundTruthBytes),
+        },
+        contract: REALTOR_AB_CONTRACT,
+        comparable,
+        arms: {
+          control: { path: "control/arm.json", summary: summarizeArm(control) },
+          treatment: { path: "treatment/arm.json", summary: summarizeArm(treatment) },
+        },
+        adjudication: {
+          control: "control-adjudication.json",
+          treatment: "treatment-adjudication.json",
+          scoreCommand:
+            `node scripts/score-realtor-draft-context-ab.mjs --run-dir=${options.outputPath}`,
+        },
+        paidCalls: {
+          expectedFactCalls: 16,
+          expectedArtifactCalls: 16,
+          expectedTotalCalls: 32,
+          explanation: "2 arms × 4 Events × (2 fact stages + Summary + Readable Transcript); escalation can add calls.",
+        },
+      };
+    },
+    writeFinal: async ({ prepared }) => {
+      const finalManifest = {
+        ...prepared,
+        sourceFreeze: sourceGuard.snapshot(),
+      };
+      await writeJson(path.join(options.outputPath, "manifest.json"), finalManifest);
+      return finalManifest;
+    },
   });
-  const treatment = await collectArm({
-    arm: "treatment",
-    enabled: true,
-    armDirectory: path.join(options.outputPath, "treatment"),
-    baseUrl,
-    port: options.port,
-    fixtureManifest,
-    fixtureBytes,
-    groundTruthBytes,
-    actionGroundTruthBytes,
-    commitSha,
-    options,
-  });
-  const comparable = validateComparableArms(control, treatment);
-  const controlAdjudication = buildAdjudicationTemplate(control, groundTruth, actionGroundTruth);
-  const treatmentAdjudication = buildAdjudicationTemplate(treatment, groundTruth, actionGroundTruth);
-  await Promise.all([
-    writeJson(path.join(options.outputPath, "control-adjudication.json"), controlAdjudication),
-    writeJson(path.join(options.outputPath, "treatment-adjudication.json"), treatmentAdjudication),
-  ]);
-  const manifest = {
-    schemaVersion: REALTOR_AB_SCHEMA_VERSION,
-    generatedAt: new Date().toISOString(),
-    commitSha,
-    fixture: {
-      id: fixtureManifest.id,
-      path: path.relative(REPOSITORY_ROOT, FIXTURE.manifestPath),
-      sha256: sha256(fixtureBytes),
-      groundTruthPath: path.relative(REPOSITORY_ROOT, GROUND_TRUTH_PATH),
-      groundTruthSha256: sha256(groundTruthBytes),
-      actionGroundTruthPath: path.relative(REPOSITORY_ROOT, ACTION_GROUND_TRUTH_PATH),
-      actionGroundTruthSha256: sha256(actionGroundTruthBytes),
-    },
-    contract: REALTOR_AB_CONTRACT,
-    comparable,
-    arms: {
-      control: { path: "control/arm.json", summary: summarizeArm(control) },
-      treatment: { path: "treatment/arm.json", summary: summarizeArm(treatment) },
-    },
-    adjudication: {
-      control: "control-adjudication.json",
-      treatment: "treatment-adjudication.json",
-      scoreCommand:
-        `node scripts/score-realtor-draft-context-ab.mjs --run-dir=${options.outputPath}`,
-    },
-    paidCalls: {
-      expectedFactCalls: 16,
-      expectedArtifactCalls: 16,
-      expectedTotalCalls: 32,
-      explanation: "2 arms × 4 Events × (2 fact stages + Summary + Readable Transcript); escalation can add calls.",
-    },
-  };
-  await writeJson(path.join(options.outputPath, "manifest.json"), manifest);
   process.stdout.write([
     "Realtor Draft Context A/B completed without confirming Claims or Relations.",
     `Output: ${options.outputPath}`,

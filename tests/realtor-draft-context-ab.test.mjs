@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import {
   REALTOR_AB_ADJUDICATION_SCHEMA_VERSION,
@@ -15,7 +20,14 @@ import {
   parseArgs as parseRunArgs,
   realtorAbFixtureImportOptions,
 } from "../scripts/run-realtor-draft-context-ab.mjs";
+import {
+  createGitSourceFreezeGuard,
+  runSourceFrozenAb,
+  validateCleanGitSourceState,
+} from "../scripts/lib/git-source-freeze.mjs";
 import { parseArgs as parseScoreArgs } from "../scripts/score-realtor-draft-context-ab.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const truth = {
   schemaVersion: "notique-ground-truth.v1",
@@ -94,8 +106,8 @@ function arm(name, tokenScale = 1) {
       { stage: "verify", attempt: 1, status: "succeeded", reasoning_effort: "high", prompt_version: "claim-extraction-prompt.v9:verify", schema_version: "claim-verification.v4", input_tokens: 40, output_tokens: 10, duration_ms: 500 },
     ],
     artifactRuns: [
-      { kind: "summary", status: "succeeded", reasoning_effort: "high", prompt_version: "event-summary-prompt.v1", schema_version: "event-summary.v1" },
-      { kind: "readable_transcript", status: "succeeded", reasoning_effort: "high", prompt_version: "readable-transcript-prompt.v1", schema_version: "readable-transcript.v1" },
+      { kind: "summary", status: "succeeded", reasoning_effort: "high", prompt_version: "event-summary-prompt.v2", schema_version: "event-summary.v2" },
+      { kind: "readable_transcript", status: "succeeded", reasoning_effort: "high", prompt_version: "readable-transcript-prompt.v2", schema_version: "readable-transcript.v1" },
     ],
   }));
   return {
@@ -226,12 +238,185 @@ test("A/B reports that the buyer Scenario is fixed at project creation", async (
   assert.doesNotMatch(source, /Scenario was explicitly accepted only to unblock/);
 });
 
-test("paid A/B refuses tracked and untracked source drift", async () => {
-  const source = await readFile(
-    new URL("../scripts/run-realtor-draft-context-ab.mjs", import.meta.url),
-    "utf8",
+test("source freeze validation rejects tracked, untracked, and HEAD drift", () => {
+  const clean = { headBefore: "commit-a", headAfter: "commit-a", status: "" };
+  assert.equal(
+    validateCleanGitSourceState(clean, { checkpoint: "startup" }),
+    "commit-a",
   );
-  assert.match(source, /gitValue\(\["status", "--porcelain", "--untracked-files=all"\]\)/);
-  assert.doesNotMatch(source, /--untracked-files=no/);
-  assert.match(source, /requires a completely clean worktree/);
+  assert.throws(
+    () => validateCleanGitSourceState(
+      { ...clean, status: " M tracked.ts\n?? untracked.ts" },
+      { checkpoint: "control:end-after-stop", frozenCommitSha: "commit-a" },
+    ),
+    /tracked or untracked files changed/,
+  );
+  assert.throws(
+    () => validateCleanGitSourceState(
+      { headBefore: "commit-b", headAfter: "commit-b", status: "" },
+      { checkpoint: "control-to-treatment", frozenCommitSha: "commit-a" },
+    ),
+    /expected frozen commit commit-a/,
+  );
+  assert.throws(
+    () => validateCleanGitSourceState(
+      { headBefore: "commit-a", headAfter: "commit-b", status: "" },
+      { checkpoint: "startup" },
+    ),
+    /HEAD changed while the source check was running/,
+  );
+});
+
+test("A/B stops after Control source changes and never writes a comparable manifest", async () => {
+  let state = { headBefore: "commit-a", headAfter: "commit-a", status: "" };
+  const checkpoints = [];
+  let treatmentStarted = false;
+  let finalManifestWritten = false;
+  let controlServerStopped = false;
+  const sourceGuard = createGitSourceFreezeGuard({
+    readState: async () => {
+      checkpoints.push({ ...state, controlServerStopped });
+      return state;
+    },
+    now: () => "2026-08-15T00:00:00.000Z",
+  });
+  assert.equal(await sourceGuard.freeze("startup"), "commit-a");
+
+  await assert.rejects(
+    runSourceFrozenAb({
+      sourceGuard,
+      runArm: async (armName) => {
+        if (armName === "control") {
+          // This represents collectArm resolving only after its finally block
+          // has stopped the local server and child process.
+          controlServerStopped = true;
+          state = { ...state, status: " M lib/changed-after-control.ts" };
+          return { arm: armName };
+        }
+        treatmentStarted = true;
+        return { arm: armName };
+      },
+      prepareFinal: async () => ({ comparable: true }),
+      writeFinal: async () => {
+        finalManifestWritten = true;
+      },
+    }),
+    /control:end-after-stop.*tracked or untracked files changed/s,
+  );
+
+  assert.equal(controlServerStopped, true);
+  assert.equal(treatmentStarted, false);
+  assert.equal(finalManifestWritten, false);
+  assert.equal(checkpoints.at(-1).controlServerStopped, true);
+});
+
+test("A/B stops after Control HEAD changes and never writes a comparable manifest", async () => {
+  let state = { headBefore: "commit-a", headAfter: "commit-a", status: "" };
+  let treatmentStarted = false;
+  let finalManifestWritten = false;
+  const sourceGuard = createGitSourceFreezeGuard({ readState: async () => state });
+  await sourceGuard.freeze("startup");
+
+  await assert.rejects(
+    runSourceFrozenAb({
+      sourceGuard,
+      runArm: async (armName) => {
+        if (armName === "control") {
+          state = { headBefore: "commit-b", headAfter: "commit-b", status: "" };
+          return { arm: armName };
+        }
+        treatmentStarted = true;
+        return { arm: armName };
+      },
+      prepareFinal: async () => ({ comparable: true }),
+      writeFinal: async () => {
+        finalManifestWritten = true;
+      },
+    }),
+    /control:end-after-stop.*expected frozen commit commit-a/s,
+  );
+
+  assert.equal(treatmentStarted, false);
+  assert.equal(finalManifestWritten, false);
+});
+
+test("A/B source checkpoints cover both stopped arms, the transition, and final manifest", async () => {
+  const sourceGuard = createGitSourceFreezeGuard({
+    readState: async () => ({ headBefore: "commit-a", headAfter: "commit-a", status: "" }),
+    now: () => "2026-08-15T00:00:00.000Z",
+  });
+  await sourceGuard.freeze("startup");
+  const armOrder = [];
+  let finalManifestWritten = false;
+  await runSourceFrozenAb({
+    sourceGuard,
+    runArm: async (armName) => {
+      armOrder.push(armName);
+      return { arm: armName };
+    },
+    prepareFinal: async () => ({ comparable: true }),
+    writeFinal: async () => {
+      finalManifestWritten = true;
+    },
+  });
+  assert.deepEqual(armOrder, ["control", "treatment"]);
+  assert.equal(finalManifestWritten, true);
+  assert.deepEqual(
+    sourceGuard.snapshot().checkpoints.map(({ checkpoint }) => checkpoint),
+    [
+      "startup",
+      "control:start",
+      "control:end-after-stop",
+      "control-to-treatment",
+      "treatment:start",
+      "treatment:end-after-stop",
+      "final-manifest:before-write",
+    ],
+  );
+});
+
+test("A/B refuses final manifest when source changes during comparison preparation", async () => {
+  let state = { headBefore: "commit-a", headAfter: "commit-a", status: "" };
+  let finalManifestWritten = false;
+  const sourceGuard = createGitSourceFreezeGuard({ readState: async () => state });
+  await sourceGuard.freeze("startup");
+
+  await assert.rejects(
+    runSourceFrozenAb({
+      sourceGuard,
+      runArm: async (armName) => ({ arm: armName }),
+      prepareFinal: async () => {
+        state = { ...state, status: "?? source-added-before-manifest.ts" };
+        return { comparable: true };
+      },
+      writeFinal: async () => {
+        finalManifestWritten = true;
+      },
+    }),
+    /final-manifest:before-write.*tracked or untracked files changed/s,
+  );
+  assert.equal(finalManifestWritten, false);
+});
+
+test("default A/B outputs stay ignored and dry-run creates no output or model work", async () => {
+  const gitignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
+  assert.match(gitignore, /^\/outputs\/$/m);
+
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "notique-realtor-ab-dry-"));
+  const outputPath = path.join(temporaryDirectory, "must-not-exist");
+  const scriptPath = fileURLToPath(
+    new URL("../scripts/run-realtor-draft-context-ab.mjs", import.meta.url),
+  );
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [scriptPath, `--output=${outputPath}`],
+      { cwd: path.dirname(scriptPath) },
+    );
+    assert.match(stdout, /DRY PLAN — no model was called/);
+    assert.equal(stderr, "");
+    await assert.rejects(access(outputPath), (error) => error?.code === "ENOENT");
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });

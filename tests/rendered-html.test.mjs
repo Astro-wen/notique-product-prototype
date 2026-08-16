@@ -40,7 +40,9 @@ test("client shell starts empty and delegates all durable data to the API", asyn
   assert.match(page, /api\.getView\(/);
   assert.doesNotMatch(page, /const\s+claimSets\s*[:=]/i);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);
-  assert.equal((page.match(/window\.sessionStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 2);
+  assert.equal((page.match(/window\.sessionStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 4);
+  assert.match(page, /notique\.ui\.summary-first:/);
+  assert.doesNotMatch(page, /sessionStorage\.(?:setItem|removeItem)\([^\n]+JSON\.stringify/);
   assert.match(page, /notique\.ui\.recent-project-id/);
   assert.match(page, /notique\.ui\.recent-event-id/);
   assert.match(page, /notique\.ui\.workflow-intent-project-id/);

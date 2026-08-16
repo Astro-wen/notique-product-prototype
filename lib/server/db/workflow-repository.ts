@@ -67,7 +67,11 @@ export async function getWorkflowSnapshot(
                 SUM(CASE WHEN processing_status = 'ready' THEN 1 ELSE 0 END) AS material_ready,
                 SUM(CASE WHEN processing_status IN ('uploading', 'parsing') THEN 1 ELSE 0 END) AS material_processing,
                 SUM(CASE WHEN processing_status = 'failed' THEN 1 ELSE 0 END) AS material_failed
-           FROM assets WHERE workspace_id = ? GROUP BY event_id
+           FROM assets
+          WHERE workspace_id = ?
+            AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+            AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+          GROUP BY event_id
        )
        SELECT e.*,
               COALESCE(mc.material_total, 0) AS material_total,

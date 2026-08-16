@@ -7,6 +7,11 @@ type MutationRecord = {
   idempotencyKey: string | null;
 };
 
+type ReadRecord = {
+  method: "GET";
+  path: string;
+};
+
 type FixtureAction = {
   claim_id: string;
   claim_version_id: string;
@@ -151,6 +156,21 @@ function processingExtractionRun(id: string, projectId: string, eventId: string)
   };
 }
 
+function freshProcessingExtractionRun(id: string, projectId: string, eventId: string) {
+  const timestamp = new Date().toISOString();
+  return {
+    ...processingExtractionRun(id, projectId, eventId),
+    created_at: timestamp,
+    queued_at: timestamp,
+    first_queued_at: timestamp,
+    current_queued_at: timestamp,
+    started_at: timestamp,
+    first_started_at: timestamp,
+    current_started_at: timestamp,
+    updated_at: timestamp,
+  };
+}
+
 function evidenceRef(id: string, segmentId: string, eventId = "event-a") {
   return {
     id,
@@ -250,6 +270,12 @@ function summaryArtifact(projectId: string, eventId: string) {
     // B state, the B summary incorrectly gains a review CTA and the race test fails.
     source_segment_ids: ["seg-summary-target"],
   };
+  const verifiedItem = {
+    item_key: "summary-verified-action",
+    text: "经纪人周五前发送三套房源",
+    support_quote: "周五前发送三套房源。",
+    source_segment_ids: ["seg-timeline"],
+  };
   return {
     id: `artifact-summary-${eventId}`,
     project_id: projectId,
@@ -262,7 +288,7 @@ function summaryArtifact(projectId: string, eventId: string) {
       sections: [{
         kind: "meeting_summary",
         title: isProjectA ? "A 项目会议重点" : "B 项目会议重点",
-        items: [...fillerItems, targetItem],
+        items: [...fillerItems, ...(isProjectA ? [verifiedItem] : []), targetItem],
       }],
     },
     derived_asset_id: null,
@@ -415,10 +441,15 @@ function gate(): Gate {
 export class NotiqueApiFixture {
   readonly writes: MutationRecord[] = [];
   readonly blockedWrites: MutationRecord[] = [];
+  readonly reads: ReadRecord[] = [];
+  readonly completedReads: ReadRecord[] = [];
+  readonly failedReads: ReadRecord[] = [];
   readonly returnedActionClaimIds: string[][] = [];
   holdProjectAClaims = false;
   holdProjectASnapshot = false;
   simulateProjectARunCompletionRefresh = false;
+  summaryFirstMode = false;
+  summarySharedClaims = false;
 
   private readonly claimsGate = gate();
   private readonly snapshotGate = gate();
@@ -426,6 +457,10 @@ export class NotiqueApiFixture {
   private readonly completionEventGate = gate();
   private projectARunReads = 0;
   private projectACompletionRefreshArmed = false;
+  private summaryFirstExtractionStatus: "processing" | "succeeded" = "processing";
+  private summaryFirstSummaryStatus: "processing" | "succeeded" | "failed" | null = "processing";
+  private summaryFirstReadableStatus: "processing" | "succeeded" | "failed" | null = "processing";
+  private staleSummaryArtifactDuringNewRun = false;
   private readonly allowedMutations = new Set<string>();
   private activeProjectIds = new Set(["project-a", "project-b"]);
   private trashProjectIds = new Set(["project-trash"]);
@@ -473,6 +508,56 @@ export class NotiqueApiFixture {
 
   allowMutation(method: string, path: string) {
     this.allowedMutations.add(`${method.toUpperCase()} ${path}`);
+  }
+
+  readCount(path: string) {
+    return this.reads.filter((read) => read.path === path).length;
+  }
+
+  completedReadCount(path: string) {
+    return this.completedReads.filter((read) => read.path === path).length;
+  }
+
+  failedReadCount(path: string) {
+    return this.failedReads.filter((read) => read.path === path).length;
+  }
+
+  enableSummaryFirstFlow(options: {
+    summaryStatus?: "processing" | "succeeded" | "failed";
+    readableStatus?: "processing" | "succeeded" | "failed";
+  } = {}) {
+    this.summaryFirstMode = true;
+    this.summaryFirstExtractionStatus = "processing";
+    this.summaryFirstSummaryStatus = options.summaryStatus ?? "processing";
+    this.summaryFirstReadableStatus = options.readableStatus ?? "processing";
+  }
+
+  completeSummary() {
+    this.summaryFirstSummaryStatus = "succeeded";
+  }
+
+  completeReadableTranscript() {
+    this.summaryFirstReadableStatus = "succeeded";
+  }
+
+  completeFacts() {
+    this.summaryFirstExtractionStatus = "succeeded";
+  }
+
+  enableSharedSummaryClaims() {
+    this.summarySharedClaims = true;
+  }
+
+  enableNewSummaryRunWithStaleArtifact() {
+    this.enableSummaryFirstFlow({ summaryStatus: "processing", readableStatus: "failed" });
+    this.staleSummaryArtifactDuringNewRun = true;
+  }
+
+  enableLegacyRawFlow() {
+    this.summaryFirstMode = true;
+    this.summaryFirstExtractionStatus = "succeeded";
+    this.summaryFirstSummaryStatus = null;
+    this.summaryFirstReadableStatus = null;
   }
 
   waitForProjectAClaimsRequest() {
@@ -538,16 +623,30 @@ export class NotiqueApiFixture {
     const project = this.project(projectId)!;
     const events = this.eventsForProject(projectId);
     const isA = projectId === "project-a";
-    const artifactSummary = events[0]
-      ? artifactRun(`artifact-run-summary-${events[0].id}`, projectId, events[0].id, "summary")
+    const summaryStatus = isA && this.summaryFirstMode
+      ? this.summaryFirstSummaryStatus
+      : "succeeded";
+    const readableStatus = isA && this.summaryFirstMode
+      ? this.summaryFirstReadableStatus
+      : "succeeded";
+    const extractionStatus = isA && this.summaryFirstMode
+      ? this.summaryFirstExtractionStatus
+      : isA ? "succeeded" : null;
+    const extractionIsRunning = extractionStatus === "processing";
+    const snapshotTimestamp = new Date().toISOString();
+    const summaryRunId = events[0] && this.staleSummaryArtifactDuringNewRun
+      ? `artifact-run-summary-new-${events[0].id}`
+      : events[0] ? `artifact-run-summary-${events[0].id}` : null;
+    const artifactSummary = events[0] && summaryStatus && summaryRunId
+      ? { ...artifactRun(summaryRunId, projectId, events[0].id, "summary"), status: summaryStatus }
       : null;
-    const artifactReadable = events[0]
-      ? artifactRun(`artifact-run-readable-${events[0].id}`, projectId, events[0].id, "readable_transcript")
+    const artifactReadable = events[0] && readableStatus
+      ? { ...artifactRun(`artifact-run-readable-${events[0].id}`, projectId, events[0].id, "readable_transcript"), status: readableStatus }
       : null;
     return {
       project,
       workflow: {
-        phase: events.length ? (isA ? "draft_ready" : "complete") : "empty",
+        phase: events.length ? (isA ? extractionIsRunning ? "running" : "draft_ready" : "complete") : "empty",
         total: events.length,
         completed: isA ? 0 : events.length,
         trust_state: isA ? "draft_ready" : "trusted",
@@ -568,37 +667,37 @@ export class NotiqueApiFixture {
         occurred_at: event.occurred_at,
         sequence_no: event.sequence_no,
         material_status: "ready",
-        display_status: isA ? "waiting_review" : "complete",
+        display_status: isA ? extractionIsRunning ? "inventory" : "waiting_review" : "complete",
         status_summary: {
           material_count: 1,
           material_ready_count: 1,
           material_processing_count: 0,
           material_failed_count: 0,
           transcription_status: null,
-          extraction_status: isA ? "succeeded" : null,
+          extraction_status: extractionStatus,
           pending_count: isA ? 1 : 0,
           candidate_count: isA ? 2 : 0,
-          summary_status: "succeeded",
-          readable_transcript_status: "succeeded",
+          summary_status: summaryStatus,
+          readable_transcript_status: readableStatus,
         },
         materials: { total: 1, ready: 1, processing: 0, failed: 0 },
         transcription: null,
         extraction: isA ? {
           run_id: "run-a",
-          status: "succeeded",
-          stage: "verify",
+          status: extractionStatus,
+          stage: extractionIsRunning ? "inventory" : "verify",
           error_code: null,
           processing_attempt_no: 1,
           dispatch_attempt_no: 1,
-          created_at: "2026-08-15T11:01:00.000Z",
-          queued_at: "2026-08-15T11:01:00.000Z",
-          first_queued_at: "2026-08-15T11:01:00.000Z",
-          current_queued_at: "2026-08-15T11:01:00.000Z",
-          started_at: "2026-08-15T11:01:02.000Z",
-          first_started_at: "2026-08-15T11:01:02.000Z",
-          current_started_at: "2026-08-15T11:01:02.000Z",
-          finished_at: "2026-08-15T11:01:45.000Z",
-          updated_at: "2026-08-15T11:01:45.000Z",
+          created_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:00.000Z",
+          queued_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:00.000Z",
+          first_queued_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:00.000Z",
+          current_queued_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:00.000Z",
+          started_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:02.000Z",
+          first_started_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:02.000Z",
+          current_started_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:02.000Z",
+          finished_at: extractionIsRunning ? null : "2026-08-15T11:01:45.000Z",
+          updated_at: extractionIsRunning ? snapshotTimestamp : "2026-08-15T11:01:45.000Z",
         } : null,
         ai_artifacts: {
           summary: artifactSummary,
@@ -678,6 +777,11 @@ export class NotiqueApiFixture {
       return;
     }
 
+    if (method === "POST" && path === "/api/v1/jobs/dispatch") {
+      await this.fulfill(route, envelope({ accepted: true }), 202);
+      return;
+    }
+
     await this.fulfill(route, {
       error: { code: "METHOD_NOT_ALLOWED", message: "Mutation is not implemented by the local fixture." },
       request_id: requestId,
@@ -685,6 +789,17 @@ export class NotiqueApiFixture {
   }
 
   async install(page: Page) {
+    page.on("response", (response) => {
+      const request = response.request();
+      const url = new URL(request.url());
+      if (request.method().toUpperCase() !== "GET" || !url.pathname.startsWith("/api/")) return;
+      this.completedReads.push({ method: "GET", path: url.pathname });
+    });
+    page.on("requestfailed", (request) => {
+      const url = new URL(request.url());
+      if (request.method().toUpperCase() !== "GET" || !url.pathname.startsWith("/api/")) return;
+      this.failedReads.push({ method: "GET", path: url.pathname });
+    });
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const method = request.method().toUpperCase();
@@ -699,6 +814,8 @@ export class NotiqueApiFixture {
         await route.fulfill({ status: 204, body: "" });
         return;
       }
+
+      this.reads.push({ method: "GET", path });
 
       if (path === "/api/v1/projects") {
         const projects = [...this.activeProjectIds]
@@ -810,12 +927,33 @@ export class NotiqueApiFixture {
       if (eventArtifactsMatch) {
         const eventId = decodeURIComponent(eventArtifactsMatch[1]);
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
+        const summaryStatus = projectId === "project-a" && this.summaryFirstMode
+          ? this.summaryFirstSummaryStatus
+          : "succeeded";
+        const readableStatus = projectId === "project-a" && this.summaryFirstMode
+          ? this.summaryFirstReadableStatus
+          : "succeeded";
         await this.fulfill(route, envelope({
           runs: [
-            artifactRun(`artifact-run-summary-${eventId}`, projectId, eventId, "summary"),
-            artifactRun(`artifact-run-readable-${eventId}`, projectId, eventId, "readable_transcript"),
+            ...(summaryStatus ? [{
+              ...artifactRun(
+                this.staleSummaryArtifactDuringNewRun
+                  ? `artifact-run-summary-new-${eventId}`
+                  : `artifact-run-summary-${eventId}`,
+                projectId,
+                eventId,
+                "summary",
+              ),
+              status: summaryStatus,
+            }] : []),
+            ...(readableStatus ? [{ ...artifactRun(`artifact-run-readable-${eventId}`, projectId, eventId, "readable_transcript"), status: readableStatus }] : []),
           ],
-          artifacts: [summaryArtifact(projectId, eventId), readableArtifact(projectId, eventId)],
+          artifacts: [
+            ...(summaryStatus === "succeeded" || this.staleSummaryArtifactDuringNewRun
+              ? [summaryArtifact(projectId, eventId)]
+              : []),
+            ...(readableStatus === "succeeded" ? [readableArtifact(projectId, eventId)] : []),
+          ],
         }));
         return;
       }
@@ -880,6 +1018,13 @@ export class NotiqueApiFixture {
             "verified",
             "seg-timeline",
           ),
+          ...(this.summarySharedClaims ? [claimRecord(
+            "claim-summary-shared",
+            "客户仍需确认 120 万美元是否包含装修预算",
+            "open_question",
+            "pending",
+            "seg-summary-target",
+          )] : []),
         ] : [];
         await this.fulfill(route, envelope({
           run: extractionRun(runId, "project-a", "event-a"),
@@ -892,6 +1037,13 @@ export class NotiqueApiFixture {
       const runMatch = path.match(/^\/api\/v1\/extraction-runs\/([^/]+)$/);
       if (runMatch) {
         const runId = decodeURIComponent(runMatch[1]);
+        if (runId === "run-a" && this.summaryFirstMode) {
+          const summaryFirstRun = this.summaryFirstExtractionStatus === "processing"
+            ? freshProcessingExtractionRun(runId, "project-a", "event-a")
+            : extractionRun(runId, "project-a", "event-a");
+          await this.fulfill(route, envelope({ run: summaryFirstRun }));
+          return;
+        }
         if (runId === "run-a" && this.simulateProjectARunCompletionRefresh) {
           this.projectARunReads += 1;
           if (this.projectARunReads === 1) {
@@ -909,7 +1061,9 @@ export class NotiqueApiFixture {
         const claimId = decodeURIComponent(claimHistoryMatch[1]);
         const claim = claimId === "claim-summary-pending"
           ? claimRecord(claimId, "预算上限是 120 万美元", "budget", "pending", "seg-summary-target")
-          : claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline");
+          : claimId === "claim-summary-shared"
+            ? claimRecord(claimId, "客户仍需确认 120 万美元是否包含装修预算", "open_question", "pending", "seg-summary-target")
+            : claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline");
         await this.fulfill(route, envelope({ current_claim: claim }));
         return;
       }
