@@ -232,8 +232,42 @@ function aggregateUsage(usages: ModelUsage[]): ModelUsage {
     inputTokens: sum("inputTokens"),
     outputTokens: sum("outputTokens"),
     cachedTokens: sum("cachedTokens"),
-    providerRequestId: usages.at(-1)?.providerRequestId ?? null,
+    providerRequestId: [...usages].reverse().find((usage) => usage.providerRequestId)?.providerRequestId ?? null,
   };
+}
+
+/**
+ * Stage telemetry is the billing/accounting source of truth. In particular,
+ * an invalid model response still consumed provider tokens and must not be
+ * hidden by the later successful retry that the Run ultimately adopts.
+ */
+async function persistedExtractionUsage(runId: string): Promise<ModelUsage | null> {
+  const rows = await all(
+    `SELECT input_tokens, output_tokens, cached_tokens, provider_request_id
+       FROM extraction_model_stages
+      WHERE run_id = ? AND status IN ('succeeded', 'failed')
+      ORDER BY created_at ASC, id ASC`,
+    [runId],
+  );
+  return rows.length
+    ? aggregateUsage(rows.map((row) => stageUsage(row as {
+        input_tokens: number | null;
+        output_tokens: number | null;
+        cached_tokens: number | null;
+        provider_request_id: string | null;
+      })))
+    : null;
+}
+
+function escalationReasons(stage: {
+  error_details: unknown;
+} | null): string[] {
+  const details = stage?.error_details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return [];
+  const reasons = (details as Record<string, unknown>).escalation_reasons;
+  return Array.isArray(reasons)
+    ? reasons.filter((reason): reason is string => typeof reason === "string").slice(0, 20)
+    : [];
 }
 
 function stageUsage(row: {
@@ -1316,7 +1350,12 @@ async function persistModelOutput(
            SELECT 1 FROM extraction_runs r
            JOIN projects p ON p.id = r.project_id AND p.workspace_id = r.workspace_id
           WHERE r.id = ? AND r.status = 'processing' AND r.lease_owner = ?
-            AND p.context_version = r.context_version
+           AND p.context_version = r.context_version
+            AND NOT EXISTS (
+              SELECT 1 FROM extraction_model_stages processing_stage
+               WHERE processing_stage.run_id = r.id
+                 AND processing_stage.status = 'processing'
+            )
             AND NOT EXISTS (SELECT 1 FROM claims WHERE extraction_run_id = r.id)
             AND NOT EXISTS (
               SELECT 1 FROM claim_occurrence_candidates WHERE extraction_run_id = r.id
@@ -1550,7 +1589,8 @@ async function markRunFailed(
   const code = errorCode(error);
   const timestamp = now();
   const db = getD1();
-  const usage = completedUsage ?? (
+  const persistedUsage = await persistedExtractionUsage(String(run.id));
+  const usage = persistedUsage ?? completedUsage ?? (
     error instanceof ModelOutputInvalidError && error.usage ? error.usage : null
   );
   const guardId = id("guard");
@@ -1560,7 +1600,12 @@ async function markRunFailed(
         `INSERT INTO mutation_guards (id, guard_value, created_at)
          SELECT ?, CASE WHEN EXISTS (
            SELECT 1 FROM extraction_runs
-            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+           WHERE id = ? AND status = 'processing' AND lease_owner = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM extraction_model_stages processing_stage
+                WHERE processing_stage.run_id = extraction_runs.id
+                  AND processing_stage.status = 'processing'
+             )
          ) THEN 1 ELSE 0 END, ?`,
       )
       .bind(guardId, run.id, owner, timestamp),
@@ -1914,30 +1959,78 @@ export async function processExtractionRun(
       });
       let verifyStage: { output: VerificationOutput; usage: ModelUsage; reused: boolean } | null = null;
       let verificationFailure: unknown = null;
-      try {
-        verifyStage = await runModelStage<VerificationOutput>({
-          run: leased,
-          stage: "verify",
-          provider: providerName,
-          model: modelName,
-          reasoningEffort: verifierEffort,
-          promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
-          schemaVersion: VERIFICATION_SCHEMA_VERSION,
-          inputHash: verifyInputHash,
-          validate: (value) => validateVerificationOutput(
-            value,
+      const existingVerify = await getLatestExtractionModelStage(String(leased.id), "verify");
+      const existingEscalated = await getLatestExtractionModelStage(
+        String(leased.id),
+        "verify_escalated",
+      );
+      const escalationInFlight = Boolean(
+        existingEscalated &&
+        (existingEscalated.status === "processing" || existingEscalated.status === "succeeded"),
+      );
+      const escalationTerminalFailure = existingEscalated?.status === "failed";
+
+      if (escalationInFlight) {
+        // Once escalation has a durable Response ID, it is a dependency
+        // barrier. Never create verify attempt 2 while that Response is still
+        // running; doing so can terminally finish the Run and orphan the
+        // escalation. A succeeded base Verify is safe to reuse for the final
+        // quality comparison, but a failed base Verify must stay failed.
+        if (existingVerify?.status === "succeeded") {
+          const validatedBase = validateVerificationOutput(
+            existingVerify.validated_output,
             inventoryStage.output,
             verificationContext,
-          ).output,
-          invoke: (stageOptions) => verifierProvider.verifyClaims(
-            verificationContext,
-            inventoryStage.output,
-            { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
-          ),
-        });
-      } catch (error) {
-        if (!(error instanceof ModelOutputInvalidError)) throw error;
-        verificationFailure = error;
+          );
+          if (!validatedBase.valid || !validatedBase.output) {
+            throw new ProcessingFault(
+              "MODEL_OUTPUT_INVALID",
+              "Persisted base verification no longer matches the frozen escalation input.",
+            );
+          }
+          verifyStage = {
+            output: validatedBase.output,
+            usage: stageUsage(existingVerify),
+            reused: true,
+          };
+        } else if (existingEscalated!.status === "processing" && !existingEscalated!.provider_request_id) {
+          // A POST may still be waiting for its Response ID. Keep the stage
+          // recoverable; never supersede it with another paid POST.
+          throw new ModelTimeoutError();
+        }
+      } else if (escalationTerminalFailure && existingVerify?.status === "failed") {
+        // The bounded pipeline has spent its verify + escalation attempts.
+        // Do not turn a failed escalation into an unbounded verify retry loop.
+        verificationFailure = new ProcessingFault(
+          "MODEL_OUTPUT_INVALID",
+          "Verification and its single escalation attempt both failed.",
+        );
+      } else {
+        try {
+          verifyStage = await runModelStage<VerificationOutput>({
+            run: leased,
+            stage: "verify",
+            provider: providerName,
+            model: modelName,
+            reasoningEffort: verifierEffort,
+            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
+            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            inputHash: verifyInputHash,
+            validate: (value) => validateVerificationOutput(
+              value,
+              inventoryStage.output,
+              verificationContext,
+            ).output,
+            invoke: (stageOptions) => verifierProvider.verifyClaims(
+              verificationContext,
+              inventoryStage.output,
+              { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
+            ),
+          });
+        } catch (error) {
+          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          verificationFailure = error;
+        }
       }
       const usages = [
         inventoryStage.usage,
@@ -1953,7 +2046,69 @@ export async function processExtractionRun(
         acceptedVerification ?? {},
         verificationContext,
       );
-      if (assessment.required) {
+      if (escalationInFlight) {
+        const escalatedInputHash = existingEscalated!.input_hash;
+        const escalatedProvider = createModelProvider(getBindings(), {
+          provider: providerName,
+          model: modelName,
+          reasoningEffort: "xhigh",
+          maxOutputTokens,
+          timeoutMs,
+        });
+        const storedEscalationReasons = escalationReasons(existingEscalated);
+        const escalatedStage = await runModelStage<VerificationOutput>({
+          run: leased,
+          stage: "verify_escalated",
+          provider: providerName,
+          model: modelName,
+          reasoningEffort: "xhigh",
+          promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
+          schemaVersion: VERIFICATION_SCHEMA_VERSION,
+          inputHash: escalatedInputHash,
+          details: { escalation_reasons: storedEscalationReasons },
+          validate: (value) => validateVerificationOutput(
+            value,
+            inventoryStage.output,
+            verificationContext,
+          ).output,
+          invoke: (stageOptions) => escalatedProvider.verifyClaims(
+            verificationContext,
+            inventoryStage.output,
+            {
+              ...stageOptions,
+              promptCacheKey: `notique:${leased.id}:two-stage`,
+              qualityFeedback: [
+                ...storedEscalationReasons,
+                "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
+              ],
+            },
+          ),
+        });
+        usages.push(escalatedStage.usage);
+        if (acceptedVerification) {
+          const selection = selectPreferredVerificationForReview(
+            inventoryStage.output,
+            acceptedVerification,
+            escalatedStage.output,
+            verificationContext,
+          );
+          acceptedVerification = selection.output;
+          assessment = selection.assessment;
+          if (selection.selected === "base") {
+            pipelineWarnings.push({
+              code: "MODEL_ESCALATION_NOT_IMPROVED",
+              fallback_stage: "verify",
+            });
+          }
+        } else {
+          acceptedVerification = escalatedStage.output;
+          assessment = assessVerificationEscalation(
+            inventoryStage.output,
+            acceptedVerification,
+            verificationContext,
+          );
+        }
+      } else if (assessment.required && !escalationTerminalFailure) {
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
@@ -2058,6 +2213,8 @@ export async function processExtractionRun(
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
       acceptedDraftLinks = acceptedVerification.draft_link_candidates;
       finalUsage = completedUsage ?? aggregateUsage(usages);
+      const persistedUsage = await persistedExtractionUsage(String(leased.id));
+      if (persistedUsage) finalUsage = persistedUsage;
     } else {
       const provider = createModelProvider(getBindings(), {
         provider: providerName,

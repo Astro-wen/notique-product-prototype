@@ -103,6 +103,37 @@ test("targeted HTTP extraction is fenced and only handles frozen two-pass OpenAI
   }
 });
 
+test("an escalated background stage is a dependency barrier and usage includes failed attempts", async () => {
+  const processor = await readFile(
+    path.join(root, "lib/server/jobs/extraction-processor.ts"),
+    "utf8",
+  );
+  assert.match(processor, /const existingEscalated = await getLatestExtractionModelStage/);
+  assert.match(
+    processor,
+    /const escalationInFlight = Boolean\([\s\S]*existingEscalated\.status === "processing"[\s\S]*existingEscalated\.status === "succeeded"/,
+  );
+  assert.match(
+    processor,
+    /if \(escalationInFlight\) \{[\s\S]*stage: "verify_escalated"/,
+    "a persisted escalation Response must be resumed before any base Verify retry",
+  );
+  assert.match(
+    processor,
+    /async function persistedExtractionUsage\(runId: string\)[\s\S]*status IN \('succeeded', 'failed'\)/,
+    "failed provider attempts must remain part of usage accounting",
+  );
+  assert.match(
+    processor,
+    /const persistedUsage = await persistedExtractionUsage\(String\(leased\.id\)\)/,
+  );
+  assert.match(
+    processor,
+    /processing_stage\.status = 'processing'/,
+    "terminal persistence must be fenced while any background stage is still processing",
+  );
+});
+
 test("ordinary request scope lookup is read-only and mutations initialize explicitly", async () => {
   const context = await readFile(path.join(root, "lib/server/http/context.ts"), "utf8");
   const route = await readFile(path.join(root, "app/api/v1/[...segments]/route.ts"), "utf8");

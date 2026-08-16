@@ -135,8 +135,8 @@ test("two-pass model stages are resumable, bounded, and safely exposed", async (
   );
   assert.match(
     processor,
-    /const usage = completedUsage \?\?[\s\S]{0,180}error instanceof ModelOutputInvalidError/,
-    "a failed later stage must retain aggregate usage from all earlier paid stages",
+    /persistedExtractionUsage\(String\(run\.id\)\)[\s\S]{0,220}completedUsage \?\?[\s\S]{0,180}error instanceof ModelOutputInvalidError/,
+    "all persisted paid stage attempts must remain in aggregate usage accounting",
   );
   assert.match(
     provider,
