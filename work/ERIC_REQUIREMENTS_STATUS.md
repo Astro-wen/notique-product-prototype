@@ -1,6 +1,6 @@
 # Eric 要求与 Notique 当前真实状态
 
-更新日期：2026 年 8 月 15 日
+更新日期：2026 年 8 月 16 日
 
 ## 1. 先说结论
 
@@ -347,9 +347,19 @@ AMI 是公开许可的真实多人语音，但会议内容来自受控产品设�
 8. 不能说 PDF 已可靠参与分析；缺少页面文本适配器时会明确失败。
 9. 不能把 AMI 的八条关键事实 Coverage 8/8 写成整场 Transcript 的 WER 或完整转写准确率。
 
+## v23 发布与当前判断（2026-08-16）
+
+Sites v23 已部署到原有公开地址，源码为 `db556104ef1a58da38c08ad3c1fab697f5405f02`。发布包由该提交重新构建，空库迁移、敏感信息审计、Worker 构建和 343 项自动化通过；生产 `AI_DRAFT_CONTEXT=0`，数据库已包含 `draft_link_candidates` 与 Event AI Artifact 表。
+
+桌面和 390px 浏览器走查确认：公开共享提示、Summary-first、Readable/Raw 切换、刷新路由、客户进展四入口、行动空态、回收站入口和单一项目/沟通选择器均可用；控制台及最近 Worker 错误日志为空。
+
+Realtor A/B 已从同一冻结提交启动并完成 Control；Treatment 因一场基础 Verify 与唯一升级 Verify 均合同无效而停止，未生成可评分的双臂结果。失败 Run 的失败与升级用量已完整记账，未留下 processing 孤儿。故当前不能声称房地产质量门、Draft Context Recall 或 Token 增幅门通过。
+
+仍需完成：真实手机真人完整流程、GitHub 登录恢复后同步、重新跑完整 Realtor A/B 并由人工完成裁决；在此之前继续保持 `AI_DRAFT_CONTEXT=0`。
+
 ## 10. 当前公开部署
 
-1. 完整交互应用：Sites v18，<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
+1. 完整交互应用：Sites v23，<https://notique-evidence-workspace.uclae2e12.chatgpt.site/>
 2. GitHub：<https://github.com/Astro-wen/notique-product-prototype>，`main` 仍为 `9751edfb7fd4ab8193cb9aa72134a5c9296d57b1`；Sites v18 源码为 `1202a5d2778157e11571e3deb752a65007d5087b`
 3. GitHub Pages 只负责跳转到 Sites，不承担 API、数据库、文件上传或模型任务。
 4. 桌面与 390px 正式站 QA 已通过；实体手机真人 QA 和 v18 新付费 Run 仍未完成。

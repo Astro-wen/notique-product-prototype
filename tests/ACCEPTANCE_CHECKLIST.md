@@ -252,6 +252,15 @@
 - [x] `.env.example` 与生产 `wrangler.jsonc` 均明确 `AI_DRAFT_CONTEXT=0`。
 - [x] 当前生产构建、空库 Migration、类型、Lint、发布包敏感信息检查和全部 265 项测试通过。
 
+### v23 发布记录（2026-08-16）
+
+- [x] v23 从精确提交重新构建并发布到原有公开 Sites；未创建新 Site，`AI_DRAFT_CONTEXT=0`。
+- [x] 343/343 全量自动化、生产构建、空库迁移、发布包敏感信息检查通过；包内无本机绝对路径、凭据或测试产物。
+- [x] 发布后桌面与 390px 浏览器走查通过：Summary-first、Readable/Raw、刷新与返回、公开共享提示、四个结果入口、行动空态、项目菜单及单一沟通选择器；控制台与 Worker 错误日志为空。
+- [x] 隔离 Realtor A/B 的编排安全回归通过：Verify 失败后只恢复同一升级 Response，不创建 Verify 2；失败和升级用量完整落库，终态没有 processing 孤儿。
+- [ ] Realtor A/B 质量分数：Treatment 因最后一场基础 Verify 与唯一升级 Verify 均合同无效而停止，未形成可比较的 Precision/Recall/Relation/Token 结果。
+- [ ] 真实实体手机完整流程、GitHub 登录恢复后的同源同步、人工 A/B 裁决仍待完成。
+
 ### 尚未完成，不能写成通过
 
 - [ ] 把当前本地改动提交并发布到现有 Sites；Sites v18 仍不包含本节新增功能。

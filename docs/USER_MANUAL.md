@@ -1,12 +1,14 @@
 # Notique 用户说明书
 
-更新日期：2026 年 8 月 15 日
+更新日期：2026 年 8 月 16 日
 
 这份说明写给第一次使用 Notique 的人。使用产品不需要理解代码，也不需要知道 Run、Ledger 或 API 是什么。
 
 完整测试站：[https://notique-evidence-workspace.uclae2e12.chatgpt.site/](https://notique-evidence-workspace.uclae2e12.chatgpt.site/)
 
-当前公开版本仍是 **Sites v18**。下面新增的“买方客户项目、可选核对、客户进展、下一步行动和双层记忆”已经进入本地代码并通过自动化，但尚未发布到正式站；Sites v18 仍按旧流程运行。
+当前公开版本是 **Sites v23**。买方客户项目、可选核对、客户进展、下一步行动、三层 Transcript 阅读和项目回收站已经上线。`AI_DRAFT_CONTEXT` 仍保持关闭（0），所以未经核对的草稿不会影响可信报告。
+
+本轮隔离 Realtor 对照实验因最后一场模型合同无效而未形成可比较的质量分数；请不要把自动化通过或 AI 草稿当作房地产准确率承诺。公开站只适合公开、合成或脱敏材料。
 
 ## 1. Notique 是做什么的
 
