@@ -8,7 +8,6 @@ import {
 } from "@/lib/server/jobs/outbox";
 import {
   dispatchTranscriptionRun,
-  wakeTranscriptionRun,
 } from "@/lib/server/jobs/transcription-outbox";
 import {
   dispatchEventAiArtifactRun,
@@ -192,10 +191,13 @@ const worker = {
             });
           }));
         } else {
-          // The audio endpoint has no OpenAI Background Response ID. Keep its
-          // durable outbox due and let the every-minute scheduled invocation,
-          // which has a 15-minute wall-time budget, perform the provider call.
-          await wakeTranscriptionRun(workspaceId, input.runId);
+          // Audio transcription has no OpenAI Background Response ID. Keep
+          // this HTTP invocation open while the existing Run is processed.
+          // Cloudflare allows an HTTP request to wait on I/O while the client
+          // remains connected; only work placed in waitUntil is cut off after
+          // roughly 30 seconds. The browser already keeps this same Run
+          // request alive and the outbox lease prevents duplicate providers.
+          await dispatchTranscriptionRun(workspaceId, input.runId);
         }
         return dispatchResponse({
           accepted: true,

@@ -18,14 +18,15 @@ test("browser dispatch accepts one workspace-scoped Run and returns before proce
   );
 });
 
-test("production audio wakes durable Cron work instead of exceeding HTTP waitUntil", async () => {
+test("production audio keeps the HTTP request open instead of losing the queued Run", async () => {
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
   const transcription = await readFile(
     path.join(root, "lib/server/jobs/transcription-outbox.ts"),
     "utf8",
   );
   assert.match(worker, /env\.APP_ENV === "local"[\s\S]*dispatchTranscriptionRun/);
-  assert.match(worker, /else \{[\s\S]*await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
+  assert.match(worker, /else \{[\s\S]*await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
+  assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
