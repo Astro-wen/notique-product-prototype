@@ -116,6 +116,51 @@ function assetRecord(id: string, projectId: string, eventId: string) {
   };
 }
 
+function audioAssetRecord(id: string, projectId: string, eventId: string) {
+  return {
+    ...assetRecord(id, projectId, eventId),
+    kind: "audio",
+    filename: "buyer-interview.m4a",
+    processing_status: "processing",
+    metadata: {
+      transcription_run_id: "transcription-a",
+      transcription_status: "processing",
+    },
+    version: {
+      ...assetRecord(id, projectId, eventId).version,
+      mime_type: "audio/mp4",
+      size_bytes: 32_500_000,
+    },
+  };
+}
+
+function chunkedTranscriptionRun() {
+  return {
+    id: "transcription-a",
+    event_id: "event-a",
+    audio_asset_id: "audio-event-a",
+    status: "processing",
+    model: "gpt-4o-transcribe-diarize",
+    orchestration_mode: "chunked",
+    chunk_count: 10,
+    completed_chunk_count: 4,
+    created_at: new Date(Date.now() - 74_000).toISOString(),
+    queued_at: new Date(Date.now() - 73_000).toISOString(),
+    started_at: new Date(Date.now() - 72_000).toISOString(),
+    finished_at: null,
+    segments: [],
+    chunks: Array.from({ length: 10 }, (_, index) => ({
+      id: `transcription-a-chunk-${index}`,
+      index,
+      start_ms: index * 175_000,
+      end_ms: (index + 1) * 180_000,
+      status: index < 4 ? "succeeded" : index < 7 ? "processing" : "queued",
+      processing_attempt_no: index < 7 ? 1 : 0,
+      error_code: null,
+    })),
+  };
+}
+
 function extractionRun(id: string, projectId: string, eventId: string) {
   return {
     id,
@@ -450,6 +495,7 @@ export class NotiqueApiFixture {
   simulateProjectARunCompletionRefresh = false;
   summaryFirstMode = false;
   summarySharedClaims = false;
+  transcriptionProgressMode = false;
 
   private readonly claimsGate = gate();
   private readonly snapshotGate = gate();
@@ -546,6 +592,10 @@ export class NotiqueApiFixture {
 
   enableSharedSummaryClaims() {
     this.summarySharedClaims = true;
+  }
+
+  enableTranscriptionProgress() {
+    this.transcriptionProgressMode = true;
   }
 
   enableNewSummaryRunWithStaleArtifact() {
@@ -962,8 +1012,24 @@ export class NotiqueApiFixture {
       if (transcriptMatch) {
         const eventId = decodeURIComponent(transcriptMatch[1]);
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
-        await this.fulfill(route, envelope({ segments: transcriptSegments(projectId, eventId) }));
+        const segments = this.transcriptionProgressMode && eventId === "event-a"
+          ? [
+              { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_000, text: "Opening." },
+              { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 2_000, text: "Reply." },
+              { id: "speaker-seg-c", ordinal: 2, speaker: "C", start_ms: 2_000, end_ms: 3_000, text: "Follow-up." },
+            ]
+          : transcriptSegments(projectId, eventId);
+        await this.fulfill(route, envelope({ segments }));
         return;
+      }
+
+      const transcriptionRunMatch = path.match(/^\/api\/v1\/transcription-runs\/([^/]+)$/);
+      if (transcriptionRunMatch) {
+        const runId = decodeURIComponent(transcriptionRunMatch[1]);
+        if (this.transcriptionProgressMode && runId === "transcription-a") {
+          await this.fulfill(route, envelope({ transcription_run: chunkedTranscriptionRun() }));
+          return;
+        }
       }
 
       const eventMatch = path.match(/^\/api\/v1\/events\/([^/]+)$/);
@@ -991,7 +1057,9 @@ export class NotiqueApiFixture {
         }
         await this.fulfill(route, envelope({
           event,
-          assets: [assetRecord(`asset-${eventId}`, projectId, eventId)],
+          assets: this.transcriptionProgressMode && eventId === "event-a"
+            ? [audioAssetRecord("audio-event-a", projectId, eventId)]
+            : [assetRecord(`asset-${eventId}`, projectId, eventId)],
         }));
         return;
       }

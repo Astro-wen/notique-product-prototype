@@ -42,6 +42,8 @@ import {
 } from "@/lib/domain/summary-first-workflow";
 import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft";
 import { highlightExactPhrase } from "@/lib/domain/text-highlight";
+import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
+import { buildChunkProgress } from "@/lib/domain/transcription-progress";
 import {
   backLabelForRoute,
   fallbackBackRoute,
@@ -110,6 +112,15 @@ import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
 type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
 type ResultTab = ProjectViewName;
+
+type AudioPreparationProgress = {
+  eventId: string;
+  stage: "inspecting" | "preparing" | "starting";
+  total: number;
+  completed: number;
+  currentIndex?: number;
+  currentFraction?: number;
+};
 
 type ContradictionResolutionInput = {
   relationId: string;
@@ -895,7 +906,7 @@ function TranscriptViewer({ run, onClose }: { run: TranscriptionRun; onClose: ()
         {run.segments.length > 0 ? run.segments.map((segment) => (
           <article key={segment.id}>
             <time>{formatTimestamp(segment.startMs / 1000)}</time>
-            <strong>{segment.speaker}</strong>
+            <strong>{displaySpeakerLabel(segment.speaker)}</strong>
             <p>{segment.text}</p>
           </article>
         )) : <p className="muted">服务器没有返回可显示的逐字稿片段。</p>}
@@ -1525,6 +1536,7 @@ export default function Home() {
   const [eventIssue, setEventIssue] = useState<ApiIssue | null>(null);
   const [run, setRun] = useState<ExtractionRun | null>(null);
   const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
+  const [audioPreparationProgress, setAudioPreparationProgress] = useState<AudioPreparationProgress | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
   const [draftAssessment, setDraftAssessment] = useState<AiDraftAssessment | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
@@ -3178,56 +3190,112 @@ export default function Home() {
     originalAudioAssetId: string,
     targetEventId: string,
   ): Promise<TranscriptionRun> {
-    const durationMs = await inspectAudioDurationMs(source);
-    if (!shouldChunkAudio({ durationMs, sizeBytes: source.size })) {
-      return launchTranscription(originalAudioAssetId, targetEventId);
+    setAudioPreparationProgress({
+      eventId: targetEventId,
+      stage: "inspecting",
+      total: 0,
+      completed: 0,
+    });
+    try {
+      const durationMs = await inspectAudioDurationMs(source);
+      if (!shouldChunkAudio({ durationMs, sizeBytes: source.size })) {
+        setAudioPreparationProgress(null);
+        return await launchTranscription(originalAudioAssetId, targetEventId);
+      }
+      const plan = audioChunkPlan(durationMs);
+      setAudioPreparationProgress({
+        eventId: targetEventId,
+        stage: "preparing",
+        total: plan.length,
+        completed: 0,
+        currentIndex: 0,
+        currentFraction: 0,
+      });
+      const uploadedChunks: Array<{
+        assetId: string;
+        index: number;
+        startMs: number;
+        endMs: number;
+      }> = [];
+      for (const item of plan) {
+        setAudioPreparationProgress({
+          eventId: targetEventId,
+          stage: "preparing",
+          total: plan.length,
+          completed: uploadedChunks.length,
+          currentIndex: item.index,
+          currentFraction: 0,
+        });
+        const prepared = await prepareAudioChunk(source, item, filename, (progress) => {
+          const currentFraction = Math.min(0.8, Math.max(0, progress) * 0.8);
+          setAudioPreparationProgress((current) => {
+            if (!current || current.eventId !== targetEventId || current.currentIndex !== item.index) return current;
+            if (Math.abs((current.currentFraction ?? 0) - currentFraction) < 0.02) return current;
+            return { ...current, currentFraction };
+          });
+        });
+        setAudioPreparationProgress((current) => current?.eventId === targetEventId
+          ? { ...current, currentFraction: 0.82 }
+          : current);
+        const fingerprint = [
+          "transcription-chunk",
+          originalAudioAssetId,
+          item.index,
+          item.startMs,
+          item.endMs,
+          prepared.blob.size,
+        ].join(":");
+        const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+        mutationKeys.current.set(fingerprint, key);
+        const initialized = await api.initAsset(targetEventId, {
+          kind: "audio",
+          filename: prepared.filename,
+          content_type: prepared.mimeType,
+          size_bytes: prepared.blob.size,
+          metadata: {
+            analysis_source: false,
+            transcription_chunk: true,
+            source_audio_asset_id: originalAudioAssetId,
+            chunk_index: item.index,
+            chunk_start_ms: item.startMs,
+            chunk_end_ms: item.endMs,
+          },
+        }, key);
+        setAudioPreparationProgress((current) => current?.eventId === targetEventId
+          ? { ...current, currentFraction: 0.88 }
+          : current);
+        await api.uploadAsset(
+          initialized.assetId,
+          initialized.uploadUrl,
+          prepared.blob,
+          prepared.mimeType,
+        );
+        setAudioPreparationProgress((current) => current?.eventId === targetEventId
+          ? { ...current, currentFraction: 0.96 }
+          : current);
+        await api.finalizeAsset(initialized.assetId);
+        mutationKeys.current.delete(fingerprint);
+        uploadedChunks.push({ assetId: initialized.assetId, ...item });
+        setAudioPreparationProgress({
+          eventId: targetEventId,
+          stage: "preparing",
+          total: plan.length,
+          completed: uploadedChunks.length,
+          currentIndex: item.index + 1 < plan.length ? item.index + 1 : undefined,
+          currentFraction: 0,
+        });
+      }
+      setAudioPreparationProgress({
+        eventId: targetEventId,
+        stage: "starting",
+        total: plan.length,
+        completed: plan.length,
+      });
+      flash(`长录音已分成 ${plan.length} 段，正在并行转写`);
+      return await launchTranscription(originalAudioAssetId, targetEventId, "chunked", uploadedChunks);
+    } finally {
+      setAudioPreparationProgress((current) => current?.eventId === targetEventId ? null : current);
     }
-    const plan = audioChunkPlan(durationMs);
-    const uploadedChunks: Array<{
-      assetId: string;
-      index: number;
-      startMs: number;
-      endMs: number;
-    }> = [];
-    for (const item of plan) {
-      flash(`正在整理长录音：第 ${item.index + 1}/${plan.length} 段`);
-      const prepared = await prepareAudioChunk(source, item, filename);
-      const fingerprint = [
-        "transcription-chunk",
-        originalAudioAssetId,
-        item.index,
-        item.startMs,
-        item.endMs,
-        prepared.blob.size,
-      ].join(":");
-      const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(fingerprint, key);
-      const initialized = await api.initAsset(targetEventId, {
-        kind: "audio",
-        filename: prepared.filename,
-        content_type: prepared.mimeType,
-        size_bytes: prepared.blob.size,
-        metadata: {
-          analysis_source: false,
-          transcription_chunk: true,
-          source_audio_asset_id: originalAudioAssetId,
-          chunk_index: item.index,
-          chunk_start_ms: item.startMs,
-          chunk_end_ms: item.endMs,
-        },
-      }, key);
-      await api.uploadAsset(
-        initialized.assetId,
-        initialized.uploadUrl,
-        prepared.blob,
-        prepared.mimeType,
-      );
-      await api.finalizeAsset(initialized.assetId);
-      mutationKeys.current.delete(fingerprint);
-      uploadedChunks.push({ assetId: initialized.assetId, ...item });
-    }
-    flash(`长录音已分成 ${plan.length} 段，正在并行转写`);
-    return launchTranscription(originalAudioAssetId, targetEventId, "chunked", uploadedChunks);
   }
 
   async function retryAudioTranscription(audioAssetId: string) {
@@ -4077,6 +4145,7 @@ export default function Home() {
           busy={busyAction}
           projectWorkflow={projectWorkflow}
           readingTab={route.readingTab}
+          audioPreparationProgress={audioPreparationProgress}
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
@@ -4264,6 +4333,7 @@ type SimpleTestScreenProps = {
   busy: string | null;
   projectWorkflow: ProjectWorkflowState;
   readingTab?: TranscriptArtifactTab;
+  audioPreparationProgress: AudioPreparationProgress | null;
   onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
@@ -4630,7 +4700,7 @@ function TranscriptArtifactsPanel({
         const readableText = firstString(segment, ["readable_text"]) || "";
         const needsCheck = segment.needs_human_check === true;
         return <article className={needsCheck ? "needs-check" : ""} key={key}>
-          <div className="readable-meta"><button onClick={() => playAt(typeof segment.start_ms === "number" ? segment.start_ms : null)}>{formatTimestamp(typeof segment.start_ms === "number" ? segment.start_ms / 1000 : undefined)}</button><strong>{firstString(segment, ["speaker"]) || "说话人未标注"}</strong>{edits.length > 0 && <span>{edits.length} 处整理</span>}{needsCheck && <em>需要留意</em>}</div>
+          <div className="readable-meta"><button onClick={() => playAt(typeof segment.start_ms === "number" ? segment.start_ms : null)}>{formatTimestamp(typeof segment.start_ms === "number" ? segment.start_ms / 1000 : undefined)}</button><strong>{displaySpeakerLabel(firstString(segment, ["speaker"]))}</strong>{edits.length > 0 && <span>{edits.length} 处整理</span>}{needsCheck && <em>需要留意</em>}</div>
           <p>{readableText}</p>
           <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, sourceIds, readableText)}>{openDiffs.has(diffKey) ? "收起差异" : "对比原稿"}</button></div>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={edits} needsCheck={needsCheck} />}
@@ -4643,7 +4713,7 @@ function TranscriptArtifactsPanel({
 
     {tab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
-      {visibleRawSegments.length ? visibleRawSegments.map((segment) => <article className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</button><strong>{segment.speaker || "说话人未标注"}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      {visibleRawSegments.length ? visibleRawSegments.map((segment) => <article className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</button><strong>{displaySpeakerLabel(segment.speaker)}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
   </section>;
 }
@@ -4704,6 +4774,97 @@ function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
   return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
 }
 
+function AudioTranscriptionProgressPanel({
+  preparation,
+  run,
+  durationMs,
+  busy,
+  onRetry,
+}: {
+  preparation: AudioPreparationProgress | null;
+  run: TranscriptionRun | null;
+  durationMs: number | null;
+  busy: string | null;
+  onRetry: (audioAssetId: string) => void;
+}) {
+  const preparing = Boolean(preparation);
+  const inspecting = preparation?.stage === "inspecting";
+  const chunkedRun = !preparation && run?.orchestrationMode === "chunked" ? run : null;
+  const total = preparation?.total ?? chunkedRun?.chunkCount ?? chunkedRun?.chunks.length ?? 0;
+  const completed = preparation?.completed ?? chunkedRun?.completedChunkCount ?? 0;
+  const progress = buildChunkProgress({
+    total,
+    completed,
+    chunks: chunkedRun?.chunks,
+    currentIndex: preparation?.currentIndex,
+    currentFraction: preparation?.currentFraction,
+  });
+  const failedCount = chunkedRun?.chunks.filter((chunk) => chunk.status === "failed").length ?? 0;
+  const failed = !preparation && run?.status === "failed";
+  const singleRun = !preparation && run?.orchestrationMode !== "chunked" ? run : null;
+  const hasChunkPlan = Boolean(preparation || chunkedRun);
+  const chunksFinished = hasChunkPlan && !inspecting && progress.total > 0 && progress.remaining === 0;
+  const title = inspecting
+    ? "正在读取录音并规划分段"
+    : preparation?.stage === "starting"
+      ? "分段已经准备完毕，正在启动并行识别"
+      : preparing
+        ? "正在整理长录音并上传分段"
+        : chunkedRun
+          ? failed
+            ? "有分段识别没有完成"
+            : "正在分段并行识别说话人和时间点"
+          : singleRun
+            ? failed
+              ? "录音转写没有完成"
+              : "正在识别说话人和时间点"
+            : "正在准备逐字稿";
+  const statusText = inspecting
+    ? "读取时长后会立即显示分段数量"
+    : hasChunkPlan && total > 0
+      ? `${preparing ? "已准备" : "已完成"} ${progress.completed}/${progress.total} 段 · ${progress.percent}%`
+      : run?.errorCode || (singleRun ? statusLabel(singleRun.status) : "正在启动");
+  const nextStepText = inspecting
+    ? "录音已经保存；这里只读取时长，不会重复上传整份文件。"
+    : singleRun
+      ? failed
+        ? "录音仍然安全保留，可以直接重新转写。"
+        : "录音正在识别；完成后即可查看逐字稿并开始分析。"
+    : progress.remaining > 0
+      ? preparing
+        ? `还差 ${progress.remaining} 段完成整理；全部就绪后会自动并行识别。`
+        : `还差 ${progress.remaining} 段完成识别；随后自动合并，完成后即可开始分析。`
+      : preparing
+        ? "所有分段已经准备好，正在交给并行识别。"
+        : "所有分段已经识别，正在合并完整逐字稿；合并后即可开始分析。";
+  const timeText = durationMs != null ? ` · 已用 ${formatReviewDuration(durationMs)}` : "";
+
+  return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" data-testid="transcription-journey">
+    <header>
+      <span className="file-kind">AUD</span>
+      <div><span className="section-kicker">录音处理进度</span><h3>{title}</h3><p>{statusText}{timeText}</p></div>
+      {!inspecting && total > 0 && <strong className="transcription-percent">{progress.percent}%</strong>}
+    </header>
+    <div className={`transcription-progress-bar${inspecting ? " indeterminate" : ""}`} role="progressbar" aria-label="录音分段处理进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={inspecting ? undefined : progress.percent}>
+      <span style={{ width: inspecting ? "34%" : `${progress.percent}%` }} />
+    </div>
+    {progress.nodes.length > 0 && <div className="transcription-chunk-nodes" aria-label={`${progress.total} 个录音分段`}>
+      {progress.nodes.map((node) => <span className={`transcription-chunk-node ${node.status}`} key={node.index} aria-label={`第 ${node.index + 1} 段：${node.status === "completed" ? "已完成" : node.status === "processing" ? "处理中" : node.status === "failed" ? "失败" : "等待"}`}>
+        <i>{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : node.index + 1}</i>
+        <small>第{node.index + 1}段</small>
+      </span>)}
+    </div>}
+    <div className="transcription-next-step"><strong>{failedCount > 0 ? `${failedCount} 段需要重试` : nextStepText}</strong><span>系统会自动继续，不需要手动开启后台任务。</span></div>
+    <ol className="transcription-milestones" aria-label="距离可以开始分析的步骤">
+      <li className="complete"><span>✓</span><b>录音已保存</b></li>
+      <li className={chunksFinished ? "complete" : "active"}><span>{chunksFinished ? "✓" : "2"}</span><b>{hasChunkPlan ? "分段识别" : "识别逐字稿"}</b></li>
+      <li className={chunksFinished && !preparing ? "active" : "pending"}><span>3</span><b>合并逐字稿</b></li>
+      <li className="pending"><span>4</span><b>可开始分析</b></li>
+    </ol>
+    {failed && run && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetry(run.audioAssetId)}>{busy === "transcription" ? "正在重试…" : failedCount > 0 ? `重试失败的 ${failedCount} 段` : "重新转写"}</button>}
+  </section>;
+}
+
 function SimpleTestScreen({
   projects,
   projectsState,
@@ -4722,6 +4883,7 @@ function SimpleTestScreen({
   busy,
   projectWorkflow,
   readingTab,
+  audioPreparationProgress,
   onUseProject,
   onUseEvent,
   onStartOwn,
@@ -4765,7 +4927,6 @@ function SimpleTestScreen({
   const materialsReady = readyAssets.length > 0;
   const transcriptionRunning = Boolean(transcriptionRun && runInProgress.has(transcriptionRun.status));
   const transcriptionDone = transcriptionRun?.status === "succeeded";
-  const transcriptionFailed = transcriptionRun?.status === "failed";
   const analysisRunning = Boolean(run && runInProgress.has(run.status));
   const analysisDone = Boolean(run && runComplete.has(run.status));
   const analysisFailed = Boolean(run && !analysisRunning && !analysisDone);
@@ -4973,11 +5134,9 @@ function SimpleTestScreen({
     && Number.isFinite(transcriptionTimingEnd)
     ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
     : null;
-  const transcriptionProgressText = transcriptionRun?.orchestrationMode === "chunked"
-    ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段`
-    : transcriptionRun
-      ? transcriptionRun.errorCode || statusLabel(transcriptionRun.status)
-      : "";
+  const currentAudioPreparation = audioPreparationProgress?.eventId === event?.id
+    ? audioPreparationProgress
+    : null;
   const workflowStepActionable = projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed"
@@ -5225,6 +5384,16 @@ function SimpleTestScreen({
             <button className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}>结果</button>
           </nav>
 
+          {(currentAudioPreparation || (transcriptionRun && !transcriptionDone)) && <div className="transcription-journey-slot">
+            <AudioTranscriptionProgressPanel
+              preparation={currentAudioPreparation}
+              run={transcriptionRun}
+              durationMs={currentAudioPreparation ? null : transcriptionProcessingDurationMs}
+              busy={busy}
+              onRetry={onRetryTranscription}
+            />
+          </div>}
+
           {factsRunningInBackground && readingAid && <aside className="workflow-reading-banner" aria-live="polite">
             <span className="workflow-reading-icon">✓</span>
             <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 原文定位不代表语义已经核对。" : " 原始逐字稿仍是最终核对依据。"}</p></div>
@@ -5284,11 +5453,6 @@ function SimpleTestScreen({
 
           {activeTab === "transcript" && <div className="meeting-tab-panel">
             {event ? <>
-              {transcriptionRun && !transcriptionDone && <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
-                <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行识别说话人和时间点" : "正在识别说话人和时间点" : "录音转写没有完成"}</strong><small>{`${transcriptionProgressText}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
-                {transcriptionRun.orchestrationMode === "chunked" && transcriptionRun.chunks.some((chunk) => chunk.status === "failed") && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : `重试失败的 ${transcriptionRun.chunks.filter((chunk) => chunk.status === "failed").length} 段`}</button>}
-                {transcriptionFailed && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}
-              </section>}
               <TranscriptArtifactsPanel
                 key={event.id}
                 event={event}
@@ -5591,7 +5755,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
             const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
             return <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
           })}</div>}
-          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
+          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
           <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { const blob = new Blob([paste], { type: "text/plain" }); void onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }).then(() => setPaste("")); })}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
         </section>
         <aside className="event-rail">
@@ -5776,7 +5940,7 @@ function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment,
         <section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>你可以立即阅读、复制或稍后核对。草稿最多帮助后续 AI 发现可能的连续信息；只有人工确认内容才能进入 Timeline、Brief 和可信报告。</p></div></section>
         {summaryItems.length > 0 && <section className="panel draft-summary"><header><div><span className="section-kicker">会议重点</span><h2>沿着原对话快速核对</h2></div><span>{summaryItems.length} 条</span></header><ol>{summaryItems.map((item, index) => {
           const claim = claimById.get(item.claimId);
-          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{item.speaker}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并核对含义 ›</u></span></span></button></li>;
+          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{displaySpeakerLabel(item.speaker)}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并核对含义 ›</u></span></span></button></li>;
         })}</ol></section>}
         {runOccurrences.length > 0 && <section className="panel draft-section draft-occurrences"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}
         {runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}
@@ -5795,9 +5959,9 @@ function MissingClaimModal({ eventId, initialType = "other", busy, onClose, onCr
   const [statement, setStatement] = useState("");
   const [type, setType] = useState<OccurrenceNewClaim["type"]>(initialType);
   useEffect(() => { let active = true; void api.listEventTranscriptSegments(eventId).then((items) => { if (!active) return; setSegments(items); setState(items.length ? "ready" : "empty"); }).catch((error) => { if (!active) return; setIssue(toIssue(error)); setState("error"); }); return () => { active = false; }; }, [eventId]);
-  const shown = segments.filter((segment) => !query.trim() || `${segment.speaker || ""} ${segment.text}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const shown = segments.filter((segment) => !query.trim() || `${displaySpeakerLabel(segment.speaker)} ${segment.speaker || ""} ${segment.text}`.toLowerCase().includes(query.trim().toLowerCase()));
   async function submit() { if (!statement.trim() || selected.size === 0) return; setIssue(null); try { await onCreate({ statement: statement.trim(), type, segmentIds: [...selected] }); } catch (error) { setIssue(toIssue(error)); } }
-  return <Modal title={initialType === "next_action" ? "从原文补充下一步行动" : "补上 AI 漏掉的重要信息"} description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{segment.speaker || "说话人未标注"}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：经纪人周五前发送三套符合预算的房源。" : "例如：客户确认总预算上限为 21,500 美元。"} /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
+  return <Modal title={initialType === "next_action" ? "从原文补充下一步行动" : "补上 AI 漏掉的重要信息"} description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：经纪人周五前发送三套符合预算的房源。" : "例如：客户确认总预算上限为 21,500 美元。"} /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
 }
 
 function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
@@ -5867,7 +6031,7 @@ function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
   const renderSegmentText = (text: string) => highlightExactPhrase(text, quote).map((part, index) => part.highlighted
     ? <mark key={`${part.text}:${index}`}>{part.text}</mark>
     : <span key={`${part.text}:${index}`}>{part.text}</span>);
-  const renderContextSegment = (segment: EvidenceContext["context"]["target"][number], target = false) => <p key={segment.id} className={target ? "selected target" : "surrounding"}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{segment.speaker || "说话人未标注"}</b><span>{renderSegmentText(segment.text)}</span></p>;
+  const renderContextSegment = (segment: EvidenceContext["context"]["target"][number], target = false) => <p key={segment.id} className={target ? "selected target" : "surrounding"}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{renderSegmentText(segment.text)}</span></p>;
   return (
     <article className="evidence-card">
       <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{context?.filename || evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${typeLabel(evidence.role)} · ` : ""}{formatTimestamp(context?.target.start_ms == null ? evidence.timestampStart : context.target.start_ms / 1000)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
