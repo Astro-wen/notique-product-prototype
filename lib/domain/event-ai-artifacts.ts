@@ -413,7 +413,8 @@ function validateEventSummary(
           if (seenKeys.has(itemKey)) issues.push({ path: `${itemPath}.item_key`, message: "Duplicate summary item key." });
           seenKeys.add(itemKey);
           const ids = segmentIds(item.source_segment_ids, `${itemPath}.source_segment_ids`, issues);
-          const citedSegments: TranscriptSegment[] = [];
+          let resolvedIds = ids;
+          let citedSegments: TranscriptSegment[] = [];
           ids.forEach((id) => {
             const segment = rawById.get(id);
             if (!segment) issues.push({ path: `${itemPath}.source_segment_ids`, message: `Unknown raw segment ID ${id}.` });
@@ -428,8 +429,35 @@ function validateEventSummary(
               });
             }
             const positions = ids.map((id) => rawPosition.get(id));
-            if (positions.some((position, index) =>
-              position === undefined || index > 0 && position !== Number(positions[index - 1]) + 1)) {
+            const positionsAreOrdered = positions.every((position, index) =>
+              position !== undefined && (index === 0 || Number(position) > Number(positions[index - 1])));
+            if (!positionsAreOrdered) {
+              issues.push({
+                path: `${itemPath}.source_segment_ids`,
+                message: "Summary source segments must be contiguous and in raw order.",
+              });
+            } else if (
+              mode === "provider" && positions.length > 1 &&
+              positions.some((position, index) => index > 0 && position !== Number(positions[index - 1]) + 1)
+            ) {
+              const first = Number(positions[0]);
+              const last = Number(positions.at(-1));
+              const expanded = input.segments.slice(first, last + 1);
+              if (
+                expanded.length > 24 ||
+                expanded.some((segment) => segment.assetVersionId !== assetVersionId)
+              ) {
+                issues.push({
+                  path: `${itemPath}.source_segment_ids`,
+                  message: "Summary source segments must be contiguous and in raw order.",
+                });
+              } else {
+                resolvedIds = expanded.map((segment) => segment.id);
+                citedSegments = expanded;
+              }
+            } else if (
+              positions.some((position, index) => index > 0 && position !== Number(positions[index - 1]) + 1)
+            ) {
               issues.push({
                 path: `${itemPath}.source_segment_ids`,
                 message: "Summary source segments must be contiguous and in raw order.",
@@ -437,7 +465,7 @@ function validateEventSummary(
             }
           }
           let sourceCharacterSpan: EventSummarySourceCharacterSpan | null = null;
-          let deterministicQuote = citedSegments.length === ids.length
+          let deterministicQuote = citedSegments.length === resolvedIds.length
             ? citedSegments.map((segment) => segment.textRaw).join("\n")
             : "";
           if (item.source_character_span !== null) {
@@ -465,13 +493,13 @@ function validateEventSummary(
               if (typeof end !== "number" || !Number.isSafeInteger(end) || end < 0) {
                 issues.push({ path: `${spanPath}.end_codepoint`, message: "Expected a non-negative Unicode code-point offset." });
               }
-              if (ids.length !== 1 || ids[0] !== segmentId) {
+              if (resolvedIds.length !== 1 || resolvedIds[0] !== segmentId) {
                 issues.push({
                   path: spanPath,
                   message: "A character span must name the one and only cited raw Segment.",
                 });
               }
-              const spanSegment = ids.length === 1 && ids[0] === segmentId
+              const spanSegment = resolvedIds.length === 1 && resolvedIds[0] === segmentId
                 ? rawById.get(segmentId)
                 : undefined;
               if (
@@ -532,7 +560,7 @@ function validateEventSummary(
             text: summaryText,
             support_quote: deterministicQuote,
             support_status: "source_linked_unverified",
-            source_segment_ids: ids,
+            source_segment_ids: resolvedIds,
             source_character_span: sourceCharacterSpan,
           });
         });
@@ -847,6 +875,7 @@ function compareProtectedSemantics(
 export function validateReadableTranscriptOutput(
   value: unknown,
   input: { eventId: string; segments: TranscriptSegment[] },
+  options: { allowRawFallback?: boolean } = {},
 ): ArtifactValidation<ReadableTranscriptOutput> {
   const issues: ArtifactContractIssue[] = [];
   if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
@@ -907,6 +936,7 @@ export function validateReadableTranscriptOutput(
       if (candidate.speaker !== expectedSpeaker) issues.push({ path: `${path}.speaker`, message: "Speaker must match the raw source group." });
       if (candidate.start_ms !== (first?.startMs ?? null)) issues.push({ path: `${path}.start_ms`, message: "Start time must match the first raw segment." });
       if (candidate.end_ms !== (last?.endMs ?? null)) issues.push({ path: `${path}.end_ms`, message: "End time must match the last raw segment." });
+      const repairableIssueStart = issues.length;
       const readableText = stringValue(candidate.readable_text, `${path}.readable_text`, issues, 12_000);
       const rawText = raw.map((segment) => segment.textRaw).join(" ");
       const forceHumanCheck = !safeForUnflaggedVerification(rawText, readableText);
@@ -1018,16 +1048,30 @@ export function validateReadableTranscriptOutput(
       if (normalizedRawText !== normalizedReadableText && edits.length === 0) {
         issues.push({ path: `${path}.edits`, message: "Every readability change must have a visible edit record." });
       }
-      segments.push({
-        readable_key: key,
-        source_segment_ids: ids,
-        speaker: expectedSpeaker,
-        start_ms: first?.startMs ?? null,
-        end_ms: last?.endMs ?? null,
-        readable_text: readableText,
-        edits,
-        needs_human_check: candidate.needs_human_check === true || forceHumanCheck,
-      });
+      if (options.allowRawFallback && issues.length > repairableIssueStart) {
+        issues.splice(repairableIssueStart);
+        segments.push({
+          readable_key: key,
+          source_segment_ids: ids,
+          speaker: expectedSpeaker,
+          start_ms: first?.startMs ?? null,
+          end_ms: last?.endMs ?? null,
+          readable_text: rawText,
+          edits: [],
+          needs_human_check: false,
+        });
+      } else {
+        segments.push({
+          readable_key: key,
+          source_segment_ids: ids,
+          speaker: expectedSpeaker,
+          start_ms: first?.startMs ?? null,
+          end_ms: last?.endMs ?? null,
+          readable_text: readableText,
+          edits,
+          needs_human_check: candidate.needs_human_check === true || forceHumanCheck,
+        });
+      }
     });
   }
   const expectedIds = input.segments.map((segment) => segment.id);

@@ -345,6 +345,33 @@ test("readable transcript exposes every change and flags semantic corrections", 
   assert.ok(result.issues.some((issue) => issue.path.endsWith("needs_human_check")));
 });
 
+test("readable provider may fall back only an invalid text/edit group to its exact raw source", () => {
+  const candidate = readable();
+  candidate.segments[0].readable_text = "";
+  candidate.segments[0].edits = [{
+    kind: "filler",
+    original: "cannot spend",
+    replacement: "",
+    reason: "unsafe model cleanup",
+    confidence: 0.9,
+  }];
+  const strict = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strict.valid, false);
+
+  const repaired = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repaired.valid, true);
+  assert.equal(
+    repaired.output.segments[0].readable_text,
+    raw.map((segment) => segment.textRaw).join(" "),
+  );
+  assert.deepEqual(repaired.output.segments[0].edits, []);
+  assert.equal(repaired.output.segments[0].needs_human_check, false);
+});
+
 test("readable transcript rejects a responsible-party swap disguised as punctuation", () => {
   const responsibilityRaw = [{
     ...raw[0],
@@ -832,7 +859,7 @@ test("summary provider no longer authors a support quote", () => {
     issue.path.endsWith(".support_quote") && issue.message === "Unexpected field."));
 });
 
-test("summary source spans fail closed for missing, cross-Event, duplicate, unordered, noncontiguous, and cross-Asset IDs", () => {
+test("summary source spans expand skipped raw turns but fail closed for missing, cross-Event, duplicate, unordered, and cross-Asset IDs", () => {
   const segments = [
     raw[0],
     raw[1],
@@ -853,12 +880,25 @@ test("summary source spans fail closed for missing, cross-Event, duplicate, unor
     ["seg_missing"],
     ["seg_1", "seg_1"],
     ["seg_2", "seg_1"],
-    ["seg_1", "seg_3"],
     ["seg_3", "seg_4"],
   ]) {
     const result = validateEventSummaryProviderOutput(providerOutput(ids), { eventId: "evt_1", segments });
     assert.equal(result.valid, false, `expected ${ids.join(",")} to fail closed`);
   }
+
+  const skippedBackchannel = validateEventSummaryProviderOutput(
+    providerOutput(["seg_1", "seg_3"]),
+    { eventId: "evt_1", segments },
+  );
+  assert.equal(skippedBackchannel.valid, true);
+  assert.deepEqual(
+    skippedBackchannel.output.sections[0].items[0].source_segment_ids,
+    ["seg_1", "seg_2", "seg_3"],
+  );
+  assert.equal(
+    skippedBackchannel.output.sections[0].items[0].support_quote,
+    segments.slice(0, 3).map((segment) => segment.textRaw).join("\n"),
+  );
 
   const crossEvent = validateEventSummaryProviderOutput(providerOutput(["seg_1"]), {
     eventId: "evt_1",

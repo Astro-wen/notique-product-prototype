@@ -899,7 +899,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     const validated = validateReadableTranscriptOutput(result.value, {
       eventId: input.new_event.event_id,
       segments: input.new_event.transcript_segments,
-    });
+    }, { allowRawFallback: true });
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }
