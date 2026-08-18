@@ -56,6 +56,7 @@ import {
 import {
   createTranscriptionRun,
   getTranscriptionRun,
+  retryFailedTranscriptionChunks,
 } from "@/lib/server/db/transcription-repository";
 import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
@@ -489,6 +490,19 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  if (
+    segments.length === 3 &&
+    segments[0] === "transcription-runs" &&
+    segments[2] === "retry-failed-chunks"
+  ) {
+    await jsonObject(request);
+    idempotencyKey(request);
+    return ok(
+      { transcription_run: await retryFailedTranscriptionChunks(scope, segments[1]) },
+      id,
+      202,
+    );
+  }
   if (segments.length === 3 && segments[0] === "draft-links" && segments[2] === "verdict") {
     const body = await jsonObject(request);
     return ok(
@@ -796,10 +810,28 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
     segments[0] === "assets" &&
     segments[2] === "transcription-runs"
   ) {
+    const body = await jsonObject(request);
+    const chunks = body.chunks === undefined
+      ? []
+      : (() => {
+          if (!Array.isArray(body.chunks)) {
+            throw new ApiFault(400, "BAD_REQUEST", "chunks must be an array.");
+          }
+          return body.chunks.map((value, index) => {
+            const chunk = record(value, `chunks[${index}]`);
+            return {
+              assetId: requiredString(chunk.asset_id, `chunks[${index}].asset_id`, { max: 128 }),
+              index: nonNegativeInteger(chunk.index, `chunks[${index}].index`),
+              startMs: nonNegativeInteger(chunk.start_ms, `chunks[${index}].start_ms`),
+              endMs: positiveInteger(chunk.end_ms, `chunks[${index}].end_ms`, 8 * 60 * 60 * 1_000),
+            };
+          });
+        })();
     const result = await createTranscriptionRun(
       scope,
       segments[1],
       idempotencyKey(request),
+      chunks,
     );
     return ok(
       { transcription_run: result.transcriptionRun },

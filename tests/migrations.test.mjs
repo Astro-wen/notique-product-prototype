@@ -105,6 +105,11 @@ test("all D1 migrations apply from an empty database", async () => {
   ]) {
     assert.equal(extractionRunColumns.has(column), true, `missing extraction timing column ${column}`);
   }
+  assert.equal(
+    transcriptionIndexes.has("uq_transcription_runs_parent_chunk"),
+    true,
+    "each parent transcription must have at most one child Run per chunk index",
+  );
   const transcriptionRunColumns = new Set(
     database
       .prepare("PRAGMA table_info(transcription_runs)")
@@ -116,6 +121,13 @@ test("all D1 migrations apply from an empty database", async () => {
     "current_queued_at",
     "first_started_at",
     "current_started_at",
+    "orchestration_mode",
+    "parent_run_id",
+    "chunk_index",
+    "chunk_start_ms",
+    "chunk_end_ms",
+    "chunk_count",
+    "completed_chunk_count",
   ]) {
     assert.equal(transcriptionRunColumns.has(column), true, `missing transcription timing column ${column}`);
   }

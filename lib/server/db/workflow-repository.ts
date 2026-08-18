@@ -168,6 +168,7 @@ export async function getWorkflowSnapshot(
          LEFT JOIN transcription_runs tr ON tr.id = (
            SELECT latest.id FROM transcription_runs latest
             WHERE latest.event_id = e.id AND latest.workspace_id = e.workspace_id
+              AND latest.parent_run_id IS NULL
             ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
          )
          LEFT JOIN transcription_queue_outbox tqo ON tqo.run_id = tr.id

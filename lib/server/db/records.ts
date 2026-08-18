@@ -210,6 +210,15 @@ export function transcriptionRunRecord(row: Row): TranscriptionRunRecord {
     provider: text(row, "provider"),
     model: text(row, "model"),
     response_format: "diarized_json",
+    orchestration_mode: (nullableText(row, "orchestration_mode") ?? "single") as TranscriptionRunRecord["orchestration_mode"],
+    parent_run_id: nullableText(row, "parent_run_id"),
+    chunk_index: row.chunk_index === null || row.chunk_index === undefined ? null : integer(row, "chunk_index"),
+    chunk_start_ms: row.chunk_start_ms === null || row.chunk_start_ms === undefined ? null : integer(row, "chunk_start_ms"),
+    chunk_end_ms: row.chunk_end_ms === null || row.chunk_end_ms === undefined ? null : integer(row, "chunk_end_ms"),
+    chunk_count: row.chunk_count === null || row.chunk_count === undefined ? null : integer(row, "chunk_count"),
+    completed_chunk_count: row.completed_chunk_count === null || row.completed_chunk_count === undefined
+      ? 0
+      : integer(row, "completed_chunk_count"),
     derived_transcript_asset_id: nullableText(row, "derived_transcript_asset_id"),
     derived_transcript_asset_version_id: nullableText(
       row,

@@ -472,6 +472,15 @@ export const transcriptionRuns = sqliteTable(
     model: text("model").notNull(),
     responseFormat: text("response_format").notNull().default("diarized_json"),
     requestTimeoutMs: integer("request_timeout_ms").notNull(),
+    orchestrationMode: text("orchestration_mode", {
+      enum: ["single", "chunked", "chunk"],
+    }).notNull().default("single"),
+    parentRunId: text("parent_run_id"),
+    chunkIndex: integer("chunk_index"),
+    chunkStartMs: integer("chunk_start_ms"),
+    chunkEndMs: integer("chunk_end_ms"),
+    chunkCount: integer("chunk_count"),
+    completedChunkCount: integer("completed_chunk_count").notNull().default(0),
     stagedResultR2Key: text("staged_result_r2_key"),
     stagedResultSha256: text("staged_result_sha256"),
     derivedTranscriptAssetId: text("derived_transcript_asset_id"),
@@ -508,6 +517,10 @@ export const transcriptionRuns = sqliteTable(
       table.createdAt,
     ),
     index("idx_transcription_runs_lease").on(table.status, table.leaseExpiresAt),
+    index("idx_transcription_runs_parent_chunk").on(table.parentRunId, table.chunkIndex),
+    uniqueIndex("uq_transcription_runs_parent_chunk")
+      .on(table.parentRunId, table.chunkIndex)
+      .where(sql`${table.parentRunId} IS NOT NULL`),
   ],
 );
 

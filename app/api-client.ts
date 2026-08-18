@@ -198,6 +198,13 @@ export type TranscriptionRun = {
   audioAssetId: Id;
   status: string;
   model: string;
+  orchestrationMode: "single" | "chunked" | "chunk";
+  parentRunId?: Id;
+  chunkIndex?: number;
+  chunkStartMs?: number;
+  chunkEndMs?: number;
+  chunkCount?: number;
+  completedChunkCount: number;
   derivedTranscriptAssetId?: Id;
   segmentCount?: number;
   durationMs?: number;
@@ -220,6 +227,15 @@ export type TranscriptionRun = {
     startMs: number;
     endMs: number;
     text: string;
+  }>;
+  chunks: Array<{
+    id: Id;
+    index: number;
+    startMs: number;
+    endMs: number;
+    status: string;
+    processingAttemptNo: number;
+    errorCode?: string;
   }>;
 };
 
@@ -533,12 +549,23 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
   const source = isRecord(unwrap(value)) ? unwrap(value) as JsonRecord : {};
   const segments = Array.isArray(source.segments) ? source.segments : [];
   const errorDetails = isRecord(source.error_details) ? source.error_details : {};
+  const chunks = Array.isArray(source.chunks) ? source.chunks : [];
   return {
     id: asString(pick(source, ["id", "run_id"])),
     eventId: asString(pick(source, ["event_id"])),
     audioAssetId: asString(pick(source, ["audio_asset_id"])),
     status: asString(pick(source, ["status"]), "unknown"),
     model: asString(pick(source, ["model"])),
+    orchestrationMode: asString(
+      pick(source, ["orchestration_mode", "orchestrationMode"]),
+      "single",
+    ) as TranscriptionRun["orchestrationMode"],
+    parentRunId: asString(pick(source, ["parent_run_id", "parentRunId"]), undefined as unknown as string) || undefined,
+    chunkIndex: asNumber(pick(source, ["chunk_index", "chunkIndex"])),
+    chunkStartMs: asNumber(pick(source, ["chunk_start_ms", "chunkStartMs"])),
+    chunkEndMs: asNumber(pick(source, ["chunk_end_ms", "chunkEndMs"])),
+    chunkCount: asNumber(pick(source, ["chunk_count", "chunkCount"])),
+    completedChunkCount: asNumber(pick(source, ["completed_chunk_count", "completedChunkCount"])) ?? 0,
     derivedTranscriptAssetId: asString(
       pick(source, ["derived_transcript_asset_id"]),
       undefined as unknown as string,
@@ -571,6 +598,21 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
         startMs: asNumber(pick(item, ["start_ms"])) ?? 0,
         endMs: asNumber(pick(item, ["end_ms"])) ?? 0,
         text: asString(pick(item, ["text"])),
+      }];
+    }),
+    chunks: chunks.flatMap((item): TranscriptionRun["chunks"] => {
+      if (!isRecord(item)) return [];
+      const id = asString(pick(item, ["id"]));
+      const index = asNumber(pick(item, ["index", "chunk_index"]));
+      if (!id || index === undefined) return [];
+      return [{
+        id,
+        index,
+        startMs: asNumber(pick(item, ["start_ms", "startMs", "chunk_start_ms"])) ?? 0,
+        endMs: asNumber(pick(item, ["end_ms", "endMs", "chunk_end_ms"])) ?? 0,
+        status: asString(pick(item, ["status"]), "unknown"),
+        processingAttemptNo: asNumber(pick(item, ["processing_attempt_no", "attempt_no"])) ?? 0,
+        errorCode: asString(pick(item, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
       }];
     }),
   };
@@ -1206,12 +1248,13 @@ export const api = {
     return body.data.events.map((item) => requireId(normalizeEvent(item), "event"));
   },
 
-  async initAsset(eventId: Id, input: { kind: string; filename: string; content_type: string; size_bytes: number }, idempotencyKey: string): Promise<{ assetId: Id; uploadUrl?: string }> {
+  async initAsset(eventId: Id, input: { kind: string; filename: string; content_type: string; size_bytes: number; metadata?: Record<string, unknown> }, idempotencyKey: string): Promise<{ assetId: Id; uploadUrl?: string }> {
     const payload: AssetInitRequest = {
       kind: input.kind as AssetInitRequest["kind"],
       filename: input.filename,
       mime_type: input.content_type,
       size_bytes: input.size_bytes,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     };
     const body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
       method: "POST",
@@ -1231,6 +1274,20 @@ export const api = {
     await request<unknown>(uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`, { method: "PUT", headers: { "content-type": contentType }, body });
   },
 
+  async downloadAsset(assetId: Id): Promise<Blob> {
+    const response = await fetch(`/api/v1/assets/${encodeURIComponent(assetId)}/evidence-view`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") ?? "";
+      const body = contentType.includes("application/json")
+        ? await response.json().catch(() => null)
+        : await response.text().catch(() => "");
+      throw new ApiClientError(issueFrom(response.status, response.headers, body));
+    }
+    return response.blob();
+  },
+
   async finalizeAsset(assetId: Id): Promise<Asset> {
     const body = await request<unknown>(`/api/v1/assets/${encodeURIComponent(assetId)}/finalize`, { method: "POST", body: jsonBody({}) });
     const result = normalizeAsset(dataValue(body, ["asset"]));
@@ -1238,13 +1295,28 @@ export const api = {
     return result;
   },
 
-  async startTranscription(assetId: Id, idempotencyKey: string): Promise<TranscriptionRun> {
+  async startTranscription(
+    assetId: Id,
+    idempotencyKey: string,
+    chunks: Array<{ assetId: Id; index: number; startMs: number; endMs: number }> = [],
+  ): Promise<TranscriptionRun> {
     const body = await request<CreateTranscriptionRunResponse>(
       `/api/v1/assets/${encodeURIComponent(assetId)}/transcription-runs`,
       {
         method: "POST",
         headers: { "idempotency-key": idempotencyKey },
-        body: "{}",
+        body: jsonBody({
+          ...(chunks.length
+            ? {
+                chunks: chunks.map((chunk) => ({
+                  asset_id: chunk.assetId,
+                  index: chunk.index,
+                  start_ms: chunk.startMs,
+                  end_ms: chunk.endMs,
+                })),
+              }
+            : {}),
+        }),
       },
     );
     return requireId(
@@ -1257,6 +1329,21 @@ export const api = {
     const body = await request<GetTranscriptionRunResponse>(
       `/api/v1/transcription-runs/${encodeURIComponent(runId)}`,
       { cache: "no-store" },
+    );
+    return requireId(
+      normalizeTranscriptionRun(body.data.transcription_run),
+      "transcription run",
+    );
+  },
+
+  async retryFailedTranscriptionChunks(runId: Id, idempotencyKey: string): Promise<TranscriptionRun> {
+    const body = await request<GetTranscriptionRunResponse>(
+      `/api/v1/transcription-runs/${encodeURIComponent(runId)}/retry-failed-chunks`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({}),
+      },
     );
     return requireId(
       normalizeTranscriptionRun(body.data.transcription_run),

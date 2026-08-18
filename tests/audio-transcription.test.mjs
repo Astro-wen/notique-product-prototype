@@ -30,6 +30,100 @@ test("audio policy accepts only the transcription provider formats and enforces 
   assert.equal(policy.AUDIO_FILE_ACCEPT.includes(".m4a"), true);
 });
 
+test("long audio is split into deterministic overlapping time chunks without coverage gaps", async () => {
+  const chunking = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  assert.equal(chunking.shouldChunkAudio({ durationMs: 4 * 60_000, sizeBytes: 4_000_000 }), false);
+  assert.equal(chunking.shouldChunkAudio({ durationMs: 6 * 60_000, sizeBytes: 4_000_000 }), true);
+  assert.equal(chunking.shouldChunkAudio({ durationMs: 60_000, sizeBytes: 19 * 1024 * 1024 }), true);
+
+  const chunks = chunking.planAudioChunks(10 * 60_000, 3 * 60_000, 5_000);
+  assert.deepEqual(chunks, [
+    { index: 0, startMs: 0, endMs: 180_000 },
+    { index: 1, startMs: 175_000, endMs: 355_000 },
+    { index: 2, startMs: 350_000, endMs: 530_000 },
+    { index: 3, startMs: 525_000, endMs: 600_000 },
+  ]);
+  assert.equal(chunks[0].startMs, 0);
+  assert.equal(chunks.at(-1).endMs, 600_000);
+  for (let index = 1; index < chunks.length; index += 1) {
+    assert.equal(chunks[index - 1].endMs - chunks[index].startMs, 5_000);
+  }
+});
+
+test("chunk transcripts merge onto the original timeline and remove only proven boundary duplicates", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0,
+      startMs: 0,
+      endMs: 180_000,
+      assetVersionId: "av_chunk_0",
+      transcript: {
+        durationSeconds: 180,
+        text: "Opening. The budget is five hundred thousand dollars.",
+        segments: [
+          { speaker: "A", text: "Opening.", startSeconds: 10, endSeconds: 12 },
+          {
+            speaker: "B",
+            text: "The budget is five hundred thousand dollars.",
+            startSeconds: 176,
+            endSeconds: 179,
+          },
+        ],
+      },
+    },
+    {
+      index: 1,
+      startMs: 175_000,
+      endMs: 355_000,
+      assetVersionId: "av_chunk_1",
+      transcript: {
+        durationSeconds: 180,
+        text: "The budget is five hundred thousand dollars. Three bedrooms are required.",
+        segments: [
+          {
+            speaker: "B",
+            text: "The budget is five hundred thousand dollars.",
+            startSeconds: 1,
+            endSeconds: 4,
+          },
+          {
+            speaker: "A",
+            text: "Three bedrooms are required.",
+            startSeconds: 8,
+            endSeconds: 11,
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(merged.durationSeconds, 355);
+  assert.deepEqual(merged.segments.map((segment) => segment.text), [
+    "Opening.",
+    "The budget is five hundred thousand dollars.",
+    "Three bedrooms are required.",
+  ]);
+  assert.equal(merged.segments[1].startSeconds, 176);
+  assert.equal(merged.segments[1].endSeconds, 179);
+  assert.equal(merged.segments[2].startSeconds, 183);
+});
+
+test("chunk merging fails closed on missing indices or non-overlapping source ranges", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const transcript = {
+    durationSeconds: 5,
+    text: "Hello",
+    segments: [{ speaker: "A", text: "Hello", startSeconds: 0, endSeconds: 1 }],
+  };
+  assert.throws(() => mergeChunkTranscripts([
+    { index: 1, startMs: 0, endMs: 5_000, assetVersionId: "av", transcript },
+  ]), /contiguous/);
+  assert.throws(() => mergeChunkTranscripts([
+    { index: 0, startMs: 0, endMs: 5_000, assetVersionId: "av0", transcript },
+    { index: 1, startMs: 5_000, endMs: 10_000, assetVersionId: "av1", transcript },
+  ]), /must overlap/);
+});
+
 test("audio magic validation rejects renamed files", async () => {
   const policy = await loadAudioPolicy();
   const wav = new Uint8Array(12);
@@ -414,6 +508,35 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(envExample, /^MAX_AUDIO_BYTES=104857600$/m);
 });
 
+test("chunked transcription uses hidden child assets, bounded parallel jobs, and one canonical parent transcript", async () => {
+  const [route, repository, processor, outbox, workflow, page, client] = await Promise.all([
+    readFile(path.join(root, "app/api/v1/[...segments]/route.ts"), "utf8"),
+    readFile(path.join(root, "lib/server/db/transcription-repository.ts"), "utf8"),
+    readFile(path.join(root, "lib/server/jobs/transcription-processor.ts"), "utf8"),
+    readFile(path.join(root, "lib/server/jobs/transcription-outbox.ts"), "utf8"),
+    readFile(path.join(root, "lib/server/db/workflow-repository.ts"), "utf8"),
+    readFile(path.join(root, "app/page.tsx"), "utf8"),
+    readFile(path.join(root, "app/api-client.ts"), "utf8"),
+  ]);
+  const getHandler = route.slice(route.indexOf("async function getHandler"), route.indexOf("async function postHandler"));
+  const postHandler = route.slice(route.indexOf("async function postHandler"), route.indexOf("async function putHandler"));
+  assert.doesNotMatch(getHandler, /retry-failed-chunks/);
+  assert.match(postHandler, /retry-failed-chunks/);
+  assert.match(postHandler, /idempotencyKey\(request\)/);
+  assert.match(repository, /orchestration_mode, chunk_count, completed_chunk_count/);
+  assert.match(repository, /metadata\.transcription_chunk !== true/);
+  assert.match(repository, /metadata\.analysis_source !== false/);
+  assert.match(repository, /uq_transcription_runs_parent_chunk|parent_run_id/);
+  assert.match(processor, /mergeChunkTranscripts/);
+  assert.match(processor, /source_audio_asset_version_id: parent\.audio_asset_version_id/);
+  assert.match(outbox, /AUDIO_CHUNK_MAX_PARALLEL/);
+  assert.match(outbox, /Promise\.all/);
+  assert.match(workflow, /parent_run_id IS NULL/);
+  assert.match(page, /prepareLongAudioTranscription/);
+  assert.match(page, /api\.downloadAsset\(audioAssetId\)/);
+  assert.match(client, /retryFailedTranscriptionChunks\(runId: Id, idempotencyKey: string\)/);
+});
+
 test("audio smoke test uses the production Event response envelope and stays on loopback", async () => {
   const smoke = await readFile(path.join(root, "scripts/run-audio-transcription-smoke.mjs"), "utf8");
   assert.match(smoke, /Audio smoke test is restricted to localhost/);
@@ -454,7 +577,7 @@ test("simple flow supports audio-first setup and preserves a transcription start
   );
   assert.match(attachSimple, /resolveSimpleImportTarget/);
   assert.match(attachSimple, /createEvent: async \(currentProject\)/);
-  assert.match(attachSimple, /await launchTranscription\(init\.assetId, targetEvent\.id\)/);
+  assert.match(attachSimple, /await prepareLongAudioTranscription\([\s\S]*init\.assetId,[\s\S]*targetEvent\.id/);
   assert.match(
     attachSimple,
     /const issue = toIssue\(error\);[\s\S]*await loadSimpleProject[\s\S]*setEventIssue\(issue\)/,

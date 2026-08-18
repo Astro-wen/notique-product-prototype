@@ -352,7 +352,9 @@ export async function getProjectDeletePreview(
   const row = await first(
     `SELECT
        (SELECT COUNT(*) FROM assets WHERE project_id = ? AND workspace_id = ?
-          AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript') AS material_count,
+          AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+          AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+          AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1) AS material_count,
        (SELECT COUNT(*) FROM extraction_runs
          WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) +
        (SELECT COUNT(*) FROM transcription_runs

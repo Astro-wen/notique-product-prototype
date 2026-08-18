@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 const outputDir = mkdtempSync(join(tmpdir(), "notique-highlight-"));
-execFileSync("npx", ["tsc", "lib/domain/text-highlight.ts", "--target", "ES2022", "--module", "commonjs", "--outDir", outputDir], { stdio: "pipe" });
+execFileSync("npx", ["tsc", "lib/domain/text-highlight.ts", "--target", "ES2022", "--module", "commonjs", "--skipLibCheck", "--outDir", outputDir], { stdio: "pipe" });
 const compiled = readFileSync(join(outputDir, "text-highlight.js"), "utf8");
 const textHighlightModule = { exports: {} };
 new Function("module", "exports", compiled)(

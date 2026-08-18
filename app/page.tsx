@@ -16,6 +16,12 @@ import {
   MAX_AUDIO_BYTES,
   audioMimeFor,
 } from "@/lib/domain/audio-transcription";
+import { shouldChunkAudio } from "@/lib/domain/audio-chunking";
+import {
+  audioChunkPlan,
+  inspectAudioDurationMs,
+  prepareAudioChunk,
+} from "@/app/audio-chunking";
 import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
 import {
   type ProjectWorkflowPlan,
@@ -392,6 +398,7 @@ function audioUploadIssue(filename: string, mimeType: string, sizeBytes: number)
 function transcriptionRunIdFromEvent(value: Event): string | undefined {
   for (const asset of [...value.assets].reverse()) {
     if (asset.kind !== "audio") continue;
+    if (asset.metadata.transcription_chunk === true) continue;
     const runId = stringValue(asset.metadata.transcription_run_id);
     if (runId) return runId;
   }
@@ -407,7 +414,9 @@ function assetIsAnalyzable(asset: Event["assets"][number]): boolean {
 }
 
 function assetIsGeneratedAiArtifact(asset: Event["assets"][number]): boolean {
-  return asset.metadata.artifact_kind === "readable_transcript" || asset.metadata.analysis_source === false;
+  return asset.metadata.artifact_kind === "readable_transcript"
+    || asset.metadata.analysis_source === false
+    || asset.metadata.transcription_chunk === true;
 }
 
 const idleProjectWorkflow: ProjectWorkflowState = {
@@ -1568,6 +1577,7 @@ export default function Home() {
   const localDispatchRuns = useRef(new Set<string>());
   const staleRecoveryRuns = useRef(new Set<string>());
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
+  const activeTranscriptionDispatches = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
   const projectWorkflowRefreshToken = useRef(0);
   const guidedTransitionKey = useRef("");
@@ -2122,6 +2132,7 @@ export default function Home() {
 
   const activeTranscriptionRunId = transcriptionRun?.id;
   const activeTranscriptionRunStatus = transcriptionRun?.status;
+  const activeTranscriptionRunChunkCount = transcriptionRun?.chunkCount;
 
   useEffect(() => {
     if (!activeTranscriptionRunId || !runInProgress.has(activeTranscriptionRunStatus ?? "")) return;
@@ -2140,7 +2151,10 @@ export default function Home() {
     };
     const poll = async () => {
       if (cancelled) return;
-      if (Date.now() - pollStartedAt >= 10 * 60_000) {
+      const pollTimeoutMs = activeTranscriptionRunChunkCount && activeTranscriptionRunChunkCount > 1
+        ? 30 * 60_000
+        : 10 * 60_000;
+      if (Date.now() - pollStartedAt >= pollTimeoutMs) {
         setEventIssue({
           code: "TRANSCRIPTION_POLL_TIMEOUT",
           message: "等待逐字稿的时间过长。录音已经保存，可以重新检查后台状态；如果服务器已经标记失败，也可以重新转写。",
@@ -2153,6 +2167,9 @@ export default function Home() {
         const latest = await api.getTranscriptionRun(runId);
         if (cancelled) return;
         setTranscriptionRun(latest);
+        if (latest.orchestrationMode === "chunked" && latest.status === "processing") {
+          wakeChunkedTranscription(latest.id);
+        }
         if (!runInProgress.has(latest.status)) {
           if (latest.status === "succeeded" && event?.id) {
             const refreshed = await api.getEvent(event.id);
@@ -2185,7 +2202,7 @@ export default function Home() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
+  }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
 
   const activeExtractionRunId = run?.id;
   const activeExtractionRunStatus = run?.status;
@@ -3130,17 +3147,87 @@ export default function Home() {
     audioAssetId: string,
     targetEventId: string,
     retryOfRunId = "initial",
+    chunks: Array<{ assetId: string; index: number; startMs: number; endMs: number }> = [],
   ): Promise<TranscriptionRun> {
     const fingerprint = ["transcription", audioAssetId, retryOfRunId].join(":");
     const key = transcriptionKeys.current.get(fingerprint) || crypto.randomUUID();
     transcriptionKeys.current.set(fingerprint, key);
-    const next = await api.startTranscription(audioAssetId, key);
+    const next = await api.startTranscription(audioAssetId, key, chunks);
     transcriptionKeys.current.delete(fingerprint);
     setTranscriptionRun(next);
     setTranscriptionPollCycle((current) => current + 1);
+    if (next.orchestrationMode === "chunked") {
+      wakeChunkedTranscription(next.id);
+    }
     const refreshed = await api.getEvent(targetEventId);
     setEvent(refreshed);
     return next;
+  }
+
+  function wakeChunkedTranscription(runId: string): void {
+    if (activeTranscriptionDispatches.current.has(runId)) return;
+    activeTranscriptionDispatches.current.add(runId);
+    void api.kickDispatcher({ kind: "transcription", runId })
+      .catch(() => undefined)
+      .finally(() => activeTranscriptionDispatches.current.delete(runId));
+  }
+
+  async function prepareLongAudioTranscription(
+    source: Blob,
+    filename: string,
+    originalAudioAssetId: string,
+    targetEventId: string,
+  ): Promise<TranscriptionRun> {
+    const durationMs = await inspectAudioDurationMs(source);
+    if (!shouldChunkAudio({ durationMs, sizeBytes: source.size })) {
+      return launchTranscription(originalAudioAssetId, targetEventId);
+    }
+    const plan = audioChunkPlan(durationMs);
+    const uploadedChunks: Array<{
+      assetId: string;
+      index: number;
+      startMs: number;
+      endMs: number;
+    }> = [];
+    for (const item of plan) {
+      flash(`正在整理长录音：第 ${item.index + 1}/${plan.length} 段`);
+      const prepared = await prepareAudioChunk(source, item, filename);
+      const fingerprint = [
+        "transcription-chunk",
+        originalAudioAssetId,
+        item.index,
+        item.startMs,
+        item.endMs,
+        prepared.blob.size,
+      ].join(":");
+      const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, key);
+      const initialized = await api.initAsset(targetEventId, {
+        kind: "audio",
+        filename: prepared.filename,
+        content_type: prepared.mimeType,
+        size_bytes: prepared.blob.size,
+        metadata: {
+          analysis_source: false,
+          transcription_chunk: true,
+          source_audio_asset_id: originalAudioAssetId,
+          chunk_index: item.index,
+          chunk_start_ms: item.startMs,
+          chunk_end_ms: item.endMs,
+        },
+      }, key);
+      await api.uploadAsset(
+        initialized.assetId,
+        initialized.uploadUrl,
+        prepared.blob,
+        prepared.mimeType,
+      );
+      await api.finalizeAsset(initialized.assetId);
+      mutationKeys.current.delete(fingerprint);
+      uploadedChunks.push({ assetId: initialized.assetId, ...item });
+    }
+    flash(`长录音已分成 ${plan.length} 段，正在并行转写`);
+    return launchTranscription(originalAudioAssetId, targetEventId, "chunked", uploadedChunks);
   }
 
   async function retryAudioTranscription(audioAssetId: string) {
@@ -3165,6 +3252,19 @@ export default function Home() {
         }
       }
       if (current && runInProgress.has(current.status)) {
+        const failedChunks = current.chunks.filter((chunk) => chunk.status === "failed");
+        if (current.orchestrationMode === "chunked" && failedChunks.length > 0) {
+          const retryFingerprint = `transcription-chunks-retry:${current.id}:${failedChunks.map((chunk) => chunk.index).join(",")}`;
+          const retryKey = mutationKeys.current.get(retryFingerprint) || crypto.randomUUID();
+          mutationKeys.current.set(retryFingerprint, retryKey);
+          current = await api.retryFailedTranscriptionChunks(current.id, retryKey);
+          mutationKeys.current.delete(retryFingerprint);
+          setTranscriptionRun(current);
+          wakeChunkedTranscription(current.id);
+          setTranscriptionPollCycle((value) => value + 1);
+          flash(`只重试失败的 ${failedChunks.length} 个录音片段，已完成片段不会重复收费`);
+          return;
+        }
         await api.kickDispatcher({ kind: "transcription", runId: current.id }).catch(() => undefined);
         const latest = await api.getTranscriptionRun(current.id);
         if (runInProgress.has(latest.status)) {
@@ -3179,6 +3279,20 @@ export default function Home() {
           flash("逐字稿已经生成");
           return;
         }
+      }
+      const audioAsset = event.assets.find((asset) => asset.id === audioAssetId);
+      if (current?.status === "failed" && audioAsset) {
+        const source = await api.downloadAsset(audioAssetId);
+        const next = await prepareLongAudioTranscription(
+          source,
+          audioAsset.filename,
+          audioAssetId,
+          event.id,
+        );
+        flash(next.orchestrationMode === "chunked"
+          ? `已改用 ${next.chunkCount ?? next.chunks.length} 段并行转写，不需要重新上传录音`
+          : "已重新开始转写，录音不会重复上传");
+        return;
       }
       await launchTranscription(audioAssetId, event.id, current?.id || "retry-without-run");
       flash("已重新开始转写，录音不会重复上传");
@@ -3619,8 +3733,15 @@ export default function Home() {
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
       if (kind === "audio") {
-        await launchTranscription(init.assetId, targetEvent.id);
-        flash("录音已保存，正在生成带说话人和时间点的逐字稿");
+        const transcription = await prepareLongAudioTranscription(
+          file,
+          file.name,
+          init.assetId,
+          targetEvent.id,
+        );
+        flash(transcription.orchestrationMode === "chunked"
+          ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
+          : "录音已保存，正在生成带说话人和时间点的逐字稿");
       } else {
         flash("材料已加入");
       }
@@ -4012,8 +4133,15 @@ export default function Home() {
             await api.finalizeAsset(init.assetId);
             mutationKeys.current.delete(fingerprint);
             if (preparedInput.kind === "audio") {
-              await launchTranscription(init.assetId, event.id);
-              flash("录音已保存，正在生成逐字稿");
+              const transcription = await prepareLongAudioTranscription(
+                preparedInput.blob,
+                preparedInput.filename,
+                init.assetId,
+                event.id,
+              );
+              flash(transcription.orchestrationMode === "chunked"
+                ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
+                : "录音已保存，正在生成逐字稿");
             } else {
               flash("材料已加入这次沟通");
             }
@@ -4649,7 +4777,8 @@ function SimpleTestScreen({
   const verifiedCount = claims.filter((claim) => claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn").length;
   const loadingSelection = projectState === "loading" || eventState === "loading";
   const issue = eventIssue ?? projectIssue ?? projectsIssue;
-  const audioAssets = event?.assets.filter((asset) => asset.kind === "audio") ?? [];
+  const audioAssets = event?.assets.filter((asset) =>
+    asset.kind === "audio" && asset.metadata.transcription_chunk !== true) ?? [];
   const retryAudioAsset = audioAssets.find((asset) => asset.id === transcriptionRun?.audioAssetId) ?? audioAssets[0];
   const issueRetry = issue?.code.includes("TRANSCRIPTION") && retryAudioAsset
     ? () => onRetryTranscription(retryAudioAsset.id)
@@ -4829,6 +4958,11 @@ function SimpleTestScreen({
     && Number.isFinite(transcriptionTimingEnd)
     ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
     : null;
+  const transcriptionProgressText = transcriptionRun?.orchestrationMode === "chunked"
+    ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段`
+    : transcriptionRun
+      ? transcriptionRun.errorCode || statusLabel(transcriptionRun.status)
+      : "";
   const workflowStepActionable = projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed"
@@ -5136,7 +5270,8 @@ function SimpleTestScreen({
           {activeTab === "transcript" && <div className="meeting-tab-panel">
             {event ? <>
               {transcriptionRun && !transcriptionDone && <section className={`transcription-progress transcript-detail ${transcriptionFailed ? "failed" : ""}`}>
-                <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? "正在识别说话人和时间点" : "录音转写没有完成"}</strong><small>{`${transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
+                <div><span className="file-kind">AUD</span><span><strong>{transcriptionRunning ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行识别说话人和时间点" : "正在识别说话人和时间点" : "录音转写没有完成"}</strong><small>{`${transcriptionProgressText}${transcriptionProcessingDurationMs != null ? ` · 已用 ${formatReviewDuration(transcriptionProcessingDurationMs)}` : ""}`}</small></span></div>
+                {transcriptionRun.orchestrationMode === "chunked" && transcriptionRun.chunks.some((chunk) => chunk.status === "failed") && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : `重试失败的 ${transcriptionRun.chunks.filter((chunk) => chunk.status === "failed").length} 段`}</button>}
                 {transcriptionFailed && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}
               </section>}
               <TranscriptArtifactsPanel
@@ -5410,7 +5545,8 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
   if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} backLabel="返回项目" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const readyAssets = event.assets.filter(assetIsAnalyzable);
   const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
-  const audioAssets = event.assets.filter((asset) => asset.kind === "audio");
+  const audioAssets = event.assets.filter((asset) =>
+    asset.kind === "audio" && asset.metadata.transcription_chunk !== true);
   const retryAudioAsset = audioAssets.find((asset) => asset.id === transcriptionRun?.audioAssetId) ?? audioAssets[0];
   const retryIssue = issue?.code.includes("TRANSCRIPTION") && retryAudioAsset
     ? () => onRetryTranscription(retryAudioAsset.id)
@@ -5440,7 +5576,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
             const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
             return <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
           })}</div>}
-          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
+          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{segment.speaker}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
           <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { const blob = new Blob([paste], { type: "text/plain" }); void onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }).then(() => setPaste("")); })}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
         </section>
         <aside className="event-rail">

@@ -1,10 +1,12 @@
 import { getD1 } from "@/db";
 import {
+  finalizeChunkedTranscriptionParent,
   processTranscriptionRun,
   requeueExpiredTranscriptionRuns,
   transcriptionTimeoutMs,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
+import { AUDIO_CHUNK_MAX_PARALLEL } from "@/lib/domain/audio-chunking";
 import {
   TRANSCRIPTION_MAX_ATTEMPTS,
   transcriptionRetryDecision,
@@ -34,7 +36,7 @@ export type TranscriptionSweepResult = {
 };
 
 const MAX_OUTBOX_ATTEMPTS = TRANSCRIPTION_MAX_ATTEMPTS;
-const BATCH_LIMIT = 1;
+const BATCH_LIMIT = AUDIO_CHUNK_MAX_PARALLEL;
 const TRANSCRIPTION_TERMINAL_STATES = ["succeeded", "failed", "cancelled"] as const;
 
 type DispatchTarget = { runId: string; workspaceId: string };
@@ -317,12 +319,12 @@ export async function dispatchDueTranscriptionOutbox(
     deferred: 0,
     items: [],
   };
-  for (const row of rows) {
+  await Promise.all(rows.map(async (row) => {
     const owner = `transcription_dispatcher_${crypto.randomUUID()}`;
     const leased = await lease(row, owner, timestamp);
     if (!leased) {
       result.deferred += 1;
-      continue;
+      return;
     }
     result.claimed += 1;
     try {
@@ -334,7 +336,7 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: "dispatch_failed",
           errorCode: "OUTBOX_PAYLOAD_HASH_MISMATCH",
         });
-        continue;
+        return;
       }
       const payload = JSON.parse(String(leased.payload_json)) as {
         transcription_run_id?: unknown;
@@ -347,7 +349,7 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: "dispatch_failed",
           errorCode: "OUTBOX_PAYLOAD_INVALID",
         });
-        continue;
+        return;
       }
       const processed = await processTranscriptionRun(String(leased.run_id));
       if (processed.status === "retryable") {
@@ -371,7 +373,7 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: processed.status,
           errorCode: retryDecision.errorCode,
         });
-        continue;
+        return;
       }
       if (processed.status === "lease_not_acquired") {
         const run = await first(`SELECT status FROM transcription_runs WHERE id = ?`, [leased.run_id]);
@@ -403,7 +405,7 @@ export async function dispatchDueTranscriptionOutbox(
         errorCode: code,
       });
     }
-  }
+  }));
   return result;
 }
 
@@ -411,7 +413,38 @@ export async function dispatchTranscriptionRun(
   workspaceId: string,
   runId: string,
 ): Promise<TranscriptionDispatchResult> {
-  return dispatchDueTranscriptionOutbox({ workspaceId, runId });
+  const parent = await first(
+    `SELECT orchestration_mode FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    [runId, workspaceId],
+  );
+  if (String(parent?.orchestration_mode) !== "chunked") {
+    return dispatchDueTranscriptionOutbox({ workspaceId, runId });
+  }
+  const children = (
+    await getD1()
+      .prepare(
+        `SELECT id FROM transcription_runs
+          WHERE parent_run_id = ? AND workspace_id = ?
+            AND status IN ('queued','processing')
+          ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, chunk_index
+          LIMIT ?`,
+      )
+      .bind(runId, workspaceId, AUDIO_CHUNK_MAX_PARALLEL)
+      .all<Row>()
+  ).results ?? [];
+  const dispatched = await Promise.all(
+    children.map((child) => dispatchDueTranscriptionOutbox({
+      workspaceId,
+      runId: String(child.id),
+    })),
+  );
+  await finalizeChunkedTranscriptionParent(runId);
+  return dispatched.reduce<TranscriptionDispatchResult>((result, current) => ({
+    claimed: result.claimed + current.claimed,
+    sent: result.sent + current.sent,
+    deferred: result.deferred + current.deferred,
+    items: [...result.items, ...current.items],
+  }), { claimed: 0, sent: 0, deferred: 0, items: [] });
 }
 
 /**

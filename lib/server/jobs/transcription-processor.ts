@@ -12,6 +12,7 @@ import {
   loadOrStageTranscriptionResult,
 } from "@/lib/domain/transcription-retry";
 import { normalizeTranscriptText } from "@/lib/domain/transcript";
+import { mergeChunkTranscripts } from "@/lib/domain/audio-chunking";
 import { sha256Hex, transcriptionStagingObjectKey } from "@/lib/server/storage/keys";
 
 type Row = Record<string, unknown>;
@@ -415,6 +416,16 @@ async function persistTranscript(
     response_format: run.response_format,
     source_audio_asset_id: run.audio_asset_id,
     source_audio_asset_version_id: run.audio_asset_version_id,
+    ...(String(run.orchestration_mode) === "chunk"
+      ? {
+          analysis_source: false,
+          transcription_chunk: true,
+          parent_transcription_run_id: run.parent_run_id,
+          chunk_index: run.chunk_index,
+          chunk_start_ms: run.chunk_start_ms,
+          chunk_end_ms: run.chunk_end_ms,
+        }
+      : {}),
   };
   const db = getD1();
   const guardId = id("guard");
@@ -695,7 +706,17 @@ export async function processTranscriptionRun(
   try {
     const staged = await loadOrCreateStagedResult(leased, owner);
     stagedReady = true;
-    return await persistTranscript(leased, owner, staged);
+    const result = await persistTranscript(leased, owner, staged);
+    if (leased.parent_run_id) {
+      await finalizeChunkedTranscriptionParent(String(leased.parent_run_id)).catch((error) => {
+        console.error("chunked_transcription_finalize_deferred", {
+          parent_run_id: leased.parent_run_id,
+          child_run_id: leased.id,
+          message: safeError(error),
+        });
+      });
+    }
+    return result;
   } catch (error) {
     if (error instanceof TranscriptionFault && error.retryable) {
       return markRetryable(leased, owner, error);
@@ -711,8 +732,251 @@ export async function processTranscriptionRun(
         ),
       );
     }
-    return markFailed(leased, owner, error);
+    const failed = await markFailed(leased, owner, error);
+    if (leased.parent_run_id) {
+      await finalizeChunkedTranscriptionParent(String(leased.parent_run_id)).catch(() => undefined);
+    }
+    return failed;
   }
+}
+
+export async function finalizeChunkedTranscriptionParent(
+  parentRunId: string,
+): Promise<"not_ready" | "already_terminal" | "succeeded"> {
+  const parent = await first(
+    `SELECT r.*, a.filename
+       FROM transcription_runs r
+       JOIN assets a ON a.id = r.audio_asset_id
+      WHERE r.id = ? AND r.orchestration_mode = 'chunked'`,
+    [parentRunId],
+  );
+  if (!parent) return "not_ready";
+  if (TERMINAL.has(String(parent.status))) return "already_terminal";
+  const children = (
+    await getD1()
+      .prepare(
+        `SELECT * FROM transcription_runs
+          WHERE parent_run_id = ? AND workspace_id = ?
+          ORDER BY chunk_index`,
+      )
+      .bind(parentRunId, parent.workspace_id)
+      .all<Row>()
+  ).results ?? [];
+  const succeeded = children.filter((child) => String(child.status) === "succeeded");
+  const failed = children.filter((child) => String(child.status) === "failed");
+  const progressTimestamp = now();
+  await getD1()
+    .prepare(
+      `UPDATE transcription_runs
+          SET completed_chunk_count = ?, error_code = ?, error_details_json = ?, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND orchestration_mode = 'chunked'`,
+    )
+    .bind(
+      succeeded.length,
+      failed.length ? "TRANSCRIPTION_CHUNK_FAILED" : null,
+      failed.length
+        ? JSON.stringify({
+            failed_chunk_indices: failed.map((child) => Number(child.chunk_index)),
+            retryable: true,
+          })
+        : null,
+      progressTimestamp,
+      parentRunId,
+    )
+    .run();
+  if (children.length !== Number(parent.chunk_count) || succeeded.length !== children.length) {
+    return "not_ready";
+  }
+
+  const chunkTranscripts = [];
+  for (const child of children) {
+    if (!child.derived_transcript_asset_version_id) return "not_ready";
+    const segmentRows = (
+      await getD1()
+        .prepare(
+          `SELECT speaker, start_ms, end_ms, text_raw
+             FROM text_segments
+            WHERE asset_version_id = ? AND workspace_id = ?
+            ORDER BY ordinal`,
+        )
+        .bind(child.derived_transcript_asset_version_id, parent.workspace_id)
+        .all<Row>()
+    ).results ?? [];
+    chunkTranscripts.push({
+      index: Number(child.chunk_index),
+      startMs: Number(child.chunk_start_ms),
+      endMs: Number(child.chunk_end_ms),
+      assetVersionId: String(child.audio_asset_version_id),
+      transcript: {
+        durationSeconds: (Number(child.chunk_end_ms) - Number(child.chunk_start_ms)) / 1_000,
+        text: segmentRows.map((segment) => String(segment.text_raw)).join(" "),
+        segments: segmentRows.map((segment) => ({
+          speaker: String(segment.speaker ?? "Speaker"),
+          text: String(segment.text_raw),
+          startSeconds: Number(segment.start_ms) / 1_000,
+          endSeconds: Number(segment.end_ms) / 1_000,
+        })),
+      },
+    });
+  }
+  const transcript = mergeChunkTranscripts(chunkTranscripts);
+  const content = diarizedTranscriptJson(transcript);
+  const bytes = new TextEncoder().encode(content);
+  const resultSha = await sha256Hex(bytes.buffer);
+  const resultKey = transcriptionStagingObjectKey({
+    workspaceId: String(parent.workspace_id),
+    projectId: String(parent.project_id),
+    eventId: String(parent.event_id),
+    runId: parentRunId,
+  });
+  await getEvidenceBucket().put(resultKey, bytes, {
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: {
+      sha256: resultSha,
+      schema: "diarized-transcript.v1",
+      source_audio_asset_version_id: String(parent.audio_asset_version_id),
+      orchestration_mode: "chunked",
+    },
+  });
+
+  const timestamp = now();
+  const transcriptAssetId = id("ast");
+  const transcriptVersionId = id("av");
+  const segments = transcript.segments.map((segment, ordinal) => ({
+    id: `seg_${transcriptVersionId}_${String(ordinal).padStart(5, "0")}`,
+    ordinal,
+    speaker: segment.speaker,
+    startMs: Math.round(segment.startSeconds * 1_000),
+    endMs: Math.round(segment.endSeconds * 1_000),
+    textRaw: segment.text,
+    textNormalized: normalizeTranscriptText(segment.text),
+  }));
+  const transform = {
+    kind: "audio_transcription",
+    orchestration_mode: "chunked",
+    transcription_run_id: parentRunId,
+    chunk_count: children.length,
+    provider: parent.provider,
+    model: parent.model,
+    response_format: parent.response_format,
+    source_audio_asset_id: parent.audio_asset_id,
+    source_audio_asset_version_id: parent.audio_asset_version_id,
+  };
+  const db = getD1();
+  const guardId = id("guard");
+  await db.batch([
+    db.prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM transcription_runs
+          WHERE id = ? AND status = 'processing' AND orchestration_mode = 'chunked'
+            AND derived_transcript_asset_id IS NULL AND chunk_count = ?
+            AND (SELECT COUNT(*) FROM transcription_runs c
+                  WHERE c.parent_run_id = transcription_runs.id AND c.status = 'succeeded') = ?
+       ) THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, parentRunId, children.length, children.length, timestamp),
+    db.prepare(
+      `INSERT INTO assets (
+        id, workspace_id, project_id, event_id, kind, filename,
+        current_version_id, metadata_json, processing_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'transcript', ?, ?, ?, 'ready', ?, ?)`,
+    ).bind(
+      transcriptAssetId,
+      parent.workspace_id,
+      parent.project_id,
+      parent.event_id,
+      derivedFilename(String(parent.filename)),
+      transcriptVersionId,
+      JSON.stringify(transform),
+      timestamp,
+      timestamp,
+    ),
+    db.prepare(
+      `INSERT INTO asset_versions (
+        id, asset_id, version_no, content_sha256, mime_type, size_bytes,
+        parser_version, r2_original_key, derived_from_asset_version_id,
+        transform_json, finalized_at, created_at
+      ) VALUES (?, ?, 1, ?, 'application/json', ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      transcriptVersionId,
+      transcriptAssetId,
+      resultSha,
+      bytes.byteLength,
+      AUDIO_TRANSCRIPTION_PARSER_VERSION,
+      resultKey,
+      parent.audio_asset_version_id,
+      JSON.stringify(transform),
+      timestamp,
+      timestamp,
+    ),
+    db.prepare(
+      `INSERT INTO text_segments (
+        id, workspace_id, project_id, event_id, asset_id, asset_version_id,
+        ordinal, speaker, start_ms, end_ms, parser_version,
+        text_raw, text_normalized, created_at
+      )
+      SELECT json_extract(value, '$.id'), ?, ?, ?, ?, ?,
+             json_extract(value, '$.ordinal'), json_extract(value, '$.speaker'),
+             json_extract(value, '$.startMs'), json_extract(value, '$.endMs'), ?,
+             json_extract(value, '$.textRaw'), json_extract(value, '$.textNormalized'), ?
+        FROM json_each(?)`,
+    ).bind(
+      parent.workspace_id,
+      parent.project_id,
+      parent.event_id,
+      transcriptAssetId,
+      transcriptVersionId,
+      AUDIO_TRANSCRIPTION_PARSER_VERSION,
+      timestamp,
+      JSON.stringify(segments),
+    ),
+    db.prepare(
+      `UPDATE transcription_runs
+          SET status = 'succeeded', staged_result_r2_key = ?, staged_result_sha256 = ?,
+              derived_transcript_asset_id = ?, derived_transcript_asset_version_id = ?,
+              segment_count = ?, completed_chunk_count = chunk_count,
+              lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
+              error_code = NULL, error_details_json = NULL, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND orchestration_mode = 'chunked'`,
+    ).bind(
+      resultKey,
+      resultSha,
+      transcriptAssetId,
+      transcriptVersionId,
+      segments.length,
+      timestamp,
+      timestamp,
+      parentRunId,
+    ),
+    db.prepare(
+      `UPDATE assets
+          SET metadata_json = json_remove(
+            json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'succeeded',
+              '$.derived_transcript_asset_id', ?,
+              '$.derived_transcript_asset_version_id', ?
+            ), '$.transcription_error_code'
+          ), updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND current_version_id = ?
+          AND json_extract(COALESCE(metadata_json, '{}'), '$.transcription_run_id') = ?
+          AND EXISTS (SELECT 1 FROM transcription_runs
+                       WHERE id = ? AND status = 'succeeded'
+                         AND derived_transcript_asset_id = ?)`,
+    ).bind(
+      transcriptAssetId,
+      transcriptVersionId,
+      timestamp,
+      parent.audio_asset_id,
+      parent.workspace_id,
+      parent.audio_asset_version_id,
+      parentRunId,
+      parentRunId,
+      transcriptAssetId,
+    ),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return "succeeded";
 }
 
 export async function requeueExpiredTranscriptionRuns(timestamp = now()): Promise<number> {

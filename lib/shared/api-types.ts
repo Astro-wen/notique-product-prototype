@@ -419,6 +419,13 @@ export type TranscriptionRunRecord = {
   provider: string;
   model: string;
   response_format: "diarized_json";
+  orchestration_mode: "single" | "chunked" | "chunk";
+  parent_run_id: string | null;
+  chunk_index: number | null;
+  chunk_start_ms: number | null;
+  chunk_end_ms: number | null;
+  chunk_count: number | null;
+  completed_chunk_count: number;
   derived_transcript_asset_id: string | null;
   derived_transcript_asset_version_id: string | null;
   segment_count: number | null;
@@ -437,6 +444,15 @@ export type TranscriptionRunRecord = {
   current_started_at: string | null;
   finished_at: string | null;
   segments?: TranscriptionSegmentRecord[];
+  chunks?: Array<{
+    id: string;
+    index: number;
+    start_ms: number;
+    end_ms: number;
+    status: TranscriptionRunStatus;
+    processing_attempt_no: number;
+    error_code: string | null;
+  }>;
 };
 
 export type ClaimRecord = {
