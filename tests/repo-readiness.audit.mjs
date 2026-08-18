@@ -1322,8 +1322,8 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   );
   assert.match(
     productionAudioBranch,
-    /await\s+dispatchTranscriptionRun\(workspaceId,\s*input\.runId\)/,
-    "production HTTP dispatch must keep the connected browser request alive while processing the existing transcription Run",
+    /return\s+streamTranscriptionDispatch\(workspaceId,\s*input\.runId,\s*requestId,\s*run\.status\)/,
+    "production HTTP dispatch must stream heartbeats while processing the existing transcription Run",
   );
   assert.doesNotMatch(productionAudioBranch, /waitUntil\(dispatchTranscriptionRun/);
   assert.match(

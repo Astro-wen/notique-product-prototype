@@ -58,6 +58,60 @@ function dispatchError(
   });
 }
 
+function streamTranscriptionDispatch(
+  workspaceId: string,
+  runId: string,
+  requestId: string,
+  runStatus: string,
+): Response {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const write = (value: unknown) => controller.enqueue(
+        encoder.encode(JSON.stringify(value)),
+      );
+      // Send whitespace immediately and every ten seconds. This keeps the
+      // browser/proxy connection active while the long audio request runs;
+      // the final JSON remains valid because JSON permits surrounding space.
+      controller.enqueue(encoder.encode("\n"));
+      heartbeat = setInterval(() => controller.enqueue(encoder.encode("\n")), 10_000);
+      void dispatchTranscriptionRun(workspaceId, runId)
+        .then(() => {
+          if (heartbeat) clearInterval(heartbeat);
+          write({
+            data: { accepted: true, kind: "transcription", run_id: runId, run_status: runStatus },
+            request_id: requestId,
+          });
+          controller.close();
+        })
+        .catch((error) => {
+          if (heartbeat) clearInterval(heartbeat);
+          write({
+            error: {
+              code: "INTERNAL_ERROR",
+              message: error instanceof Error ? error.message : "The background task could not be accepted.",
+            },
+            request_id: requestId,
+          });
+          controller.close();
+        });
+    },
+    cancel() {
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    status: 202,
+    headers: {
+      "cache-control": "private, no-store",
+      "content-type": "application/json; charset=utf-8",
+      "x-request-id": requestId,
+      "x-notique-dispatch-stream": "transcription",
+    },
+  });
+}
+
 type DispatchKind = "extraction" | "transcription" | "artifact";
 
 async function dispatchInput(
@@ -192,12 +246,10 @@ const worker = {
           }));
         } else {
           // Audio transcription has no OpenAI Background Response ID. Keep
-          // this HTTP invocation open while the existing Run is processed.
-          // Cloudflare allows an HTTP request to wait on I/O while the client
-          // remains connected; only work placed in waitUntil is cut off after
-          // roughly 30 seconds. The browser already keeps this same Run
-          // request alive and the outbox lease prevents duplicate providers.
-          await dispatchTranscriptionRun(workspaceId, input.runId);
+          // this HTTP invocation open with heartbeats while the existing Run
+          // is processed; the browser can then wait without an idle proxy
+          // timeout, and the outbox lease prevents duplicate providers.
+          return streamTranscriptionDispatch(workspaceId, input.runId, requestId, run.status);
         }
         return dispatchResponse({
           accepted: true,

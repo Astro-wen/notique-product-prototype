@@ -190,11 +190,11 @@ async function prepareTargetedTranscriptionOutbox(
   timestamp: string,
 ): Promise<"queued" | "processing" | "terminal" | "missing"> {
   const row = await first(
-    `SELECT status FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    `SELECT status, lease_expires_at FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
     [target.runId, target.workspaceId],
   );
   if (!row) return "missing";
-  const status = String(row.status);
+  let status = String(row.status);
   if (
     TRANSCRIPTION_TERMINAL_STATES.includes(
       status as (typeof TRANSCRIPTION_TERMINAL_STATES)[number],
@@ -212,7 +212,35 @@ async function prepareTargetedTranscriptionOutbox(
       .run();
     return "terminal";
   }
-  if (status === "processing") return "processing";
+  if (status === "processing") {
+    const leaseExpiresAt = String(row.lease_expires_at ?? "");
+    if (!leaseExpiresAt || Date.parse(leaseExpiresAt) > Date.parse(timestamp)) return "processing";
+    const db = getD1();
+    await db.batch([
+      db.prepare(
+        `UPDATE transcription_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                current_queued_at = ?, finished_at = NULL, error_code = 'TRANSCRIPTION_TIMEOUT',
+                error_details_json = '{"reason":"targeted_lease_expired","retryable":true}', updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND status = 'processing'
+            AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      ).bind(timestamp, timestamp, target.runId, target.workspaceId, timestamp),
+      db.prepare(
+        `UPDATE transcription_queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'TRANSCRIPTION_TIMEOUT', updated_at = ?
+          WHERE run_id = ? AND status = 'sending'
+            AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      ).bind(timestamp, timestamp, target.runId, timestamp),
+    ]);
+    const recovered = await first(
+      `SELECT status FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+      [target.runId, target.workspaceId],
+    );
+    if (String(recovered?.status) === "queued") status = "queued";
+    else return "processing";
+  }
   if (status !== "queued") return "missing";
   await getD1()
     .prepare(

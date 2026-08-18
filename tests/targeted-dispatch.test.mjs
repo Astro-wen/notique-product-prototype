@@ -25,11 +25,23 @@ test("production audio keeps the HTTP request open instead of losing the queued 
     "utf8",
   );
   assert.match(worker, /env\.APP_ENV === "local"[\s\S]*dispatchTranscriptionRun/);
-  assert.match(worker, /else \{[\s\S]*await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
+  assert.match(worker, /streamTranscriptionDispatch[\s\S]*setInterval\(\(\) => controller\.enqueue/);
+  assert.match(worker, /return streamTranscriptionDispatch\(workspaceId, input\.runId, requestId, run\.status\)/);
+  assert.doesNotMatch(worker, /await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
+});
+
+test("targeted audio wakes a stale processing lease instead of leaving it stuck", async () => {
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+  assert.match(outbox, /lease_expires_at <=/);
+  assert.match(outbox, /status = 'queued'[\s\S]{0,500}targeted_lease_expired/);
+  assert.match(outbox, /status = 'pending'[\s\S]{0,500}TRANSCRIPTION_TIMEOUT/);
 });
 
 test("targeted extraction and transcription dispatch only lease queued matching Runs", async () => {
