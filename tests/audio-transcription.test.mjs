@@ -19,14 +19,14 @@ async function loadAudioPolicy() {
   return loadTypeScriptModule("lib/domain/audio-transcription.ts");
 }
 
-test("audio policy accepts only the transcription provider formats and enforces 25 MiB", async () => {
+test("audio policy accepts only the transcription provider formats and enforces 100 MiB", async () => {
   const policy = await loadAudioPolicy();
   assert.equal(policy.audioMimeFor("meeting.mp3", ""), "audio/mpeg");
   assert.equal(policy.audioMimeFor("meeting.m4a", "application/octet-stream"), "audio/mp4");
   assert.equal(policy.audioMimeFor("meeting.wav", "audio/wav"), "audio/wav");
   assert.equal(policy.audioMimeFor("meeting.aac", "audio/aac"), null);
   assert.equal(policy.audioMimeFor("meeting.mp3", "text/plain"), null);
-  assert.equal(policy.MAX_AUDIO_BYTES, 25 * 1024 * 1024);
+  assert.equal(policy.MAX_AUDIO_BYTES, 100 * 1024 * 1024);
   assert.equal(policy.AUDIO_FILE_ACCEPT.includes(".m4a"), true);
 });
 
@@ -391,7 +391,7 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(page, /resolveSimpleImportTarget/);
   assert.match(page, /audioSource/);
   assert.match(envExample, /^AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize$/m);
-  assert.match(envExample, /^MAX_AUDIO_BYTES=26214400$/m);
+  assert.match(envExample, /^MAX_AUDIO_BYTES=104857600$/m);
 });
 
 test("audio smoke test uses the production Event response envelope and stays on loopback", async () => {

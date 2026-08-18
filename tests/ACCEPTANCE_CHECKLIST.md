@@ -224,7 +224,7 @@
 ### 公开许可真实音频
 
 - [x] 选择 AMI Meeting Corpus `ES2002a`，来源与许可记录为 CC BY 4.0；没有使用 YouTube-to-MP3 第三方网站。
-- [x] 原始 WAV 已转换为小于产品 25 MB 上限的 M4A，并保存原始文件、派生文件和人工标注包的 SHA256。
+- [x] 原始 WAV 已转换为小于产品 100 MB 上限的 M4A，并保存原始文件、派生文件和人工标注包的 SHA256。
 - [x] 在任何 Notique 模型运行前冻结 8 条 Ground Truth：售价、成本上限、国际市场、一个未决产品范围问题、三类责任和会议范围。
 - [x] AMI 样本已通过 production audio、Transcription、Prompt v8.2 双阶段 Extraction 和 Evidence validation 跑完；没有确认 Scenario 或 Claim，因此结果是纯 AI 初稿。
 - [x] 已分开报告 Audio → Transcript 与 Transcript → AI 初稿：关键事实转写 Coverage 8/8；Raw final 10 的 Strict/Coverage Recall 6/8，Critical 2/4；Evidence 安全门后的 Persisted 6 为 4/8，Critical 1/4。

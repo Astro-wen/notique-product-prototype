@@ -67,7 +67,7 @@ async function main() {
   const mimeType = audioMimeByExtension.get(extension);
   invariant(mimeType, "Audio file must be WAV, MP3, M4A, MP4, MPEG, MPGA, or WebM.");
   const bytes = await readFile(absolutePath);
-  invariant(bytes.byteLength > 0 && bytes.byteLength <= 25 * 1024 * 1024, "Audio file must be between 1 byte and 25 MiB.");
+  invariant(bytes.byteLength > 0 && bytes.byteLength <= 100 * 1024 * 1024, "Audio file must be between 1 byte and 100 MiB.");
 
   const runKey = randomUUID();
   const project = (await request(baseUrl, "POST", "/api/v1/projects", {

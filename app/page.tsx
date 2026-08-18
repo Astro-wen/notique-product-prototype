@@ -381,7 +381,7 @@ function audioUploadIssue(filename: string, mimeType: string, sizeBytes: number)
   if (sizeBytes > MAX_AUDIO_BYTES) {
     return {
       code: "ASSET_TOO_LARGE",
-      message: "录音超过 25 MB，尚未上传。",
+      message: "录音超过 100 MB，尚未上传。",
       status: 413,
       details: { kind: "audio", filename, size_bytes: sizeBytes, max_size_bytes: MAX_AUDIO_BYTES },
     };

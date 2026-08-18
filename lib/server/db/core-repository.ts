@@ -1456,7 +1456,7 @@ function unsupportedAssetFormat(
   const photoMessage =
     "Photos must be JPEG, PNG, or WebP. HEIC/HEIF conversion is not available in this POC.";
   const audioMessage =
-    "Audio must be MP3, MP4, MPEG, MPGA, M4A, WAV, or WebM and no larger than 25 MB.";
+    "Audio must be MP3, MP4, MPEG, MPGA, M4A, WAV, or WebM and no larger than 100 MB.";
   return new ApiFault(
     415,
     "ASSET_UNSUPPORTED_FORMAT",

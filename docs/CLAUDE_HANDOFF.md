@@ -224,7 +224,7 @@ Verified Ledger
 - 时长：约 21 分钟
 - 许可：CC BY 4.0
 - 原始音频：`ES2002a.Mix-Headset.wav`
-- 产品输入：AAC M4A，小于 25 MB
+- 产品输入：AAC M4A，小于 100 MB
 - 官方来源：<https://groups.inf.ed.ac.uk/ami/>
 - 官方音频：<https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2002a/audio/ES2002a.Mix-Headset.wav>
 

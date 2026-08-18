@@ -1,7 +1,10 @@
 export const AUDIO_TRANSCRIPTION_MODEL_DEFAULT = "gpt-4o-transcribe-diarize";
 export const AUDIO_TRANSCRIPTION_SCHEMA_VERSION = "diarized-transcript.v1";
 export const AUDIO_TRANSCRIPTION_PARSER_VERSION = "openai-diarized-json.v1";
-export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+// Cloudflare's Free/Pro Worker request-body ceiling is 100 MB. Keep the
+// application limit at the same practical ceiling; larger files need a
+// multipart/R2 upload path instead of buffering one request in the Worker.
+export const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
 export const AUDIO_FILE_ACCEPT = ".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm";
 

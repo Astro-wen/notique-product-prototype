@@ -90,12 +90,12 @@ Agent B 可以在功能开关启用时读取之前沟通中有合法原始 Evide
 `gpt-4o-transcribe-diarize`，输出逐句说话人和开始、结束时间。原音频保留在私有
 R2，转写结果作为派生 Transcript 保存；之后的 Claim 仍引用逐字原文和时间点，
 证据页可以从对应位置播放原录音。录音支持 MP3、M4A、WAV、WebM、MP4、MPEG
-和 MPGA，单文件上限 25 MiB。相关配置为：
+和 MPGA，单文件上限 100 MiB。相关配置为：
 
 ```text
 AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize
 AI_TRANSCRIPTION_TIMEOUT_MS=300000
-MAX_AUDIO_BYTES=26214400
+MAX_AUDIO_BYTES=104857600
 ```
 
 录音上传、转写和业务提取是三段独立的可重试操作。上传成功但转写失败时，原音频
@@ -143,7 +143,7 @@ npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/repor
 ```
 
 1. 选择或建立项目，再选择当前沟通。
-2. 上传 Transcript、照片、PDF 或自己的录音；也可以直接使用浏览器录音。MP3、M4A、WAV、WebM、MP4、MPEG 和 MPGA 均可，单个录音上限 25 MB。
+2. 上传 Transcript、照片、PDF 或自己的录音；也可以直接使用浏览器录音。MP3、M4A、WAV、WebM、MP4、MPEG 和 MPGA 均可，单个录音上限 100 MB。
 3. 录音完成转写、材料显示“可以分析”后，点击一次“开始分析”。刷新不会建立第二个付费任务。
 4. 第一次分析先确认使用场景，然后阅读整场 AI 初稿。点击重点可以查看放大的目标句、精确高亮和前后两段原文。
 5. 优先核对金额、日期、责任人、矛盾、低置信内容和关系；其他草稿可以稍后处理。保存后自动进入下一条。
