@@ -413,8 +413,7 @@ function validateEventSummary(
           if (seenKeys.has(itemKey)) issues.push({ path: `${itemPath}.item_key`, message: "Duplicate summary item key." });
           seenKeys.add(itemKey);
           const ids = segmentIds(item.source_segment_ids, `${itemPath}.source_segment_ids`, issues);
-          let resolvedIds = ids;
-          let citedSegments: TranscriptSegment[] = [];
+          const citedSegments: TranscriptSegment[] = [];
           ids.forEach((id) => {
             const segment = rawById.get(id);
             if (!segment) issues.push({ path: `${itemPath}.source_segment_ids`, message: `Unknown raw segment ID ${id}.` });
@@ -434,40 +433,21 @@ function validateEventSummary(
             if (!positionsAreOrdered) {
               issues.push({
                 path: `${itemPath}.source_segment_ids`,
-                message: "Summary source segments must be contiguous and in raw order.",
-              });
-            } else if (
-              mode === "provider" && positions.length > 1 &&
-              positions.some((position, index) => index > 0 && position !== Number(positions[index - 1]) + 1)
-            ) {
-              const first = Number(positions[0]);
-              const last = Number(positions.at(-1));
-              const expanded = input.segments.slice(first, last + 1);
-              if (
-                expanded.length > 24 ||
-                expanded.some((segment) => segment.assetVersionId !== assetVersionId)
-              ) {
-                issues.push({
-                  path: `${itemPath}.source_segment_ids`,
-                  message: "Summary source segments must be contiguous and in raw order.",
-                });
-              } else {
-                resolvedIds = expanded.map((segment) => segment.id);
-                citedSegments = expanded;
-              }
-            } else if (
-              positions.some((position, index) => index > 0 && position !== Number(positions[index - 1]) + 1)
-            ) {
-              issues.push({
-                path: `${itemPath}.source_segment_ids`,
-                message: "Summary source segments must be contiguous and in raw order.",
+                message: "Summary source segments must be in raw order.",
               });
             }
           }
           let sourceCharacterSpan: EventSummarySourceCharacterSpan | null = null;
-          let deterministicQuote = citedSegments.length === resolvedIds.length
-            ? citedSegments.map((segment) => segment.textRaw).join("\n")
-            : "";
+          let deterministicQuote = "";
+          if (citedSegments.length === ids.length) {
+            const positions = ids.map((id) => rawPosition.get(id));
+            deterministicQuote = citedSegments.map((segment, index) => {
+              if (index === 0) return segment.textRaw;
+              return positions[index] === Number(positions[index - 1]) + 1
+                ? `\n${segment.textRaw}`
+                : `\n…\n${segment.textRaw}`;
+            }).join("");
+          }
           if (item.source_character_span !== null) {
             const spanPath = `${itemPath}.source_character_span`;
             if (!record(item.source_character_span)) {
@@ -493,13 +473,13 @@ function validateEventSummary(
               if (typeof end !== "number" || !Number.isSafeInteger(end) || end < 0) {
                 issues.push({ path: `${spanPath}.end_codepoint`, message: "Expected a non-negative Unicode code-point offset." });
               }
-              if (resolvedIds.length !== 1 || resolvedIds[0] !== segmentId) {
+              if (ids.length !== 1 || ids[0] !== segmentId) {
                 issues.push({
                   path: spanPath,
                   message: "A character span must name the one and only cited raw Segment.",
                 });
               }
-              const spanSegment = resolvedIds.length === 1 && resolvedIds[0] === segmentId
+              const spanSegment = ids.length === 1 && ids[0] === segmentId
                 ? rawById.get(segmentId)
                 : undefined;
               if (
@@ -560,7 +540,7 @@ function validateEventSummary(
             text: summaryText,
             support_quote: deterministicQuote,
             support_status: "source_linked_unverified",
-            source_segment_ids: resolvedIds,
+            source_segment_ids: ids,
             source_character_span: sourceCharacterSpan,
           });
         });
@@ -911,12 +891,16 @@ export function validateReadableTranscriptOutput(
         if (!rawById.has(id)) issues.push({ path: `${path}.source_segment_ids`, message: `Unknown raw segment ID ${id}.` });
       });
       const positions = ids.map((id) => rawPosition.get(id)).filter((position): position is number => position !== undefined);
-      if (positions.some((position, rawIndex) => rawIndex > 0 && position !== positions[rawIndex - 1] + 1)) {
+      const sourceMappingIsSafe = raw.length === ids.length && raw.length > 0 &&
+        positions.length === ids.length &&
+        !positions.some((position, rawIndex) => rawIndex > 0 && position !== positions[rawIndex - 1] + 1);
+      if (!sourceMappingIsSafe) {
         issues.push({ path: `${path}.source_segment_ids`, message: "Source segments must be contiguous and ordered." });
       }
       covered.push(...ids);
       const first = raw[0];
       const last = raw[raw.length - 1];
+      const repairableIssueStart = issues.length;
       const sameAssetVersion = raw.length > 0 &&
         raw.every((segment) => segment.assetVersionId === first.assetVersionId);
       if (!sameAssetVersion) {
@@ -936,7 +920,6 @@ export function validateReadableTranscriptOutput(
       if (candidate.speaker !== expectedSpeaker) issues.push({ path: `${path}.speaker`, message: "Speaker must match the raw source group." });
       if (candidate.start_ms !== (first?.startMs ?? null)) issues.push({ path: `${path}.start_ms`, message: "Start time must match the first raw segment." });
       if (candidate.end_ms !== (last?.endMs ?? null)) issues.push({ path: `${path}.end_ms`, message: "End time must match the last raw segment." });
-      const repairableIssueStart = issues.length;
       const readableText = stringValue(candidate.readable_text, `${path}.readable_text`, issues, 12_000);
       const rawText = raw.map((segment) => segment.textRaw).join(" ");
       const forceHumanCheck = !safeForUnflaggedVerification(rawText, readableText);
@@ -1048,18 +1031,31 @@ export function validateReadableTranscriptOutput(
       if (normalizedRawText !== normalizedReadableText && edits.length === 0) {
         issues.push({ path: `${path}.edits`, message: "Every readability change must have a visible edit record." });
       }
-      if (options.allowRawFallback && issues.length > repairableIssueStart) {
+      if (options.allowRawFallback && sourceMappingIsSafe && issues.length > repairableIssueStart) {
         issues.splice(repairableIssueStart);
-        segments.push({
-          readable_key: key,
-          source_segment_ids: ids,
-          speaker: expectedSpeaker,
-          start_ms: first?.startMs ?? null,
-          end_ms: last?.endMs ?? null,
-          readable_text: rawText,
-          edits: [],
-          needs_human_check: false,
-        });
+        if (sameAssetVersion && sameSpeaker) {
+          segments.push({
+            readable_key: key,
+            source_segment_ids: ids,
+            speaker: expectedSpeaker,
+            start_ms: first?.startMs ?? null,
+            end_ms: last?.endMs ?? null,
+            readable_text: rawText,
+            edits: [],
+            needs_human_check: false,
+          });
+        } else {
+          raw.forEach((segment, rawIndex) => segments.push({
+            readable_key: `fallback_${index}_${rawIndex}`,
+            source_segment_ids: [segment.id],
+            speaker: segment.speaker,
+            start_ms: segment.startMs,
+            end_ms: segment.endMs,
+            readable_text: segment.textRaw,
+            edits: [],
+            needs_human_check: false,
+          }));
+        }
       } else {
         segments.push({
           readable_key: key,

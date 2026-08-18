@@ -372,6 +372,37 @@ test("readable provider may fall back only an invalid text/edit group to its exa
   assert.equal(repaired.output.segments[0].needs_human_check, false);
 });
 
+test("readable provider replaces wrong timing and cross-speaker grouping with raw-safe rows", () => {
+  const crossSpeakerRaw = [raw[0], { ...raw[1], speaker: "Blair" }];
+  const candidate = readable({ end_ms: 7_999 });
+  const strictTiming = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strictTiming.valid, false);
+  const repairedTiming = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repairedTiming.valid, true);
+  assert.equal(repairedTiming.output.segments[0].end_ms, 8_000);
+  assert.equal(repairedTiming.output.segments[0].readable_text, raw.map((segment) => segment.textRaw).join(" "));
+
+  const crossSpeaker = readable({ speaker: "Alex" });
+  const repairedSpeakers = validateReadableTranscriptOutput(
+    crossSpeaker,
+    { eventId: "evt_1", segments: crossSpeakerRaw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repairedSpeakers.valid, true);
+  assert.deepEqual(
+    repairedSpeakers.output.segments.map((segment) => segment.source_segment_ids),
+    [["seg_1"], ["seg_2"]],
+  );
+  assert.deepEqual(
+    repairedSpeakers.output.segments.map((segment) => segment.speaker),
+    ["Alex", "Blair"],
+  );
+});
+
 test("readable transcript rejects a responsible-party swap disguised as punctuation", () => {
   const responsibilityRaw = [{
     ...raw[0],
@@ -859,7 +890,7 @@ test("summary provider no longer authors a support quote", () => {
     issue.path.endsWith(".support_quote") && issue.message === "Unexpected field."));
 });
 
-test("summary source spans expand skipped raw turns but fail closed for missing, cross-Event, duplicate, unordered, and cross-Asset IDs", () => {
+test("summary source spans preserve ordered raw excerpts but fail closed for missing, cross-Event, duplicate, unordered, and cross-Asset IDs", () => {
   const segments = [
     raw[0],
     raw[1],
@@ -893,11 +924,11 @@ test("summary source spans expand skipped raw turns but fail closed for missing,
   assert.equal(skippedBackchannel.valid, true);
   assert.deepEqual(
     skippedBackchannel.output.sections[0].items[0].source_segment_ids,
-    ["seg_1", "seg_2", "seg_3"],
+    ["seg_1", "seg_3"],
   );
   assert.equal(
     skippedBackchannel.output.sections[0].items[0].support_quote,
-    segments.slice(0, 3).map((segment) => segment.textRaw).join("\n"),
+    `${segments[0].textRaw}\n…\n${segments[2].textRaw}`,
   );
 
   const crossEvent = validateEventSummaryProviderOutput(providerOutput(["seg_1"]), {
