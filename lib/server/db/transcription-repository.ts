@@ -14,7 +14,7 @@ import type {
 type Row = Record<string, unknown>;
 
 const TRANSCRIPTION_RESPONSE_FORMAT = "diarized_json";
-const DEFAULT_TRANSCRIPTION_TIMEOUT_MS = 300_000;
+const DEFAULT_TRANSCRIPTION_TIMEOUT_MS = 600_000;
 
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;

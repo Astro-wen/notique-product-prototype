@@ -94,7 +94,7 @@ R2，转写结果作为派生 Transcript 保存；之后的 Claim 仍引用逐�
 
 ```text
 AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize
-AI_TRANSCRIPTION_TIMEOUT_MS=300000
+AI_TRANSCRIPTION_TIMEOUT_MS=600000
 MAX_AUDIO_BYTES=104857600
 ```
 

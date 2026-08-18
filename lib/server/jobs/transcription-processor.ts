@@ -25,6 +25,7 @@ export type TranscriptionProcessResult = {
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_PROVIDER_ERROR_CHARS = 500;
+const DEFAULT_TRANSCRIPTION_TIMEOUT_MS = 600_000;
 
 class TranscriptionFault extends Error {
   constructor(
@@ -54,6 +55,26 @@ async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
   return (await getD1().prepare(sql).bind(...bindings).first<Row>()) ?? null;
 }
 
+/**
+ * Never shorten a Run's persisted timeout, but allow a production operator to
+ * extend an older queued Run after observing that a long audio response needs
+ * more time. This keeps retries on the same Run and gives its provider call
+ * and leases the same effective deadline.
+ */
+export function transcriptionTimeoutMs(run: Row): number {
+  const persisted = Number(run.request_timeout_ms);
+  const configured = Number(getBindings().AI_TRANSCRIPTION_TIMEOUT_MS);
+  const configuredMs = Number.isSafeInteger(configured)
+    && configured >= 30_000
+    && configured <= 600_000
+    ? configured
+    : DEFAULT_TRANSCRIPTION_TIMEOUT_MS;
+  return Math.max(
+    Number.isSafeInteger(persisted) && persisted >= 30_000 ? persisted : DEFAULT_TRANSCRIPTION_TIMEOUT_MS,
+    configuredMs,
+  );
+}
+
 function errorCode(error: unknown): string {
   if (error instanceof TranscriptionFault) return error.code;
   if (error instanceof DOMException && error.name === "AbortError") {
@@ -77,7 +98,7 @@ function persistenceRetry(error: unknown, fallback: string): TranscriptionFault 
 
 async function acquireLease(runId: string, owner: string, timestamp: string): Promise<Row | null> {
   const run = await first(`SELECT request_timeout_ms FROM transcription_runs WHERE id = ?`, [runId]);
-  const timeoutMs = Number(run?.request_timeout_ms ?? 300_000);
+  const timeoutMs = transcriptionTimeoutMs(run ?? {});
   const leaseMs = Math.max(120_000, Math.min(timeoutMs + 60_000, 660_000));
   const db = getD1();
   const guardId = id("guard");
@@ -156,7 +177,7 @@ async function callProvider(run: Row): Promise<{
   form.set("stream", "true");
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(run.request_timeout_ms));
+  const timer = setTimeout(() => controller.abort(), transcriptionTimeoutMs(run));
   let response: Response;
   let body: string;
   try {

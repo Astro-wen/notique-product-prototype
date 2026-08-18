@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import {
   processTranscriptionRun,
   requeueExpiredTranscriptionRuns,
+  transcriptionTimeoutMs,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
 import {
@@ -59,7 +60,7 @@ async function hashText(value: string): Promise<string> {
 }
 
 async function lease(row: Row, owner: string, timestamp: string): Promise<Row | null> {
-  const timeoutMs = Number(row.run_timeout_ms ?? 300_000);
+  const timeoutMs = transcriptionTimeoutMs({ request_timeout_ms: row.run_timeout_ms });
   const leaseMs = Math.max(120_000, Math.min(timeoutMs + 60_000, 660_000));
   const leaseExpiresAt = new Date(Date.parse(timestamp) + leaseMs).toISOString();
   const db = getD1();

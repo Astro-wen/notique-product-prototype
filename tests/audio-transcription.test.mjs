@@ -148,6 +148,26 @@ test("the transcription timeout remains active while the streamed body is read",
   assert.ok(timerClear > bodyRead, "the abort timer must remain active through response.text()");
 });
 
+test("long audio retries can extend an older Run without shortening its timeout", async () => {
+  const processor = await readFile(
+    path.join(root, "lib/server/jobs/transcription-processor.ts"),
+    "utf8",
+  );
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+  const repository = await readFile(
+    path.join(root, "lib/server/db/transcription-repository.ts"),
+    "utf8",
+  );
+  assert.match(processor, /DEFAULT_TRANSCRIPTION_TIMEOUT_MS\s*=\s*600_000/);
+  assert.match(processor, /export function transcriptionTimeoutMs/);
+  assert.match(processor, /Math\.max\([\s\S]{0,300}persisted[\s\S]{0,300}configuredMs/);
+  assert.match(outbox, /transcriptionTimeoutMs\(\{ request_timeout_ms: row\.run_timeout_ms \}\)/);
+  assert.match(repository, /DEFAULT_TRANSCRIPTION_TIMEOUT_MS\s*=\s*600_000/);
+});
+
 test("a staged provider result survives a later persistence failure and prevents a second provider charge", async () => {
   const retry = await loadTypeScriptModule("lib/domain/transcription-retry.ts");
   let providerCalls = 0;
