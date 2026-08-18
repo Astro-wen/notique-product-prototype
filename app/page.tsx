@@ -3265,6 +3265,21 @@ export default function Home() {
           flash(`只重试失败的 ${failedChunks.length} 个录音片段，已完成片段不会重复收费`);
           return;
         }
+        const largeAudioAsset = event.assets.find((asset) =>
+          asset.id === audioAssetId &&
+          current?.orchestrationMode === "single" &&
+          shouldChunkAudio({ durationMs: 0, sizeBytes: asset.sizeBytes ?? 0 }));
+        if (largeAudioAsset) {
+          const source = await api.downloadAsset(audioAssetId);
+          const next = await prepareLongAudioTranscription(
+            source,
+            largeAudioAsset.filename,
+            audioAssetId,
+            event.id,
+          );
+          flash(`旧的整段任务已换成 ${next.chunkCount ?? next.chunks.length} 段并行转写`);
+          return;
+        }
         await api.kickDispatcher({ kind: "transcription", runId: current.id }).catch(() => undefined);
         const latest = await api.getTranscriptionRun(current.id);
         if (runInProgress.has(latest.status)) {

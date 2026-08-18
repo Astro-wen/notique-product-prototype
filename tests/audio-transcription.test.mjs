@@ -526,6 +526,8 @@ test("chunked transcription uses hidden child assets, bounded parallel jobs, and
   assert.match(repository, /orchestration_mode, chunk_count, completed_chunk_count/);
   assert.match(repository, /metadata\.transcription_chunk !== true/);
   assert.match(repository, /metadata\.analysis_source !== false/);
+  assert.match(repository, /TRANSCRIPTION_REPLACED_BY_CHUNKED/);
+  assert.match(repository, /status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= \?/);
   assert.match(repository, /uq_transcription_runs_parent_chunk|parent_run_id/);
   assert.match(processor, /mergeChunkTranscripts/);
   assert.match(processor, /source_audio_asset_version_id: parent\.audio_asset_version_id/);
@@ -534,6 +536,7 @@ test("chunked transcription uses hidden child assets, bounded parallel jobs, and
   assert.match(workflow, /parent_run_id IS NULL/);
   assert.match(page, /prepareLongAudioTranscription/);
   assert.match(page, /api\.downloadAsset\(audioAssetId\)/);
+  assert.match(page, /旧的整段任务已换成/);
   assert.match(client, /retryFailedTranscriptionChunks\(runId: Id, idempotencyKey: string\)/);
 });
 

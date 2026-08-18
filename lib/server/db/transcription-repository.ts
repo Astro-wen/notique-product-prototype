@@ -362,6 +362,42 @@ async function createChunkedTranscriptionRun(
   const db = getD1();
   const statements = [
     db.prepare(
+      `UPDATE transcription_runs
+          SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
+              finished_at = ?, error_code = 'TRANSCRIPTION_REPLACED_BY_CHUNKED',
+              error_details_json = '{"reason":"replaced_by_chunked_transcription"}', updated_at = ?
+        WHERE workspace_id = ? AND audio_asset_version_id = ?
+          AND parent_run_id IS NULL AND orchestration_mode = 'single'
+          AND (
+            status = 'queued' OR (
+              status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+            )
+          )`,
+    ).bind(
+      timestamp,
+      timestamp,
+      scope.workspaceId,
+      source.audio_asset_version_id,
+      timestamp,
+    ),
+    db.prepare(
+      `UPDATE transcription_queue_outbox
+          SET status = 'sent', sent_at = COALESCE(sent_at, ?), lease_owner = NULL,
+              lease_expires_at = NULL, last_error_code = 'RUN_REPLACED_BY_CHUNKED', updated_at = ?
+        WHERE run_id IN (
+          SELECT id FROM transcription_runs
+           WHERE workspace_id = ? AND audio_asset_version_id = ?
+             AND status = 'cancelled' AND error_code = 'TRANSCRIPTION_REPLACED_BY_CHUNKED'
+             AND finished_at = ?
+        )`,
+    ).bind(
+      timestamp,
+      timestamp,
+      scope.workspaceId,
+      source.audio_asset_version_id,
+      timestamp,
+    ),
+    db.prepare(
       `INSERT INTO mutation_guards (id, guard_value, created_at)
        SELECT ?, CASE WHEN (
          SELECT COUNT(*) FROM transcription_runs
