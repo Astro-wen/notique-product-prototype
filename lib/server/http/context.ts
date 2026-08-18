@@ -12,7 +12,12 @@ export async function getRequestScope(request: Request): Promise<RequestScope> {
   // misspelled deployment configuration therefore fails closed as production.
   const environment = bindings.APP_ENV === "local" ? "local" : "production";
   const gateway = bindings.AUTH_GATEWAY;
-  let email = request.headers.get("oai-authenticated-user-email")?.trim();
+  // Public mode intentionally ignores any caller-supplied identity headers.
+  // Every visitor shares the explicitly public test workspace as one stable
+  // actor; this must never be enabled for a private/customer workspace.
+  let email = gateway === "public"
+    ? "public@notique.test"
+    : request.headers.get("oai-authenticated-user-email")?.trim();
   if (environment === "production") {
     if (gateway === "cloudflare-access") {
       const assertion = request.headers.get("cf-access-jwt-assertion")?.trim();
@@ -26,6 +31,10 @@ export async function getRequestScope(request: Request): Promise<RequestScope> {
       }
       // Managed hosting must strip user-supplied oai-authenticated-* headers
       // before injecting the verified identity used by this mode.
+    } else if (gateway === "public") {
+      // The fixed actor above is deliberate: public visitors do not get to
+      // choose an identity by sending forged gateway headers.
+      email = "public@notique.test";
     } else {
       throw new ApiFault(
         503,

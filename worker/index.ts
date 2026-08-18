@@ -21,7 +21,7 @@ interface Env {
   DB: D1Database;
   EVIDENCE: R2Bucket;
   APP_ENV?: string;
-  AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
+  AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
   INTERNAL_WORKSPACE_ID?: string;
   IMAGES: {
     input(stream: ReadableStream): {
@@ -121,7 +121,9 @@ const worker = {
       if (env.APP_ENV !== "local") {
         const origin = request.headers.get("origin");
         const sameOrigin = origin === url.origin && request.headers.get("sec-fetch-site") === "same-origin";
-        const authenticated = env.AUTH_GATEWAY === "cloudflare-access"
+        const authenticated = env.AUTH_GATEWAY === "public"
+          ? true
+          : env.AUTH_GATEWAY === "cloudflare-access"
           ? Boolean(
               request.headers.get("cf-access-jwt-assertion") &&
               request.headers.get("cf-access-authenticated-user-email"),
@@ -131,7 +133,7 @@ const worker = {
               request.headers.get("oai-authenticated-user-email"),
             );
         if (!sameOrigin || !authenticated) {
-          return dispatchError(401, "UNAUTHORIZED", "A signed-in same-origin request is required.", requestId);
+          return dispatchError(401, "UNAUTHORIZED", "A same-origin browser request is required.", requestId);
         }
       }
       try {

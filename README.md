@@ -113,6 +113,7 @@ Run Debug 只保留已经通过服务端 Schema 校验的模型 JSON，大小上
 
 - `AUTH_GATEWAY=chatgpt` 时，托管网关必须删除外部请求自带的 `oai-authenticated-*` Header，再注入已验证身份
 - `AUTH_GATEWAY=cloudflare-access` 时，Cloudflare Access 必须位于 Worker 前方并完成 JWT 签名和 Policy 验证
+- `AUTH_GATEWAY=public` 仅适用于明确标注为公开共享测试空间的部署：所有访客共享 `INTERNAL_WORKSPACE_ID` 和固定公开测试身份，任何访客都可以读取和修改其中的数据。真实客户资料不得进入该模式。
 - 生产写请求要求同源 `Origin` 和 `Sec-Fetch-Site`
 - R2 Bucket 必须保持私有；证据只通过经过 Workspace 校验的 API 返回
 - Context Snapshot 只保存图片占位符、Hash 和文本上下文，不保存 base64 图片

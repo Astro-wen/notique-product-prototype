@@ -3921,7 +3921,7 @@ export default function Home() {
       <main>
         <aside className="public-workspace-notice" aria-label="公开共享测试空间提示">
           <strong>公开共享测试空间</strong>
-          <span>请勿上传真实客户姓名、联系方式、地址、财务信息或其他敏感材料。仅使用公开、合成或已脱敏内容。</span>
+          <span>所有访问者共享这个测试工作区。请勿上传真实客户姓名、联系方式、地址、财务信息或其他敏感材料；仅使用公开、合成或已脱敏内容。</span>
         </aside>
         {screen === "simple" && <SimpleTestScreen
           key={project?.id ?? "none"}

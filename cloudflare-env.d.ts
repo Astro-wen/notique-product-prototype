@@ -96,7 +96,7 @@ declare namespace Cloudflare {
     AI_TRANSCRIPTION_MODEL?: string;
     AI_TRANSCRIPTION_TIMEOUT_MS?: string;
     APP_ENV?: string;
-    AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
+    AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
     INTERNAL_JOB_TOKEN?: string;
     INTERNAL_WORKSPACE_ID?: string;
     INTERNAL_WORKSPACE_NAME?: string;
