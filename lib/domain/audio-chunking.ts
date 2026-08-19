@@ -7,14 +7,14 @@ export const AUDIO_CHUNK_TARGET_MS = 3 * 60_000;
 export const AUDIO_CHUNK_OVERLAP_MS = 15_000;
 export const AUDIO_CHUNK_MIN_DURATION_MS = 5 * 60_000;
 export const AUDIO_CHUNK_MIN_SOURCE_BYTES = 18 * 1024 * 1024;
-export const AUDIO_CHUNK_MAX_PARALLEL = 4;
+export const AUDIO_CHUNK_MAX_PARALLEL = 6;
 export const MAX_STABLE_SPEAKER_COUNT = 4;
 export const UNRESOLVED_SPEAKER_LABEL = "Speaker unknown";
 
 /**
- * Keep short recordings conservative while allowing long recordings to use
- * one extra provider lane. The hard ceiling protects provider rate limits and
- * browser memory; the chunk count remains the source of truth shown in UI.
+ * Keep short recordings conservative while letting a long recording fill one
+ * bounded six-lane provider batch. This does not add chunks or model work; it
+ * only avoids leaving already-prepared chunks idle behind a four-lane wave.
  */
 export function audioChunkParallelism(chunkCountValue: number): number {
   const chunkCount = Math.max(1, Math.floor(finiteNonNegative(chunkCountValue, "chunkCount")));

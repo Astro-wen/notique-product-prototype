@@ -5014,7 +5014,9 @@ function AudioTranscriptionProgressPanel({
   const statusText = inspecting
     ? "读取时长后会立即显示分段数量"
     : hasChunkPlan && total > 0
-      ? `${preparing ? "已准备" : "已完成"} ${progress.completed}/${progress.total} 段 · ${progress.percent}%`
+      ? preparing
+        ? `已准备 ${progress.completed}/${progress.total} 段 · ${progress.percent}%`
+        : `已完成 ${progress.completed}/${progress.total} 段 · ${progress.processing} 段识别中 · ${progress.queued} 段等待`
       : run?.errorCode || (singleRun ? statusLabel(singleRun.status) : "正在启动");
   const nextStepText = inspecting
     ? "录音已经保存；这里只读取时长，不会重复上传整份文件。"
@@ -5025,7 +5027,9 @@ function AudioTranscriptionProgressPanel({
     : progress.remaining > 0
       ? preparing
         ? `还差 ${progress.remaining} 段完成整理；全部就绪后会自动并行识别。`
-        : `还差 ${progress.remaining} 段完成识别；随后自动合并，完成后即可开始分析。`
+        : progress.processing > 0
+          ? `${progress.processing} 段正在识别${progress.queued > 0 ? `，${progress.queued} 段等待并行空位` : ""}；每完成一段就会立即打勾。`
+          : `还差 ${progress.remaining} 段完成识别；随后自动合并，完成后即可开始分析。`
       : preparing
         ? "所有分段已经准备好，正在交给并行识别。"
         : "所有分段已经识别，正在合并完整逐字稿；合并后即可开始分析。";
@@ -5038,12 +5042,14 @@ function AudioTranscriptionProgressPanel({
       {!inspecting && total > 0 && <strong className="transcription-percent">{progress.percent}%</strong>}
     </header>
     <div className={`transcription-progress-bar${inspecting ? " indeterminate" : ""}`} role="progressbar" aria-label="录音分段处理进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={inspecting ? undefined : progress.percent}>
+      {!inspecting && progress.activePercent > progress.percent && <i className="transcription-progress-active" style={{ width: `${progress.activePercent}%` }} />}
       <span style={{ width: inspecting ? "34%" : `${progress.percent}%` }} />
     </div>
     {progress.nodes.length > 0 && <div className="transcription-chunk-nodes" aria-label={`${progress.total} 个录音分段`}>
       {progress.nodes.map((node) => <span className={`transcription-chunk-node ${node.status}`} key={node.index} aria-label={`第 ${node.index + 1} 段：${node.status === "completed" ? "已完成" : node.status === "processing" ? "处理中" : node.status === "failed" ? "失败" : "等待"}`}>
         <i>{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : node.index + 1}</i>
         <small>第{node.index + 1}段</small>
+        <em>{node.status === "completed" ? "已完成" : node.status === "processing" ? "识别中" : node.status === "failed" ? "需重试" : "等待"}</em>
       </span>)}
     </div>}
     <div className="transcription-next-step"><strong>{failedCount > 0 ? `${failedCount} 段需要重试` : nextStepText}</strong><span>系统会自动继续，不需要手动开启后台任务。</span></div>

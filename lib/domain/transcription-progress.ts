@@ -8,8 +8,12 @@ export type ChunkProgressNode = {
 export type ChunkProgressModel = {
   total: number;
   completed: number;
+  processing: number;
+  queued: number;
+  failed: number;
   remaining: number;
   percent: number;
+  activePercent: number;
   nodes: ChunkProgressNode[];
 };
 
@@ -68,11 +72,21 @@ export function buildChunkProgress(input: {
   const percent = total > 0
     ? clamp(Math.floor(((completed + partial) / total) * 100), 0, 100)
     : 0;
+  const processing = nodes.filter((node) => node.status === "processing").length;
+  const queued = nodes.filter((node) => node.status === "queued").length;
+  const failed = nodes.filter((node) => node.status === "failed").length;
+  const activePercent = total > 0
+    ? clamp(Math.floor(((completed + processing) / total) * 100), percent, 100)
+    : 0;
   return {
     total,
     completed,
+    processing,
+    queued,
+    failed,
     remaining: Math.max(0, total - completed),
     percent,
+    activePercent,
     nodes,
   };
 }

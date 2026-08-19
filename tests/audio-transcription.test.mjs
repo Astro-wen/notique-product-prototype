@@ -36,11 +36,11 @@ test("long audio is split into deterministic overlapping time chunks without cov
   assert.equal(chunking.shouldChunkAudio({ durationMs: 6 * 60_000, sizeBytes: 4_000_000 }), true);
   assert.equal(chunking.shouldChunkAudio({ durationMs: 60_000, sizeBytes: 19 * 1024 * 1024 }), true);
   assert.equal(chunking.AUDIO_CHUNK_OVERLAP_MS, 15_000);
-  assert.equal(chunking.AUDIO_CHUNK_MAX_PARALLEL, 4);
+  assert.equal(chunking.AUDIO_CHUNK_MAX_PARALLEL, 6);
   assert.equal(chunking.audioChunkParallelism(1), 1);
   assert.equal(chunking.audioChunkParallelism(5), 3);
-  assert.equal(chunking.audioChunkParallelism(6), 4);
-  assert.equal(chunking.audioChunkParallelism(10), 4);
+  assert.equal(chunking.audioChunkParallelism(6), 6);
+  assert.equal(chunking.audioChunkParallelism(10), 6);
 
   const chunks = chunking.planAudioChunks(10 * 60_000, 3 * 60_000, 5_000);
   assert.deepEqual(chunks, [

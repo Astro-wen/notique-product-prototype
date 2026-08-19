@@ -189,14 +189,17 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .transcription-journey h3 { margin: 3px 0 4px; font-size: 15px; line-height: 1.35; }
 .transcription-journey header p { margin: 0; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .transcription-percent { color: var(--brand-green); font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: -0.04em; }
-.transcription-progress-bar { height: 10px; overflow: hidden; border-radius: 999px; background: #dfe9e5; }
-.transcription-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2e8063, #60ad8d); transition: width .35s ease; }
+.transcription-progress-bar { position: relative; height: 10px; overflow: hidden; border-radius: 999px; background: #dfe9e5; }
+.transcription-progress-bar > span { position: relative; z-index: 2; display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2e8063, #60ad8d); transition: width .35s ease; }
+.transcription-progress-active { position: absolute; z-index: 1; inset: 0 auto 0 0; border-radius: inherit; background: repeating-linear-gradient(115deg, #b8d0ef 0, #b8d0ef 8px, #d8e6f8 8px, #d8e6f8 16px); animation: transcription-active 1.1s linear infinite; transition: width .35s ease; }
 .transcription-progress-bar.indeterminate > span { animation: transcription-indeterminate 1.2s ease-in-out infinite alternate; }
 @keyframes transcription-indeterminate { from { margin-left: 0; } to { margin-left: 66%; } }
+@keyframes transcription-active { to { background-position: 32px 0; } }
 .transcription-chunk-nodes { display: flex; flex-wrap: wrap; gap: 10px; }
 .transcription-chunk-node { min-width: 44px; flex: 1 1 48px; max-width: 72px; display: grid; justify-items: center; gap: 5px; color: var(--muted); }
 .transcription-chunk-node i { width: 29px; height: 29px; border: 2px solid #d4ddd9; border-radius: 50%; background: #fff; display: grid; place-items: center; color: #7f8a86; font-size: 9px; font-style: normal; font-weight: 850; font-variant-numeric: tabular-nums; }
 .transcription-chunk-node small { font-size: 8px; white-space: nowrap; }
+.transcription-chunk-node em { color: inherit; font-size: 7px; font-style: normal; font-weight: 700; white-space: nowrap; }
 .transcription-chunk-node.completed i { border-color: var(--brand-green); background: var(--brand-green); color: #fff; }
 .transcription-chunk-node.completed { color: var(--brand-green-dark); }
 .transcription-chunk-node.processing i { border-color: #4e7fbd; background: #eaf2ff; color: #285899; box-shadow: 0 0 0 4px rgba(78, 127, 189, .1); animation: transcription-node-pulse 1.4s ease-in-out infinite; }

@@ -29,6 +29,10 @@ test("chunk progress exposes an honest percentage and one stable node per segmen
   });
 
   assert.equal(progress.percent, 30);
+  assert.equal(progress.activePercent, 40);
+  assert.equal(progress.processing, 1);
+  assert.equal(progress.queued, 5);
+  assert.equal(progress.failed, 1);
   assert.equal(progress.remaining, 7);
   assert.equal(progress.nodes.length, 10);
   assert.equal(progress.nodes.filter((node) => node.status === "completed").length, 3);
@@ -70,10 +74,12 @@ test("the meeting workspace uses the persistent progress journey instead of per-
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
   assert.match(page, /data-testid="transcription-journey"/);
-  assert.match(page, /还差 \$\{progress\.remaining\} 段完成识别/);
+  assert.match(page, /\$\{progress\.processing\} 段正在识别/);
+  assert.match(page, /\$\{progress\.queued\} 段等待并行空位/);
   assert.match(page, /系统会自动继续，不需要手动开启后台任务/);
   assert.doesNotMatch(page, /正在整理长录音：第 \$\{item\.index \+ 1\}/);
   assert.match(styles, /\.transcription-progress-bar/);
+  assert.match(styles, /\.transcription-progress-active/);
   assert.match(styles, /\.transcription-chunk-node\.completed/);
   assert.match(styles, /\.transcription-milestones/);
 });

@@ -21,8 +21,9 @@ test("chunked transcription shows percentage, nodes, remaining work, and numbere
   const journey = page.getByTestId("transcription-journey");
   await expect(journey).toBeVisible();
   await expect(journey).toContainText("正在分段并行识别说话人和时间点");
-  await expect(journey).toContainText("已完成 4/10 段 · 40%");
-  await expect(journey).toContainText("还差 6 段完成识别");
+  await expect(journey).toContainText("已完成 4/10 段 · 3 段识别中 · 3 段等待");
+  await expect(journey).toContainText("3 段正在识别，3 段等待并行空位");
+  await expect(journey.locator(".transcription-progress-active")).toHaveCSS("width", /.+/);
   await expect(journey.locator(".transcription-chunk-node.completed")).toHaveCount(4);
   await expect(journey.locator(".transcription-chunk-node.processing")).toHaveCount(3);
   await expect(journey.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
