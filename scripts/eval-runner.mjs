@@ -3,6 +3,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
 
+import { ERIC_QUALITY_THRESHOLDS } from "./lib/quality-gates.mjs";
+
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -173,6 +175,7 @@ function singleRunMetrics(groundTruth, run) {
   const criticalAmbiguities = materialTruth.filter((claim) => claim.ambiguity?.severity === "critical");
   const predictionGroups = groupBy(run.claims, (claim) => claim.matchedGroundTruthId);
   const uniqueMaterialMatches = materialTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
+  const uniqueCriticalMatches = criticalTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
   const supportedUniqueMaterial = uniqueMaterialMatches.filter((truth) => supported(predictionGroups.get(truth.id)[0]));
   const supportedCritical = criticalTruth.filter((truth) => {
     const matches = predictionGroups.get(truth.id) ?? [];
@@ -224,6 +227,7 @@ function singleRunMetrics(groundTruth, run) {
     runId: run.id,
     materialClaimRecall: ratio(uniqueMaterialMatches.length, materialTruth.length),
     materialClaimPrecision: ratio(uniqueMaterialMatches.length, run.claims.length),
+    criticalClaimRecall: ratio(uniqueCriticalMatches.length, criticalTruth.length),
     claimsWithEvidence: ratio(run.claims.length - missingEvidenceClaims, run.claims.length),
     evidenceIdValidity: ratio(evidence.filter((item) => item.idValid === true).length, evidence.length + missingEvidenceClaims),
     transcriptQuoteExactMatch: ratio(transcriptChecks.filter((item) => item.quoteExact === true).length, transcriptChecks.length),
@@ -271,6 +275,7 @@ export function evaluate(groundTruth, predictionSet) {
   const criticalTruth = materialTruth.filter((claim) => claim.critical === true);
   const predictionGroups = groupBy(primaryRun.claims, (claim) => claim.matchedGroundTruthId);
   const uniqueMaterialMatches = materialTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
+  const uniqueCriticalMatches = criticalTruth.filter((truth) => predictionGroups.get(truth.id)?.length === 1);
   const supportedUniqueMaterial = uniqueMaterialMatches.filter((truth) => supported(predictionGroups.get(truth.id)[0]));
   const supportedCritical = criticalTruth.filter((truth) => {
     const matches = predictionGroups.get(truth.id) ?? [];
@@ -385,6 +390,7 @@ export function evaluate(groundTruth, predictionSet) {
   const metrics = {
     materialClaimRecall: ratio(uniqueMaterialMatches.length, materialTruth.length),
     materialClaimPrecision: ratio(uniqueMaterialMatches.length, primaryRun.claims.length),
+    criticalClaimRecall: ratio(uniqueCriticalMatches.length, criticalTruth.length),
     claimsWithEvidence: ratio(primaryRun.claims.length - missingEvidenceClaims, primaryRun.claims.length),
     evidenceIdValidity: ratio(evidence.filter((item) => item.idValid === true).length, evidence.length + missingEvidenceClaims),
     transcriptQuoteExactMatch: ratio(transcriptChecks.filter((item) => item.quoteExact === true).length, transcriptChecks.length),
@@ -414,6 +420,7 @@ export function evaluate(groundTruth, predictionSet) {
     worstRun: {
       materialClaimRecall: worstRatio(perRun, "materialClaimRecall"),
       materialClaimPrecision: worstRatio(perRun, "materialClaimPrecision"),
+      criticalClaimRecall: worstRatio(perRun, "criticalClaimRecall"),
       claimsWithEvidence: worstRatio(perRun, "claimsWithEvidence"),
       evidenceIdValidity: worstRatio(perRun, "evidenceIdValidity"),
       transcriptQuoteExactMatch: worstRatio(perRun, "transcriptQuoteExactMatch"),
@@ -443,16 +450,17 @@ export function evaluate(groundTruth, predictionSet) {
 
   const checks = [
     gate("sample_eligible", sampleEligibility.meetsTranscriptMinimum, sampleEligibility.meetsTranscriptMinimum, true),
-    gate("material_recall", worst.materialClaimRecall >= 0.8, worst.materialClaimRecall, ">= 0.80 in every run"),
-    gate("material_precision", worst.materialClaimPrecision >= 0.85, worst.materialClaimPrecision, ">= 0.85 in every run"),
+    gate("material_recall", worst.materialClaimRecall >= ERIC_QUALITY_THRESHOLDS.materialRecall, worst.materialClaimRecall, ">= 0.90 in every run"),
+    gate("material_precision", worst.materialClaimPrecision >= ERIC_QUALITY_THRESHOLDS.claimPrecision, worst.materialClaimPrecision, ">= 0.95 in every run"),
+    gate("critical_recall", worst.criticalClaimRecall === ERIC_QUALITY_THRESHOLDS.criticalRecall, worst.criticalClaimRecall, "1.00 in every run"),
     gate("claims_have_evidence", worst.claimsWithEvidence === 1, worst.claimsWithEvidence, "1.00 in every run"),
     gate("evidence_id_validity", worst.evidenceIdValidity === 1, worst.evidenceIdValidity, "1.00 in every run"),
     gate("transcript_quote_exact", worst.transcriptQuoteExactMatch === 1, worst.transcriptQuoteExactMatch, "1.00 in every run"),
     gate("citation_support", worst.citationSupportPrecision >= 0.95, worst.citationSupportPrecision, ">= 0.95 in every run"),
     gate("critical_citation_support", worst.criticalCitationSupport === 1, worst.criticalCitationSupport, "1.00 in every run"),
     gate("critical_ambiguity", worst.criticalAmbiguityRecall === 1, worst.criticalAmbiguityRecall, "1.00 in every run"),
-    gate("relation_recall", worst.relationRecall === 1, worst.relationRecall, "1.00 in every run"),
-    gate("relation_precision", worst.relationPrecision === 1, worst.relationPrecision, "1.00 in every run"),
+    gate("relation_recall", worst.relationRecall >= ERIC_QUALITY_THRESHOLDS.relationRecall, worst.relationRecall, ">= 0.90 in every run"),
+    gate("relation_precision", worst.relationPrecision >= ERIC_QUALITY_THRESHOLDS.relationPrecision, worst.relationPrecision, ">= 0.90 in every run"),
     gate("duplicate_creation", worst.duplicateCreationRate != null && worst.duplicateCreationRate < 0.1, worst.duplicateCreationRate, "< 0.10 in every run"),
     gate("reaffirmed_accuracy", worst.reaffirmedClassificationAccuracy === 1, worst.reaffirmedClassificationAccuracy, "1.00 in every run"),
     gate("visual_adjudication", worst.visualClaimsAllAdjudicated, worst.visualClaimsAllAdjudicated, true),

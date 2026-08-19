@@ -4,7 +4,7 @@ import type {
 } from "@/lib/domain/audio-transcription";
 
 export const AUDIO_CHUNK_TARGET_MS = 3 * 60_000;
-export const AUDIO_CHUNK_OVERLAP_MS = 5_000;
+export const AUDIO_CHUNK_OVERLAP_MS = 10_000;
 export const AUDIO_CHUNK_MIN_DURATION_MS = 5 * 60_000;
 export const AUDIO_CHUNK_MIN_SOURCE_BYTES = 18 * 1024 * 1024;
 export const AUDIO_CHUNK_MAX_PARALLEL = 3;
@@ -121,32 +121,92 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
   });
 
   const merged: Array<DiarizedTranscriptSegment & { chunkIndex: number }> = [];
+  let nextGlobalSpeaker = 1;
+  let previousChunkSpeakers: string[] = [];
   for (const chunk of chunks) {
     const offsetSeconds = chunk.startMs / 1_000;
-    for (const source of chunk.transcript.segments) {
-      const segment = {
-        speaker: source.speaker,
-        text: source.text,
-        startSeconds: offsetSeconds + source.startSeconds,
-        endSeconds: offsetSeconds + source.endSeconds,
+    const absoluteSegments = chunk.transcript.segments.map((source) => ({
+      speaker: source.speaker,
+      text: source.text,
+      startSeconds: offsetSeconds + source.startSeconds,
+      endSeconds: offsetSeconds + source.endSeconds,
+      chunkIndex: chunk.index,
+    }));
+    const localSpeakers = [...new Set(absoluteSegments.map((segment) => segment.speaker))];
+    const speakerMap = new Map<string, string>();
+    const usedGlobalSpeakers = new Set<string>();
+    const votes: Array<{ local: string; global: string; score: number }> = [];
+
+    if (chunk.index > 0) {
+      for (const segment of absoluteSegments) {
+        for (const candidate of merged) {
+          if (candidate.chunkIndex !== chunk.index - 1 || !duplicateAcrossBoundary(candidate, segment)) continue;
+          votes.push({
+            local: segment.speaker,
+            global: candidate.speaker,
+            score: textSimilarity(candidate.text, segment.text),
+          });
+        }
+      }
+      votes.sort((left, right) => right.score - left.score || left.local.localeCompare(right.local));
+      for (const vote of votes) {
+        if (speakerMap.has(vote.local) || usedGlobalSpeakers.has(vote.global)) continue;
+        speakerMap.set(vote.local, vote.global);
+        usedGlobalSpeakers.add(vote.global);
+      }
+
+      // In the common two-person case one overlap anchor determines the other
+      // speaker by elimination. Do this only when the adjacent chunks contain
+      // the same number of speakers and exactly one identity remains.
+      const unmappedLocal = localSpeakers.filter((speaker) => !speakerMap.has(speaker));
+      const unusedPrevious = previousChunkSpeakers.filter((speaker) => !usedGlobalSpeakers.has(speaker));
+      if (
+        speakerMap.size > 0
+        && localSpeakers.length === previousChunkSpeakers.length
+        && unmappedLocal.length === 1
+        && unusedPrevious.length === 1
+      ) {
+        speakerMap.set(unmappedLocal[0]!, unusedPrevious[0]!);
+        usedGlobalSpeakers.add(unusedPrevious[0]!);
+      }
+    }
+
+    for (const localSpeaker of localSpeakers) {
+      if (speakerMap.has(localSpeaker)) continue;
+      speakerMap.set(localSpeaker, `Speaker ${nextGlobalSpeaker}`);
+      nextGlobalSpeaker += 1;
+    }
+
+    const alignedSegments = absoluteSegments.map((segment) => ({
+      ...segment,
+      speaker: speakerMap.get(segment.speaker)!,
+    }));
+    previousChunkSpeakers = [...new Set(alignedSegments.map((segment) => segment.speaker))];
+
+    for (const segment of alignedSegments) {
+      const normalizedSegment = {
+        speaker: segment.speaker,
+        text: segment.text,
+        startSeconds: segment.startSeconds,
+        endSeconds: segment.endSeconds,
         chunkIndex: chunk.index,
       };
       const duplicateIndex = merged.findIndex((candidate) =>
-        candidate.chunkIndex === chunk.index - 1 && duplicateAcrossBoundary(candidate, segment));
+        candidate.chunkIndex === chunk.index - 1 && duplicateAcrossBoundary(candidate, normalizedSegment));
       if (duplicateIndex < 0) {
-        merged.push(segment);
+        merged.push(normalizedSegment);
         continue;
       }
       const existing = merged[duplicateIndex]!;
-      if (normalizedWords(segment.text).length > normalizedWords(existing.text).length) {
+      if (normalizedWords(normalizedSegment.text).length > normalizedWords(existing.text).length) {
         merged[duplicateIndex] = {
-          ...segment,
-          startSeconds: Math.min(existing.startSeconds, segment.startSeconds),
-          endSeconds: Math.max(existing.endSeconds, segment.endSeconds),
+          ...normalizedSegment,
+          startSeconds: Math.min(existing.startSeconds, normalizedSegment.startSeconds),
+          endSeconds: Math.max(existing.endSeconds, normalizedSegment.endSeconds),
         };
       } else {
-        existing.startSeconds = Math.min(existing.startSeconds, segment.startSeconds);
-        existing.endSeconds = Math.max(existing.endSeconds, segment.endSeconds);
+        existing.startSeconds = Math.min(existing.startSeconds, normalizedSegment.startSeconds);
+        existing.endSeconds = Math.max(existing.endSeconds, normalizedSegment.endSeconds);
       }
     }
   }

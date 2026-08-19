@@ -35,6 +35,7 @@ test("long audio is split into deterministic overlapping time chunks without cov
   assert.equal(chunking.shouldChunkAudio({ durationMs: 4 * 60_000, sizeBytes: 4_000_000 }), false);
   assert.equal(chunking.shouldChunkAudio({ durationMs: 6 * 60_000, sizeBytes: 4_000_000 }), true);
   assert.equal(chunking.shouldChunkAudio({ durationMs: 60_000, sizeBytes: 19 * 1024 * 1024 }), true);
+  assert.equal(chunking.AUDIO_CHUNK_OVERLAP_MS, 10_000);
 
   const chunks = chunking.planAudioChunks(10 * 60_000, 3 * 60_000, 5_000);
   assert.deepEqual(chunks, [
@@ -82,13 +83,13 @@ test("chunk transcripts merge onto the original timeline and remove only proven 
         text: "The budget is five hundred thousand dollars. Three bedrooms are required.",
         segments: [
           {
-            speaker: "B",
+            speaker: "A",
             text: "The budget is five hundred thousand dollars.",
             startSeconds: 1,
             endSeconds: 4,
           },
           {
-            speaker: "A",
+            speaker: "B",
             text: "Three bedrooms are required.",
             startSeconds: 8,
             endSeconds: 11,
@@ -106,6 +107,11 @@ test("chunk transcripts merge onto the original timeline and remove only proven 
   assert.equal(merged.segments[1].startSeconds, 176);
   assert.equal(merged.segments[1].endSeconds, 179);
   assert.equal(merged.segments[2].startSeconds, 183);
+  assert.deepEqual(merged.segments.map((segment) => segment.speaker), [
+    "Speaker 1",
+    "Speaker 2",
+    "Speaker 1",
+  ]);
 });
 
 test("chunk merging fails closed on missing indices or non-overlapping source ranges", async () => {

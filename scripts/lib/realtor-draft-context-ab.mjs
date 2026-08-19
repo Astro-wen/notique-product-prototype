@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { ERIC_QUALITY_THRESHOLDS } from "./quality-gates.mjs";
+
 export const REALTOR_AB_SCHEMA_VERSION = "notique-realtor-draft-context-ab.v1";
 export const REALTOR_AB_ARM_SCHEMA_VERSION = "notique-realtor-draft-context-ab-arm.v1";
 export const REALTOR_AB_ADJUDICATION_SCHEMA_VERSION =
@@ -597,18 +599,18 @@ export function scoreArm(arm, adjudication, groundTruth, actionGroundTruth) {
     artifactUsage: summary.artifactUsage,
   };
   const checks = [
-    ["claim_precision", metrics.claimPrecision.value >= 0.95, metrics.claimPrecision.value, ">= 0.95"],
-    ["material_recall", metrics.materialRecall.value >= 0.9, metrics.materialRecall.value, ">= 0.90"],
-    ["critical_recall", metrics.criticalRecall.value === 1, metrics.criticalRecall.value, "1.00"],
+    ["claim_precision", metrics.claimPrecision.value >= ERIC_QUALITY_THRESHOLDS.claimPrecision, metrics.claimPrecision.value, ">= 0.95"],
+    ["material_recall", metrics.materialRecall.value >= ERIC_QUALITY_THRESHOLDS.materialRecall, metrics.materialRecall.value, ">= 0.90"],
+    ["critical_recall", metrics.criticalRecall.value === ERIC_QUALITY_THRESHOLDS.criticalRecall, metrics.criticalRecall.value, "1.00"],
     ["claims_have_evidence", metrics.claimsWithEvidence.value === 1, metrics.claimsWithEvidence.value, "1.00"],
     ["evidence_id_accuracy", metrics.evidenceIdAccuracy.value === 1, metrics.evidenceIdAccuracy.value, "1.00"],
     ["quote_accuracy", metrics.transcriptQuoteAccuracy.value === 1, metrics.transcriptQuoteAccuracy.value, "1.00"],
     ["timestamp_accuracy", metrics.timestampAccuracy.sampleCount === metrics.timestampAccuracy.expectedCount && metrics.timestampAccuracy.maxDistanceMs != null && metrics.timestampAccuracy.maxDistanceMs < 5_000, metrics.timestampAccuracy, "complete coverage and < 5000 ms"],
-    ["relation_precision", metrics.relationPrecision.value >= 0.9, metrics.relationPrecision.value, ">= 0.90"],
-    ["relation_recall", metrics.relationRecall.value >= 0.9, metrics.relationRecall.value, ">= 0.90"],
+    ["relation_precision", metrics.relationPrecision.value >= ERIC_QUALITY_THRESHOLDS.relationPrecision, metrics.relationPrecision.value, ">= 0.90"],
+    ["relation_recall", metrics.relationRecall.value >= ERIC_QUALITY_THRESHOLDS.relationRecall, metrics.relationRecall.value, ">= 0.90"],
     ["reaffirmed_accuracy", metrics.reaffirmedAccuracy.value >= 0.95, metrics.reaffirmedAccuracy.value, ">= 0.95"],
-    ["action_precision", metrics.actionPrecision.value >= 0.95, metrics.actionPrecision.value, ">= 0.95"],
-    ["action_recall", metrics.actionRecall.value === 1, metrics.actionRecall.value, "1.00"],
+    ["action_precision", metrics.actionPrecision.value >= ERIC_QUALITY_THRESHOLDS.actionPrecision, metrics.actionPrecision.value, ">= 0.95"],
+    ["action_recall", metrics.actionRecall.value === ERIC_QUALITY_THRESHOLDS.actionRecall, metrics.actionRecall.value, "1.00"],
     ["action_owner", metrics.actionOwnerAccuracy.value === 1, metrics.actionOwnerAccuracy.value, "1.00"],
     ["action_due", metrics.actionDueAccuracy.value === 1, metrics.actionDueAccuracy.value, "1.00"],
     ["action_source", metrics.actionSourceAccuracy.value === 1, metrics.actionSourceAccuracy.value, "1.00"],
@@ -677,8 +679,8 @@ export function buildScoredComparison({ control, treatment, controlAdjudication,
   const checks = [
     { name: "comparable_inputs", passed: comparable.comparable, actual: comparable.comparable, expected: true },
     { name: "treatment_quality_gates", passed: treatmentScore.gates.pass, actual: treatmentScore.gates.pass, expected: true },
-    { name: "token_increase", passed: tokenIncrease != null && tokenIncrease <= 0.25, actual: tokenIncrease, expected: "<= 0.25" },
-    { name: "fact_token_increase", passed: factTokenIncrease != null && factTokenIncrease <= 0.25, actual: factTokenIncrease, expected: "<= 0.25" },
+    { name: "token_increase", passed: tokenIncrease != null && tokenIncrease <= ERIC_QUALITY_THRESHOLDS.draftTokenIncreaseMax, actual: tokenIncrease, expected: "<= 0.25" },
+    { name: "fact_token_increase", passed: factTokenIncrease != null && factTokenIncrease <= ERIC_QUALITY_THRESHOLDS.draftTokenIncreaseMax, actual: factTokenIncrease, expected: "<= 0.25" },
     ...regressionChecks,
   ];
   return {
