@@ -736,7 +736,13 @@ function issueMessage(issue: ApiIssue): string {
     }
     return "当前文件格式暂不支持。页面没有上传或保存这份文件。";
   }
-  if (issue.code === "EVENT_NOT_READY") return "这次沟通还没有准备好可处理的材料。请等文件状态变为“材料已就绪”。";
+  if (issue.code === "EVENT_NOT_READY") {
+    const details = isRecord(issue.details) ? issue.details : {};
+    if (details.reason === "analysis_required") {
+      return "原始逐字稿已经准备好。请点击“开始分析并生成”，系统会同时生成 AI 摘要、易读逐字稿和事实清单。";
+    }
+    return "这次沟通还没有准备好可处理的材料。请等文件状态变为“材料已就绪”。";
+  }
   if (issue.code === "NOT_FOUND" || issue.status === 404) return "请求的内容不存在。后端接口可能尚未完成，或这条数据已经被删除。";
   if (issue.code === "NETWORK_ERROR" || issue.status === 0) return "无法连接后端服务，请确认本地服务正在运行。";
   if (issue.status >= 500) return "服务端没有完成这次请求。本次没有写入假数据或半成品，请保留 Request ID 供排查。";
@@ -4320,6 +4326,7 @@ export default function Home() {
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
           onRetryArtifact={retryEventAiArtifact}
+          onStartAnalysis={async (targetEvent) => startExtractionForEvent(targetEvent)}
           onFocusTranscriptArtifact={(eventId, tab) => {
             setTranscriptFocusRequest({ id: Date.now(), eventId, tab });
             if (routeRef.current.view === "simple") {
@@ -4508,6 +4515,7 @@ type SimpleTestScreenProps = {
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onStartAnalysis: (event: Event) => Promise<void>;
   onFocusTranscriptArtifact: (eventId: string, tab: TranscriptArtifactTab) => void;
   onClearTranscriptArtifact: () => void;
   transcriptFocusRequest: TranscriptFocusRequest | null;
@@ -4580,20 +4588,24 @@ function restoreWindowScrollPosition(targetY: number, onDone: () => void): () =>
 function TranscriptArtifactsPanel({
   event,
   transcriptionRun,
+  analysisRun,
   claims,
   busy,
   onOpenClaim,
   onRetryArtifact,
+  onStartAnalysis,
   onSelectTab,
   focusRequest,
   onFocusHandled,
 }: {
   event: Event;
   transcriptionRun: TranscriptionRun | null;
+  analysisRun: ExtractionRun | null;
   claims: Claim[];
   busy: string | null;
   onOpenClaim: (id: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onStartAnalysis: (event: Event) => Promise<void>;
   onSelectTab: (tab: TranscriptArtifactTab) => void;
   focusRequest: TranscriptFocusRequest | null;
   onFocusHandled: (requestId: number) => void;
@@ -4710,6 +4722,8 @@ function TranscriptArtifactsPanel({
   const readableRun = readablePair.run ?? undefined;
   const summaryArtifact = summaryPair.artifact ?? undefined;
   const readableArtifact = readablePair.artifact ?? undefined;
+  const analysisRunning = Boolean(analysisRun && runInProgress.has(analysisRun.status));
+  const analysisComplete = Boolean(analysisRun && runComplete.has(analysisRun.status));
   const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
@@ -4875,6 +4889,11 @@ function TranscriptArtifactsPanel({
     await load(true);
   }
 
+  async function startAnalysisAndLoadArtifacts() {
+    await onStartAnalysis(event);
+    await load(true);
+  }
+
   function toggleReadableDiff(
     key: string,
     sourceIds: string[],
@@ -4963,7 +4982,7 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
-      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>旧记录可以单独生成，不会重跑事实识别。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div>}
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</span><button className="button primary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button></div>}
     </section>
 
     <nav className="transcript-subtabs" aria-label="逐字稿版本">
@@ -5008,7 +5027,7 @@ function TranscriptArtifactsPanel({
           <p>{group.text}</p>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
-      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={async () => {
+      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
         await onRetryArtifact(event.id, "readable_transcript");
         await load(true);
       }} onRaw={() => selectArtifactTab("raw")} />}
@@ -5072,10 +5091,13 @@ function ReadableTranscriptDiff({ state, edits, needsCheck }: {
   </div>;
 }
 
-function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
+function ArtifactFallback({ kind, run, busy, analysisRunning, analysisComplete, onStartAnalysis, onRetry, onRaw }: {
   kind: EventAiArtifactRun["kind"];
   run?: EventAiArtifactRun;
   busy: string | null;
+  analysisRunning: boolean;
+  analysisComplete: boolean;
+  onStartAnalysis: () => Promise<void>;
   onRetry: () => Promise<void>;
   onRaw: () => void;
 }) {
@@ -5088,6 +5110,8 @@ function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
     return <div className="artifact-fallback failed" role="status"><h3>{title}</h3><p>{body}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
   }
   if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}正在启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
+  if (analysisRunning) return <div className="artifact-fallback"><span className="spinner" /><h3>分析已启动，正在建立 {name} 任务</h3><p>原始逐字稿已经可以阅读，不需要重复点击。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
+  if (!analysisComplete) return <div className="artifact-fallback"><h3>逐字稿已经准备好</h3><p>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</p><div><button className="button primary" disabled={Boolean(busy)} onClick={() => void onStartAnalysis().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div></div>;
   return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
 }
 
@@ -5264,6 +5288,7 @@ function SimpleTestScreen({
   onResult,
   onOpenClaim,
   onRetryArtifact,
+  onStartAnalysis,
   onFocusTranscriptArtifact,
   onClearTranscriptArtifact,
   transcriptFocusRequest,
@@ -5868,10 +5893,12 @@ function SimpleTestScreen({
                 key={event.id}
                 event={event}
                 transcriptionRun={transcriptionRun}
+                analysisRun={run}
                 claims={claims}
                 busy={busy}
                 onOpenClaim={onOpenClaim}
                 onRetryArtifact={onRetryArtifact}
+                onStartAnalysis={onStartAnalysis}
                 onSelectTab={(tab) => {
                   markUserNavigation();
                   onFocusTranscriptArtifact(event.id, tab);

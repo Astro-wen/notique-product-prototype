@@ -1056,7 +1056,9 @@ test("artifact jobs use durable Background Responses and independent retries", a
   assert.match(worker, /kind === "artifact"/);
   assert.match(repository, /createEventAiArtifactRetry/);
   assert.match(repository, /Only a failed AI artifact can be regenerated/);
-  assert.match(repository, /Complete fact analysis is required before this reading aid can be generated/);
+  assert.match(repository, /Start this event's analysis first/);
+  assert.match(repository, /409,[\s\S]*"EVENT_NOT_READY"/);
+  assert.match(repository, /reason: "analysis_required"/);
   assert.match(repository, /er\.status IN \('succeeded','completed','completed_with_warnings'\)/);
   assert.match(repository, /listEventAiArtifactRunDebug/);
   assert.match(repository, /SELECT canonical_value, aliases_json, category/);

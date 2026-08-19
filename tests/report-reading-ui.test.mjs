@@ -88,6 +88,17 @@ test("completed analysis opens the summary and restores it after reading evidenc
   assert.match(page, /readableRun\?\.status === "processing"/);
 });
 
+test("a transcript without an analysis offers one valid start action instead of broken artifact retries", () => {
+  assert.match(page, /analysisRunning \? <div className="summary-card-loading"/);
+  assert.match(page, /analysisComplete \? <div className="summary-card-message"/);
+  assert.match(page, /开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成/);
+  assert.match(page, /开始分析并生成/);
+  assert.match(page, /onStartAnalysis=\{onStartAnalysis\}/);
+  assert.match(page, /analysisRunning=\{analysisRunning\}/);
+  assert.match(page, /analysisComplete=\{analysisComplete\}/);
+  assert.match(page, /details\.reason === "analysis_required"/);
+});
+
 test("failed reading artifacts fall back safely without exposing provider error codes", () => {
   assert.match(page, /AI 摘要未通过安全检查/);
   assert.match(page, /易读逐字稿未通过完整性检查/);

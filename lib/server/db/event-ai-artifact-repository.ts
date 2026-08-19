@@ -537,7 +537,12 @@ export async function createEventAiArtifactRetry(
       [eventId, scope.workspaceId],
     );
     if (!source) {
-      throw new ApiFault(404, "NOT_FOUND", "Complete fact analysis is required before this reading aid can be generated.");
+      throw new ApiFault(
+        409,
+        "EVENT_NOT_READY",
+        "Start this event's analysis first. The summary and readable transcript will be created with that run.",
+        { reason: "analysis_required" },
+      );
     }
   }
   const manifest = parseJson<Array<{ kind?: unknown }>>(String(source.input_manifest_json ?? "[]"), []);
