@@ -4575,9 +4575,7 @@ function TranscriptArtifactsPanel({
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
   const readableSegments = readableContent ? recordArray(readableContent.segments) : [];
-  const visibleRawSegments = rawSegments.filter((segment) =>
-    selectedSourceIds.size === 0 || selectedSourceIds.has(segment.id),
-  );
+  const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
 
   useEffect(() => {
     if (state === "loading" || state === "idle") return;
@@ -4649,6 +4647,30 @@ function TranscriptArtifactsPanel({
     }
   }
 
+  function locateRawSources(sourceIds: string[]) {
+    if (!sourceIds.length) return;
+    summaryScrollY.current = window.scrollY;
+    setSelectedSourceIds(new Set(sourceIds));
+    selectArtifactTab("raw");
+    window.setTimeout(() => {
+      document.getElementById(`raw-segment-${sourceIds[0]}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 60);
+  }
+
+  function openClaimFromSummary(claimId: string) {
+    summaryScrollY.current = window.scrollY;
+    onSelectTab("summary");
+    onOpenClaim(claimId);
+  }
+
+  async function retrySummaryArtifact() {
+    await onRetryArtifact(event.id, "summary");
+    await load(true);
+  }
+
   function toggleReadableDiff(
     key: string,
     sourceIds: string[],
@@ -4696,40 +4718,57 @@ function TranscriptArtifactsPanel({
   if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className="transcript-workspace" aria-label="逐字稿阅读区">
+    <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
+      <header className="summary-overview-header">
+        <div>
+          <button className={`summary-card-title${tab === "summary" ? " active" : ""}`} onClick={() => selectArtifactTab("summary")}>
+            <span className="summary-spark" aria-hidden="true">✦</span>
+            AI 摘要
+            {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
+          </button>
+          <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要等待后台启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
+        </div>
+        {summaryArtifact && <span className="summary-ready-check" aria-label="AI 摘要生成完成">✓</span>}
+      </header>
+
+      {summaryArtifact ? <div className="summary-card-content">
+        <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
+        {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
+          <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
+          <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
+            const ids = stringValues(item.source_segment_ids);
+            const matchedClaims = matchingSummarySourceIndexes(
+              ids,
+              claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
+            ).map((index) => claims[index]);
+            const matchedClaim = matchedClaims.length === 1 ? matchedClaims[0] : null;
+            const revealIndex = sectionIndex * 4 + itemIndex;
+            return <article className="summary-reveal-line" style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={firstString(item, ["item_key"]) || itemIndex}>
+              <div className="summary-point-copy"><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q></div>
+              <div className="summary-point-actions">
+                <button className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => locateRawSources(ids)}>定位原文</button>
+                {matchedClaim && <button className="text-button" onClick={() => openClaimFromSummary(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
+                {matchedClaims.length > 1 && <details className="summary-related-claims">
+                  <summary className="text-button">{matchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{matchedClaims.length}）</summary>
+                  <div>{matchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
+                </details>}
+              </div>
+            </article>;
+          })}</div>
+        </section>)}
+      </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
+        <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要等待后台启动" : "正在生成 AI 摘要"}</strong></div>
+        <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>旧记录可以单独生成，不会重跑事实识别。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div>}
+    </section>
+
     <nav className="transcript-subtabs" aria-label="逐字稿版本">
-      <button className={tab === "summary" ? "active" : ""} onClick={() => selectArtifactTab("summary")}>AI 摘要 {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span>未生成</span>}{summaryPair.legacyFallback && <span>历史版本</span>}</button>
-      <button className={tab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
-      <button className={tab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
+      <button className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
+      <button className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
     </nav>
     {transcriptionRun?.audioAssetId && <audio ref={audioRef} controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`} />}
 
-    {tab === "summary" && <div className="artifact-panel summary-artifact">
-      <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对。请在重要内容核对后，再把它当作可信记忆。</span></aside>
-      {summaryArtifact ? summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
-        <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
-        <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
-          const ids = stringValues(item.source_segment_ids);
-          const matchedClaims = matchingSummarySourceIndexes(
-            ids,
-            claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
-          ).map((index) => claims[index]);
-          const matchedClaim = matchedClaims.length === 1 ? matchedClaims[0] : null;
-          return <article key={firstString(item, ["item_key"]) || itemIndex}>
-            <button className="summary-sentence" onClick={() => { summaryScrollY.current = window.scrollY; setSelectedSourceIds(new Set(ids)); selectArtifactTab("raw"); }}><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q><small>查看 {ids.length} 段原文</small></button>
-            {matchedClaim && <button className="text-button" onClick={() => onOpenClaim(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
-            {matchedClaims.length > 1 && <details className="summary-related-claims">
-              <summary className="text-button">{matchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{matchedClaims.length}）</summary>
-              <div>{matchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => onOpenClaim(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
-            </details>}
-          </article>;
-        })}</div>
-      </section>) : <ArtifactFallback kind="summary" run={summaryRun} busy={busy} onRetry={async () => {
-        await onRetryArtifact(event.id, "summary");
-        await load(true);
-      }} onRaw={() => selectArtifactTab("raw")} />}
-    </div>}
-
-    {tab === "readable" && <div className="artifact-panel readable-artifact">
+    {readerTab === "readable" && <div className="artifact-panel readable-artifact">
       {readableArtifact ? readableSegments.map((segment, index) => {
         const key = firstString(segment, ["readable_key"]) || `readable-${index}`;
         const diffKey = `${event.id}:${key}`;
@@ -4749,9 +4788,9 @@ function TranscriptArtifactsPanel({
       }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
-    {tab === "raw" && <div className="artifact-panel raw-artifact">
+    {readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
-      {visibleRawSegments.length ? visibleRawSegments.map((segment) => <article className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</button><strong>{displaySpeakerLabel(segment.speaker)}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      {rawSegments.length ? rawSegments.map((segment) => <article id={`raw-segment-${segment.id}`} className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1_000)}</button><strong>{displaySpeakerLabel(segment.speaker)}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
   </section>;
 }

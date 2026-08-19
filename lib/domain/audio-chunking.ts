@@ -4,10 +4,21 @@ import type {
 } from "@/lib/domain/audio-transcription";
 
 export const AUDIO_CHUNK_TARGET_MS = 3 * 60_000;
-export const AUDIO_CHUNK_OVERLAP_MS = 10_000;
+export const AUDIO_CHUNK_OVERLAP_MS = 15_000;
 export const AUDIO_CHUNK_MIN_DURATION_MS = 5 * 60_000;
 export const AUDIO_CHUNK_MIN_SOURCE_BYTES = 18 * 1024 * 1024;
-export const AUDIO_CHUNK_MAX_PARALLEL = 3;
+export const AUDIO_CHUNK_MAX_PARALLEL = 4;
+
+/**
+ * Keep short recordings conservative while allowing long recordings to use
+ * one extra provider lane. The hard ceiling protects provider rate limits and
+ * browser memory; the chunk count remains the source of truth shown in UI.
+ */
+export function audioChunkParallelism(chunkCountValue: number): number {
+  const chunkCount = Math.max(1, Math.floor(finiteNonNegative(chunkCountValue, "chunkCount")));
+  if (chunkCount >= 6) return AUDIO_CHUNK_MAX_PARALLEL;
+  return Math.min(3, chunkCount);
+}
 
 export type AudioChunkPlanItem = {
   index: number;

@@ -35,7 +35,12 @@ test("long audio is split into deterministic overlapping time chunks without cov
   assert.equal(chunking.shouldChunkAudio({ durationMs: 4 * 60_000, sizeBytes: 4_000_000 }), false);
   assert.equal(chunking.shouldChunkAudio({ durationMs: 6 * 60_000, sizeBytes: 4_000_000 }), true);
   assert.equal(chunking.shouldChunkAudio({ durationMs: 60_000, sizeBytes: 19 * 1024 * 1024 }), true);
-  assert.equal(chunking.AUDIO_CHUNK_OVERLAP_MS, 10_000);
+  assert.equal(chunking.AUDIO_CHUNK_OVERLAP_MS, 15_000);
+  assert.equal(chunking.AUDIO_CHUNK_MAX_PARALLEL, 4);
+  assert.equal(chunking.audioChunkParallelism(1), 1);
+  assert.equal(chunking.audioChunkParallelism(5), 3);
+  assert.equal(chunking.audioChunkParallelism(6), 4);
+  assert.equal(chunking.audioChunkParallelism(10), 4);
 
   const chunks = chunking.planAudioChunks(10 * 60_000, 3 * 60_000, 5_000);
   assert.deepEqual(chunks, [
@@ -538,6 +543,8 @@ test("chunked transcription uses hidden child assets, bounded parallel jobs, and
   assert.match(processor, /mergeChunkTranscripts/);
   assert.match(processor, /source_audio_asset_version_id: parent\.audio_asset_version_id/);
   assert.match(outbox, /AUDIO_CHUNK_MAX_PARALLEL/);
+  assert.match(outbox, /audioChunkParallelism/);
+  assert.match(outbox, /SELECT orchestration_mode, chunk_count/);
   assert.match(outbox, /Promise\.all/);
   assert.match(workflow, /parent_run_id IS NULL/);
   assert.match(page, /prepareLongAudioTranscription/);

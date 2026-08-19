@@ -6,7 +6,10 @@ import {
   transcriptionTimeoutMs,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
-import { AUDIO_CHUNK_MAX_PARALLEL } from "@/lib/domain/audio-chunking";
+import {
+  AUDIO_CHUNK_MAX_PARALLEL,
+  audioChunkParallelism,
+} from "@/lib/domain/audio-chunking";
 import {
   TRANSCRIPTION_MAX_ATTEMPTS,
   transcriptionRetryDecision,
@@ -414,12 +417,13 @@ export async function dispatchTranscriptionRun(
   runId: string,
 ): Promise<TranscriptionDispatchResult> {
   const parent = await first(
-    `SELECT orchestration_mode FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    `SELECT orchestration_mode, chunk_count FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
     [runId, workspaceId],
   );
   if (String(parent?.orchestration_mode) !== "chunked") {
     return dispatchDueTranscriptionOutbox({ workspaceId, runId });
   }
+  const parallelism = audioChunkParallelism(Number(parent?.chunk_count ?? 1));
   const children = (
     await getD1()
       .prepare(
@@ -429,7 +433,7 @@ export async function dispatchTranscriptionRun(
           ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, chunk_index
           LIMIT ?`,
       )
-      .bind(runId, workspaceId, AUDIO_CHUNK_MAX_PARALLEL)
+      .bind(runId, workspaceId, parallelism)
       .all<Row>()
   ).results ?? [];
   const dispatched = await Promise.all(
