@@ -770,6 +770,13 @@ function LoadingBlock({ label = "正在读取…" }: { label?: string }) {
   return <div className="loading-block" role="status"><span /><span /><span /><small>{label}</small></div>;
 }
 
+function MaterialSyncingCard({ detail = "文件已上传，正在更新这次沟通。" }: { detail?: string }) {
+  return <div className="material-syncing-card" role="status" aria-live="polite" aria-busy="true">
+    <span className="material-syncing-spinner" aria-hidden="true" />
+    <div><strong>正在同步材料…</strong><p>{detail}</p></div>
+  </div>;
+}
+
 function StatusBadge({ value }: { value?: string }) {
   const tone = ["failed", "rejected", "withdrawn"].includes(value ?? "")
     ? "danger"
@@ -5662,8 +5669,9 @@ function SimpleTestScreen({
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
-            <section className="materials-section">
-              <header><div><h3>材料</h3><p>{event ? `所有新文件都会加入“${event.title}”` : "还没有当前沟通时，系统会自动建立。"}</p></div>{visibleAssets.length > 0 && <button className="button secondary" onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加材料"}</button>}</header>
+            <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
+              <header><div><h3>材料</h3><p>{event ? `所有新文件都会加入“${event.title}”` : "还没有当前沟通时，系统会自动建立。"}</p></div>{visibleAssets.length > 0 && <button className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加材料"}</button>}</header>
+              {(busy === "asset" || busy === "simple-start") && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以看到上传的材料。" : audioPreparationProgress ? "录音已上传，正在准备后续处理。" : "文件已上传，正在刷新材料列表。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record">●</span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
@@ -5975,7 +5983,8 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
       {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "质量门仍有提醒，请在审核区重点核对事实与关系。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
-          <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" onClick={() => onRequirePublicWorkspaceAcknowledgement(() => fileRef.current?.click())}>上传材料</button></div>
+          <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" disabled={busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => fileRef.current?.click())}>{busy === "asset" ? "正在同步…" : "上传材料"}</button></div>
+          {busy === "asset" && <MaterialSyncingCard detail="文件已上传，正在刷新材料列表。" />}
           <input ref={fileRef} className="visually-hidden" type="file" accept={`.txt,.vtt,.srt,.json,${MODEL_IMAGE_FILE_ACCEPT},${AUDIO_FILE_ACCEPT}`} onChange={(change) => {
             const file = change.target.files?.[0];
             if (!file) return;
