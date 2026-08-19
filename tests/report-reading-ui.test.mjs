@@ -99,6 +99,12 @@ test("a transcript without an analysis offers one valid start action instead of 
   assert.match(page, /details\.reason === "analysis_required"/);
 });
 
+test("daily model budget errors explain the test limit without implying a stuck run", () => {
+  assert.match(page, /issue\.code === "RUN_BUDGET_EXCEEDED"/);
+  assert.match(page, /测试工作区今天的模型处理额度已经用完/);
+  assert.match(page, /本次分析没有启动，也不会产生新的模型费用/);
+});
+
 test("failed reading artifacts fall back safely without exposing provider error codes", () => {
   assert.match(page, /AI 摘要未通过安全检查/);
   assert.match(page, /易读逐字稿未通过完整性检查/);

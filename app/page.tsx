@@ -702,6 +702,13 @@ function issueTitle(issue: ApiIssue): string {
 function issueMessage(issue: ApiIssue): string {
   if (issue.code === "EXTRACTION_POLL_TIMEOUT") return "页面暂时停止等待，但原来的事实识别任务仍由服务器保存。重新检查只会读取同一个任务，不会重复付费。";
   if (issue.code === "TRANSCRIPTION_POLL_TIMEOUT") return "页面暂时停止等待，但录音和原来的转写任务仍然保留。重新检查不会重复上传录音。";
+  if (issue.code === "RUN_BUDGET_EXCEEDED") {
+    const details = isRecord(issue.details) ? issue.details : {};
+    if (typeof details.max_daily_model_tokens === "number") {
+      return "测试工作区今天的模型处理额度已经用完。本次分析没有启动，也不会产生新的模型费用；额度会在新的统计日自动恢复。";
+    }
+    return "这次材料超过当前单次分析上限。本次分析没有启动，请减少材料后重试。";
+  }
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "服务端还没有配置模型 Provider 和 API Key。本次没有生成任何候选记录，配置完成后可以安全重试。";
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音已经安全保存，但服务端还没有配置 OpenAI 转写模型。本次没有生成逐字稿，配置完成后可以重新提交。";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音已经保存，但本次转写在时限内没有完成。可以安全重试，不需要重新上传。";
