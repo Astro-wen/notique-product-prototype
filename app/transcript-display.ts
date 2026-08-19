@@ -93,3 +93,16 @@ export function groupConsecutiveSpeakerSegments(
   }
   return groups;
 }
+
+export function activeTranscriptGroupKeyAt(
+  groups: TranscriptDisplayGroup[],
+  currentMs: number,
+): string | null {
+  let activeKey: string | null = null;
+  for (const group of groups) {
+    if (group.startMs == null) continue;
+    if (group.startMs > currentMs + 120) break;
+    activeKey = group.key;
+  }
+  return activeKey;
+}

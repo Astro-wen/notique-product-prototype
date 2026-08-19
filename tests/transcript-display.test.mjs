@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const cjsModule = { exports: {} };
 new Function("module", "exports", compiled)(cjsModule, cjsModule.exports);
-const { groupConsecutiveSpeakerSegments } = cjsModule.exports;
+const { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments } = cjsModule.exports;
 
 function segment(overrides = {}) {
   return {
@@ -82,4 +82,16 @@ test("中文连续文本不会插入多余空格", () => {
     segment({ key: "segment-2", text: "然后再看区域。", startMs: 4_000 }),
   ]);
   assert.equal(groups[0].text, "今天先看预算，然后再看区域。");
+});
+
+test("播放位置只激活已经到达的最新段落", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment(),
+    segment({ key: "segment-2", speaker: "Speaker 2", text: "Fine.", startMs: 5_000, endMs: 6_000 }),
+    segment({ key: "segment-3", speaker: "Speaker 1", text: "Great.", startMs: 8_000, endMs: 9_000 }),
+  ]);
+  assert.equal(activeTranscriptGroupKeyAt(groups, 2_000), "segment-1");
+  assert.equal(activeTranscriptGroupKeyAt(groups, 5_050), "segment-2");
+  assert.equal(activeTranscriptGroupKeyAt(groups, 7_500), "segment-2");
+  assert.equal(activeTranscriptGroupKeyAt(groups, 8_000), "segment-3");
 });

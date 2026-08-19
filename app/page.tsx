@@ -109,7 +109,7 @@ import {
   type ReadableWordDiffResult,
 } from "./readable-transcript-diff";
 import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
-import { groupConsecutiveSpeakerSegments } from "./transcript-display";
+import { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments } from "./transcript-display";
 
 type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
@@ -4476,7 +4476,11 @@ function TranscriptArtifactsPanel({
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
   const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
+  const [activePlaybackKey, setActivePlaybackKey] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackNodes = useRef(new Map<string, HTMLElement>());
+  const pendingPlaybackTarget = useRef<{ key: string; startMs: number } | null>(null);
+  const programmaticAudioSeek = useRef(false);
   const loadEpoch = useRef(0);
   const activeDiffEventId = useRef(event.id);
   const diffLoadsInFlight = useRef(new Set<string>());
@@ -4490,6 +4494,8 @@ function TranscriptArtifactsPanel({
   useEffect(() => {
     activeDiffEventId.current = event.id;
     diffLoadsInFlight.current.clear();
+    playbackNodes.current.clear();
+    pendingPlaybackTarget.current = null;
   }, [event.id]);
 
   const load = useCallback(async (quiet = false) => {
@@ -4602,6 +4608,19 @@ function TranscriptArtifactsPanel({
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
 
   useEffect(() => {
+    if (!activePlaybackKey) return;
+    const frame = window.requestAnimationFrame(() => {
+      const node = playbackNodes.current.get(activePlaybackKey);
+      if (!node) return;
+      const bounds = node.getBoundingClientRect();
+      if (bounds.top < 120 || bounds.bottom > window.innerHeight - 96) {
+        node.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activePlaybackKey]);
+
+  useEffect(() => {
     if (state === "loading" || state === "idle") return;
     const hasSummary = Boolean(
       summaryArtifact
@@ -4655,9 +4674,38 @@ function TranscriptArtifactsPanel({
     summaryRun,
   ]);
 
-  function playAt(milliseconds: number | null) {
+  function playbackKey(groupKey: string): string {
+    return `${readerTab}:${groupKey}`;
+  }
+
+  function registerPlaybackNode(key: string, node: HTMLElement | null) {
+    if (node) playbackNodes.current.set(key, node);
+    else playbackNodes.current.delete(key);
+  }
+
+  function syncPlaybackHighlight() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const currentMs = audio.currentTime * 1_000;
+    const pending = pendingPlaybackTarget.current;
+    if (pending && currentMs < pending.startMs - 80) {
+      setActivePlaybackKey(pending.key);
+      return;
+    }
+    pendingPlaybackTarget.current = null;
+    const groups = readerTab === "readable" ? readableDisplayGroups : rawDisplayGroups;
+    const groupKey = activeTranscriptGroupKeyAt(groups, currentMs);
+    setActivePlaybackKey(groupKey ? playbackKey(groupKey) : null);
+  }
+
+  function playAt(milliseconds: number | null, targetKey: string) {
     if (!audioRef.current || milliseconds == null) return;
+    const key = playbackKey(targetKey);
+    pendingPlaybackTarget.current = { key, startMs: milliseconds };
+    setActivePlaybackKey(key);
+    programmaticAudioSeek.current = true;
     audioRef.current.currentTime = Math.max(0, milliseconds / 1_000 - 3);
+    window.setTimeout(() => { programmaticAudioSeek.current = false; }, 500);
     void audioRef.current.play().catch(() => undefined);
   }
 
@@ -4790,14 +4838,34 @@ function TranscriptArtifactsPanel({
       <button className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       <button className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
     </nav>
-    {transcriptionRun?.audioAssetId && <audio ref={audioRef} controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`} />}
+    {transcriptionRun?.audioAssetId && <audio
+      ref={audioRef}
+      controls
+      preload="metadata"
+      src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`}
+      onPlay={syncPlaybackHighlight}
+      onTimeUpdate={syncPlaybackHighlight}
+      onSeeking={() => {
+        if (!programmaticAudioSeek.current) pendingPlaybackTarget.current = null;
+      }}
+      onSeeked={() => {
+        programmaticAudioSeek.current = false;
+        syncPlaybackHighlight();
+      }}
+      onEnded={() => {
+        pendingPlaybackTarget.current = null;
+        setActivePlaybackKey(null);
+      }}
+    />}
 
     {readerTab === "readable" && <div className="artifact-panel readable-artifact">
       {readableArtifact ? readableDisplayGroups.map((group) => {
         const diffKey = `${event.id}:${group.key}`;
-        return <article className={group.needsCheck ? "needs-check" : ""} key={group.key}>
+        const groupPlaybackKey = `readable:${group.key}`;
+        const playing = activePlaybackKey === groupPlaybackKey;
+        return <article ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${group.needsCheck ? "needs-check" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           <div className="readable-meta">
-            <button onClick={() => playAt(group.startMs)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
+            <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)} 前三秒播放`} onClick={() => playAt(group.startMs, group.key)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
             <strong>{displaySpeakerLabel(group.speaker)}</strong>
             {group.needsCheck && <em>请核对</em>}
             {(group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
@@ -4816,10 +4884,15 @@ function TranscriptArtifactsPanel({
 
     {readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
-      {rawSegments.length ? rawDisplayGroups.map((group) => <article className={group.sourceIds.some((id) => selectedSourceIds.has(id)) ? "selected" : ""} key={group.key}>
-        {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
-        <button onClick={() => playAt(group.startMs)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
-      </article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      {rawSegments.length ? rawDisplayGroups.map((group) => {
+        const groupPlaybackKey = `raw:${group.key}`;
+        const playing = activePlaybackKey === groupPlaybackKey;
+        const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
+        return <article ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${selected ? "selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
+          {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
+          <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)} 前三秒播放`} onClick={() => playAt(group.startMs, group.key)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
+        </article>;
+      }) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
   </section>;
 }

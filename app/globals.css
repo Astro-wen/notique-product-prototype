@@ -999,6 +999,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .readable-artifact > article { padding: 13px 0; border-bottom: 1px solid var(--line); }
 .readable-artifact > article:last-child { border-bottom: 0; }
 .readable-artifact > article.needs-check { margin: 0 -8px; padding: 13px 8px; border-radius: 8px; background: #fff8ec; }
+.readable-artifact > article.playing { margin-left: -8px; margin-right: -8px; padding-left: 12px; padding-right: 12px; border-radius: 9px; background: #e6f4ed; box-shadow: inset 4px 0 0 var(--brand-green); transition: background 180ms ease, box-shadow 180ms ease; }
 .readable-meta { display: flex; align-items: center; gap: 9px; }
 .readable-meta button, .raw-artifact > article > button { border: 0; background: transparent; padding: 0; color: #2767a8; font-variant-numeric: tabular-nums; }
 .readable-meta em { color: #9a5b00; font-size: 9px; font-style: normal; font-weight: 700; }
@@ -1034,6 +1035,8 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .raw-focus-header { padding: 10px 12px; display: flex; justify-content: space-between; gap: 10px; border-radius: 8px; background: var(--brand-green-soft); }
 .raw-artifact > article { position: relative; padding: 11px 7px; display: grid; grid-template-columns: 58px 110px minmax(0, 1fr); gap: 9px; border-bottom: 1px solid var(--line); }
 .raw-artifact > article.selected { margin: 0 -7px; padding-left: 14px; padding-right: 14px; background: #f3faf6; }
+.raw-artifact > article.playing { margin: 0 -7px; padding-left: 14px; padding-right: 14px; border-radius: 9px; background: #e6f4ed; box-shadow: inset 4px 0 0 var(--brand-green); transition: background 180ms ease, box-shadow 180ms ease; }
+.readable-artifact > article.playing .readable-meta > button, .raw-artifact > article.playing > button { color: var(--brand-green-dark); font-weight: 800; }
 .raw-artifact > article p { margin: 0; line-height: 1.65; }
 .raw-segment-anchor { position: absolute; top: 0; width: 0; height: 0; scroll-margin-top: 8rem; }
 .artifact-fallback { min-height: 230px; display: grid; align-content: center; justify-items: center; gap: 8px; text-align: center; }
