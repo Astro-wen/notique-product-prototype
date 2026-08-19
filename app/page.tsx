@@ -2208,6 +2208,15 @@ export default function Home() {
   useEffect(() => {
     if (!activeTranscriptionRunId || !runInProgress.has(activeTranscriptionRunStatus ?? "")) return;
     const runId = activeTranscriptionRunId;
+    const projectId = routeRef.current.projectId || project?.id;
+    const eventId = routeRef.current.eventId || event?.id;
+    if (!projectId || !eventId) return;
+    const owner: RequestOwner = {
+      projectId,
+      projectEpoch: requestEpochs.current.project,
+      eventId,
+      eventEpoch: requestEpochs.current.event,
+    };
     const pollKey = `${runId}:${transcriptionPollCycle}`;
     if (transcriptionPollingRunKey.current !== pollKey) {
       transcriptionPollingRunKey.current = pollKey;
@@ -2216,6 +2225,7 @@ export default function Home() {
     const pollStartedAt = Date.now();
     let cancelled = false;
     let timer: number | undefined;
+    const requestIsCurrent = () => !cancelled && isCurrentRequestOwner(owner);
     const schedule = () => {
       if (cancelled) return;
       timer = window.setTimeout(() => void poll(), runPollDelayMs(Date.now() - pollStartedAt));
@@ -2236,20 +2246,30 @@ export default function Home() {
       transcriptionPollAttempts.current += 1;
       try {
         const latest = await api.getTranscriptionRun(runId);
-        if (cancelled) return;
-        setTranscriptionRun(latest);
-        setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
-        if (latest.orchestrationMode === "chunked" && latest.status === "processing") {
-          wakeChunkedTranscription(latest.id);
-        }
+        if (!requestIsCurrent()) return;
         if (!runInProgress.has(latest.status)) {
-          if (latest.status === "succeeded" && event?.id) {
-            const refreshed = await api.getEvent(event.id);
-            if (cancelled) return;
+          if (latest.status === "succeeded") {
+            // Do not publish the terminal Run before its parent Event and
+            // workflow summary have been reloaded. Publishing it first tears
+            // down this polling effect and used to cancel the ready-state
+            // refresh, leaving a completed transcript labelled "transcribing".
+            const [refreshed, workflowSnapshot] = await Promise.all([
+              api.getEvent(eventId),
+              inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot),
+            ]);
+            if (!requestIsCurrent()) return;
+            setTranscriptionRun(latest);
+            setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
             setEvent(refreshed);
+            setProject(workflowSnapshot.project);
+            setEvents(workflowSnapshot.events);
+            setProjectWorkflow(workflowSnapshot.plan);
+            setEventWorkflowSummaries(workflowSnapshot.eventSummaries);
             setEventIssue(null);
             flash(`逐字稿已生成，包含 ${latest.segmentCount ?? latest.segments.length} 个带时间点的片段`);
           } else if (latest.status === "failed") {
+            setTranscriptionRun(latest);
+            setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
             setEventIssue({
               code: latest.errorCode || "TRANSCRIPTION_FAILED",
               message: "录音仍然保留在这次沟通中。请检查错误后点击“重新转写”。",
@@ -2258,7 +2278,13 @@ export default function Home() {
           }
           return;
         }
+        setTranscriptionRun(latest);
+        setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
+        if (latest.orchestrationMode === "chunked" && latest.status === "processing") {
+          wakeChunkedTranscription(latest.id);
+        }
       } catch (error) {
+        if (!requestIsCurrent()) return;
         const issue = toIssue(error);
         if (issue.status >= 500 || issue.status === 0) {
           schedule();
@@ -2274,7 +2300,7 @@ export default function Home() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
+  }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, isCurrentRequestOwner, loadFreshWorkflowSnapshot, project?.id, transcriptionPollCycle]);
 
   const secondaryTranscriptionRuns = Object.values(transcriptionRunsByAssetId)
     .filter((item) => item.id !== activeTranscriptionRunId && runInProgress.has(item.status));
@@ -2285,6 +2311,15 @@ export default function Home() {
 
   useEffect(() => {
     if (!secondaryTranscriptionRunKey) return;
+    const projectId = routeRef.current.projectId || project?.id;
+    const eventId = routeRef.current.eventId || event?.id;
+    if (!projectId || !eventId) return;
+    const owner: RequestOwner = {
+      projectId,
+      projectEpoch: requestEpochs.current.project,
+      eventId,
+      eventEpoch: requestEpochs.current.event,
+    };
     const runsToPoll = secondaryTranscriptionRuns.map((item) => ({
       id: item.id,
       eventId: item.eventId,
@@ -2301,18 +2336,30 @@ export default function Home() {
         }
         return latest;
       }));
-      if (cancelled) return;
+      if (cancelled || !isCurrentRequestOwner(owner)) return;
       const latestRuns = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      const completedCurrentEvent = latestRuns.some((item) => item.eventId === eventId && item.status === "succeeded");
+      let refreshed: Event | null = null;
+      let workflowSnapshot: ProjectWorkflowSnapshot | null = null;
+      if (completedCurrentEvent) {
+        [refreshed, workflowSnapshot] = await Promise.all([
+          api.getEvent(eventId).catch(() => null),
+          inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot).catch(() => null),
+        ]);
+      }
+      if (cancelled || !isCurrentRequestOwner(owner)) return;
       if (latestRuns.length > 0) {
         setTranscriptionRunsByAssetId((current) => ({
           ...current,
           ...Object.fromEntries(latestRuns.map((item) => [item.audioAssetId, item])),
         }));
       }
-      const completedCurrentEvent = latestRuns.some((item) => item.eventId === event?.id && item.status === "succeeded");
-      if (completedCurrentEvent && event?.id) {
-        const refreshed = await api.getEvent(event.id).catch(() => null);
-        if (!cancelled && refreshed) setEvent(refreshed);
+      if (refreshed) setEvent(refreshed);
+      if (workflowSnapshot) {
+        setProject(workflowSnapshot.project);
+        setEvents(workflowSnapshot.events);
+        setProjectWorkflow(workflowSnapshot.plan);
+        setEventWorkflowSummaries(workflowSnapshot.eventSummaries);
       }
       if (!cancelled && latestRuns.some((item) => runInProgress.has(item.status))) {
         timer = window.setTimeout(() => void poll(), 2_000);
@@ -2329,7 +2376,7 @@ export default function Home() {
     // The stable key intentionally owns the polling lifetime; the captured
     // list is refreshed whenever any secondary Run changes state or progress.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondaryTranscriptionRunKey, event?.id]);
+  }, [secondaryTranscriptionRunKey, event?.id, isCurrentRequestOwner, loadFreshWorkflowSnapshot, project?.id]);
 
   const activeExtractionRunId = run?.id;
   const activeExtractionRunStatus = run?.status;
@@ -3716,18 +3763,24 @@ export default function Home() {
   }
 
   async function startExtractionForEvent(targetEvent: Event) {
-    const ids = targetEvent.assets
-      .filter(assetIsAnalyzable)
-      .map((asset) => asset.versionId)
-      .filter((id): id is string => Boolean(id));
-    if (!ids.length) {
-      setEventIssue({ code: "EVENT_NOT_READY", message: "当前材料还没有可用于分析的已完成版本。", status: 409 });
-      return;
-    }
     setBusyAction("extraction");
     setEventIssue(null);
     try {
-      const nextRun = await requestExtractionForEvent(targetEvent);
+      let extractionTarget = targetEvent;
+      if (extractionAssetVersionIds(extractionTarget).length === 0) {
+        // The transcription may have completed between the last render and
+        // this explicit click. Re-read the Event once instead of rejecting a
+        // valid canonical transcript because the browser held stale assets.
+        const refreshed = await api.getEvent(targetEvent.id);
+        if ((routeRef.current.eventId || event?.id) !== targetEvent.id) return;
+        extractionTarget = refreshed;
+        setEvent(refreshed);
+      }
+      if (extractionAssetVersionIds(extractionTarget).length === 0) {
+        setEventIssue({ code: "EVENT_NOT_READY", message: "当前材料还没有可用于分析的已完成版本。", status: 409 });
+        return;
+      }
+      const nextRun = await requestExtractionForEvent(extractionTarget);
       setRun(nextRun);
       setRunPollCycle((value) => value + 1);
       setClaims([]);

@@ -80,3 +80,36 @@ test("mobile keeps one event selector and resets the tab when switching events",
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.simple-meeting-rail \{ display: none; \}/);
   assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });
+
+test("terminal transcription refreshes the Event and workflow before publishing success", () => {
+  const source = fs.readFileSync("app/page.tsx", "utf8");
+  const effectStart = source.indexOf("const activeTranscriptionRunId = transcriptionRun?.id");
+  const effectEnd = source.indexOf("const secondaryTranscriptionRuns", effectStart);
+  assert.ok(effectStart >= 0 && effectEnd > effectStart);
+  const effect = source.slice(effectStart, effectEnd);
+  const terminalBranch = effect.slice(effect.indexOf('if (latest.status === "succeeded")'));
+
+  assert.match(terminalBranch, /Promise\.all\(\[\s*api\.getEvent\(eventId\),\s*inspectProjectWorkflow\(projectId, loadFreshWorkflowSnapshot\)/);
+  assert.ok(
+    terminalBranch.indexOf("api.getEvent(eventId)") < terminalBranch.indexOf("setTranscriptionRun(latest)"),
+    "the terminal Run must not tear down polling before the ready Event is loaded",
+  );
+  assert.match(terminalBranch, /setEventWorkflowSummaries\(workflowSnapshot\.eventSummaries\)/);
+  assert.match(effect, /isCurrentRequestOwner\(owner\)/);
+});
+
+test("starting analysis rechecks a stale Event once before reporting not ready", () => {
+  const source = fs.readFileSync("app/page.tsx", "utf8");
+  const start = source.indexOf("async function startExtractionForEvent");
+  const end = source.indexOf("async function advanceProjectWorkflow", start);
+  assert.ok(start >= 0 && end > start);
+  const action = source.slice(start, end);
+
+  assert.match(action, /if \(extractionAssetVersionIds\(extractionTarget\)\.length === 0\) \{[\s\S]*?api\.getEvent\(targetEvent\.id\)/);
+  assert.match(action, /extractionTarget = refreshed/);
+  assert.match(action, /requestExtractionForEvent\(extractionTarget\)/);
+  assert.ok(
+    action.indexOf("api.getEvent(targetEvent.id)") < action.indexOf('code: "EVENT_NOT_READY"'),
+    "the browser must consult server truth before rejecting a just-finished transcript",
+  );
+});
