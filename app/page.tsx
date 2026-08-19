@@ -32,6 +32,7 @@ import {
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
 import { buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
+import { buildAnalysisProgress, type AnalysisProgress } from "@/lib/domain/analysis-progress";
 import {
   factsReadyForReview,
   factsStillRunning,
@@ -4865,6 +4866,49 @@ function AudioTranscriptionProgressPanel({
   </section>;
 }
 
+function AnalysisProgressJourney({
+  progress,
+  timingItems,
+}: {
+  progress: AnalysisProgress;
+  timingItems: ReturnType<typeof buildRunTimingItems>;
+}) {
+  const timingForNode = (key: AnalysisProgress["nodes"][number]["key"]) => {
+    if (key === "verify") {
+      return timingItems.find((item) => item.key === "verify_escalated" && item.status === "running")
+        ?? timingItems.find((item) => item.key === "verify_escalated")
+        ?? timingItems.find((item) => item.key === "verify");
+    }
+    return timingItems.find((item) => item.key === key);
+  };
+  const statusText = (node: AnalysisProgress["nodes"][number]) => {
+    const timing = timingForNode(node.key);
+    const duration = timing?.durationMs == null ? "" : ` · ${formatReviewDuration(timing.durationMs)}`;
+    if (node.status === "completed") return `${node.key === "persist" ? "可以核对" : "已完成"}${duration}`;
+    if (node.status === "processing") {
+      if (node.key === "prepare") return `正在准备${duration}`;
+      if (node.key === "inventory") return `xhigh 处理中${duration}`;
+      if (node.key === "verify") return `${timing?.key === "verify_escalated" ? "加强复核" : "high 查漏中"}${duration}`;
+      return `正在验证并保存${duration}`;
+    }
+    if (node.status === "failed") return "这一步没有完成";
+    return "等待前一步";
+  };
+
+  return <section className="analysis-progress-journey" data-testid="analysis-progress-journey" aria-label="距离可以开始核对的分析进度">
+    <div className="analysis-progress-track">
+      {progress.nodes.map((node, index) => <div className={`analysis-progress-node ${node.status}`} key={node.key}>
+        <span className="analysis-progress-node-mark">{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : index + 1}</span>
+        <span><strong>{node.label}</strong><small>{statusText(node)}</small></span>
+      </div>)}
+    </div>
+    <div className="analysis-progress-next">
+      <strong>{progress.remaining > 0 ? <>还差 {progress.remaining} 步即可开始核对</> : "分析已经完成，可以开始核对"}</strong>
+      <span>系统会自动继续，不需要手动启动后台任务。百分比只在真实阶段完成后前进。</span>
+    </div>
+  </section>;
+}
+
 function SimpleTestScreen({
   projects,
   projectsState,
@@ -5121,6 +5165,13 @@ function SimpleTestScreen({
         finishedAt: run.finishedAt,
         stages: run.stages,
       }, timingNow)
+    : null;
+  const analysisProgress = run && workflowSelectedCurrent && projectWorkflow.phase === "running"
+    ? buildAnalysisProgress({
+        runStatus: run.status,
+        pipelineStage: run.pipelineStage,
+        stages: run.stages,
+      })
     : null;
   const transcriptionTimingStart = transcriptionRun
     ? Date.parse(transcriptionRun.startedAt || transcriptionRun.queuedAt || transcriptionRun.createdAt || "")
@@ -5418,7 +5469,8 @@ function SimpleTestScreen({
           {activeTab === "materials" && <div className="meeting-tab-panel">
             {project && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
               <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
-              {projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
+              {analysisProgress ? <div className="project-workflow-progress analysis"><div><span>本次分析</span><strong>{analysisProgress.percent}%</strong></div><progress aria-label="本次事实分析进度" max={100} value={analysisProgress.percent} /><small>已完成 {analysisProgress.completed}/{analysisProgress.total} 步</small></div> : projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
+              {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
               {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
                 <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
                 <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}{typeof item.attempt === "number" && item.attempt > 0 && !item.label.includes("第 ") ? ` · 第 ${item.attempt} 次` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>

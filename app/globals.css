@@ -86,6 +86,29 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
 .project-workflow-progress progress { width: 100%; height: 8px; border: 0; border-radius: 999px; overflow: hidden; accent-color: #2458a6; }
 .project-workflow-progress progress::-webkit-progress-bar { background: #dfe5ee; }
 .project-workflow-progress progress::-webkit-progress-value { border-radius: 999px; background: #2458a6; }
+.project-workflow-progress.analysis strong { color: var(--brand-green-dark); font-size: 23px; letter-spacing: -0.04em; }
+.project-workflow-progress.analysis progress { accent-color: var(--brand-green); }
+.project-workflow-progress.analysis progress::-webkit-progress-value { background: linear-gradient(90deg, #2e8063, #60ad8d); }
+.project-workflow-progress.analysis > small { color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.analysis-progress-journey { grid-column: 1 / -1; border: 1px solid #c9ddd5; border-radius: 11px; background: rgba(255, 255, 255, .8); padding: 14px; display: grid; gap: 13px; }
+.analysis-progress-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.analysis-progress-node { position: relative; min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 9px; color: var(--muted); }
+.analysis-progress-node:not(:last-child)::after { position: absolute; z-index: 0; top: 15px; left: 31px; width: calc(100% - 7px); height: 3px; border-radius: 999px; background: #dce5e1; content: ""; }
+.analysis-progress-node.completed:not(:last-child)::after { background: #69a890; }
+.analysis-progress-node-mark { position: relative; z-index: 1; width: 31px; height: 31px; border: 2px solid #d3ddd9; border-radius: 50%; background: #fff; display: grid; place-items: center; color: #7c8883; font-size: 9px; font-weight: 850; font-variant-numeric: tabular-nums; }
+.analysis-progress-node > span:last-child { position: relative; z-index: 1; min-width: 0; border-radius: 7px; background: rgba(255, 255, 255, .88); padding: 4px 3px; display: grid; gap: 3px; }
+.analysis-progress-node strong { overflow: hidden; color: #53615c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.analysis-progress-node small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.analysis-progress-node.completed .analysis-progress-node-mark { border-color: var(--brand-green); background: var(--brand-green); color: #fff; }
+.analysis-progress-node.completed strong, .analysis-progress-node.completed small { color: var(--brand-green-dark); }
+.analysis-progress-node.processing .analysis-progress-node-mark { border-color: #4e7fbd; background: #eaf2ff; color: #285899; box-shadow: 0 0 0 4px rgba(78, 127, 189, .1); animation: transcription-node-pulse 1.4s ease-in-out infinite; }
+.analysis-progress-node.processing strong { color: #285899; }
+.analysis-progress-node.processing small { color: #47709e; font-weight: 750; }
+.analysis-progress-node.failed .analysis-progress-node-mark { border-color: #c44c4c; background: #fff0f0; color: #a73333; }
+.analysis-progress-node.failed strong, .analysis-progress-node.failed small { color: #9a3434; }
+.analysis-progress-next { border-radius: 9px; background: #f1f7f4; padding: 10px 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 15px; }
+.analysis-progress-next strong { color: #244f3f; font-size: 10px; }
+.analysis-progress-next span { color: var(--muted); font-size: 9px; line-height: 1.5; text-align: right; }
 .workflow-timing { grid-column: 1 / -1; border: 1px solid #d8e2df; border-radius: 10px; background: rgba(255, 255, 255, 0.74); padding: 12px; display: grid; gap: 10px; }
 .workflow-timing > header { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
 .workflow-timing > header > div { display: grid; gap: 4px; }
@@ -1049,6 +1072,11 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
   .project-workflow-copy h2 { font-size: 18px; }
   .workflow-timing > header { align-items: flex-start; flex-direction: column; }
   .workflow-timing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analysis-progress-track { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
+  .analysis-progress-node:nth-child(2)::after { display: none; }
+  .analysis-progress-node:not(:last-child)::after { width: calc(100% - 3px); }
+  .analysis-progress-next { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .analysis-progress-next span { text-align: left; }
   .project-workflow-action { min-height: 54px; font-size: 14px; }
   .simple-step-button { min-height: 126px; padding: 16px; grid-template-columns: 38px minmax(0, 1fr); }
   .simple-step-number { width: 38px; height: 38px; }

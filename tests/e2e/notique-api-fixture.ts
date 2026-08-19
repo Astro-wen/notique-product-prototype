@@ -216,6 +216,36 @@ function freshProcessingExtractionRun(id: string, projectId: string, eventId: st
   };
 }
 
+function analysisProgressExtractionRun(id: string, projectId: string, eventId: string) {
+  const nowMs = Date.now();
+  const createdAt = new Date(nowMs - 31_000).toISOString();
+  const startedAt = new Date(nowMs - 28_000).toISOString();
+  const stageStartedAt = new Date(nowMs - 27_000).toISOString();
+  return {
+    ...processingExtractionRun(id, projectId, eventId),
+    created_at: createdAt,
+    queued_at: createdAt,
+    first_queued_at: createdAt,
+    current_queued_at: createdAt,
+    started_at: startedAt,
+    first_started_at: startedAt,
+    current_started_at: startedAt,
+    updated_at: new Date(nowMs).toISOString(),
+    stages: [{
+      stage: "inventory",
+      status: "processing",
+      attempt: 1,
+      reasoning_effort: "xhigh",
+      input_tokens: null,
+      output_tokens: null,
+      cached_tokens: null,
+      started_at: stageStartedAt,
+      finished_at: null,
+      duration_ms: null,
+    }],
+  };
+}
+
 function evidenceRef(id: string, segmentId: string, eventId = "event-a") {
   return {
     id,
@@ -496,6 +526,7 @@ export class NotiqueApiFixture {
   summaryFirstMode = false;
   summarySharedClaims = false;
   transcriptionProgressMode = false;
+  analysisProgressMode = false;
 
   private readonly claimsGate = gate();
   private readonly snapshotGate = gate();
@@ -598,6 +629,10 @@ export class NotiqueApiFixture {
     this.transcriptionProgressMode = true;
   }
 
+  enableAnalysisProgress() {
+    this.analysisProgressMode = true;
+  }
+
   enableNewSummaryRunWithStaleArtifact() {
     this.enableSummaryFirstFlow({ summaryStatus: "processing", readableStatus: "failed" });
     this.staleSummaryArtifactDuringNewRun = true;
@@ -673,13 +708,19 @@ export class NotiqueApiFixture {
     const project = this.project(projectId)!;
     const events = this.eventsForProject(projectId);
     const isA = projectId === "project-a";
-    const summaryStatus = isA && this.summaryFirstMode
+    const summaryStatus = isA && this.analysisProgressMode
+      ? "processing"
+      : isA && this.summaryFirstMode
       ? this.summaryFirstSummaryStatus
       : "succeeded";
-    const readableStatus = isA && this.summaryFirstMode
+    const readableStatus = isA && this.analysisProgressMode
+      ? "processing"
+      : isA && this.summaryFirstMode
       ? this.summaryFirstReadableStatus
       : "succeeded";
-    const extractionStatus = isA && this.summaryFirstMode
+    const extractionStatus = isA && this.analysisProgressMode
+      ? "processing"
+      : isA && this.summaryFirstMode
       ? this.summaryFirstExtractionStatus
       : isA ? "succeeded" : null;
     const extractionIsRunning = extractionStatus === "processing";
@@ -1105,6 +1146,10 @@ export class NotiqueApiFixture {
       const runMatch = path.match(/^\/api\/v1\/extraction-runs\/([^/]+)$/);
       if (runMatch) {
         const runId = decodeURIComponent(runMatch[1]);
+        if (runId === "run-a" && this.analysisProgressMode) {
+          await this.fulfill(route, envelope({ run: analysisProgressExtractionRun(runId, "project-a", "event-a") }));
+          return;
+        }
         if (runId === "run-a" && this.summaryFirstMode) {
           const summaryFirstRun = this.summaryFirstExtractionStatus === "processing"
             ? freshProcessingExtractionRun(runId, "project-a", "event-a")
