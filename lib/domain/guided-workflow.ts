@@ -40,7 +40,7 @@ export function deriveGuidedDisplayStatus(input: {
     return { key: "action_required", label: "需要处理", tone: "danger" };
   }
   if (runStatus === "queued") {
-    return { key: "queued", label: "等待后台启动", tone: "neutral" };
+    return { key: "queued", label: "正在启动分析", tone: "neutral" };
   }
   if (runStatus && runningStatuses.has(runStatus)) {
     if (input.pipelineStage === "verify_escalated") {

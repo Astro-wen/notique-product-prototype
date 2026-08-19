@@ -14,7 +14,7 @@ const {
 test("guided status exposes exactly one actionable phase", () => {
   const base = { assetCount: 1, analyzableAssetCount: 1, pendingCount: 0 };
   assert.equal(deriveGuidedDisplayStatus(base).label, "可以分析");
-  assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "queued" }).label, "等待后台启动");
+  assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "queued" }).label, "正在启动分析");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "inventory" }).label, "正在识别事实");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "verify" }).label, "正在查漏纠错");
   assert.equal(deriveGuidedDisplayStatus({ ...base, runStatus: "processing", pipelineStage: "verify_escalated" }).label, "需要加强复核");

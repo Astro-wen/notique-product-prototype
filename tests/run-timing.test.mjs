@@ -83,10 +83,35 @@ test("a retried Run preserves first queue time and reports the current queue sep
   const items = buildRunTimingItems(run, now);
   assert.equal(items.find((item) => item.key === "queue").durationMs, 3_000);
   assert.equal(items.find((item) => item.key === "queue").status, "done");
-  assert.equal(items.find((item) => item.key === "queue").attempt, 1);
+  assert.equal(items.find((item) => item.key === "queue").label, "启动分析");
+  assert.equal(items.find((item) => item.key === "queue").attempt, undefined);
   assert.equal(items.find((item) => item.key === "current_queue").durationMs, 15_000);
-  assert.equal(items.find((item) => item.key === "current_queue").attempt, 2);
+  assert.equal(items.find((item) => item.key === "current_queue").label, "后台衔接");
+  assert.equal(items.find((item) => item.key === "current_queue").attempt, undefined);
   assert.equal(runTotalDurationMs(run, now), 120_000);
+});
+
+test("infrastructure processing attempts do not look like repeated user work", async () => {
+  const { ACTIVE_BACKGROUND_WAKE_MS, buildRunTimingItems } = await loadTiming();
+  const items = buildRunTimingItems({
+    status: "processing",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    firstQueuedAt: "2026-08-12T00:00:00.000Z",
+    firstStartedAt: "2026-08-12T00:00:01.000Z",
+    currentStartedAt: "2026-08-12T00:00:20.000Z",
+    processingAttemptNo: 3,
+    dispatchAttemptNo: 3,
+    stages: [{
+      stage: "inventory",
+      status: "processing",
+      reasoningEffort: "xhigh",
+      startedAt: "2026-08-12T00:00:21.000Z",
+      attempt: 1,
+    }],
+  }, Date.parse("2026-08-12T00:00:30.000Z"));
+  assert.equal(ACTIVE_BACKGROUND_WAKE_MS, 5_000);
+  assert.equal(items.find((item) => item.key === "prepare").label, "准备材料与上下文");
+  assert.equal(items.find((item) => item.key === "prepare").attempt, undefined);
 });
 
 test("a processing model stage becomes recoverable after the timeout window", async () => {

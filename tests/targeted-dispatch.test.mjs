@@ -193,9 +193,10 @@ test("queued browser wake survives polling object replacement and only targets t
 
   for (const block of [extractionWake, transcriptionWake]) {
     assert.match(block, /\.delete\([^)]*RunId\)/);
-    assert.match(block, /window\.setTimeout\([\s\S]*15_000/);
     assert.doesNotMatch(block, /createExtractionRun|createTranscriptionRun|requestExtractionForEvent/);
   }
+  assert.match(extractionWake, /window\.setTimeout\([\s\S]*ACTIVE_BACKGROUND_WAKE_MS/);
+  assert.match(transcriptionWake, /window\.setTimeout\([\s\S]*15_000/);
   assert.match(
     extractionWake,
     /if \(queuedExtractionRunStatus === "queued"[\s\S]*?const scheduleWake[\s\S]*?scheduleWake\(\)/,
@@ -213,8 +214,8 @@ test("primary queued status and timer expose server queue cycles and attempts", 
     readFile(path.join(root, "lib/server/db/workflow-repository.ts"), "utf8"),
     readFile(path.join(root, "lib/shared/api-types.ts"), "utf8"),
   ]);
-  assert.match(page, /if \(run\.status === "queued"\) return "等待后台启动"/);
-  assert.match(page, /queued: "等待后台启动"/);
+  assert.match(page, /if \(run\.status === "queued"\) return "正在启动分析"/);
+  assert.match(page, /queued: "正在启动分析"/);
 
   const timing = page.slice(
     page.indexOf("const runTimingItems"),
@@ -230,7 +231,7 @@ test("primary queued status and timer expose server queue cycles and attempts", 
   ]) {
     assert.match(timing, new RegExp(`${field}: run\\.${field}`));
   }
-  assert.match(page, /item\.attempt[\s\S]*第 \$\{item\.attempt\} 次/);
+  assert.doesNotMatch(page, /item\.attempt[\s\S]*第 \$\{item\.attempt\} 次/);
   assert.match(repository, /er\.first_queued_at AS extraction_first_queued_at/);
   assert.match(repository, /er\.current_queued_at AS extraction_current_queued_at/);
   assert.match(repository, /first_queued_at: nullableText\(row, "extraction_first_queued_at"\)/);

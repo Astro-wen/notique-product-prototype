@@ -31,7 +31,7 @@ import {
   deriveGuidedDisplayStatus,
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
-import { buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
+import { ACTIVE_BACKGROUND_WAKE_MS, buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
 import { buildAnalysisProgress, type AnalysisProgress } from "@/lib/domain/analysis-progress";
 import {
   factsReadyForReview,
@@ -452,7 +452,7 @@ function workflowEventDisplayStatus(summary?: WorkflowEventSummary): {
     waiting_material: "等待材料",
     transcribing: "正在转写",
     ready: "可以分析",
-    queued: "等待后台启动",
+    queued: "正在启动分析",
     inventory: "正在识别事实",
     verify: "正在查漏纠错",
     verify_escalated: "需要加强复核",
@@ -635,7 +635,7 @@ function statusLabel(value?: string): string {
     ready: "材料已就绪",
     uploading: "正在上传",
     parsing: "正在读取",
-    queued: "等待后台启动",
+    queued: "正在启动分析",
     processing: "正在提取",
     extracting: "正在提取",
     succeeded: "处理完成",
@@ -662,7 +662,7 @@ function statusLabel(value?: string): string {
 
 function extractionProgressLabel(run?: ExtractionRun | null): string {
   if (!run || !runInProgress.has(run.status)) return statusLabel(run?.status);
-  if (run.status === "queued") return "等待后台启动";
+  if (run.status === "queued") return "正在启动分析";
   if (run.pipelineStage === "inventory") return "正在识别事实";
   if (run.pipelineStage === "verify") return "正在查漏纠错";
   if (run.pipelineStage === "verify_escalated") return "正在加强复核";
@@ -2134,7 +2134,7 @@ export default function Home() {
         }).catch(() => {
           if (!stopped) scheduleWake();
         });
-      }, 15_000);
+      }, ACTIVE_BACKGROUND_WAKE_MS);
     };
     scheduleWake();
     return () => {
@@ -4561,7 +4561,7 @@ function TranscriptArtifactsPanel({
       });
     };
     wake();
-    const timer = window.setInterval(wake, 15_000);
+    const timer = window.setInterval(wake, ACTIVE_BACKGROUND_WAKE_MS);
     return () => window.clearInterval(timer);
   }, [runningRunIds]);
 
@@ -4805,7 +4805,7 @@ function TranscriptArtifactsPanel({
             AI 摘要
             {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
           </button>
-          <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要等待后台启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
+          <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要正在启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
         </div>
         {summaryArtifact && <span className="summary-ready-check" aria-label="AI 摘要生成完成">✓</span>}
       </header>
@@ -4836,7 +4836,7 @@ function TranscriptArtifactsPanel({
           })}</div>
         </section>)}
       </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
-        <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要等待后台启动" : "正在生成 AI 摘要"}</strong></div>
+        <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>旧记录可以单独生成，不会重跑事实识别。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div>}
     </section>
@@ -4962,7 +4962,7 @@ function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
       : "系统没有采用可能遗漏、错位或改写事实的版本，已安全回退到原始逐字稿。";
     return <div className="artifact-fallback failed" role="status"><h3>{title}</h3><p>{body}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
   }
-  if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}等待后台启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
+  if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}正在启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
   return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
 }
 
@@ -5678,7 +5678,7 @@ function SimpleTestScreen({
               {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
               {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
                 <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>每秒更新 · 服务器真实时间</small></header>
-                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}{typeof item.attempt === "number" && item.attempt > 0 && !item.label.includes("第 ") ? ` · 第 ${item.attempt} 次` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
+                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
               </div>}
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}

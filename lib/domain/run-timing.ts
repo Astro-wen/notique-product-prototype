@@ -25,6 +25,7 @@ export type RunTimingInput = {
 };
 
 export const EXTRACTION_STAGE_STALE_AFTER_MS = 10 * 60_000;
+export const ACTIVE_BACKGROUND_WAKE_MS = 5_000;
 
 /**
  * Poll quickly while a just-created Run is acquiring a worker, then back off
@@ -108,10 +109,9 @@ export function buildRunTimingItems(
     const queueEnd = started ?? (run.status === "queued" ? nowMs : null);
     result.push({
       key: "queue",
-      label: "排队等待",
+      label: "启动分析",
       status: started !== null ? "done" : run.status === "queued" ? "running" : "waiting",
       durationMs: boundedDuration(queued, queueEnd),
-      attempt: currentQueued !== null && currentQueued > queued ? 1 : run.dispatchAttemptNo,
     });
   }
 
@@ -121,10 +121,9 @@ export function buildRunTimingItems(
       : run.status === "queued" ? nowMs : null;
     result.push({
       key: "current_queue",
-      label: "本轮重新排队",
+      label: "后台衔接",
       status: run.status === "queued" ? "running" : currentQueueEnd !== null ? "done" : "waiting",
       durationMs: boundedDuration(currentQueued, currentQueueEnd),
-      attempt: run.dispatchAttemptNo,
     });
   }
 
@@ -141,7 +140,6 @@ export function buildRunTimingItems(
       label: "准备材料与上下文",
       status: firstStageStart ? "done" : run.status === "processing" ? "running" : "done",
       durationMs: boundedDuration(preparationStart, prepareEnd),
-      attempt: run.processingAttemptNo,
     });
   }
 
