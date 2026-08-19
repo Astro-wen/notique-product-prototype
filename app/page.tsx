@@ -109,6 +109,7 @@ import {
   type ReadableWordDiffResult,
 } from "./readable-transcript-diff";
 import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
+import { groupConsecutiveSpeakerSegments } from "./transcript-display";
 
 type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
@@ -4574,7 +4575,30 @@ function TranscriptArtifactsPanel({
   const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
-  const readableSegments = readableContent ? recordArray(readableContent.segments) : [];
+  const readableDisplayGroups = groupConsecutiveSpeakerSegments(
+    (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
+      key: firstString(segment, ["readable_key"]) || `readable-${index}`,
+      speaker: firstString(segment, ["speaker"]) ?? null,
+      text: firstString(segment, ["readable_text"]) || "",
+      startMs: typeof segment.start_ms === "number" ? segment.start_ms : null,
+      endMs: typeof segment.end_ms === "number" ? segment.end_ms : null,
+      sourceIds: stringValues(segment.source_segment_ids),
+      edits: recordArray(segment.edits),
+      needsCheck: segment.needs_human_check === true,
+    })),
+  );
+  const rawDisplayGroups = groupConsecutiveSpeakerSegments(
+    rawSegments.map((segment) => ({
+      key: segment.id,
+      speaker: segment.speaker,
+      text: segment.text,
+      startMs: segment.start_ms,
+      endMs: segment.end_ms,
+      sourceIds: [segment.id],
+      edits: [],
+      needsCheck: false,
+    })),
+  );
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
 
   useEffect(() => {
@@ -4769,18 +4793,20 @@ function TranscriptArtifactsPanel({
     {transcriptionRun?.audioAssetId && <audio ref={audioRef} controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`} />}
 
     {readerTab === "readable" && <div className="artifact-panel readable-artifact">
-      {readableArtifact ? readableSegments.map((segment, index) => {
-        const key = firstString(segment, ["readable_key"]) || `readable-${index}`;
-        const diffKey = `${event.id}:${key}`;
-        const sourceIds = stringValues(segment.source_segment_ids);
-        const edits = recordArray(segment.edits);
-        const readableText = firstString(segment, ["readable_text"]) || "";
-        const needsCheck = segment.needs_human_check === true;
-        return <article className={needsCheck ? "needs-check" : ""} key={key}>
-          <div className="readable-meta"><button onClick={() => playAt(typeof segment.start_ms === "number" ? segment.start_ms : null)}>{formatTimestamp(typeof segment.start_ms === "number" ? segment.start_ms / 1000 : undefined)}</button><strong>{displaySpeakerLabel(firstString(segment, ["speaker"]))}</strong>{edits.length > 0 && <span>{edits.length} 处整理</span>}{needsCheck && <em>需要留意</em>}</div>
-          <p>{readableText}</p>
-          <div className="readable-actions"><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(sourceIds)); selectArtifactTab("raw"); }}>查看原始证据</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, sourceIds, readableText)}>{openDiffs.has(diffKey) ? "收起差异" : "对比原稿"}</button></div>
-          {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={edits} needsCheck={needsCheck} />}
+      {readableArtifact ? readableDisplayGroups.map((group) => {
+        const diffKey = `${event.id}:${group.key}`;
+        return <article className={group.needsCheck ? "needs-check" : ""} key={group.key}>
+          <div className="readable-meta">
+            <button onClick={() => playAt(group.startMs)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
+            <strong>{displaySpeakerLabel(group.speaker)}</strong>
+            {group.needsCheck && <em>请核对</em>}
+            {(group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
+              <summary aria-label="查看整理详情">•••</summary>
+              <div><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(group.sourceIds)); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
+            </details>}
+          </div>
+          <p>{group.text}</p>
+          {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
       }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} onRetry={async () => {
         await onRetryArtifact(event.id, "readable_transcript");
@@ -4790,7 +4816,10 @@ function TranscriptArtifactsPanel({
 
     {readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
-      {rawSegments.length ? rawSegments.map((segment) => <article id={`raw-segment-${segment.id}`} className={selectedSourceIds.has(segment.id) ? "selected" : ""} key={segment.id}><button onClick={() => playAt(segment.start_ms)}>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1_000)}</button><strong>{displaySpeakerLabel(segment.speaker)}</strong><p>{segment.text}</p></article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      {rawSegments.length ? rawDisplayGroups.map((group) => <article className={group.sourceIds.some((id) => selectedSourceIds.has(id)) ? "selected" : ""} key={group.key}>
+        {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
+        <button onClick={() => playAt(group.startMs)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
+      </article>) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
   </section>;
 }
