@@ -3,7 +3,8 @@ import {
   finalizeChunkedTranscriptionParent,
   processTranscriptionRun,
   requeueExpiredTranscriptionRuns,
-  transcriptionTimeoutMs,
+  TRANSCRIPTION_LEASE_HEARTBEAT_MS,
+  transcriptionLeaseExpiresAt,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
 import {
@@ -65,9 +66,7 @@ async function hashText(value: string): Promise<string> {
 }
 
 async function lease(row: Row, owner: string, timestamp: string): Promise<Row | null> {
-  const timeoutMs = transcriptionTimeoutMs({ request_timeout_ms: row.run_timeout_ms });
-  const leaseMs = Math.max(120_000, Math.min(timeoutMs + 60_000, 660_000));
-  const leaseExpiresAt = new Date(Date.parse(timestamp) + leaseMs).toISOString();
+  const leaseExpiresAt = transcriptionLeaseExpiresAt(timestamp);
   const db = getD1();
   const guardId = id("guard");
   try {
@@ -111,6 +110,76 @@ async function lease(row: Row, owner: string, timestamp: string): Promise<Row | 
       WHERE id = ? AND status = 'sending' AND lease_owner = ?`,
     [row.id, owner],
   );
+}
+
+async function renewDispatchLease(row: Row, owner: string): Promise<void> {
+  const timestamp = now();
+  const leaseExpiresAt = transcriptionLeaseExpiresAt(timestamp);
+  const guardId = id("guard");
+  const db = getD1();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM transcription_queue_outbox
+            WHERE id = ? AND run_id = ? AND status = 'sending' AND lease_owner = ?
+         ) AND EXISTS (
+           SELECT 1 FROM transcription_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        row.id,
+        row.run_id,
+        owner,
+        row.run_id,
+        owner,
+        timestamp,
+      ),
+    db
+      .prepare(
+        `UPDATE transcription_queue_outbox
+            SET lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND run_id = ? AND status = 'sending' AND lease_owner = ?`,
+      )
+      .bind(leaseExpiresAt, timestamp, row.id, row.run_id, owner),
+    db
+      .prepare(
+        `UPDATE transcription_runs
+            SET lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(leaseExpiresAt, timestamp, row.run_id, owner),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+}
+
+function startDispatchLeaseHeartbeat(row: Row, owner: string): () => Promise<void> {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let renewal = Promise.resolve();
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      renewal = renewDispatchLease(row, owner)
+        .catch((error) => {
+          console.error("transcription_dispatch_lease_renewal_failed", {
+            run_id: row.run_id,
+            outbox_id: row.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(schedule);
+    }, TRANSCRIPTION_LEASE_HEARTBEAT_MS);
+  };
+  schedule();
+  return async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    await renewal;
+  };
 }
 
 async function markSent(row: Row, owner: string): Promise<void> {
@@ -303,7 +372,7 @@ export async function dispatchDueTranscriptionOutbox(
   const rows = (
     await getD1()
       .prepare(
-        `SELECT o.*, r.request_timeout_ms AS run_timeout_ms
+        `SELECT o.*
            FROM transcription_queue_outbox o
            JOIN transcription_runs r ON r.id = o.run_id
           WHERE o.status IN ('pending', 'failed') AND o.attempt < ?
@@ -354,7 +423,13 @@ export async function dispatchDueTranscriptionOutbox(
         });
         return;
       }
-      const processed = await processTranscriptionRun(String(leased.run_id));
+      const stopHeartbeat = startDispatchLeaseHeartbeat(leased, owner);
+      let processed: TranscriptionProcessResult;
+      try {
+        processed = await processTranscriptionRun(String(leased.run_id), owner);
+      } finally {
+        await stopHeartbeat();
+      }
       if (processed.status === "retryable") {
         const code = processed.errorCode || "TRANSCRIPTION_RETRYABLE_FAILURE";
         const retryDecision = transcriptionRetryDecision({

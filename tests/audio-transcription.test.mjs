@@ -334,7 +334,12 @@ test("long audio retries can extend an older Run without shortening its timeout"
   assert.match(processor, /DEFAULT_TRANSCRIPTION_TIMEOUT_MS\s*=\s*600_000/);
   assert.match(processor, /export function transcriptionTimeoutMs/);
   assert.match(processor, /Math\.max\([\s\S]{0,300}persisted[\s\S]{0,300}configuredMs/);
-  assert.match(outbox, /transcriptionTimeoutMs\(\{ request_timeout_ms: row\.run_timeout_ms \}\)/);
+  assert.match(processor, /TRANSCRIPTION_RENEWABLE_LEASE_MS\s*=\s*120_000/);
+  assert.match(processor, /TRANSCRIPTION_LEASE_HEARTBEAT_MS\s*=\s*30_000/);
+  assert.match(outbox, /transcriptionLeaseExpiresAt\(timestamp\)/);
+  assert.match(outbox, /startDispatchLeaseHeartbeat\(leased, owner\)/);
+  assert.match(outbox, /processTranscriptionRun\(String\(leased\.run_id\), owner\)/);
+  assert.match(outbox, /transcription_queue_outbox[\s\S]{0,500}status = 'sending' AND lease_owner = \?[\s\S]{0,500}transcription_runs[\s\S]{0,500}status = 'processing' AND lease_owner = \?/);
   assert.match(repository, /DEFAULT_TRANSCRIPTION_TIMEOUT_MS\s*=\s*600_000/);
 });
 

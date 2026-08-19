@@ -27,6 +27,8 @@ export type TranscriptionProcessResult = {
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_PROVIDER_ERROR_CHARS = 500;
 const DEFAULT_TRANSCRIPTION_TIMEOUT_MS = 600_000;
+export const TRANSCRIPTION_RENEWABLE_LEASE_MS = 120_000;
+export const TRANSCRIPTION_LEASE_HEARTBEAT_MS = 30_000;
 
 class TranscriptionFault extends Error {
   constructor(
@@ -52,6 +54,10 @@ function plusMilliseconds(timestamp: string, milliseconds: number): string {
   return new Date(Date.parse(timestamp) + milliseconds).toISOString();
 }
 
+export function transcriptionLeaseExpiresAt(timestamp: string): string {
+  return plusMilliseconds(timestamp, TRANSCRIPTION_RENEWABLE_LEASE_MS);
+}
+
 async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
   return (await getD1().prepare(sql).bind(...bindings).first<Row>()) ?? null;
 }
@@ -59,8 +65,8 @@ async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
 /**
  * Never shorten a Run's persisted timeout, but allow a production operator to
  * extend an older queued Run after observing that a long audio response needs
- * more time. This keeps retries on the same Run and gives its provider call
- * and leases the same effective deadline.
+ * more time. This keeps retries on the same Run while the separately renewed
+ * short lease makes an interrupted browser dispatch recover quickly.
  */
 export function transcriptionTimeoutMs(run: Row): number {
   const persisted = Number(run.request_timeout_ms);
@@ -98,9 +104,6 @@ function persistenceRetry(error: unknown, fallback: string): TranscriptionFault 
 }
 
 async function acquireLease(runId: string, owner: string, timestamp: string): Promise<Row | null> {
-  const run = await first(`SELECT request_timeout_ms FROM transcription_runs WHERE id = ?`, [runId]);
-  const timeoutMs = transcriptionTimeoutMs(run ?? {});
-  const leaseMs = Math.max(120_000, Math.min(timeoutMs + 60_000, 660_000));
   const db = getD1();
   const guardId = id("guard");
   try {
@@ -125,7 +128,7 @@ async function acquireLease(runId: string, owner: string, timestamp: string): Pr
         )
         .bind(
           owner,
-          plusMilliseconds(timestamp, leaseMs),
+          transcriptionLeaseExpiresAt(timestamp),
           timestamp,
           timestamp,
           timestamp,
@@ -693,13 +696,14 @@ async function markRetryable(
 
 export async function processTranscriptionRun(
   runId: string,
+  leaseOwner?: string,
 ): Promise<TranscriptionProcessResult> {
   const initial = await first(`SELECT * FROM transcription_runs WHERE id = ?`, [runId]);
   if (!initial) throw new TranscriptionFault("NOT_FOUND", "Transcription run does not exist.");
   if (TERMINAL.has(String(initial.status))) {
     return { runId, status: "already_terminal", segmentCount: Number(initial.segment_count ?? 0) };
   }
-  const owner = `transcriber_${crypto.randomUUID()}`;
+  const owner = leaseOwner ?? `transcriber_${crypto.randomUUID()}`;
   const leased = await acquireLease(runId, owner, now());
   if (!leased) return { runId, status: "lease_not_acquired", segmentCount: 0 };
   let stagedReady = false;
