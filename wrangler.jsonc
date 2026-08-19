@@ -6,7 +6,8 @@
   "vars": {
     "APP_ENV": "production",
     "AUTH_GATEWAY": "public",
-    "AI_DRAFT_CONTEXT": "0"
+    "AI_DRAFT_CONTEXT": "0",
+    "AI_VERIFICATION_USES_READABLE": "0"
   },
   "triggers": {
     "crons": ["* * * * *"]

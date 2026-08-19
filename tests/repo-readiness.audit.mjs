@@ -549,7 +549,7 @@ test("database verdict paths preserve the domain state and evidence rules", asyn
   );
 });
 
-test("batch confirmation requires an explicit server-side Evidence review attestation", async () => {
+test("legacy batch confirmation remains server-gated while the simplified UI stays single-record", async () => {
   const schema = await read("db/schema.ts");
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
@@ -564,12 +564,8 @@ test("batch confirmation requires an explicit server-side Evidence review attest
   );
   assert.match(route, /evidence-review-attestations[\s\S]{0,400}attestClaimEvidenceReview[\s\S]{0,300}idempotencyKey\(request\)/i);
   assert.match(client, /async attestEvidenceReview[\s\S]{0,500}idempotency-key/);
-  assert.match(page, /我已核对证据，返回列表/);
-  assert.match(
-    page,
-    /batchEligible = claim\.reviewStatus === ["']pending["'] && claim\.batchReviewAttested && !hasProposedRelations[\s\S]{0,500}disabled=\{!batchEligible\}/,
-    "a list checkbox must stay disabled until Evidence is attested and no relationship remains undecided",
-  );
+  assert.doesNotMatch(page, /批量处理选项|确认所选|className="claim-select"/);
+  assert.match(page, /aria-label="确认并加入正式结果"[\s\S]{0,500}aria-label="修改后确认"[\s\S]{0,500}aria-label="不采纳这条记录"/);
   assert.doesNotMatch(
     page,
     /useState<Set<string>>\([^)]*reviewed|localStorage[\s\S]{0,300}batchReviewAttested/i,
@@ -1097,7 +1093,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
   );
   const evidenceLoader = page.slice(
     page.indexOf("async function openClaim"),
-    page.indexOf("const pendingClaims"),
+    page.indexOf("async function runVerdict"),
   );
   const verdictHandler = page.slice(
     page.indexOf("async function runVerdict"),
@@ -1120,8 +1116,8 @@ test("claim review stays locked until the exact complete evidence set is loaded"
     "a non-empty partial response must never be treated as ready");
   assert.match(verdictHandler, /\(action\s*===\s*["']confirm["']\s*\|\|\s*action\s*===\s*["']edit["']\)[\s\S]{0,120}evidenceState\s*!==\s*["']ready["']/,
     "event handlers must guard confirm and edit in addition to disabled buttons");
-  assert.match(verdictHandler, /attestSelectedClaimForBatch[\s\S]{0,180}evidenceState\s*!==\s*["']ready["']/,
-    "the attestation handler must reject an incomplete Evidence view");
+  assert.doesNotMatch(claimScreen, /批量处理选项|evidence-review-attestation/,
+    "the simplified review detail must not expose a second batch-attestation workflow");
   assert.match(claimScreen, /证据未完整加载[\s\S]*确认、核对声明和修改功能已停用/);
   assert.match(claimScreen, /const evidenceReady\s*=\s*evidenceState\s*===\s*["']ready["']/);
   assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);

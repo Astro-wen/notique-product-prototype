@@ -1173,13 +1173,18 @@ test("artifact retry refreshes the panel and dispatches only the requested artif
   assert.match(page, /retryEventAiArtifact[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: artifactRun\.id \}\)/);
 });
 
-test("Agent A remains raw-only while Agent B gets a mapped readability aid", async () => {
-  const [processor, provider, context, coreRepository] = await Promise.all([
+test("fact extraction defaults to raw-only while readable remains an optional mapped aid", async () => {
+  const [processor, provider, context, coreRepository, exampleEnvironment, workerConfig] = await Promise.all([
     readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/server/ai/model-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/domain/context-pack.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
   ]);
+  assert.match(exampleEnvironment, /^AI_VERIFICATION_USES_READABLE=0$/m);
+  assert.match(workerConfig, /"AI_VERIFICATION_USES_READABLE": "0"/);
+  assert.match(processor, /frozen\.verification_uses_readable === false \|\| getBindings\(\)\.AI_VERIFICATION_USES_READABLE === "0"[\s\S]{0,80}return base/);
   assert.match(processor, /inventoryProvider\.inventoryClaims\(\s*inventoryContext/);
   assert.match(processor, /draft_context: \{ enabled: false, claims: \[\] \}/);
   assert.match(processor, /contextWithReadableTranscript/);

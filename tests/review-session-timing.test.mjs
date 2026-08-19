@@ -67,7 +67,7 @@ test("the real UI starts, resumes, and completes the server timer", () => {
   assert.match(page, /remainingPendingClaimCount \+ reviewSession\.remainingPendingOccurrenceCount/);
   assert.equal(
     page.match(/await syncReviewTiming\(latestProject(?:, requestIsCurrent)?\);/g)?.length,
-    4,
-    "queue loads plus single and batch verdicts must refresh the server-owned remaining count, with stale-response guards where needed",
+    3,
+    "queue loads and single-record verdicts must refresh the server-owned remaining count, with stale-response guards where needed",
   );
 });

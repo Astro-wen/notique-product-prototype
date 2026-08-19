@@ -9,11 +9,12 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const cjsModule = { exports: {} };
 new Function("module", "exports", compiled)(cjsModule, cjsModule.exports);
-const { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments } = cjsModule.exports;
+const { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments, groupReadableTranscriptSegments } = cjsModule.exports;
 
 function segment(overrides = {}) {
   return {
     key: "segment-1",
+    assetVersionId: "asset-version-1",
     speaker: "Speaker 1",
     text: "All right. Hey, Curtis, thanks for coming on in today.",
     startMs: 2_000,
@@ -94,4 +95,54 @@ test("播放位置只激活已经到达的最新段落", () => {
   assert.equal(activeTranscriptGroupKeyAt(groups, 5_050), "segment-2");
   assert.equal(activeTranscriptGroupKeyAt(groups, 7_500), "segment-2");
   assert.equal(activeTranscriptGroupKeyAt(groups, 8_000), "segment-3");
+});
+
+test("易读稿把短暂插话两侧未说完的同一说话人接成一句", () => {
+  const groups = groupReadableTranscriptSegments([
+    segment({
+      speaker: "Speaker 2",
+      text: "Yeah, we've probably got about uh ten twelve thousand, I'd",
+      startMs: 86_000,
+      endMs: 89_000,
+    }),
+    segment({
+      key: "segment-2",
+      speaker: "Speaker 1",
+      text: "Okay.",
+      startMs: 89_000,
+      endMs: 89_400,
+      sourceIds: ["seg-2"],
+    }),
+    segment({
+      key: "segment-3",
+      speaker: "Speaker 2",
+      text: "say, uh available right now. And then in the next couple of months if I need to save up a little more we could.",
+      startMs: 89_450,
+      endMs: 96_000,
+      sourceIds: ["seg-3"],
+    }),
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(
+    groups[0].text,
+    "Yeah, we've probably got about ten twelve thousand, I'd say, available right now. And then in the next couple of months if I need to save up a little more we could.",
+  );
+  assert.deepEqual(groups[0].sourceIds, ["seg-1", "seg-2", "seg-3"]);
+  assert.equal(groups[0].speaker, "Speaker 2");
+});
+
+test("完整句、不同素材或非白名单插话不会被跨说话人合并", () => {
+  const completeTurn = groupReadableTranscriptSegments([
+    segment({ text: "The budget is twelve thousand.", endMs: 4_000 }),
+    segment({ key: "segment-2", speaker: "Speaker 2", text: "Okay.", startMs: 4_100, endMs: 4_400 }),
+    segment({ key: "segment-3", text: "We can continue.", startMs: 4_500 }),
+  ]);
+  assert.equal(completeTurn.length, 3);
+
+  const differentAsset = groupReadableTranscriptSegments([
+    segment({ text: "I would", endMs: 4_000 }),
+    segment({ key: "segment-2", speaker: "Speaker 2", text: "Okay.", startMs: 4_100, endMs: 4_400 }),
+    segment({ key: "segment-3", assetVersionId: "asset-version-2", text: "say yes.", startMs: 4_500 }),
+  ]);
+  assert.equal(differentAsset.length, 3);
 });
