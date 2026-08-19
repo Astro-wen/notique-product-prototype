@@ -109,7 +109,7 @@ export function buildRunTimingItems(
     const queueEnd = started ?? (run.status === "queued" ? nowMs : null);
     result.push({
       key: "queue",
-      label: "启动分析",
+      label: "后端接收任务",
       status: started !== null ? "done" : run.status === "queued" ? "running" : "waiting",
       durationMs: boundedDuration(queued, queueEnd),
     });
@@ -121,7 +121,7 @@ export function buildRunTimingItems(
       : run.status === "queued" ? nowMs : null;
     result.push({
       key: "current_queue",
-      label: "后台衔接",
+      label: "后端检查同一模型任务",
       status: run.status === "queued" ? "running" : currentQueueEnd !== null ? "done" : "waiting",
       durationMs: boundedDuration(currentQueued, currentQueueEnd),
     });

@@ -132,6 +132,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .workflow-timing > header > div { display: grid; gap: 4px; }
 .workflow-timing > header strong { font-size: 18px; font-variant-numeric: tabular-nums; }
 .workflow-timing > header > small { color: var(--muted); font-size: 9px; }
+.workflow-timing-explanation { margin: 0; border-radius: 7px; background: #f1f6f4; color: #425b52; font-size: 10px; line-height: 1.55; padding: 8px 10px; }
 .workflow-timing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 7px; }
 .workflow-timing-grid > div { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 9px; display: grid; gap: 4px; }
 .workflow-timing-grid > div.running { border-color: #a8cbbf; background: #f5fbf8; }

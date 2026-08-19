@@ -83,10 +83,10 @@ test("a retried Run preserves first queue time and reports the current queue sep
   const items = buildRunTimingItems(run, now);
   assert.equal(items.find((item) => item.key === "queue").durationMs, 3_000);
   assert.equal(items.find((item) => item.key === "queue").status, "done");
-  assert.equal(items.find((item) => item.key === "queue").label, "启动分析");
+  assert.equal(items.find((item) => item.key === "queue").label, "后端接收任务");
   assert.equal(items.find((item) => item.key === "queue").attempt, undefined);
   assert.equal(items.find((item) => item.key === "current_queue").durationMs, 15_000);
-  assert.equal(items.find((item) => item.key === "current_queue").label, "后台衔接");
+  assert.equal(items.find((item) => item.key === "current_queue").label, "后端检查同一模型任务");
   assert.equal(items.find((item) => item.key === "current_queue").attempt, undefined);
   assert.equal(runTotalDurationMs(run, now), 120_000);
 });
