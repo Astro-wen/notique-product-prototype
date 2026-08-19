@@ -37,9 +37,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 img { max-width: 100%; }
 
 .app-shell { min-height: 100vh; }
-.sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: 224px; padding: 24px 15px 18px; border-right: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; }
+.sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: 224px; padding: 24px 15px 18px; border-right: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; transition: width 180ms ease, padding 180ms ease; }
+.sidebar-toggle { position: absolute; z-index: 2; top: 72px; right: -13px; width: 27px; height: 27px; border: 1px solid var(--line-strong); border-radius: 50%; background: #fff; color: #4f5968; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 5px 14px rgba(29, 37, 52, 0.12); font-size: 19px; line-height: 1; }
+.sidebar-toggle:hover { border-color: #9fb5ad; background: var(--brand-green-soft); color: var(--brand-green-dark); }
 .brand { border: 0; background: transparent; display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; color: var(--ink); font-weight: 800; letter-spacing: -0.03em; }
-.brand > span { color: var(--brand-green); font-size: 24px; transform: rotate(-10deg); }
+.brand-mark { color: var(--brand-green); font-size: 24px; transform: rotate(-10deg); }
 .account { margin: 22px 0 17px; display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 9px; padding: 0 5px; }
 .avatar { width: 34px; height: 34px; border-radius: 50%; background: #657084; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
 .account > span:last-child { display: grid; gap: 2px; min-width: 0; }
@@ -47,7 +49,8 @@ img { max-width: 100%; }
 .account small { color: var(--muted); font-size: 10px; }
 .sidebar nav { display: grid; gap: 4px; }
 .sidebar nav button { min-height: 39px; width: 100%; border: 0; border-radius: 7px; background: transparent; padding: 0 10px; display: flex; align-items: center; gap: 10px; text-align: left; color: #3b414b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar nav button span { width: 18px; flex: none; text-align: center; }
+.sidebar-nav-icon { width: 18px; flex: none; text-align: center; }
+.sidebar-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sidebar nav button:hover { background: #eef1f5; }
 .sidebar nav button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
 .sidebar-note { margin-top: auto; border: 1px solid var(--line); border-radius: 8px; background: #f0f3f7; padding: 12px; }
@@ -55,7 +58,22 @@ img { max-width: 100%; }
 .sidebar-note p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .mobile-header { display: none; }
 
-main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; }
+main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: margin-left 180ms ease; }
+
+@media (min-width: 801px) {
+  .sidebar-collapsed .sidebar { width: 68px; padding-right: 10px; padding-left: 10px; }
+  .sidebar-collapsed main { margin-left: 68px; }
+  .sidebar-collapsed .sidebar .brand { width: 100%; justify-content: center; padding: 0; }
+  .sidebar-collapsed .sidebar .account { grid-template-columns: 1fr; justify-items: center; padding: 0; }
+  .sidebar-collapsed .sidebar nav button { justify-content: center; padding: 0; }
+  .sidebar-collapsed .sidebar-label,
+  .sidebar-collapsed .sidebar-nav-label,
+  .sidebar-collapsed .sidebar-note { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, main { transition: none; }
+}
 .public-workspace-notice { position: sticky; z-index: 24; top: 0; width: min(1220px, 100%); min-height: 38px; margin: 0 auto; border: 1px solid #e7d79f; border-top: 0; border-radius: 0 0 9px 9px; background: rgba(255, 249, 232, .97); color: #6e531e; padding: 8px 12px; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 10px; line-height: 1.45; text-align: center; backdrop-filter: blur(8px); }
 .public-workspace-notice strong { flex: none; color: #5e4311; font-size: 10px; }
 .page { width: min(1220px, 100%); margin: 0 auto; }

@@ -68,6 +68,34 @@ test("refresh preserves a directly opened route", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
 });
 
+test("desktop sidebar collapses, restores, and keeps navigation accessible", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop sidebar assertion");
+
+  await page.goto("/?view=simple");
+  await expect(page.getByText("尚未选择项目", { exact: true })).toBeVisible();
+  await page.waitForTimeout(300);
+  const shell = page.locator(".app-shell");
+  const sidebar = page.getByLabel("应用侧栏");
+  const main = page.locator("main");
+  const expandedMainX = (await main.boundingBox())?.x ?? 0;
+
+  await page.getByRole("button", { name: "收起侧栏" }).click();
+  await expect(shell).toHaveClass(/sidebar-collapsed/);
+  await expect(sidebar).toHaveCSS("width", "68px");
+  await expect(page.getByRole("button", { name: "核心测试", exact: true })).toBeVisible();
+  expect((await main.boundingBox())?.x ?? expandedMainX).toBeLessThan(expandedMainX);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("notique.ui.sidebar-collapsed"))).toBe("1");
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  await expect(sidebar).toHaveCSS("width", "68px");
+
+  await page.getByRole("button", { name: "展开侧栏" }).click();
+  await expect(shell).not.toHaveClass(/sidebar-collapsed/);
+  await expect(sidebar).toHaveCSS("width", "224px");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("notique.ui.sidebar-collapsed"))).toBeNull();
+});
+
 test("mobile uses one compact navigation shell without horizontal overflow", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout assertion");
 

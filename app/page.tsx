@@ -214,6 +214,7 @@ const runComplete = new Set(["succeeded", "completed", "completed_with_warnings"
 const acceptedTranscriptTypes = [".txt", ".vtt", ".srt", ".json"];
 const recentProjectStorageKey = "notique.ui.recent-project-id";
 const workflowIntentStorageKey = "notique.ui.workflow-intent-project-id";
+const sidebarCollapsedStorageKey = "notique.ui.sidebar-collapsed";
 const publicWorkspaceAcknowledgementKey = "notique.ui.public-workspace-acknowledged";
 
 function recentEventStorageKey(projectId: string): string {
@@ -1571,6 +1572,7 @@ export default function Home() {
   const [trashIssue, setTrashIssue] = useState<ApiIssue | null>(null);
   const [undoDeletedProject, setUndoDeletedProject] = useState<Project | null>(null);
   const [simpleFlow, setSimpleFlow] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [projectWorkflow, setProjectWorkflow] = useState<ProjectWorkflowState>(idleProjectWorkflow);
@@ -1597,6 +1599,22 @@ export default function Home() {
   const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "draft_ready" | "partially_reviewed" | "complete") => void>(() => undefined);
   const pendingPublicWorkspaceAction = useRef<(() => void) | null>(null);
   const summaryReturnContext = useRef<{ eventId: string; scrollY: number } | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const frame = window.requestAnimationFrame(() => {
+      setSidebarCollapsed(readStoredId(sidebarCollapsedStorageKey) === "1");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      storeId(sidebarCollapsedStorageKey, next ? "1" : null);
+      return next;
+    });
+  }, []);
 
   const navigateRoute = useCallback((nextRoute: AppRoute, mode: "push" | "replace" | "none" = "push") => {
     const normalized = normalizeAppRoute(nextRoute);
@@ -4111,14 +4129,24 @@ export default function Home() {
   const claimRouteReadonly = isReadonlyClaimRoute(route, selectedClaim?.reviewStatus);
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <button className="brand" onClick={goSimple}><span>⌁</span> Notique AI</button>
-        <div className="account"><span className="avatar">N</span><span><strong>Notique</strong><small>Workspace</small></span></div>
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <aside className="sidebar" aria-label="应用侧栏">
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={toggleSidebar}
+          aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+        >
+          <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
+        </button>
+        <button className="brand" onClick={goSimple} aria-label="Notique AI · 核心测试"><span className="brand-mark">⌁</span><span className="sidebar-label">Notique AI</span></button>
+        <div className="account"><span className="avatar">N</span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
         <nav aria-label="主要导航">
-          <button className={screen === "simple" ? "active" : ""} onClick={goSimple}><span>◎</span>核心测试</button>
-          <button className={screen === "projects" ? "active" : ""} onClick={goProjects}><span>▣</span>高级工具</button>
-          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })}><span>◫</span>{project.name}</button>}
+          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="核心测试" title={sidebarCollapsed ? "核心测试" : undefined}><span className="sidebar-nav-icon">◎</span><span className="sidebar-nav-label">核心测试</span></button>
+          <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon">▣</span><span className="sidebar-nav-label">高级工具</span></button>
+          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon">◫</span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
         <div className="sidebar-note"><strong>核心工作区</strong><p>按沟通顺序添加材料、分析、核对，再从确认内容生成报告。</p></div>
       </aside>

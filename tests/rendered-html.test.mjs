@@ -52,8 +52,11 @@ test("client shell starts empty and delegates all durable data to the API", asyn
     target === "key: string"
       || target === "recentProjectStorageKey"
       || target === "workflowIntentStorageKey"
+      || target === "sidebarCollapsedStorageKey"
       || target.startsWith("recentEventStorageKey("),
   ));
+  assert.match(page, /aria-label=\{sidebarCollapsed \? "展开侧栏" : "收起侧栏"\}/);
+  assert.match(page, /notique\.ui\.sidebar-collapsed/);
   assert.doesNotMatch(page, /storeId\([^\n]+JSON\.stringify/);
   assert.doesNotMatch(page, /Sample Project|Sample Claim|Budget is \$/i);
 
