@@ -4553,17 +4553,26 @@ function TranscriptArtifactsPanel({
 
   useEffect(() => {
     if (state === "loading" || state === "idle") return;
-    const hasSummary = Boolean(summaryRun || summaryArtifact);
-    const hasReadable = Boolean(readableRun || readableArtifact);
+    const hasSummary = Boolean(
+      summaryArtifact
+      || summaryRun?.status === "queued"
+      || summaryRun?.status === "processing",
+    );
+    const hasReadable = Boolean(
+      readableArtifact
+      || readableRun?.status === "queued"
+      || readableRun?.status === "processing",
+    );
     const fallbackTab: TranscriptArtifactTab = hasReadable ? "readable" : hasSummary ? "summary" : "raw";
     if (
       focusRequest
       && focusRequest.eventId === event.id
       && handledFocusRequestId.current !== focusRequest.id
     ) {
-      const requestedTab = focusRequest.tab === "summary" && !hasSummary
+      const shouldFallbackUnavailable = !manuallySelectedTab.current;
+      const requestedTab = shouldFallbackUnavailable && focusRequest.tab === "summary" && !hasSummary
         ? fallbackTab
-        : focusRequest.tab === "readable" && !hasReadable
+        : shouldFallbackUnavailable && focusRequest.tab === "readable" && !hasReadable
           ? fallbackTab
           : focusRequest.tab;
       handledFocusRequestId.current = focusRequest.id;
@@ -4770,7 +4779,13 @@ function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
   onRaw: () => void;
 }) {
   const name = kind === "summary" ? "AI 摘要" : "易读逐字稿";
-  if (run?.status === "failed") return <div className="artifact-fallback failed"><h3>{name} 没有生成</h3><p>{run.error_code || "这一项单独失败；原始逐字稿和事实识别不受影响。"}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+  if (run?.status === "failed") {
+    const title = kind === "summary" ? "AI 摘要未通过安全检查" : "易读逐字稿未通过完整性检查";
+    const body = kind === "summary"
+      ? "系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。"
+      : "系统没有采用可能遗漏、错位或改写事实的版本，已安全回退到原始逐字稿。";
+    return <div className="artifact-fallback failed" role="status"><h3>{title}</h3><p>{body}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+  }
   if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}等待后台启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
   return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
 }

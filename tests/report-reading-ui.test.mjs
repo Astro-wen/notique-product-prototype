@@ -84,6 +84,16 @@ test("completed analysis opens the summary and restores it after reading evidenc
   assert.match(page, /summaryReturnContext\.current/);
   assert.match(page, /restoreScrollY: context\.scrollY/);
   assert.match(page, /hasReadable \? "readable" : hasSummary \? "summary" : "raw"/);
+  assert.match(page, /summaryRun\?\.status === "queued"/);
+  assert.match(page, /readableRun\?\.status === "processing"/);
+});
+
+test("failed reading artifacts fall back safely without exposing provider error codes", () => {
+  assert.match(page, /AI 摘要未通过安全检查/);
+  assert.match(page, /易读逐字稿未通过完整性检查/);
+  assert.match(page, /事实识别和原始逐字稿都已保留/);
+  const fallback = page.slice(page.indexOf("function ArtifactFallback"), page.indexOf("function AudioTranscriptionProgressPanel"));
+  assert.doesNotMatch(fallback, /run\.error_code/);
 });
 
 test("review empty states and completed workflow cards avoid duplicate primary actions", () => {

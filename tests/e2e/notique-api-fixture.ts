@@ -1036,8 +1036,13 @@ export class NotiqueApiFixture {
                 "summary",
               ),
               status: summaryStatus,
+              error_code: summaryStatus === "failed" ? "MODEL_OUTPUT_INVALID" : null,
             }] : []),
-            ...(readableStatus ? [{ ...artifactRun(`artifact-run-readable-${eventId}`, projectId, eventId, "readable_transcript"), status: readableStatus }] : []),
+            ...(readableStatus ? [{
+              ...artifactRun(`artifact-run-readable-${eventId}`, projectId, eventId, "readable_transcript"),
+              status: readableStatus,
+              error_code: readableStatus === "failed" ? "MODEL_OUTPUT_INVALID" : null,
+            }] : []),
           ],
           artifacts: [
             ...(summaryStatus === "succeeded" || this.staleSummaryArtifactDuringNewRun
