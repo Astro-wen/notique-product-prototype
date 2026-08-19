@@ -105,7 +105,6 @@ declare namespace Cloudflare {
     MAX_RUN_IMAGE_BYTES?: string;
     MAX_CONCURRENT_RUNS_PER_WORKSPACE?: string;
     MAX_DAILY_EVAL_COST_USD?: string;
-    MAX_DAILY_MODEL_TOKENS?: string;
     MAX_AUDIO_BYTES?: string;
     [key: string]: unknown;
   }

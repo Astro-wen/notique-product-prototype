@@ -1943,10 +1943,6 @@ export async function createExtractionRun(
     bindings.MAX_CONCURRENT_RUNS_PER_WORKSPACE,
     2,
   );
-  const maxDailyModelTokens = configuredPositiveInteger(
-    bindings.MAX_DAILY_MODEL_TOKENS,
-    1_000_000,
-  );
   const maxImageUnits = configuredPositiveInteger(bindings.MAX_RUN_IMAGE_UNITS, 12);
   const reasoningEffort = normalizeOpenAiReasoningEffort(bindings.AI_REASONING_EFFORT);
   const verifierReasoningEffort = normalizeVerifierReasoningEffort(
@@ -2039,9 +2035,6 @@ export async function createExtractionRun(
   const quotaGuardId = id("guard");
   const scenarioGuardId = needsScenarioAssessment ? id("guard") : null;
   const scenarioLeaseExpiresAt = new Date(Date.now() + 35 * 60_000).toISOString();
-  const dailyWindow = new Date(timestamp);
-  dailyWindow.setUTCHours(0, 0, 0, 0);
-  const dailyWindowStart = dailyWindow.toISOString();
   const modelParamsJson = JSON.stringify({
     max_output_tokens: maxOutputTokens,
     timeout_ms: timeoutMs,
@@ -2056,7 +2049,7 @@ export async function createExtractionRun(
     verification_uses_readable: bindings.AI_VERIFICATION_USES_READABLE !== "0",
     reserved_input_tokens: estimatedInputTokens,
     reserved_model_tokens: reservedModelTokens,
-    token_budget_policy: "token-reservation.v1",
+    token_budget_policy: "per-run-safety.v1",
   });
   const statements = [
     db
@@ -2065,26 +2058,12 @@ export async function createExtractionRun(
          SELECT ?, CASE WHEN (
            SELECT COUNT(*) FROM extraction_runs
             WHERE workspace_id = ? AND status IN ('queued', 'processing')
-         ) < ? AND (
-           SELECT COALESCE(SUM(
-             CASE
-               WHEN status IN ('queued', 'processing')
-                 THEN CAST(COALESCE(json_extract(model_params_json, '$.reserved_model_tokens'), 0) AS INTEGER)
-               ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-             END
-           ), 0)
-             FROM extraction_runs
-            WHERE workspace_id = ? AND created_at >= ?
-         ) + ? <= ? THEN 1 ELSE 0 END, ?`,
+         ) < ? THEN 1 ELSE 0 END, ?`,
       )
       .bind(
         quotaGuardId,
         scope.workspaceId,
         maxConcurrentRuns,
-        scope.workspaceId,
-        dailyWindowStart,
-        reservedModelTokens,
-        maxDailyModelTokens,
         timestamp,
       ),
   ] as D1PreparedStatement[];
@@ -2209,37 +2188,17 @@ export async function createExtractionRun(
       );
     }
     const quotaState = await first(
-      `SELECT
-         SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS active_count,
-         SUM(CASE WHEN created_at >= ? THEN
-           CASE
-             WHEN status IN ('queued', 'processing')
-               THEN CAST(COALESCE(json_extract(model_params_json, '$.reserved_model_tokens'), 0) AS INTEGER)
-             ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-           END ELSE 0 END) AS daily_tokens
-       FROM extraction_runs WHERE workspace_id = ?`,
-      [dailyWindowStart, scope.workspaceId],
+      `SELECT SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS active_count
+         FROM extraction_runs WHERE workspace_id = ?`,
+      [scope.workspaceId],
     );
     const activeCount = Number(quotaState?.active_count ?? 0);
-    const dailyTokens = Number(quotaState?.daily_tokens ?? 0);
     if (activeCount >= maxConcurrentRuns) {
       throw new ApiFault(
         429,
         "WORKSPACE_RUN_LIMIT",
         "Workspace extraction concurrency limit was reached.",
         { active_runs: activeCount, max_concurrent_runs: maxConcurrentRuns },
-      );
-    }
-    if (dailyTokens + reservedModelTokens > maxDailyModelTokens) {
-      throw new ApiFault(
-        422,
-        "RUN_BUDGET_EXCEEDED",
-        "Workspace daily model token budget was reached.",
-        {
-          used_or_reserved_tokens: dailyTokens,
-          requested_reservation_tokens: reservedModelTokens,
-          max_daily_model_tokens: maxDailyModelTokens,
-        },
       );
     }
     if (needsScenarioAssessment) {

@@ -656,7 +656,7 @@ test("first-event extraction owns one persisted scenario assessment lease", asyn
   );
 });
 
-test("workspace run concurrency and token reservations are enforced before queueing", async () => {
+test("workspace run concurrency is enforced before queueing without a daily model ceiling", async () => {
   const schema = await read("db/schema.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const extraction = core.slice(
@@ -674,11 +674,8 @@ test("workspace run concurrency and token reservations are enforced before queue
     /MAX_CONCURRENT_RUNS_PER_WORKSPACE[\s\S]*?INSERT INTO mutation_guards[\s\S]*?COUNT\(\*\) FROM extraction_runs[\s\S]*?status IN \('queued', 'processing'\)[\s\S]*?<\s*\?/i,
     "queued and processing runs must be counted in the same guarded batch as the new run",
   );
-  assert.match(
-    extraction,
-    /MAX_DAILY_MODEL_TOKENS[\s\S]*?reserved_model_tokens[\s\S]*?INSERT INTO extraction_runs[\s\S]*?INSERT INTO queue_outbox/i,
-    "the atomic run/outbox mutation must reserve the model budget before the provider can be called",
-  );
+  assert.doesNotMatch(extraction, /MAX_DAILY_MODEL_TOKENS|max_daily_model_tokens|daily_tokens/i);
+  assert.match(extraction, /token_budget_policy:\s*"per-run-safety\.v1"/);
   assert.match(
     extraction,
     /activeCount\s*>=\s*maxConcurrentRuns[\s\S]*?429[\s\S]*?WORKSPACE_RUN_LIMIT/i,
