@@ -5379,11 +5379,25 @@ function SimpleTestScreen({
   const currentAudioPreparation = audioPreparationProgress?.eventId === event?.id
     ? audioPreparationProgress
     : null;
+  const materialPreparationActive = busy === "asset"
+    || busy === "simple-start"
+    || Boolean(currentAudioPreparation)
+    || transcriptionRunning;
+  const workflowInputActuallyReady = materialsReady && !materialPreparationActive;
+  const showProjectWorkflowCard = Boolean(project) && (
+    projectWorkflow.phase === "empty"
+      ? visibleAssets.length === 0 && !materialPreparationActive
+      : projectWorkflow.phase === "ready"
+        ? workflowInputActuallyReady
+        : !["idle", "loading", "waiting_material"].includes(projectWorkflow.phase)
+  );
   const workflowStepActionable = projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed"
     ? true
-    : workflowActionable && workflowSelectedCurrent;
+    : workflowActionable
+      && workflowSelectedCurrent
+      && (projectWorkflow.phase !== "ready" || workflowInputActuallyReady);
   const workflowStepStateLabels: Record<ProjectWorkflowState["phase"], string> = {
     idle: "准备中",
     loading: "检查中",
@@ -5658,7 +5672,7 @@ function SimpleTestScreen({
           </aside>}
 
           {activeTab === "materials" && <div className="meeting-tab-panel">
-            {project && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
+            {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
               <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
               {analysisProgress ? <div className="project-workflow-progress analysis"><div><span>本次分析</span><strong>{analysisProgress.percent}%</strong></div><progress aria-label="本次事实分析进度" max={100} value={analysisProgress.percent} /><small>已完成 {analysisProgress.completed}/{analysisProgress.total} 步</small></div> : projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
               {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
@@ -5684,7 +5698,7 @@ function SimpleTestScreen({
                 {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
               </div>}
 
-              {event && visibleAssets.length > 0 ? <div className="simple-material-list">
+              {materialPreparationActive && visibleAssets.length === 0 ? null : event && visibleAssets.length > 0 ? <div className="simple-material-list">
                 {visibleAssets.map((asset) => {
                   const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
                   const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);

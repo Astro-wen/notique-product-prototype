@@ -371,6 +371,11 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
     /\{workflowActionable && <button className="project-workflow-action"/,
     "a primary workflow action must stay hidden while it cannot be used",
   );
+  assert.match(simpleScreen, /const materialPreparationActive = busy === "asset"[\s\S]*\|\| transcriptionRunning/);
+  assert.match(simpleScreen, /const workflowInputActuallyReady = materialsReady && !materialPreparationActive/);
+  assert.match(simpleScreen, /const showProjectWorkflowCard = Boolean\(project\)[\s\S]*projectWorkflow\.phase === "ready"[\s\S]*workflowInputActuallyReady/);
+  assert.match(simpleScreen, /\{showProjectWorkflowCard && <section className=\{`project-workflow-card/);
+  assert.doesNotMatch(simpleScreen, /\{project && <section className=\{`project-workflow-card/);
   assert.doesNotMatch(
     simpleScreen,
     /projectWorkflow\.phase !== "empty" && <button className="project-workflow-action"/,
