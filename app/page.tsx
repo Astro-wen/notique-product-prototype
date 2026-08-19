@@ -17,6 +17,7 @@ import {
   audioMimeFor,
 } from "@/lib/domain/audio-transcription";
 import { shouldChunkAudio } from "@/lib/domain/audio-chunking";
+import { mapWithConcurrency } from "@/lib/domain/bounded-parallel";
 import {
   audioChunkPlan,
   inspectAudioDurationMs,
@@ -116,12 +117,17 @@ type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
 type ResultTab = ProjectViewName;
 
 type AudioPreparationProgress = {
+  audioAssetId: string;
   eventId: string;
+  filename: string;
   stage: "inspecting" | "preparing" | "starting";
   total: number;
   completed: number;
-  currentIndex?: number;
-  currentFraction?: number;
+  chunks: Array<{
+    index: number;
+    status: "queued" | "processing" | "succeeded" | "failed";
+    fraction: number;
+  }>;
 };
 
 type ContradictionResolutionInput = {
@@ -409,14 +415,15 @@ function audioUploadIssue(filename: string, mimeType: string, sizeBytes: number)
   return null;
 }
 
-function transcriptionRunIdFromEvent(value: Event): string | undefined {
-  for (const asset of [...value.assets].reverse()) {
+function transcriptionRunIdsFromEvent(value: Event): Array<{ audioAssetId: string; runId: string }> {
+  const runs: Array<{ audioAssetId: string; runId: string }> = [];
+  for (const asset of value.assets) {
     if (asset.kind !== "audio") continue;
     if (asset.metadata.transcription_chunk === true) continue;
     const runId = stringValue(asset.metadata.transcription_run_id);
-    if (runId) return runId;
+    if (runId) runs.push({ audioAssetId: asset.id, runId });
   }
-  return undefined;
+  return runs;
 }
 
 function assetIsAnalyzable(asset: Event["assets"][number]): boolean {
@@ -1546,7 +1553,8 @@ export default function Home() {
   const [eventIssue, setEventIssue] = useState<ApiIssue | null>(null);
   const [run, setRun] = useState<ExtractionRun | null>(null);
   const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
-  const [audioPreparationProgress, setAudioPreparationProgress] = useState<AudioPreparationProgress | null>(null);
+  const [transcriptionRunsByAssetId, setTranscriptionRunsByAssetId] = useState<Record<string, TranscriptionRun>>({});
+  const [audioPreparationProgressByAssetId, setAudioPreparationProgressByAssetId] = useState<Record<string, AudioPreparationProgress>>({});
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
   const [draftAssessment, setDraftAssessment] = useState<AiDraftAssessment | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
@@ -1839,21 +1847,31 @@ export default function Home() {
   }, [event?.id, isCurrentRequestOwner, project?.id]);
 
   const loadTranscriptionForEvent = useCallback(async (nextEvent: Event, expectedEventEpoch?: number) => {
-    const transcriptionRunId = transcriptionRunIdFromEvent(nextEvent);
-    if (!transcriptionRunId) {
+    const transcriptionRunRefs = transcriptionRunIdsFromEvent(nextEvent);
+    if (transcriptionRunRefs.length === 0) {
       if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
       setTranscriptionRun(null);
+      setTranscriptionRunsByAssetId({});
       return;
     }
     try {
-      const nextTranscriptionRun = await api.getTranscriptionRun(transcriptionRunId);
+      const settled = await Promise.allSettled(transcriptionRunRefs.map(async ({ audioAssetId, runId }) => ({
+        audioAssetId,
+        run: await api.getTranscriptionRun(runId),
+      })));
       if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
-      setTranscriptionRun(nextTranscriptionRun);
+      const loaded = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      const hardFailure = settled.find((result) => result.status === "rejected" && toIssue(result.reason).status !== 404);
+      if (hardFailure?.status === "rejected") throw hardFailure.reason;
+      const byAssetId = Object.fromEntries(loaded.map(({ audioAssetId, run }) => [audioAssetId, run]));
+      setTranscriptionRunsByAssetId(byAssetId);
+      setTranscriptionRun(loaded.at(-1)?.run ?? null);
     } catch (error) {
       if (expectedEventEpoch != null && requestEpochs.current.event !== expectedEventEpoch) return;
       const issue = toIssue(error);
       if (issue.status === 404) {
         setTranscriptionRun(null);
+        setTranscriptionRunsByAssetId({});
         return;
       }
       throw error;
@@ -1913,6 +1931,7 @@ export default function Home() {
     setEventIssue(null);
     setRun(null);
     setTranscriptionRun(null);
+    setTranscriptionRunsByAssetId({});
     setClaims([]);
     setClaimsState("idle");
     try {
@@ -2206,6 +2225,7 @@ export default function Home() {
         const latest = await api.getTranscriptionRun(runId);
         if (cancelled) return;
         setTranscriptionRun(latest);
+        setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
         if (latest.orchestrationMode === "chunked" && latest.status === "processing") {
           wakeChunkedTranscription(latest.id);
         }
@@ -2242,6 +2262,61 @@ export default function Home() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, transcriptionPollCycle]);
+
+  const secondaryTranscriptionRuns = Object.values(transcriptionRunsByAssetId)
+    .filter((item) => item.id !== activeTranscriptionRunId && runInProgress.has(item.status));
+  const secondaryTranscriptionRunKey = secondaryTranscriptionRuns
+    .map((item) => `${item.id}:${item.status}:${item.completedChunkCount}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!secondaryTranscriptionRunKey) return;
+    const runsToPoll = secondaryTranscriptionRuns.map((item) => ({
+      id: item.id,
+      eventId: item.eventId,
+    }));
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      const settled = await Promise.allSettled(runsToPoll.map(async ({ id }) => {
+        const latest = await api.getTranscriptionRun(id);
+        if (runInProgress.has(latest.status)) {
+          if (latest.status === "queued" || latest.orchestrationMode === "chunked") {
+            wakeChunkedTranscription(latest.id);
+          }
+        }
+        return latest;
+      }));
+      if (cancelled) return;
+      const latestRuns = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      if (latestRuns.length > 0) {
+        setTranscriptionRunsByAssetId((current) => ({
+          ...current,
+          ...Object.fromEntries(latestRuns.map((item) => [item.audioAssetId, item])),
+        }));
+      }
+      const completedCurrentEvent = latestRuns.some((item) => item.eventId === event?.id && item.status === "succeeded");
+      if (completedCurrentEvent && event?.id) {
+        const refreshed = await api.getEvent(event.id).catch(() => null);
+        if (!cancelled && refreshed) setEvent(refreshed);
+      }
+      if (!cancelled && latestRuns.some((item) => runInProgress.has(item.status))) {
+        timer = window.setTimeout(() => void poll(), 2_000);
+      }
+    };
+    for (const item of secondaryTranscriptionRuns) {
+      if (item.status === "queued" || item.orchestrationMode === "chunked") wakeChunkedTranscription(item.id);
+    }
+    timer = window.setTimeout(() => void poll(), 1_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // The stable key intentionally owns the polling lifetime; the captured
+    // list is refreshed whenever any secondary Run changes state or progress.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondaryTranscriptionRunKey, event?.id]);
 
   const activeExtractionRunId = run?.id;
   const activeExtractionRunStatus = run?.status;
@@ -3194,12 +3269,13 @@ export default function Home() {
     const next = await api.startTranscription(audioAssetId, key, chunks);
     transcriptionKeys.current.delete(fingerprint);
     setTranscriptionRun(next);
+    setTranscriptionRunsByAssetId((current) => ({ ...current, [next.audioAssetId]: next }));
     setTranscriptionPollCycle((current) => current + 1);
     if (next.orchestrationMode === "chunked") {
       wakeChunkedTranscription(next.id);
     }
     const refreshed = await api.getEvent(targetEventId);
-    setEvent(refreshed);
+    if (routeRef.current.eventId === targetEventId || event?.id === targetEventId) setEvent(refreshed);
     return next;
   }
 
@@ -3217,53 +3293,80 @@ export default function Home() {
     originalAudioAssetId: string,
     targetEventId: string,
   ): Promise<TranscriptionRun> {
-    setAudioPreparationProgress({
+    const setPreparation = (
+      next: AudioPreparationProgress | null | ((current: AudioPreparationProgress | undefined) => AudioPreparationProgress | null | undefined),
+    ) => {
+      setAudioPreparationProgressByAssetId((current) => {
+        const resolved = typeof next === "function" ? next(current[originalAudioAssetId]) : next;
+        if (!resolved) {
+          if (!current[originalAudioAssetId]) return current;
+          const copy = { ...current };
+          delete copy[originalAudioAssetId];
+          return copy;
+        }
+        return { ...current, [originalAudioAssetId]: resolved };
+      });
+    };
+    setPreparation({
+      audioAssetId: originalAudioAssetId,
       eventId: targetEventId,
+      filename,
       stage: "inspecting",
       total: 0,
       completed: 0,
+      chunks: [],
     });
     try {
       const durationMs = await inspectAudioDurationMs(source);
       if (!shouldChunkAudio({ durationMs, sizeBytes: source.size })) {
-        setAudioPreparationProgress(null);
+        setPreparation(null);
         return await launchTranscription(originalAudioAssetId, targetEventId);
       }
       const plan = audioChunkPlan(durationMs);
-      setAudioPreparationProgress({
+      setPreparation({
+        audioAssetId: originalAudioAssetId,
         eventId: targetEventId,
+        filename,
         stage: "preparing",
         total: plan.length,
         completed: 0,
-        currentIndex: 0,
-        currentFraction: 0,
+        chunks: plan.map((item) => ({ index: item.index, status: "queued", fraction: 0 })),
       });
-      const uploadedChunks: Array<{
+      const uploadedChunks = await mapWithConcurrency<typeof plan[number], {
         assetId: string;
         index: number;
         startMs: number;
         endMs: number;
-      }> = [];
-      for (const item of plan) {
-        setAudioPreparationProgress({
-          eventId: targetEventId,
-          stage: "preparing",
-          total: plan.length,
-          completed: uploadedChunks.length,
-          currentIndex: item.index,
-          currentFraction: 0,
-        });
+      }>(plan, 4, async (item) => {
+        const updateChunk = (status: AudioPreparationProgress["chunks"][number]["status"], fraction: number) => {
+          setPreparation((current) => {
+            if (!current) return current;
+            const chunks = current.chunks.map((chunk) => chunk.index === item.index
+              ? { ...chunk, status, fraction }
+              : chunk);
+            return {
+              ...current,
+              completed: chunks.filter((chunk) => chunk.status === "succeeded").length,
+              chunks,
+            };
+          });
+        };
+        updateChunk("processing", 0);
         const prepared = await prepareAudioChunk(source, item, filename, (progress) => {
           const currentFraction = Math.min(0.8, Math.max(0, progress) * 0.8);
-          setAudioPreparationProgress((current) => {
-            if (!current || current.eventId !== targetEventId || current.currentIndex !== item.index) return current;
-            if (Math.abs((current.currentFraction ?? 0) - currentFraction) < 0.02) return current;
-            return { ...current, currentFraction };
+          setPreparation((current) => {
+            if (!current) return current;
+            const existing = current.chunks.find((chunk) => chunk.index === item.index);
+            if (!existing || Math.abs(existing.fraction - currentFraction) < 0.02) return current;
+            return {
+              ...current,
+              chunks: current.chunks.map((chunk) => chunk.index === item.index
+                ? { ...chunk, status: "processing", fraction: currentFraction }
+                : chunk),
+            };
           });
         });
-        setAudioPreparationProgress((current) => current?.eventId === targetEventId
-          ? { ...current, currentFraction: 0.82 }
-          : current);
+        updateChunk("processing", 0.82);
         const fingerprint = [
           "transcription-chunk",
           originalAudioAssetId,
@@ -3288,40 +3391,44 @@ export default function Home() {
             chunk_end_ms: item.endMs,
           },
         }, key);
-        setAudioPreparationProgress((current) => current?.eventId === targetEventId
-          ? { ...current, currentFraction: 0.88 }
-          : current);
+        updateChunk("processing", 0.88);
         await api.uploadAsset(
           initialized.assetId,
           initialized.uploadUrl,
           prepared.blob,
           prepared.mimeType,
         );
-        setAudioPreparationProgress((current) => current?.eventId === targetEventId
-          ? { ...current, currentFraction: 0.96 }
-          : current);
+        updateChunk("processing", 0.96);
         await api.finalizeAsset(initialized.assetId);
         mutationKeys.current.delete(fingerprint);
-        uploadedChunks.push({ assetId: initialized.assetId, ...item });
-        setAudioPreparationProgress({
-          eventId: targetEventId,
-          stage: "preparing",
-          total: plan.length,
-          completed: uploadedChunks.length,
-          currentIndex: item.index + 1 < plan.length ? item.index + 1 : undefined,
-          currentFraction: 0,
-        });
-      }
-      setAudioPreparationProgress({
+        updateChunk("succeeded", 0);
+        return { assetId: initialized.assetId, ...item };
+      });
+      setPreparation((current) => current ? {
+        ...current,
         eventId: targetEventId,
         stage: "starting",
         total: plan.length,
         completed: plan.length,
-      });
+        chunks: current.chunks.map((chunk) => ({ ...chunk, status: "succeeded", fraction: 0 })),
+      } : current);
       flash(`长录音已分成 ${plan.length} 段，正在并行转写`);
-      return await launchTranscription(originalAudioAssetId, targetEventId, "chunked", uploadedChunks);
+      return await launchTranscription(
+        originalAudioAssetId,
+        targetEventId,
+        "chunked",
+        uploadedChunks.sort((left, right) => left.index - right.index),
+      );
+    } catch (error) {
+      setPreparation((current) => current ? {
+        ...current,
+        chunks: current.chunks.map((chunk) => chunk.status === "processing"
+          ? { ...chunk, status: "failed", fraction: 0 }
+          : chunk),
+      } : current);
+      throw error;
     } finally {
-      setAudioPreparationProgress((current) => current?.eventId === targetEventId ? null : current);
+      setPreparation(null);
     }
   }
 
@@ -3330,7 +3437,8 @@ export default function Home() {
     setBusyAction("transcription");
     setEventIssue(null);
     try {
-      let current = transcriptionRun?.audioAssetId === audioAssetId ? transcriptionRun : null;
+      let current = transcriptionRunsByAssetId[audioAssetId]
+        ?? (transcriptionRun?.audioAssetId === audioAssetId ? transcriptionRun : null);
       if (!current) {
         const refreshedEvent = await api.getEvent(event.id);
         setEvent(refreshedEvent);
@@ -3343,6 +3451,7 @@ export default function Home() {
           if (persistedRun.audioAssetId === audioAssetId) {
             current = persistedRun;
             setTranscriptionRun(persistedRun);
+            setTranscriptionRunsByAssetId((runs) => ({ ...runs, [persistedRun.audioAssetId]: persistedRun }));
           }
         }
       }
@@ -3355,6 +3464,7 @@ export default function Home() {
           current = await api.retryFailedTranscriptionChunks(current.id, retryKey);
           mutationKeys.current.delete(retryFingerprint);
           setTranscriptionRun(current);
+          setTranscriptionRunsByAssetId((runs) => ({ ...runs, [current!.audioAssetId]: current! }));
           wakeChunkedTranscription(current.id);
           setTranscriptionPollCycle((value) => value + 1);
           flash(`只重试失败的 ${failedChunks.length} 个录音片段，已完成片段不会重复收费`);
@@ -3379,12 +3489,14 @@ export default function Home() {
         const latest = await api.getTranscriptionRun(current.id);
         if (runInProgress.has(latest.status)) {
           setTranscriptionRun(latest);
+          setTranscriptionRunsByAssetId((runs) => ({ ...runs, [latest.audioAssetId]: latest }));
           setTranscriptionPollCycle((value) => value + 1);
           flash("已重新检查后台任务，会继续等待转写结果");
           return;
         }
         if (latest.status === "succeeded") {
           setTranscriptionRun(latest);
+          setTranscriptionRunsByAssetId((runs) => ({ ...runs, [latest.audioAssetId]: latest }));
           setEvent(await api.getEvent(event.id));
           flash("逐字稿已经生成");
           return;
@@ -3464,6 +3576,8 @@ export default function Home() {
     setEvent(null);
     setRun(null);
     setTranscriptionRun(null);
+    setTranscriptionRunsByAssetId({});
+    setAudioPreparationProgressByAssetId({});
     setClaims([]);
     setOccurrenceCandidates([]);
     setProjectWorkflow(idleProjectWorkflow);
@@ -3843,15 +3957,24 @@ export default function Home() {
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
       if (kind === "audio") {
-        const transcription = await prepareLongAudioTranscription(
+        const targetProjectId = targetProject.id;
+        const targetEventId = targetEvent.id;
+        flash("录音已保存，正在规划分段；可以继续添加下一份录音");
+        await loadSimpleProject(targetProjectId, targetEventId);
+        void prepareLongAudioTranscription(
           file,
           file.name,
           init.assetId,
-          targetEvent.id,
-        );
-        flash(transcription.orchestrationMode === "chunked"
-          ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
-          : "录音已保存，正在生成带说话人和时间点的逐字稿");
+          targetEventId,
+        ).then(async (transcription) => {
+          flash(transcription.orchestrationMode === "chunked"
+            ? `“${file.name}”的 ${transcription.chunkCount ?? transcription.chunks.length} 段正在并行识别`
+            : `“${file.name}”正在识别说话人和时间点`);
+          if (routeRef.current.projectId === targetProjectId && routeRef.current.eventId === targetEventId) {
+            await loadSimpleProject(targetProjectId, targetEventId, "replace");
+          }
+        }).catch((error) => setEventIssue(toIssue(error)));
+        return true;
       } else {
         flash("材料已加入");
       }
@@ -4182,7 +4305,8 @@ export default function Home() {
           busy={busyAction}
           projectWorkflow={projectWorkflow}
           readingTab={route.readingTab}
-          audioPreparationProgress={audioPreparationProgress}
+          transcriptionRunsByAssetId={transcriptionRunsByAssetId}
+          audioPreparationProgressByAssetId={audioPreparationProgressByAssetId}
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
@@ -4366,11 +4490,12 @@ type SimpleTestScreenProps = {
   eventIssue: ApiIssue | null;
   run: ExtractionRun | null;
   transcriptionRun: TranscriptionRun | null;
+  transcriptionRunsByAssetId: Record<string, TranscriptionRun>;
   claims: Claim[];
   busy: string | null;
   projectWorkflow: ProjectWorkflowState;
   readingTab?: TranscriptArtifactTab;
-  audioPreparationProgress: AudioPreparationProgress | null;
+  audioPreparationProgressByAssetId: Record<string, AudioPreparationProgress>;
   onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
@@ -4969,12 +5094,14 @@ function ArtifactFallback({ kind, run, busy, onRetry, onRaw }: {
 function AudioTranscriptionProgressPanel({
   preparation,
   run,
+  label,
   durationMs,
   busy,
   onRetry,
 }: {
   preparation: AudioPreparationProgress | null;
   run: TranscriptionRun | null;
+  label?: string;
   durationMs: number | null;
   busy: string | null;
   onRetry: (audioAssetId: string) => void;
@@ -4987,9 +5114,8 @@ function AudioTranscriptionProgressPanel({
   const progress = buildChunkProgress({
     total,
     completed,
-    chunks: chunkedRun?.chunks,
-    currentIndex: preparation?.currentIndex,
-    currentFraction: preparation?.currentFraction,
+    chunks: preparation?.chunks ?? chunkedRun?.chunks,
+    chunkFractions: preparation?.chunks.map((chunk) => ({ index: chunk.index, fraction: chunk.fraction })),
   });
   const failedCount = chunkedRun?.chunks.filter((chunk) => chunk.status === "failed").length ?? 0;
   const failed = !preparation && run?.status === "failed";
@@ -5001,7 +5127,7 @@ function AudioTranscriptionProgressPanel({
     : preparation?.stage === "starting"
       ? "分段已经准备完毕，正在启动并行识别"
       : preparing
-        ? "正在整理长录音并上传分段"
+        ? "正在并行整理并上传录音分段"
         : chunkedRun
           ? failed
             ? "有分段识别没有完成"
@@ -5015,7 +5141,7 @@ function AudioTranscriptionProgressPanel({
     ? "读取时长后会立即显示分段数量"
     : hasChunkPlan && total > 0
       ? preparing
-        ? `已准备 ${progress.completed}/${progress.total} 段 · ${progress.percent}%`
+        ? `已准备 ${progress.completed}/${progress.total} 段 · ${progress.processing} 段并行处理中 · ${progress.percent}%`
         : `已完成 ${progress.completed}/${progress.total} 段 · ${progress.processing} 段识别中 · ${progress.queued} 段等待`
       : run?.errorCode || (singleRun ? statusLabel(singleRun.status) : "正在启动");
   const nextStepText = inspecting
@@ -5026,7 +5152,7 @@ function AudioTranscriptionProgressPanel({
         : "录音正在识别；完成后即可查看逐字稿并开始分析。"
     : progress.remaining > 0
       ? preparing
-        ? `还差 ${progress.remaining} 段完成整理；全部就绪后会自动并行识别。`
+        ? `浏览器最多 4 段同时准备；全部登记后，后端最多 6 段同时识别。`
         : progress.processing > 0
           ? `${progress.processing} 段正在识别${progress.queued > 0 ? `，${progress.queued} 段等待并行空位` : ""}；每完成一段就会立即打勾。`
           : `还差 ${progress.remaining} 段完成识别；随后自动合并，完成后即可开始分析。`
@@ -5038,7 +5164,7 @@ function AudioTranscriptionProgressPanel({
   return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" data-testid="transcription-journey">
     <header>
       <span className="file-kind">AUD</span>
-      <div><span className="section-kicker">录音处理进度</span><h3>{title}</h3><p>{statusText}{timeText}</p></div>
+      <div><span className="section-kicker">录音处理进度{preparation?.filename || label ? ` · ${preparation?.filename ?? label}` : ""}</span><h3>{title}</h3><p>{statusText}{timeText}</p></div>
       {!inspecting && total > 0 && <strong className="transcription-percent">{progress.percent}%</strong>}
     </header>
     <div className={`transcription-progress-bar${inspecting ? " indeterminate" : ""}`} role="progressbar" aria-label="录音分段处理进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={inspecting ? undefined : progress.percent}>
@@ -5049,7 +5175,7 @@ function AudioTranscriptionProgressPanel({
       {progress.nodes.map((node) => <span className={`transcription-chunk-node ${node.status}`} key={node.index} aria-label={`第 ${node.index + 1} 段：${node.status === "completed" ? "已完成" : node.status === "processing" ? "处理中" : node.status === "failed" ? "失败" : "等待"}`}>
         <i>{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : node.index + 1}</i>
         <small>第{node.index + 1}段</small>
-        <em>{node.status === "completed" ? "已完成" : node.status === "processing" ? "识别中" : node.status === "failed" ? "需重试" : "等待"}</em>
+        <em>{node.status === "completed" ? "已完成" : node.status === "processing" ? preparing ? "准备中" : "识别中" : node.status === "failed" ? "需重试" : "等待"}</em>
       </span>)}
     </div>}
     <div className="transcription-next-step"><strong>{failedCount > 0 ? `${failedCount} 段需要重试` : nextStepText}</strong><span>系统会自动继续，不需要手动开启后台任务。</span></div>
@@ -5120,11 +5246,12 @@ function SimpleTestScreen({
   eventIssue,
   run,
   transcriptionRun,
+  transcriptionRunsByAssetId,
   claims,
   busy,
   projectWorkflow,
   readingTab,
-  audioPreparationProgress,
+  audioPreparationProgressByAssetId,
   onUseProject,
   onUseEvent,
   onStartOwn,
@@ -5166,7 +5293,13 @@ function SimpleTestScreen({
   const readyAssets = event?.assets.filter(assetIsAnalyzable) ?? [];
   const visibleAssets = event?.assets.filter((asset) => !assetIsGeneratedAiArtifact(asset)) ?? [];
   const materialsReady = readyAssets.length > 0;
-  const transcriptionRunning = Boolean(transcriptionRun && runInProgress.has(transcriptionRun.status));
+  const currentTranscriptionRuns = event
+    ? Object.values({
+        ...transcriptionRunsByAssetId,
+        ...(transcriptionRun ? { [transcriptionRun.audioAssetId]: transcriptionRun } : {}),
+      }).filter((item) => item.eventId === event.id)
+    : [];
+  const transcriptionRunning = currentTranscriptionRuns.some((item) => runInProgress.has(item.status));
   const transcriptionDone = transcriptionRun?.status === "succeeded";
   const analysisRunning = Boolean(run && runInProgress.has(run.status));
   const analysisDone = Boolean(run && runComplete.has(run.status));
@@ -5382,12 +5515,12 @@ function SimpleTestScreen({
     && Number.isFinite(transcriptionTimingEnd)
     ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
     : null;
-  const currentAudioPreparation = audioPreparationProgress?.eventId === event?.id
-    ? audioPreparationProgress
-    : null;
+  const currentAudioPreparations = event
+    ? Object.values(audioPreparationProgressByAssetId).filter((item) => item.eventId === event.id)
+    : [];
   const materialPreparationActive = busy === "asset"
     || busy === "simple-start"
-    || Boolean(currentAudioPreparation)
+    || currentAudioPreparations.length > 0
     || transcriptionRunning;
   const workflowInputActuallyReady = materialsReady && !materialPreparationActive;
   const showProjectWorkflowCard = Boolean(project) && (
@@ -5646,14 +5779,27 @@ function SimpleTestScreen({
             <button className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}>结果</button>
           </nav>
 
-          {(currentAudioPreparation || (transcriptionRun && !transcriptionDone)) && <div className="transcription-journey-slot">
-            <AudioTranscriptionProgressPanel
-              preparation={currentAudioPreparation}
-              run={transcriptionRun}
-              durationMs={currentAudioPreparation ? null : transcriptionProcessingDurationMs}
+          {(currentAudioPreparations.length > 0 || currentTranscriptionRuns.some((item) => item.status !== "succeeded")) && <div className="transcription-journey-slot">
+            {currentAudioPreparations.map((preparation) => <AudioTranscriptionProgressPanel
+              key={`preparation:${preparation.audioAssetId}`}
+              preparation={preparation}
+              run={null}
+              label={preparation.filename}
+              durationMs={null}
               busy={busy}
               onRetry={onRetryTranscription}
-            />
+            />)}
+            {currentTranscriptionRuns
+              .filter((item) => !audioPreparationProgressByAssetId[item.audioAssetId] && item.status !== "succeeded")
+              .map((item) => <AudioTranscriptionProgressPanel
+                key={item.id}
+                preparation={null}
+                run={item}
+                label={visibleAssets.find((asset) => asset.id === item.audioAssetId)?.filename}
+                durationMs={item.id === transcriptionRun?.id ? transcriptionProcessingDurationMs : null}
+                busy={busy}
+                onRetry={onRetryTranscription}
+              />)}
           </div>}
 
           {factsRunningInBackground && readingAid && <aside className="workflow-reading-banner" aria-live="polite">
@@ -5692,7 +5838,7 @@ function SimpleTestScreen({
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
               <header><div><h3>材料</h3><p>{event ? `所有新文件都会加入“${event.title}”` : "还没有当前沟通时，系统会自动建立。"}</p></div>{visibleAssets.length > 0 && <button className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加材料"}</button>}</header>
-              {(busy === "asset" || busy === "simple-start") && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以看到上传的材料。" : audioPreparationProgress ? "录音已上传，正在准备后续处理。" : "文件已上传，正在刷新材料列表。"} />}
+              {(busy === "asset" || busy === "simple-start") && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以看到上传的材料。" : "文件已上传，正在刷新材料列表。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record">●</span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
@@ -5707,7 +5853,7 @@ function SimpleTestScreen({
 
               {materialPreparationActive && visibleAssets.length === 0 ? null : event && visibleAssets.length > 0 ? <div className="simple-material-list">
                 {visibleAssets.map((asset) => {
-                  const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
+                  const assetRun = asset.kind === "audio" ? transcriptionRunsByAssetId[asset.id] ?? null : null;
                   const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
                   return <article key={asset.id}><span className="file-kind">{asset.kind === "audio" ? "AUD" : asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;

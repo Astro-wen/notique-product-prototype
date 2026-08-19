@@ -181,7 +181,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .transcription-progress strong { font-size: 11px; }
 .transcription-progress small { color: var(--muted); font-size: 9px; }
 .transcription-progress.compact { margin: 10px 14px 14px; background: #f8fbff; }
-.transcription-journey-slot { padding: 16px 17px 0; }
+.transcription-journey-slot { padding: 16px 17px 0; display: grid; gap: 12px; }
 .transcription-journey { border: 1px solid #b8d7ca; border-radius: 13px; background: linear-gradient(145deg, #fbfefd 0%, #f3faf7 100%); padding: 17px; display: grid; gap: 14px; }
 .transcription-journey.failed { border-color: #e2b7b7; background: #fffafa; }
 .transcription-journey > header { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; }

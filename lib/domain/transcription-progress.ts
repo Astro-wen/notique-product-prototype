@@ -39,6 +39,7 @@ export function buildChunkProgress(input: {
   chunks?: ChunkStatusInput[];
   currentIndex?: number;
   currentFraction?: number;
+  chunkFractions?: Array<{ index: number; fraction: number }>;
 }): ChunkProgressModel {
   const total = Math.max(0, Math.floor(input.total));
   const completed = clamp(Math.floor(input.completed), 0, total);
@@ -68,7 +69,12 @@ export function buildChunkProgress(input: {
     paintedCompleted += 1;
   }
 
-  const partial = clamp(input.currentFraction ?? 0, 0, 1);
+  const partial = input.chunkFractions
+    ? input.chunkFractions.reduce((sum, chunk) => {
+        if (!Number.isInteger(chunk.index) || chunk.index < 0 || chunk.index >= total) return sum;
+        return sum + clamp(chunk.fraction, 0, 1);
+      }, 0)
+    : clamp(input.currentFraction ?? 0, 0, 1);
   const percent = total > 0
     ? clamp(Math.floor(((completed + partial) / total) * 100), 0, 100)
     : 0;

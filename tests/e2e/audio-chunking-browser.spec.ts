@@ -50,7 +50,7 @@ test.describe("browser audio chunking", () => {
     expect(result.durationMs).toBe(301_000);
     expect(result.plan).toEqual([
       { index: 0, startMs: 0, endMs: 180_000 },
-      { index: 1, startMs: 175_000, endMs: 301_000 },
+      { index: 1, startMs: 165_000, endMs: 301_000 },
     ]);
     expect(result.chunkType).toBe("audio/wav");
     expect(result.chunkBytes).toBeGreaterThan(5_000_000);

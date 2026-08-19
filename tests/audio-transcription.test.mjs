@@ -38,7 +38,7 @@ test("long audio is split into deterministic overlapping time chunks without cov
   assert.equal(chunking.AUDIO_CHUNK_OVERLAP_MS, 15_000);
   assert.equal(chunking.AUDIO_CHUNK_MAX_PARALLEL, 6);
   assert.equal(chunking.audioChunkParallelism(1), 1);
-  assert.equal(chunking.audioChunkParallelism(5), 3);
+  assert.equal(chunking.audioChunkParallelism(5), 5);
   assert.equal(chunking.audioChunkParallelism(6), 6);
   assert.equal(chunking.audioChunkParallelism(10), 6);
 
@@ -663,7 +663,9 @@ test("simple flow supports audio-first setup and preserves a transcription start
   );
   assert.match(attachSimple, /resolveSimpleImportTarget/);
   assert.match(attachSimple, /createEvent: async \(currentProject\)/);
-  assert.match(attachSimple, /await prepareLongAudioTranscription\([\s\S]*init\.assetId,[\s\S]*targetEvent\.id/);
+  assert.match(attachSimple, /await loadSimpleProject\(targetProjectId, targetEventId\);[\s\S]*void prepareLongAudioTranscription\([\s\S]*init\.assetId,[\s\S]*targetEventId/);
+  assert.match(attachSimple, /可以继续添加下一份录音/);
+  assert.match(attachSimple, /\.catch\(\(error\) => setEventIssue\(toIssue\(error\)\)\)/);
   assert.match(
     attachSimple,
     /const issue = toIssue\(error\);[\s\S]*await loadSimpleProject[\s\S]*setEventIssue\(issue\)/,

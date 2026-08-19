@@ -12,14 +12,12 @@ export const MAX_STABLE_SPEAKER_COUNT = 4;
 export const UNRESOLVED_SPEAKER_LABEL = "Speaker unknown";
 
 /**
- * Keep short recordings conservative while letting a long recording fill one
- * bounded six-lane provider batch. This does not add chunks or model work; it
- * only avoids leaving already-prepared chunks idle behind a four-lane wave.
+ * Every prepared chunk gets a provider lane immediately, up to the bounded
+ * six-lane batch. This changes only concurrency, not chunk count or model work.
  */
 export function audioChunkParallelism(chunkCountValue: number): number {
   const chunkCount = Math.max(1, Math.floor(finiteNonNegative(chunkCountValue, "chunkCount")));
-  if (chunkCount >= 6) return AUDIO_CHUNK_MAX_PARALLEL;
-  return Math.min(3, chunkCount);
+  return Math.min(AUDIO_CHUNK_MAX_PARALLEL, chunkCount);
 }
 
 export type AudioChunkPlanItem = {

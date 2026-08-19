@@ -55,6 +55,48 @@ test("browser preparation includes the active segment without marking it complet
   assert.equal(progress.nodes[9].status, "processing");
 });
 
+test("parallel preparation counts fractional work from every active segment", async () => {
+  const { buildChunkProgress } = await loadTypeScriptModule("lib/domain/transcription-progress.ts");
+  const progress = buildChunkProgress({
+    total: 10,
+    completed: 2,
+    chunks: [
+      { index: 0, status: "succeeded" },
+      { index: 1, status: "succeeded" },
+      { index: 2, status: "processing" },
+      { index: 3, status: "processing" },
+      { index: 4, status: "processing" },
+      { index: 5, status: "processing" },
+    ],
+    chunkFractions: [
+      { index: 2, fraction: 0.5 },
+      { index: 3, fraction: 0.5 },
+      { index: 4, fraction: 0.5 },
+      { index: 5, fraction: 0.5 },
+    ],
+  });
+
+  assert.equal(progress.percent, 40);
+  assert.equal(progress.processing, 4);
+  assert.equal(progress.activePercent, 60);
+});
+
+test("bounded worker lanes preserve result order while doing real work concurrently", async () => {
+  const { mapWithConcurrency } = await loadTypeScriptModule("lib/domain/bounded-parallel.ts");
+  let active = 0;
+  let peak = 0;
+  const results = await mapWithConcurrency([30, 5, 20, 1, 10], 3, async (delay, index) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    active -= 1;
+    return index;
+  });
+
+  assert.equal(peak, 3);
+  assert.deepEqual(results, [0, 1, 2, 3, 4]);
+});
+
 test("anonymous diarization labels are shown as Speaker 1, Speaker 2, Speaker 3", async () => {
   const { displaySpeakerLabel } = await loadTypeScriptModule("lib/domain/speaker-label.ts");
   assert.equal(displaySpeakerLabel("A"), "Speaker 1");
@@ -77,6 +119,10 @@ test("the meeting workspace uses the persistent progress journey instead of per-
   assert.match(page, /\$\{progress\.processing\} 段正在识别/);
   assert.match(page, /\$\{progress\.queued\} 段等待并行空位/);
   assert.match(page, /系统会自动继续，不需要手动开启后台任务/);
+  assert.match(page, /\}\>\(plan, 4, async/);
+  assert.match(page, /后端最多 6 段同时识别/);
+  assert.match(page, /currentAudioPreparations\.map/);
+  assert.match(page, /transcriptionRunsByAssetId\[asset\.id\]/);
   assert.doesNotMatch(page, /正在整理长录音：第 \$\{item\.index \+ 1\}/);
   assert.match(styles, /\.transcription-progress-bar/);
   assert.match(styles, /\.transcription-progress-active/);

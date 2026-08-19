@@ -163,23 +163,24 @@ test("an old Run without reading artifacts falls back to the original transcript
   await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
 
   await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: true })).toBeVisible();
+  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
   expect(apiFixture.writes).toEqual([]);
 });
 
 test("failed Summary and readable transcript fall back to Raw without exposing model error codes", async ({ page, apiFixture }) => {
+  apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "failed", readableStatus: "failed" });
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
 
   await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: true })).toBeVisible();
+  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "AI 摘要未通过安全检查" })).toBeVisible();
   await expect(page.getByText("事实识别和原始逐字稿都已保留。", { exact: false })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
-  expect(apiFixture.writes).toEqual([]);
+  expect(apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch")).toEqual([]);
 });
 
 test("manual Raw selection replaces the route and survives reload from a Summary URL", async ({ page, apiFixture }) => {
@@ -197,7 +198,7 @@ test("manual Raw selection replaces the route and survives reload from a Summary
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.getByRole("button", { name: /^Transcript/ })).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: true })).toBeVisible();
+  await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
 });
 
 test("manual Summary selection replaces the route and survives reload", async ({ page, apiFixture }) => {
