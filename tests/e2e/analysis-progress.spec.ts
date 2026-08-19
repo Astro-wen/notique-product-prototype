@@ -30,4 +30,5 @@ test("fact analysis shows honest stage percentage and distance to review", async
   await expect(journey).toContainText("xhigh 处理中");
   await expect(journey).toContainText("还差 3 步即可开始核对");
   await expect(journey).toContainText("系统会自动继续，不需要手动启动后台任务");
+  await expect(page.getByRole("button", { name: "正在处理，请稍候", exact: true })).toHaveCount(0);
 });

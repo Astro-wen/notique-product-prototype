@@ -26,6 +26,7 @@ test("chunked transcription shows percentage, nodes, remaining work, and numbere
   await expect(journey.locator(".transcription-chunk-node.completed")).toHaveCount(4);
   await expect(journey.locator(".transcription-chunk-node.processing")).toHaveCount(3);
   await expect(journey.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
+  await expect(page.getByRole("button", { name: "开始处理全部沟通", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: /^Transcript/ }).click();
   await page.getByRole("button", { name: /^原始逐字稿/ }).click();

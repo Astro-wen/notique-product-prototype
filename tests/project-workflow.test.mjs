@@ -366,6 +366,16 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   assert.doesNotMatch(simpleScreen, /onAnalyze/);
   assert.doesNotMatch(simpleScreen, /onRetryRunStatus/);
   assert.match(simpleScreen, /onClick=\{onProjectWorkflowAction\}/);
+  assert.match(
+    simpleScreen,
+    /\{workflowActionable && <button className="project-workflow-action"/,
+    "a primary workflow action must stay hidden while it cannot be used",
+  );
+  assert.doesNotMatch(
+    simpleScreen,
+    /projectWorkflow\.phase !== "empty" && <button className="project-workflow-action"/,
+    "waiting and running states must not render a disabled primary action",
+  );
   assert.match(simpleScreen, /issueRetry[\s\S]*onProjectWorkflowAction/);
   assert.match(simpleScreen, /workflowReviewReady = pendingCount > 0 && analysisDone && !needsScenario/);
   assert.match(simpleScreen, /\{workflowReviewReady && <button[\s\S]*核对重要内容/);
