@@ -119,6 +119,71 @@ test("chunk transcripts merge onto the original timeline and remove only proven 
   ]);
 });
 
+test("chunk speaker stitching never invents Speaker 5 through Speaker 13", async () => {
+  const chunking = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const firstSegments = ["A", "B", "C", "D", "E"].map((speaker, index) => ({
+    speaker,
+    text: `First chunk speaker ${speaker}.`,
+    startSeconds: 10 + index * 10,
+    endSeconds: 12 + index * 10,
+  }));
+  const secondSegments = ["A", "B", "C", "D", "E"].map((speaker, index) => ({
+    speaker,
+    text: `Second chunk speaker ${speaker}.`,
+    startSeconds: 20 + index * 10,
+    endSeconds: 22 + index * 10,
+  }));
+  const merged = chunking.mergeChunkTranscripts([
+    {
+      index: 0,
+      startMs: 0,
+      endMs: 180_000,
+      assetVersionId: "av_chunk_0",
+      transcript: { durationSeconds: 180, text: "first", segments: firstSegments },
+    },
+    {
+      index: 1,
+      startMs: 165_000,
+      endMs: 345_000,
+      assetVersionId: "av_chunk_1",
+      transcript: { durationSeconds: 180, text: "second", segments: secondSegments },
+    },
+  ]);
+
+  assert.equal(chunking.MAX_STABLE_SPEAKER_COUNT, 4);
+  assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set([
+    "Speaker 1",
+    "Speaker 2",
+    "Speaker 3",
+    "Speaker 4",
+    "Speaker unknown",
+  ]));
+  assert.equal(merged.segments.some((segment) => /Speaker (?:[5-9]|1[0-9])/.test(segment.speaker)), false);
+});
+
+test("silent chunk boundaries reuse the prior local speaker map instead of creating new identities", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const chunks = Array.from({ length: 7 }, (_, index) => ({
+    index,
+    startMs: index * 165_000,
+    endMs: index * 165_000 + 180_000,
+    assetVersionId: `av_chunk_${index}`,
+    transcript: {
+      durationSeconds: 180,
+      text: `Chunk ${index}`,
+      segments: [
+        { speaker: "A", text: `Unique buyer sentence ${index}.`, startSeconds: 30, endSeconds: 35 },
+        { speaker: "B", text: `Unique agent sentence ${index}.`, startSeconds: 90, endSeconds: 95 },
+      ],
+    },
+  }));
+  const merged = mergeChunkTranscripts(chunks);
+  assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set([
+    "Speaker 1",
+    "Speaker 2",
+  ]));
+});
+
 test("chunk merging fails closed on missing indices or non-overlapping source ranges", async () => {
   const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
   const transcript = {

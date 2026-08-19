@@ -8,6 +8,8 @@ export const AUDIO_CHUNK_OVERLAP_MS = 15_000;
 export const AUDIO_CHUNK_MIN_DURATION_MS = 5 * 60_000;
 export const AUDIO_CHUNK_MIN_SOURCE_BYTES = 18 * 1024 * 1024;
 export const AUDIO_CHUNK_MAX_PARALLEL = 4;
+export const MAX_STABLE_SPEAKER_COUNT = 4;
+export const UNRESOLVED_SPEAKER_LABEL = "Speaker unknown";
 
 /**
  * Keep short recordings conservative while allowing long recordings to use
@@ -115,6 +117,13 @@ function duplicateAcrossBoundary(
   return rangesOverlap(left, right) && textSimilarity(left.text, right.text) >= 0.78;
 }
 
+function isStableSpeakerLabel(value: string): boolean {
+  const match = value.match(/^Speaker (\d+)$/);
+  if (!match) return false;
+  const speakerNumber = Number(match[1]);
+  return speakerNumber >= 1 && speakerNumber <= MAX_STABLE_SPEAKER_COUNT;
+}
+
 /**
  * Merge independently-transcribed chunks back onto the original recording's
  * absolute timeline. The original audio remains the Evidence source; chunk
@@ -134,6 +143,7 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
   const merged: Array<DiarizedTranscriptSegment & { chunkIndex: number }> = [];
   let nextGlobalSpeaker = 1;
   let previousChunkSpeakers: string[] = [];
+  let previousLocalSpeakerMap = new Map<string, string>();
   for (const chunk of chunks) {
     const offsetSeconds = chunk.startMs / 1_000;
     const absoluteSegments = chunk.transcript.segments.map((source) => ({
@@ -151,7 +161,11 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
     if (chunk.index > 0) {
       for (const segment of absoluteSegments) {
         for (const candidate of merged) {
-          if (candidate.chunkIndex !== chunk.index - 1 || !duplicateAcrossBoundary(candidate, segment)) continue;
+          if (
+            candidate.chunkIndex !== chunk.index - 1
+            || !isStableSpeakerLabel(candidate.speaker)
+            || !duplicateAcrossBoundary(candidate, segment)
+          ) continue;
           votes.push({
             local: segment.speaker,
             global: candidate.speaker,
@@ -180,19 +194,55 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
         speakerMap.set(unmappedLocal[0]!, unusedPrevious[0]!);
         usedGlobalSpeakers.add(unusedPrevious[0]!);
       }
+
+      // OpenAI assigns chunk-local labels independently. When the overlap is
+      // silent or contains no repeated phrase, retain the immediately prior
+      // local-label mapping instead of minting another global identity. A
+      // proven overlap vote above always wins when labels changed at a chunk
+      // boundary.
+      for (const localSpeaker of localSpeakers) {
+        if (speakerMap.has(localSpeaker)) continue;
+        const previousGlobal = previousLocalSpeakerMap.get(localSpeaker);
+        if (
+          previousGlobal
+          && isStableSpeakerLabel(previousGlobal)
+          && !usedGlobalSpeakers.has(previousGlobal)
+        ) {
+          speakerMap.set(localSpeaker, previousGlobal);
+          usedGlobalSpeakers.add(previousGlobal);
+        }
+      }
     }
 
+    // A higher local speaker count is the only deterministic evidence, in
+    // the absence of an overlap anchor, that a new participant may have
+    // appeared. Never create more than four canonical identities: the
+    // provider supports at most four known-speaker references, and inventing
+    // Speaker 5...13 is more misleading than marking the identity unresolved.
+    let newSpeakerSlots = chunk.index === 0
+      ? MAX_STABLE_SPEAKER_COUNT
+      : Math.max(0, localSpeakers.length - previousChunkSpeakers.length);
     for (const localSpeaker of localSpeakers) {
       if (speakerMap.has(localSpeaker)) continue;
-      speakerMap.set(localSpeaker, `Speaker ${nextGlobalSpeaker}`);
-      nextGlobalSpeaker += 1;
+      if (newSpeakerSlots > 0 && nextGlobalSpeaker <= MAX_STABLE_SPEAKER_COUNT) {
+        speakerMap.set(localSpeaker, `Speaker ${nextGlobalSpeaker}`);
+        nextGlobalSpeaker += 1;
+        newSpeakerSlots -= 1;
+      } else {
+        speakerMap.set(localSpeaker, UNRESOLVED_SPEAKER_LABEL);
+      }
     }
 
     const alignedSegments = absoluteSegments.map((segment) => ({
       ...segment,
       speaker: speakerMap.get(segment.speaker)!,
     }));
-    previousChunkSpeakers = [...new Set(alignedSegments.map((segment) => segment.speaker))];
+    previousLocalSpeakerMap = new Map(speakerMap);
+    previousChunkSpeakers = [...new Set(
+      alignedSegments
+        .map((segment) => segment.speaker)
+        .filter(isStableSpeakerLabel),
+    )];
 
     for (const segment of alignedSegments) {
       const normalizedSegment = {

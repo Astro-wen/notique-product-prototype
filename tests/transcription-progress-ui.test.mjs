@@ -57,6 +57,9 @@ test("anonymous diarization labels are shown as Speaker 1, Speaker 2, Speaker 3"
   assert.equal(displaySpeakerLabel("B"), "Speaker 2");
   assert.equal(displaySpeakerLabel("speaker-C"), "Speaker 3");
   assert.equal(displaySpeakerLabel("Speaker 0"), "Speaker 1");
+  assert.equal(displaySpeakerLabel("Speaker 13"), "说话人待确认");
+  assert.equal(displaySpeakerLabel("Speaker unknown"), "说话人待确认");
+  assert.equal(displaySpeakerLabel("E"), "说话人待确认");
   assert.equal(displaySpeakerLabel("Buyer"), "Buyer");
   assert.equal(displaySpeakerLabel(null), "说话人未标注");
 });
