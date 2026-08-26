@@ -47,6 +47,9 @@ import { highlightExactPhrase } from "@/lib/domain/text-highlight";
 import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
 import { autoAnalysisDecision } from "@/lib/domain/auto-analysis";
+import { formatTimestamp } from "@/lib/domain/display-format";
+import { Modal } from "@/app/components/modal";
+import { TranscriptViewer } from "@/app/components/transcript-viewer";
 import { firstString, isRecord, stringValue } from "@/lib/domain/claim-fields";
 import { formatDate, projectSelectionLabel } from "@/lib/domain/project-label";
 import { projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection } from "@/lib/domain/project-overview";
@@ -569,15 +572,6 @@ async function inspectProjectWorkflow(
   return { project: snapshot.project, events: latestEvents, eventSummaries, details, plan };
 }
 
-function formatTimestamp(value?: string | number): string {
-  if (value == null || value === "") return "无法定位具体时间";
-  if (typeof value === "string" && value.includes(":")) return value;
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds)) return String(value);
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
-}
-
 function confidenceText(value?: number): string {
   if (value == null) return "AI 未提供置信度";
   const normalized = value <= 1 ? value * 100 : value;
@@ -832,56 +826,6 @@ function StatusBadge({ value }: { value?: string }) {
   return <span className={`status-badge ${tone}`}>{statusLabel(value)}</span>;
 }
 
-function Modal({
-  title,
-  description,
-  onClose,
-  children,
-  wide = false,
-  dismissible = true,
-  returnFocusSelector,
-}: {
-  title: string;
-  description?: string;
-  onClose: () => void;
-  children: ReactNode;
-  wide?: boolean;
-  dismissible?: boolean;
-  returnFocusSelector?: string;
-}) {
-  return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open && dismissible) onClose(); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="modal-backdrop" />
-        <Dialog.Content
-          className={`modal ${wide ? "modal-wide" : ""}`}
-          onEscapeKeyDown={(event) => { if (!dismissible) event.preventDefault(); }}
-          onPointerDownOutside={(event) => { if (!dismissible) event.preventDefault(); }}
-          onInteractOutside={(event) => { if (!dismissible) event.preventDefault(); }}
-          onCloseAutoFocus={(event) => {
-            if (!returnFocusSelector) return;
-            const target = document.querySelector<HTMLElement>(returnFocusSelector);
-            if (!target) return;
-            event.preventDefault();
-            target.focus();
-          }}
-        >
-          <header className="modal-header">
-            <div>
-              <Dialog.Title>{title}</Dialog.Title>
-              <Dialog.Description>{description || "完成当前操作，或关闭此对话框返回上一页。"}</Dialog.Description>
-            </div>
-            <Dialog.Close asChild disabled={!dismissible}>
-              <button className="icon-button" aria-label="关闭" disabled={!dismissible}>×</button>
-            </Dialog.Close>
-          </header>
-          {children}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
 function PublicWorkspaceConfirmationModal({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
   const [confirmed, setConfirmed] = useState(false);
   return <Modal
@@ -946,27 +890,6 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
       <div className="modal-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => setPermanentTarget(null)}>取消</button><button className="button danger" disabled={Boolean(busy) || confirmation !== permanentTarget.name} onClick={() => void onPermanentDelete(permanentTarget, confirmation).then(() => { setPermanentTarget(null); setConfirmation(""); })}>{busy === `permanent:${permanentTarget.id}` ? "正在清理文件…" : "永久删除"}</button></div>
     </div>}
   </Modal>;
-}
-
-function TranscriptViewer({ run, onClose }: { run: TranscriptionRun; onClose: () => void }) {
-  return (
-    <Modal
-      title="完整逐字稿"
-      description={`${run.segments.length} 个带说话人和时间点的片段`}
-      onClose={onClose}
-      wide
-    >
-      <div className="full-transcript" data-testid="full-transcript">
-        {run.segments.length > 0 ? run.segments.map((segment) => (
-          <article key={segment.id}>
-            <time>{formatTimestamp(segment.startMs / 1000)}</time>
-            <strong>{displaySpeakerLabel(segment.speaker)}</strong>
-            <p>{segment.text}</p>
-          </article>
-        )) : <p className="muted">服务器没有返回可显示的逐字稿片段。</p>}
-      </div>
-    </Modal>
-  );
 }
 
 function recordArray(value: unknown): Record<string, unknown>[] {
