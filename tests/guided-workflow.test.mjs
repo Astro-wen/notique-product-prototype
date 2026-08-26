@@ -4,6 +4,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { declarationSource, effectContaining } from "./helpers/ui-source.mjs";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const moduleUrl = pathToFileURL(path.resolve("lib/domain/guided-workflow.ts")).href;
 const {
@@ -44,37 +45,35 @@ test("remembered selection falls back safely when an id is stale", () => {
 });
 
 test("the page connects guided navigation without weakening review gates", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
-  assert.match(source, /recentProjectStorageKey = "notique\.ui\.recent-project-id"/);
-  assert.match(source, /storeId\(recentEventStorageKey\(projectId\), nextEvent\.id\)/);
-  assert.match(source, /key=\{project\?\.id \?\? "none"\}/);
-  assert.match(source, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);
-  assert.match(source, /projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\)/);
-  assert.match(source, /onClick=\{\(\) => onResult\("client-progress"\)\}>打开项目概览/);
-  assert.match(source, /await openClaim\(nextId, "review", undefined, "replace"\)/);
-  assert.match(source, /await finishGuidedReview\(\)/);
+  assert.match(uiSource, /recentProjectStorageKey = "notique\.ui\.recent-project-id"/);
+  assert.match(uiSource, /storeId\(recentEventStorageKey\(projectId\), nextEvent\.id\)/);
+  assert.match(uiSource, /key=\{project\?\.id \?\? "none"\}/);
+  assert.match(uiSource, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);
+  assert.match(uiSource, /projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\)/);
+  assert.match(uiSource, /onClick=\{\(\) => onResult\("client-progress"\)\}>打开项目概览/);
+  assert.match(uiSource, /await openClaim\(nextId, "review", undefined, "replace"\)/);
+  assert.match(uiSource, /await finishGuidedReview\(\)/);
   const finishGuidedReview = declarationSource("finishGuidedReview");
   assert.match(finishGuidedReview, /loadView\("brief-card", projectId, "replace"\)/);
   assert.match(finishGuidedReview, /loadSimpleProject\(projectId, snapshot\.plan\.currentEventId, "replace"\)/);
   assert.match(finishGuidedReview, /if \(!isCurrentRequestOwner\(owner\)\) return/);
   assert.doesNotMatch(finishGuidedReview, /setScreen\("review-summary"\)/);
-  assert.match(source, /const claimRouteReadonly = isReadonlyClaimRoute\(route, selectedClaim\?\.reviewStatus\)/);
-  assert.match(source, /reviewClaims=\{claimRouteReadonly \? \[\] : claims\}/);
-  assert.match(source, /pendingOccurrenceCount=\{claimRouteReadonly \? 0 :/);
-  assert.match(source, /relationsReviewed/);
-  assert.equal((source.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
-  assert.doesNotMatch(source, /<em>\{itemDisplayStatus\.label\}<\/em>/);
-  assert.match(source, /const itemSummary = eventWorkflowSummaries\[item\.id\]/);
-  assert.match(source, /const itemDisplayStatus = workflowEventDisplayStatus\(itemSummary\)/);
-  assert.match(source, /const materialCount = itemSummary\?\.statusSummary\.materialCount/);
-  assert.doesNotMatch(source, /Luna Max|旧的 max/);
+  assert.match(uiSource, /const claimRouteReadonly = isReadonlyClaimRoute\(route, selectedClaim\?\.reviewStatus\)/);
+  assert.match(uiSource, /reviewClaims=\{claimRouteReadonly \? \[\] : claims\}/);
+  assert.match(uiSource, /pendingOccurrenceCount=\{claimRouteReadonly \? 0 :/);
+  assert.match(uiSource, /relationsReviewed/);
+  assert.equal((uiSource.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
+  assert.doesNotMatch(uiSource, /<em>\{itemDisplayStatus\.label\}<\/em>/);
+  assert.match(uiSource, /const itemSummary = eventWorkflowSummaries\[item\.id\]/);
+  assert.match(uiSource, /const itemDisplayStatus = workflowEventDisplayStatus\(itemSummary\)/);
+  assert.match(uiSource, /const materialCount = itemSummary\?\.statusSummary\.materialCount/);
+  assert.doesNotMatch(uiSource, /Luna Max|旧的 max/);
 });
 
 test("mobile keeps one event selector and resets the tab when switching events", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
   const styles = fs.readFileSync("app/globals.css", "utf8");
-  assert.match(source, /function selectEvent\(nextEventId: string\)[\s\S]*?setActiveTab\("materials"\);[\s\S]*?onUseEvent\(nextEventId\)/);
-  assert.match(source, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
+  assert.match(uiSource, /function selectEvent\(nextEventId: string\)[\s\S]*?setActiveTab\("materials"\);[\s\S]*?onUseEvent\(nextEventId\)/);
+  assert.match(uiSource, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.simple-meeting-rail \{ display: none; \}/);
   assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });
@@ -105,13 +104,12 @@ test("starting analysis rechecks a stale Event once before reporting not ready",
 });
 
 test("new material auto-starts one idempotent analysis only after its final transcript is ready", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
   const effect = effectContaining("const intent = readAutoAnalysisIntent(event.id)");
 
-  assert.match(source, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
-  assert.match(source, /armedAt: Date\.now\(\),\s*idempotencyKey: crypto\.randomUUID\(\)/);
-  assert.match(source, /armAutoAnalysis\(\s*targetEvent\.id,\s*kind === "audio" \? init\.assetId : undefined/);
-  assert.match(source, /created\.forEach\(\(item\) => armAutoAnalysis\(item\.id, undefined, item\.latestRun\?\.id \|\| item\.latestRunId\)\)/);
+  assert.match(uiSource, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
+  assert.match(uiSource, /armedAt: Date\.now\(\),\s*idempotencyKey: crypto\.randomUUID\(\)/);
+  assert.match(uiSource, /armAutoAnalysis\(\s*targetEvent\.id,\s*kind === "audio" \? init\.assetId : undefined/);
+  assert.match(uiSource, /created\.forEach\(\(item\) => armAutoAnalysis\(item\.id, undefined, item\.latestRun\?\.id \|\| item\.latestRunId\)\)/);
   assert.match(effect, /autoAnalysisDecision\(\{/);
   assert.match(effect, /baseRunId: intent\.baseRunId/);
   assert.match(effect, /latestRunLoaded: !latestRunId \|\| Boolean\(loadedLatestRun\)/);

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { QueryClient } from "@tanstack/react-query";
-
-const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+import { uiSource } from "./helpers/ui-source.mjs";
 const querySource = await readFile(new URL("../app/notique-queries.ts", import.meta.url), "utf8");
 const apiSource = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
 
@@ -69,12 +68,12 @@ test("Notique read models use scoped cache keys and forward AbortSignal", () => 
   assert.match(apiSource, /getClaimHistory\(claimId: Id, signal\?: AbortSignal\)/);
   assert.match(apiSource, /getEvidence\(refId: Id, signal\?: AbortSignal\)/);
   assert.match(apiSource, /getEvidenceContext\(refId: Id, signal\?: AbortSignal\)/);
-  assert.match(pageSource, /queryClient\.cancelQueries\(\{ queryKey: \["notique"\] \}\)/);
-  assert.match(pageSource, /queryClient\.fetchQuery\(eventArtifactsQuery\(event\.id\)\)/);
+  assert.match(uiSource, /queryClient\.cancelQueries\(\{ queryKey: \["notique"\] \}\)/);
+  assert.match(uiSource, /queryClient\.fetchQuery\(eventArtifactsQuery\(event\.id\)\)/);
   assert.match(querySource, /eventTranscriptSegmentsQuery[\s\S]{0,400}staleTime: 0/);
-  assert.match(pageSource, /previousTranscriptRevision\.current === transcriptRevision/);
-  assert.match(pageSource, /queryClient\.invalidateQueries\(\{[\s\S]{0,180}eventTranscriptSegmentsQuery/);
-  assert.match(pageSource, /queryClient\.prefetchQuery\(claimHistoryQuery\(followingClaim\.id, followingClaim\.versionId\)\)/);
-  assert.match(pageSource, /queryClient\.prefetchQuery\(evidenceContextQuery\(id\)\)/);
-  assert.match(pageSource, /queryClient\.fetchQuery\(verifiedViewQuery\(projectId, view\)\)/);
+  assert.match(uiSource, /previousTranscriptRevision\.current === transcriptRevision/);
+  assert.match(uiSource, /queryClient\.invalidateQueries\(\{[\s\S]{0,180}eventTranscriptSegmentsQuery/);
+  assert.match(uiSource, /queryClient\.prefetchQuery\(claimHistoryQuery\(followingClaim\.id, followingClaim\.versionId\)\)/);
+  assert.match(uiSource, /queryClient\.prefetchQuery\(evidenceContextQuery\(id\)\)/);
+  assert.match(uiSource, /queryClient\.fetchQuery\(verifiedViewQuery\(projectId, view\)\)/);
 });

@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { declarationSource } from "./helpers/ui-source.mjs";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -732,7 +732,7 @@ test("diarized streaming output requires completion and preserves every segment"
 });
 
 test("production route, durable worker, UI, and evidence playback share the audio contract", async () => {
-  const [route, processor, outbox, page, repository, envExample] = await Promise.all([
+  const [route, processor, outbox, uiSource, repository, envExample] = await Promise.all([
     readFile(path.join(root, "app/api/v1/[...segments]/route.ts"), "utf8"),
     readFile(path.join(root, "lib/server/jobs/transcription-processor.ts"), "utf8"),
     readFile(path.join(root, "lib/server/jobs/transcription-outbox.ts"), "utf8"),
@@ -748,16 +748,16 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(processor, /parseDiarizedTranscriptProviderBody/);
   assert.match(outbox, /TRANSCRIPTION_MAX_ATTEMPTS/);
   assert.match(repository, /Audio must finish transcription before analysis/);
-  assert.match(page, /上传已有录音/);
-  assert.match(page, /DirectRecorder/);
-  assert.match(page, /resolveSimpleImportTarget/);
-  assert.match(page, /audioSource/);
+  assert.match(uiSource, /上传已有录音/);
+  assert.match(uiSource, /DirectRecorder/);
+  assert.match(uiSource, /resolveSimpleImportTarget/);
+  assert.match(uiSource, /audioSource/);
   assert.match(envExample, /^AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize$/m);
   assert.match(envExample, /^MAX_AUDIO_BYTES=104857600$/m);
 });
 
 test("chunked transcription uses hidden child assets, bounded parallel jobs, and one canonical parent transcript", async () => {
-  const [route, repository, processor, outbox, workflow, page, client] = await Promise.all([
+  const [route, repository, processor, outbox, workflow, uiSource, client] = await Promise.all([
     readFile(path.join(root, "app/api/v1/[...segments]/route.ts"), "utf8"),
     readFile(path.join(root, "lib/server/db/transcription-repository.ts"), "utf8"),
     readFile(path.join(root, "lib/server/jobs/transcription-processor.ts"), "utf8"),
@@ -784,9 +784,9 @@ test("chunked transcription uses hidden child assets, bounded parallel jobs, and
   assert.match(outbox, /SELECT orchestration_mode, chunk_count/);
   assert.match(outbox, /Promise\.all/);
   assert.match(workflow, /parent_run_id IS NULL/);
-  assert.match(page, /prepareLongAudioTranscription/);
-  assert.match(page, /api\.downloadAsset\(audioAssetId\)/);
-  assert.match(page, /旧的整段任务已换成/);
+  assert.match(uiSource, /prepareLongAudioTranscription/);
+  assert.match(uiSource, /api\.downloadAsset\(audioAssetId\)/);
+  assert.match(uiSource, /旧的整段任务已换成/);
   assert.match(client, /retryFailedTranscriptionChunks\(runId: Id, idempotencyKey: string\)/);
 });
 
@@ -800,7 +800,6 @@ test("audio smoke test uses the production Event response envelope and stays on 
 });
 
 test("simple flow supports audio-first setup and preserves a transcription start error after refresh", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   const beginSimple = declarationSource("beginSimpleTest");
   assert.match(beginSimple, /api\.createProject/);
   assert.doesNotMatch(beginSimple, /api\.createEvent/);
@@ -809,17 +808,17 @@ test("simple flow supports audio-first setup and preserves a transcription start
   assert.match(beginSimple, /async function beginSimpleTest\(/);
   assert.match(beginSimple, /if \(openTranscriptAfterCreate\) setShowImport\(true\)/);
   assert.match(
-    page,
+    uiSource,
     /onStartOwn=\{\(\) => \{ setSimpleFlow\(true\); setShowNewProject\(true\); \}\}/,
     "the named buyer-project flow must open the form instead of silently creating a test record",
   );
   assert.match(
-    page,
+    uiSource,
     /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/,
     "a buyer project created from the core workspace must remain in the guided workspace",
   );
-  assert.match(page, /else void beginSimpleTest\(true\)/);
-  assert.match(page, /Transcript 会成为第一条沟通/);
+  assert.match(uiSource, /else void beginSimpleTest\(true\)/);
+  assert.match(uiSource, /Transcript 会成为第一条沟通/);
 
   const attachSimple = declarationSource("attachSimpleFile");
   assert.match(attachSimple, /resolveSimpleImportTarget/);
@@ -835,28 +834,26 @@ test("simple flow supports audio-first setup and preserves a transcription start
 });
 
 test("audio and extraction recovery remain actionable without duplicating an in-flight run", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   const retryAudio = declarationSource("retryAudioTranscription");
   assert.match(retryAudio, /runInProgress\.has\(current\.status\)/);
   assert.match(retryAudio, /api\.kickDispatcher/);
   assert.match(retryAudio, /api\.getTranscriptionRun\(current\.id\)/);
   assert.match(retryAudio, /launchTranscription\(audioAssetId, event\.id, current\?\.id/);
-  assert.match(page, /重新转写/);
-  assert.match(page, /重新检查后台状态/);
-  assert.match(page, /重新分析/);
+  assert.match(uiSource, /重新转写/);
+  assert.match(uiSource, /重新检查后台状态/);
+  assert.match(uiSource, /重新分析/);
 });
 
 test("polling keeps attempt state per run, surfaces timeout recovery, and exposes the full transcript", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  assert.match(page, /transcriptionPollingRunKey\.current !== pollKey/);
-  assert.match(page, /pollingRunKey\.current !== pollKey/);
-  assert.match(page, /TRANSCRIPTION_POLL_TIMEOUT/);
-  assert.match(page, /EXTRACTION_POLL_TIMEOUT/);
-  assert.doesNotMatch(page, /\[event\?\.id, flash, transcriptionRun\]/);
-  assert.doesNotMatch(page, /\[event\?\.id, loadClaimsForRun, project\?\.id, run\]/);
+  assert.match(uiSource, /transcriptionPollingRunKey\.current !== pollKey/);
+  assert.match(uiSource, /pollingRunKey\.current !== pollKey/);
+  assert.match(uiSource, /TRANSCRIPTION_POLL_TIMEOUT/);
+  assert.match(uiSource, /EXTRACTION_POLL_TIMEOUT/);
+  assert.doesNotMatch(uiSource, /\[event\?\.id, flash, transcriptionRun\]/);
+  assert.doesNotMatch(uiSource, /\[event\?\.id, loadClaimsForRun, project\?\.id, run\]/);
 
   const viewer = declarationSource("TranscriptViewer");
   assert.match(viewer, /run\.segments\.map/);
   assert.doesNotMatch(viewer, /\.slice\(/);
-  assert.match(page, /查看完整逐字稿/);
+  assert.match(uiSource, /查看完整逐字稿/);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { declarationSource } from "./helpers/ui-source.mjs";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 import test from "node:test";
 
 const repository = await readFile(
@@ -12,7 +12,6 @@ const route = await readFile(
   "utf8",
 );
 const client = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
-const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const migration = await readFile(
   new URL("../drizzle/0009_review_session_timing.sql", import.meta.url),
   "utf8",
@@ -62,12 +61,12 @@ test("the real UI starts, resumes, and completes the server timer", () => {
   assert.match(client, /async getReviewSession\(/);
   assert.match(client, /async startReviewSession\([\s\S]+idempotency-key/);
   assert.match(client, /async completeReviewSession\([\s\S]+idempotency-key/);
-  assert.match(page, /刷新或关闭页面不会重置/);
-  assert.match(page, /达到两分钟目标/);
-  assert.match(page, /initialPendingClaimCount \+ reviewSession\.initialPendingOccurrenceCount/);
-  assert.match(page, /remainingPendingClaimCount \+ reviewSession\.remainingPendingOccurrenceCount/);
+  assert.match(uiSource, /刷新或关闭页面不会重置/);
+  assert.match(uiSource, /达到两分钟目标/);
+  assert.match(uiSource, /initialPendingClaimCount \+ reviewSession\.initialPendingOccurrenceCount/);
+  assert.match(uiSource, /remainingPendingClaimCount \+ reviewSession\.remainingPendingOccurrenceCount/);
   assert.equal(
-    page.match(/await syncReviewTiming\(latestProject(?:, requestIsCurrent)?\);/g)?.length,
+    uiSource.match(/await syncReviewTiming\(latestProject(?:, requestIsCurrent)?\);/g)?.length,
     3,
     "queue loads and the fast background refresh must update server-owned counts with stale-response guards",
   );
@@ -78,7 +77,7 @@ test("the real UI starts, resumes, and completes the server timer", () => {
   );
   assert.match(verdict, /refreshReviewSnapshotInBackground\(project\.id\)[\s\S]{0,120}await openClaim\(nextId/);
   assert.doesNotMatch(verdict, /await invalidateProjectReadModels/);
-  assert.match(page, /const refreshReviewSnapshotInBackground/);
-  assert.match(page, /const reviewRefreshEpoch = useRef\(0\)/);
-  assert.match(page, /reviewRefreshEpoch\.current === token/);
+  assert.match(uiSource, /const refreshReviewSnapshotInBackground/);
+  assert.match(uiSource, /const reviewRefreshEpoch = useRef\(0\)/);
+  assert.match(uiSource, /reviewRefreshEpoch\.current === token/);
 });

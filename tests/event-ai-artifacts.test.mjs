@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { uiSource } from "./helpers/ui-source.mjs";
 import {
   chunkReadableTranscriptSource,
   eventAiArtifactContractMismatch,
@@ -1168,16 +1169,15 @@ test("artifact prompt cache keys stay within the OpenAI 64-character limit", asy
 });
 
 test("artifact retry refreshes the panel and dispatches only the requested artifact", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(
-    page,
+    uiSource,
     /await onRetryArtifact\(event\.id, "summary"\);\s*await load\(true\);/,
   );
   assert.match(
-    page,
+    uiSource,
     /await onRetryArtifact\(event\.id, "readable_transcript"\);\s*await load\(true\);/,
   );
-  assert.match(page, /retryEventAiArtifact[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: artifactRun\.id \}\)/);
+  assert.match(uiSource, /retryEventAiArtifact[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: artifactRun\.id \}\)/);
 });
 
 test("fact extraction defaults to raw-only while readable remains an optional mapped aid", async () => {
@@ -1373,7 +1373,7 @@ test("Summary source loading accepts raw Transcript and pasted text but excludes
 });
 
 test("project deletion is reversible, blocks active jobs, and deletes R2 before D1", async () => {
-  const [repository, route, page] = await Promise.all([
+  const [repository, route, uiSource] = await Promise.all([
     readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -1386,6 +1386,6 @@ test("project deletion is reversible, blocks active jobs, and deletes R2 before 
   assert.match(route, /segments\[1\] === "trash"/);
   assert.match(route, /segments\[2\] === "restore"/);
   assert.match(route, /segments\[2\] === "permanent"/);
-  assert.match(page, /输入完整项目名称确认/);
-  assert.match(page, /已移到回收站[\s\S]*撤销/);
+  assert.match(uiSource, /输入完整项目名称确认/);
+  assert.match(uiSource, /已移到回收站[\s\S]*撤销/);
 });

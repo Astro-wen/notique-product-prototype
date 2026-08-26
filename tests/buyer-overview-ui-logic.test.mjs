@@ -3,8 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { projectOverviewSectionFor } from "../lib/domain/project-overview.ts";
 import { projectSelectionLabel } from "../lib/domain/project-label.ts";
-
-const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+import { uiSource } from "./helpers/ui-source.mjs";
 const realtor = JSON.parse(await readFile(new URL("../eval/cases/synthetic-realtor-v1/ground-truth.json", import.meta.url), "utf8"));
 const oak = JSON.parse(await readFile(new URL("../eval/cases/synthetic-contractor-v1/ground-truth.json", import.meta.url), "utf8"));
 
@@ -31,8 +30,8 @@ test("project overview executes the production classifier across buyer and contr
 });
 
 test("the page renders the overview through the shared production classifier", () => {
-  assert.match(page, /import \{ projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection \} from "@\/lib\/domain\/project-overview"/);
-  assert.doesNotMatch(page, /function projectOverviewSectionFor/, "the classifier must live in the domain layer, not in the page");
+  assert.match(uiSource, /import \{ projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection \} from "@\/lib\/domain\/project-overview"/);
+  assert.doesNotMatch(uiSource, /function projectOverviewSectionFor/, "the classifier must live in the domain layer, not in the page");
 });
 
 test("duplicate project names get stable option labels without renaming projects", () => {
@@ -51,5 +50,5 @@ test("duplicate project names get stable option labels without renaming projects
   assert.match(second, /eta222$/);
   assert.equal(labelFor(projects[2], projects), "Oak Street");
   assert.equal(projects[0].name, "Morgan Family");
-  assert.match(page, /projectSelectionLabel\(item, sortedProjects\)/);
+  assert.match(uiSource, /projectSelectionLabel\(item, sortedProjects\)/);
 });

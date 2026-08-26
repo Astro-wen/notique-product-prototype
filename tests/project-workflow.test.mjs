@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { declarationSource } from "./helpers/ui-source.mjs";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -339,19 +339,18 @@ test("workflow material counts exclude generated readable transcript assets", as
 });
 
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  assert.doesNotMatch(page, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
-  assert.match(page, /开始处理全部沟通/);
-  assert.match(page, /继续处理下一次沟通/);
-  assert.match(page, /loadWorkflowSnapshot\(projectId(?:, true)?\)/);
-  assert.match(page, /workflowSnapshotQuery\(projectId\)/);
-  assert.match(page, /candidateCount: summary\?\.candidate_count/);
-  assert.doesNotMatch(page, /api\.getRunReview\(latestRun\.id\)/);
-  assert.match(page, /Claim 和再次出现记录都是 0/);
-  assert.match(page, /次沟通没有材料，未纳入处理/);
-  assert.match(page, /等待当前材料准备完成/);
-  assert.match(page, /正在处理，请稍候/);
-  assert.match(page, /请先确认使用场景/);
+  assert.doesNotMatch(uiSource, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
+  assert.match(uiSource, /开始处理全部沟通/);
+  assert.match(uiSource, /继续处理下一次沟通/);
+  assert.match(uiSource, /loadWorkflowSnapshot\(projectId(?:, true)?\)/);
+  assert.match(uiSource, /workflowSnapshotQuery\(projectId\)/);
+  assert.match(uiSource, /candidateCount: summary\?\.candidate_count/);
+  assert.doesNotMatch(uiSource, /api\.getRunReview\(latestRun\.id\)/);
+  assert.match(uiSource, /Claim 和再次出现记录都是 0/);
+  assert.match(uiSource, /次沟通没有材料，未纳入处理/);
+  assert.match(uiSource, /等待当前材料准备完成/);
+  assert.match(uiSource, /正在处理，请稍候/);
+  assert.match(uiSource, /请先确认使用场景/);
 
   const workflowAction = declarationSource("advanceProjectWorkflow");
   assert.match(workflowAction, /requestExtractionForEvent\(current\.event\)/);

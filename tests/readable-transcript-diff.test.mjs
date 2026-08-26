@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const outputDir = mkdtempSync(join(tmpdir(), "notique-readable-diff-"));
 execFileSync("npx", [
@@ -33,7 +34,6 @@ const {
 } = readableDiffModule.exports;
 
 const helperSource = await readFile(new URL("../app/readable-transcript-diff.ts", import.meta.url), "utf8");
-const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
 test("combines only explicitly mapped raw Segments in the readable paragraph order", () => {
   const mapped = mappedRawParagraph(["raw-2", "raw-1", "missing"], [
@@ -77,9 +77,9 @@ test("UI lazy-loads jsdiff only after expansion and falls back to model edit rec
   assert.match(helperSource, /const \{ diffWords \} = await import\(["']diff["']\)/);
   assert.match(helperSource, /maxEditLength:\s*READABLE_PARAGRAPH_DIFF_LIMITS\.maxEditLength/);
   assert.match(helperSource, /timeout:\s*READABLE_PARAGRAPH_DIFF_LIMITS\.timeoutMs/);
-  assert.match(pageSource, /mappedRawParagraph\(sourceIds, rawSegments\)/);
-  assert.match(pageSource, /toggleReadableDiff\(diffKey, group\.sourceIds, group\.text\)/);
-  assert.match(pageSource, /<summary aria-label=["']查看整理详情["']>•••<\/summary>/);
-  assert.match(pageSource, /state\.status === ["']fallback["'][\s\S]*?readable-edit-list/);
-  assert.doesNotMatch(pageSource, /edits\.length\s*>\s*0\s*&&\s*<button[^>]*>[^<]*(?:查看差异|对比原稿)/);
+  assert.match(uiSource, /mappedRawParagraph\(sourceIds, rawSegments\)/);
+  assert.match(uiSource, /toggleReadableDiff\(diffKey, group\.sourceIds, group\.text\)/);
+  assert.match(uiSource, /<summary aria-label=["']查看整理详情["']>•••<\/summary>/);
+  assert.match(uiSource, /state\.status === ["']fallback["'][\s\S]*?readable-edit-list/);
+  assert.doesNotMatch(uiSource, /edits\.length\s*>\s*0\s*&&\s*<button[^>]*>[^<]*(?:查看差异|对比原稿)/);
 });

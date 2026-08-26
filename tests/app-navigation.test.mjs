@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { declarationSource } from "./helpers/ui-source.mjs";
+import { uiSource } from "./helpers/ui-source.mjs";
 
 const moduleUrl = pathToFileURL(path.resolve("lib/domain/app-navigation.ts")).href;
 const {
@@ -136,10 +136,9 @@ test("invalid deep-link values fall back without retaining unsafe fields", () =>
 });
 
 test("report tabs replace history and refresh preserves the current app depth", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
-  assert.match(source, /onSelect=\{\(tab\) => void loadView\(tab, undefined, "replace"\)\}/);
-  assert.match(source, /notiqueDepth: currentDepth/);
-  assert.match(source, /backLabel=\{backLabelForRoute\(route\)\}/);
+  assert.match(uiSource, /onSelect=\{\(tab\) => void loadView\(tab, undefined, "replace"\)\}/);
+  assert.match(uiSource, /notiqueDepth: currentDepth/);
+  assert.match(uiSource, /backLabel=\{backLabelForRoute\(route\)\}/);
 });
 
 test("a new project selection invalidates an older workflow snapshot", () => {
