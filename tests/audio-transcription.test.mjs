@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { declarationSource } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -800,10 +801,7 @@ test("audio smoke test uses the production Event response envelope and stays on 
 
 test("simple flow supports audio-first setup and preserves a transcription start error after refresh", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  const beginSimple = page.slice(
-    page.indexOf("async function beginSimpleTest"),
-    page.indexOf("async function attachSimpleFile"),
-  );
+  const beginSimple = declarationSource("beginSimpleTest");
   assert.match(beginSimple, /api\.createProject/);
   assert.doesNotMatch(beginSimple, /api\.createEvent/);
   assert.match(beginSimple, /await loadSimpleProject\(created\.id\)/);
@@ -823,10 +821,7 @@ test("simple flow supports audio-first setup and preserves a transcription start
   assert.match(page, /else void beginSimpleTest\(true\)/);
   assert.match(page, /Transcript 会成为第一条沟通/);
 
-  const attachSimple = page.slice(
-    page.indexOf("async function attachSimpleFile"),
-    page.indexOf("function goSimple"),
-  );
+  const attachSimple = declarationSource("attachSimpleFile");
   assert.match(attachSimple, /resolveSimpleImportTarget/);
   assert.match(attachSimple, /createEvent: async \(currentProject\)/);
   assert.match(attachSimple, /await loadSimpleProject\(targetProjectId, targetEventId\);[\s\S]*void prepareLongAudioTranscription\([\s\S]*init\.assetId,[\s\S]*targetEventId/);
@@ -841,10 +836,7 @@ test("simple flow supports audio-first setup and preserves a transcription start
 
 test("audio and extraction recovery remain actionable without duplicating an in-flight run", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  const retryAudio = page.slice(
-    page.indexOf("async function retryAudioTranscription"),
-    page.indexOf("async function retryRunStatus"),
-  );
+  const retryAudio = declarationSource("retryAudioTranscription");
   assert.match(retryAudio, /runInProgress\.has\(current\.status\)/);
   assert.match(retryAudio, /api\.kickDispatcher/);
   assert.match(retryAudio, /api\.getTranscriptionRun\(current\.id\)/);
@@ -863,10 +855,7 @@ test("polling keeps attempt state per run, surfaces timeout recovery, and expose
   assert.doesNotMatch(page, /\[event\?\.id, flash, transcriptionRun\]/);
   assert.doesNotMatch(page, /\[event\?\.id, loadClaimsForRun, project\?\.id, run\]/);
 
-  const viewer = page.slice(
-    page.indexOf("function TranscriptViewer"),
-    page.indexOf("function recordArray"),
-  );
+  const viewer = declarationSource("TranscriptViewer");
   assert.match(viewer, /run\.segments\.map/);
   assert.doesNotMatch(viewer, /\.slice\(/);
   assert.match(page, /查看完整逐字稿/);

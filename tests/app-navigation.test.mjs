@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import { declarationSource } from "./helpers/ui-source.mjs";
 
 const moduleUrl = pathToFileURL(path.resolve("lib/domain/app-navigation.ts")).href;
 const {
@@ -142,11 +143,7 @@ test("report tabs replace history and refresh preserves the current app depth", 
 });
 
 test("a new project selection invalidates an older workflow snapshot", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
-  const loadSimpleProject = source.slice(
-    source.indexOf("const loadSimpleProject = useCallback"),
-    source.indexOf("const loadEvent = useCallback"),
-  );
+  const loadSimpleProject = declarationSource("loadSimpleProject");
   assert.match(loadSimpleProject, /invalidateProjectSelectionRequests\(\)/);
 });
 

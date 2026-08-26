@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { declarationSource } from "./helpers/ui-source.mjs";
 import test from "node:test";
 
 const repository = await readFile(
@@ -70,7 +71,7 @@ test("the real UI starts, resumes, and completes the server timer", () => {
     3,
     "queue loads and the fast background refresh must update server-owned counts with stale-response guards",
   );
-  const verdict = page.slice(page.indexOf("async function runVerdict"), page.indexOf("async function withdrawClaim"));
+  const verdict = declarationSource("runVerdict");
   assert.ok(
     verdict.indexOf("await openClaim(nextId") < verdict.indexOf('loadReviewQueue("review"'),
     "a successful non-final verdict must open the locally known next claim before a full queue reload",

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { declarationSource, statementContaining } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -176,15 +177,8 @@ test("workflow snapshot aggregates materials, jobs, pending review, and one next
 });
 
 test("queued browser wake survives polling object replacement and only targets the existing Run", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  const extractionWake = page.slice(
-    page.indexOf("const queuedExtractionRunId"),
-    page.indexOf("const queuedTranscriptionRunId"),
-  );
-  const transcriptionWake = page.slice(
-    page.indexOf("const queuedTranscriptionRunId"),
-    page.indexOf("const activeTranscriptionRunId"),
-  );
+  const extractionWake = statementContaining("[queuedExtractionRunId, queuedExtractionRunStatus]");
+  const transcriptionWake = statementContaining("[queuedTranscriptionRunId, queuedTranscriptionRunStatus]");
 
   assert.match(extractionWake, /\[queuedExtractionRunId, queuedExtractionRunStatus\]/);
   assert.match(transcriptionWake, /\[queuedTranscriptionRunId, queuedTranscriptionRunStatus\]/);
@@ -217,10 +211,7 @@ test("primary queued status and timer expose server queue cycles and attempts", 
   assert.match(page, /if \(run\.status === "queued"\) return "正在启动分析"/);
   assert.match(page, /queued: "正在启动分析"/);
 
-  const timing = page.slice(
-    page.indexOf("const runTimingItems"),
-    page.indexOf("const transcriptionTimingStart"),
-  );
+  const timing = declarationSource("runTimingItems");
   for (const field of [
     "firstQueuedAt",
     "currentQueuedAt",

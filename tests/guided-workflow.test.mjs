@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import { declarationSource, effectContaining } from "./helpers/ui-source.mjs";
 
 const moduleUrl = pathToFileURL(path.resolve("lib/domain/guided-workflow.ts")).href;
 const {
@@ -52,10 +53,7 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(source, /onClick=\{\(\) => onResult\("client-progress"\)\}>打开项目概览/);
   assert.match(source, /await openClaim\(nextId, "review", undefined, "replace"\)/);
   assert.match(source, /await finishGuidedReview\(\)/);
-  const finishGuidedReview = source.slice(
-    source.indexOf("async function finishGuidedReview"),
-    source.indexOf("async function continueAfterReviewSummary"),
-  );
+  const finishGuidedReview = declarationSource("finishGuidedReview");
   assert.match(finishGuidedReview, /loadView\("brief-card", projectId, "replace"\)/);
   assert.match(finishGuidedReview, /loadSimpleProject\(projectId, snapshot\.plan\.currentEventId, "replace"\)/);
   assert.match(finishGuidedReview, /if \(!isCurrentRequestOwner\(owner\)\) return/);
@@ -82,11 +80,7 @@ test("mobile keeps one event selector and resets the tab when switching events",
 });
 
 test("terminal transcription refreshes the Event and workflow before publishing success", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
-  const effectStart = source.indexOf("const activeTranscriptionRunId = transcriptionRun?.id");
-  const effectEnd = source.indexOf("const secondaryTranscriptionRuns", effectStart);
-  assert.ok(effectStart >= 0 && effectEnd > effectStart);
-  const effect = source.slice(effectStart, effectEnd);
+  const effect = effectContaining("const activeTranscriptionRunId = transcriptionRun?.id");
   const terminalBranch = effect.slice(effect.indexOf('if (latest.status === "succeeded")'));
 
   assert.match(terminalBranch, /Promise\.all\(\[\s*api\.getEvent\(eventId\),\s*inspectProjectWorkflow\(projectId, loadFreshWorkflowSnapshot\)/);
@@ -99,11 +93,7 @@ test("terminal transcription refreshes the Event and workflow before publishing 
 });
 
 test("starting analysis rechecks a stale Event once before reporting not ready", () => {
-  const source = fs.readFileSync("app/page.tsx", "utf8");
-  const start = source.indexOf("async function startExtractionForEvent");
-  const end = source.indexOf("async function advanceProjectWorkflow", start);
-  assert.ok(start >= 0 && end > start);
-  const action = source.slice(start, end);
+  const action = declarationSource("startExtractionForEvent");
 
   assert.match(action, /if \(extractionAssetVersionIds\(extractionTarget\)\.length === 0\) \{[\s\S]*?api\.getEvent\(targetEvent\.id\)/);
   assert.match(action, /extractionTarget = refreshed/);
@@ -116,10 +106,7 @@ test("starting analysis rechecks a stale Event once before reporting not ready",
 
 test("new material auto-starts one idempotent analysis only after its final transcript is ready", () => {
   const source = fs.readFileSync("app/page.tsx", "utf8");
-  const effectStart = source.indexOf("const intent = readAutoAnalysisIntent(event.id)");
-  const effectEnd = source.indexOf("async function advanceProjectWorkflow", effectStart);
-  assert.ok(effectStart >= 0 && effectEnd > effectStart);
-  const effect = source.slice(effectStart, effectEnd);
+  const effect = effectContaining("const intent = readAutoAnalysisIntent(event.id)");
 
   assert.match(source, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
   assert.match(source, /armedAt: Date\.now\(\),\s*idempotencyKey: crypto\.randomUUID\(\)/);

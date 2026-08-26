@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { declarationSource } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -352,17 +353,11 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   assert.match(page, /正在处理，请稍候/);
   assert.match(page, /请先确认使用场景/);
 
-  const start = page.indexOf("async function advanceProjectWorkflow");
-  const end = page.indexOf("async function beginSimpleTest", start);
-  assert.ok(start >= 0 && end > start);
-  const workflowAction = page.slice(start, end);
+  const workflowAction = declarationSource("advanceProjectWorkflow");
   assert.match(workflowAction, /requestExtractionForEvent\(current\.event\)/);
   assert.doesNotMatch(workflowAction, /confirmCurrentScenario|confirmScenario|saveVerdict|batchConfirm/);
 
-  const simpleStart = page.indexOf("function SimpleTestScreen");
-  const simpleEnd = page.indexOf("function PageHeader", simpleStart);
-  assert.ok(simpleStart >= 0 && simpleEnd > simpleStart);
-  const simpleScreen = page.slice(simpleStart, simpleEnd);
+  const simpleScreen = declarationSource("SimpleTestScreen");
   assert.doesNotMatch(simpleScreen, /onAnalyze/);
   assert.doesNotMatch(simpleScreen, /onRetryRunStatus/);
   assert.match(simpleScreen, /onClick=\{onProjectWorkflowAction\}/);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { declarationSource } from "./helpers/ui-source.mjs";
 import { projectOverviewSections } from "../lib/domain/project-overview.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -15,7 +16,7 @@ test("AI draft is a chronological, evidence-linked view of existing Agent B clai
 });
 
 test("evidence cards use the scoped context endpoint and exact quote highlighting", () => {
-  const evidenceCard = page.slice(page.indexOf("function EvidenceCard"), page.indexOf("function uncertaintyForEdit"));
+  const evidenceCard = declarationSource("EvidenceCard");
   assert.match(evidenceCard, /useQuery\(evidenceContextQuery\(evidence\.id\)\)/);
   assert.doesNotMatch(evidenceCard, /listEventTranscriptSegments/);
   assert.match(evidenceCard, /context\.before/);
@@ -38,7 +39,7 @@ test("verified results render typed timeline moments and preference history", ()
 });
 
 test("results use four general project entrances and move specialist reports behind more", () => {
-  const primary = page.slice(page.indexOf("const primaryResultTabs"), page.indexOf("const secondaryResultTabs"));
+  const primary = declarationSource("primaryResultTabs");
   assert.match(primary, /项目概览/);
   assert.match(primary, /时间线/);
   assert.match(primary, /下一步/);
@@ -143,7 +144,7 @@ test("failed reading artifacts fall back safely without exposing provider error 
   assert.match(page, /AI 摘要未通过安全检查/);
   assert.match(page, /易读逐字稿未通过完整性检查/);
   assert.match(page, /事实识别和原始逐字稿都已保留/);
-  const fallback = page.slice(page.indexOf("function ArtifactFallback"), page.indexOf("function AudioTranscriptionProgressPanel"));
+  const fallback = declarationSource("ArtifactFallback");
   assert.doesNotMatch(fallback, /run\.error_code/);
 });
 
