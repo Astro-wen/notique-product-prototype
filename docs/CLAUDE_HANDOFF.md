@@ -40,7 +40,7 @@ Notique 是一个面向买方经纪人的“带证据客户旅程记忆”MVP：
 10. 原始 Transcript、易读 Transcript 和 AI Summary 三层分离。
 11. Project soft delete、回收站、恢复和 R2-first 永久删除。
 12. 买方客户固定场景、十类客户旅程覆盖字段和“客户进展”双层页面。
-13. Pending 不再阻止下一次沟通；每次新的付费分析仍须用户明确点击。
+13. Pending 不再阻止下一次沟通；上传、导入和整组流程中的下一条材料就绪后自动分析，失败时才需要用户重试。
 14. `next_action` 站内行动、负责人、期限和人工完成记录。
 15. Context Pack v3 / Verification v4 / Prompt v9 的 Draft Link 安全边界；`AI_DRAFT_CONTEXT=0` 默认关闭。
 

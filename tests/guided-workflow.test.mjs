@@ -113,3 +113,27 @@ test("starting analysis rechecks a stale Event once before reporting not ready",
     "the browser must consult server truth before rejecting a just-finished transcript",
   );
 });
+
+test("new material auto-starts one idempotent analysis only after its final transcript is ready", () => {
+  const source = fs.readFileSync("app/page.tsx", "utf8");
+  const effectStart = source.indexOf("const intent = readAutoAnalysisIntent(event.id)");
+  const effectEnd = source.indexOf("async function advanceProjectWorkflow", effectStart);
+  assert.ok(effectStart >= 0 && effectEnd > effectStart);
+  const effect = source.slice(effectStart, effectEnd);
+
+  assert.match(source, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
+  assert.match(source, /armedAt: Date\.now\(\),\s*idempotencyKey: crypto\.randomUUID\(\)/);
+  assert.match(source, /armAutoAnalysis\(\s*targetEvent\.id,\s*kind === "audio" \? init\.assetId : undefined/);
+  assert.match(source, /created\.forEach\(\(item\) => armAutoAnalysis\(item\.id, undefined, item\.latestRun\?\.id \|\| item\.latestRunId\)\)/);
+  assert.match(effect, /autoAnalysisDecision\(\{/);
+  assert.match(effect, /baseRunId: intent\.baseRunId/);
+  assert.match(effect, /latestRunLoaded: !latestRunId \|\| Boolean\(loadedLatestRun\)/);
+  assert.match(effect, /if \(decision === "clear"\)/);
+  assert.match(effect, /audioRun\?\.status !== "succeeded" \|\| !audioRun\.derivedTranscriptAssetId/);
+  assert.match(effect, /asset\.id === audioRun\.derivedTranscriptAssetId && assetIsAnalyzable\(asset\)/);
+  assert.match(effect, /currentEventTranscriptionRunning,\s*hasAnalyzableAssets: analyzableVersionIds\.length > 0/);
+  assert.match(effect, /intent\.extractionFingerprint === fingerprint[\s\S]*?storeAutoAnalysisIntent\(\{ \.\.\.intent, extractionFingerprint: fingerprint, idempotencyKey \}\)/);
+  assert.match(effect, /extractionKeys\.current\.set\(fingerprint, idempotencyKey\)/);
+  assert.match(effect, /autoAnalysisAttempts\.current\.has\(fingerprint\)/);
+  assert.match(effect, /startExtractionForEvent\(event, true\)/);
+});

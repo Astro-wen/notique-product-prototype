@@ -115,11 +115,12 @@ test("the core workspace keeps two primary tabs and one contextual review action
   assert.match(page, /reviewBlocked=\{needsScenario\}/);
 });
 
-test("a transcript without an analysis offers one valid start action instead of broken artifact retries", () => {
+test("a transcript without a Run explains auto-start and keeps one recovery action", () => {
   assert.match(page, /analysisRunning \? <div className="summary-card-loading"/);
   assert.match(page, /analysisComplete \? <div className="summary-card-message"/);
-  assert.match(page, /开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成/);
-  assert.match(page, /开始分析并生成/);
+  assert.match(page, /系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试/);
+  assert.match(page, /重新启动分析/);
+  assert.doesNotMatch(page, /开始分析并生成/);
   assert.match(page, /onStartAnalysis=\{onStartAnalysis\}/);
   assert.match(page, /analysisRunning=\{analysisRunning\}/);
   assert.match(page, /analysisComplete=\{analysisComplete\}/);

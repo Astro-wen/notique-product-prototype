@@ -46,6 +46,7 @@ import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft"
 import { highlightExactPhrase } from "@/lib/domain/text-highlight";
 import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
+import { autoAnalysisDecision } from "@/lib/domain/auto-analysis";
 import {
   backLabelForRoute,
   fallbackBackRoute,
@@ -234,6 +235,64 @@ const recentProjectStorageKey = "notique.ui.recent-project-id";
 const workflowIntentStorageKey = "notique.ui.workflow-intent-project-id";
 const sidebarCollapsedStorageKey = "notique.ui.sidebar-collapsed";
 const publicWorkspaceAcknowledgementKey = "notique.ui.public-workspace-acknowledged";
+
+type AutoAnalysisIntent = {
+  eventId: string;
+  waitForAudioAssetIds: string[];
+  armedAt: number;
+  idempotencyKey: string;
+  extractionFingerprint?: string;
+  baseRunId?: string;
+};
+
+function autoAnalysisIntentKey(eventId: string): string {
+  return `notique.ui.auto-analysis:${eventId}`;
+}
+
+function readAutoAnalysisIntent(eventId: string): AutoAnalysisIntent | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(autoAnalysisIntentKey(eventId)) || "null") as unknown;
+    if (
+      !isRecord(value)
+      || value.eventId !== eventId
+      || !Array.isArray(value.waitForAudioAssetIds)
+      || typeof value.idempotencyKey !== "string"
+      || !value.idempotencyKey
+    ) return null;
+    return {
+      eventId,
+      waitForAudioAssetIds: value.waitForAudioAssetIds.filter((id): id is string => typeof id === "string" && Boolean(id)),
+      armedAt: typeof value.armedAt === "number" ? value.armedAt : Date.now(),
+      idempotencyKey: value.idempotencyKey,
+      ...(typeof value.extractionFingerprint === "string"
+        ? { extractionFingerprint: value.extractionFingerprint }
+        : {}),
+      ...(typeof value.baseRunId === "string" ? { baseRunId: value.baseRunId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeAutoAnalysisIntent(intent: AutoAnalysisIntent): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(autoAnalysisIntentKey(intent.eventId), JSON.stringify(intent));
+  } catch {
+    // Same-tab automation is an enhancement. Server Runs and their
+    // idempotency/concurrency guards remain authoritative.
+  }
+}
+
+function clearStoredAutoAnalysisIntent(eventId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(autoAnalysisIntentKey(eventId));
+  } catch {
+    // A blocked storage API must not affect the analysis Run itself.
+  }
+}
 
 function recentEventStorageKey(projectId: string): string {
   return `notique.ui.recent-event-id:${projectId}`;
@@ -753,7 +812,7 @@ function issueMessage(issue: ApiIssue): string {
   if (issue.code === "EVENT_NOT_READY") {
     const details = isRecord(issue.details) ? issue.details : {};
     if (details.reason === "analysis_required") {
-      return "原始逐字稿已经准备好。请点击“开始分析并生成”，系统会同时生成 AI 摘要、易读逐字稿和事实清单。";
+      return "原始逐字稿已经准备好。系统通常会自动生成 AI 摘要、易读逐字稿和事实清单；如果没有启动，可以直接重新尝试。";
     }
     return "这次沟通还没有准备好可处理的材料。请等文件状态变为“材料已就绪”。";
   }
@@ -1630,6 +1689,7 @@ export default function Home() {
   const staleRecoveryRuns = useRef(new Set<string>());
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
   const activeTranscriptionDispatches = useRef(new Set<string>());
+  const autoAnalysisAttempts = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
   const reviewRefreshEpoch = useRef(0);
   const projectWorkflowRefreshToken = useRef(0);
@@ -1637,6 +1697,34 @@ export default function Home() {
   const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "draft_ready" | "partially_reviewed" | "complete") => void>(() => undefined);
   const pendingPublicWorkspaceAction = useRef<(() => void) | null>(null);
   const summaryReturnContext = useRef<{ eventId: string; scrollY: number } | null>(null);
+  const [autoAnalysisIntentRevision, setAutoAnalysisIntentRevision] = useState(0);
+
+  function armAutoAnalysis(eventId: string, audioAssetId?: string, baseRunId?: string): void {
+    const current = readAutoAnalysisIntent(eventId);
+    const waitForAudioAssetIds = Array.from(new Set([
+      ...(current?.waitForAudioAssetIds ?? []),
+      ...(audioAssetId ? [audioAssetId] : []),
+    ]));
+    storeAutoAnalysisIntent({
+      eventId,
+      waitForAudioAssetIds,
+      armedAt: Date.now(),
+      idempotencyKey: crypto.randomUUID(),
+      ...(baseRunId ? { baseRunId } : {}),
+    });
+    for (const key of autoAnalysisAttempts.current) {
+      if (key === eventId || key.startsWith(`${eventId}:`)) autoAnalysisAttempts.current.delete(key);
+    }
+    setAutoAnalysisIntentRevision((value) => value + 1);
+  }
+
+  function clearAutoAnalysisIntent(eventId: string): void {
+    clearStoredAutoAnalysisIntent(eventId);
+    for (const key of autoAnalysisAttempts.current) {
+      if (key === eventId || key.startsWith(`${eventId}:`)) autoAnalysisAttempts.current.delete(key);
+    }
+    setAutoAnalysisIntentRevision((value) => value + 1);
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2905,8 +2993,10 @@ export default function Home() {
       return;
     }
     if (snapshot.plan.currentEventId) {
+      const nextEvent = snapshot.events.find((item) => item.id === snapshot.plan.currentEventId);
+      armAutoAnalysis(snapshot.plan.currentEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
       await loadSimpleProject(projectId, snapshot.plan.currentEventId, "replace");
-      flash("下一次沟通已准备好，需要你点击后才会开始分析");
+      flash("下一次沟通已准备好，正在自动开始分析");
       return;
     }
     await loadSimpleProject(projectId, event?.id, "replace");
@@ -2920,8 +3010,10 @@ export default function Home() {
       flash("整组沟通已经核对完成，正在打开会前速览");
       await loadView("brief-card");
     } else if (reviewSummaryDestination.nextEventId) {
+      const nextEvent = events.find((item) => item.id === reviewSummaryDestination.nextEventId);
+      armAutoAnalysis(reviewSummaryDestination.nextEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
       await loadSimpleProject(project.id, reviewSummaryDestination.nextEventId);
-      flash("下一次沟通已准备好，需要你点击后才会开始分析");
+      flash("下一次沟通已准备好，正在自动开始分析");
     } else {
       await loadSimpleProject(project.id, event?.id);
     }
@@ -2982,8 +3074,10 @@ export default function Home() {
     setProjectWorkflow(snapshot.plan);
     setEventWorkflowSummaries(snapshot.eventSummaries);
     if (snapshot.plan.phase === "ready" && snapshot.plan.currentEventId) {
+      const nextEvent = snapshot.events.find((item) => item.id === snapshot.plan.currentEventId);
+      armAutoAnalysis(snapshot.plan.currentEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
       await loadSimpleProject(projectId, snapshot.plan.currentEventId, "replace");
-      flash("下一次沟通已准备好；仍需你点击一次才会开始新的付费分析");
+      flash("下一次沟通已准备好，正在自动开始分析");
       return;
     }
     if (snapshot.plan.phase === "draft_ready" || snapshot.plan.phase === "partially_reviewed") {
@@ -3724,7 +3818,7 @@ export default function Home() {
     return nextRun;
   }
 
-  async function startExtractionForEvent(targetEvent: Event) {
+  async function startExtractionForEvent(targetEvent: Event, automatic = false): Promise<boolean> {
     setBusyAction("extraction");
     setEventIssue(null);
     try {
@@ -3734,26 +3828,88 @@ export default function Home() {
         // this explicit click. Re-read the Event once instead of rejecting a
         // valid canonical transcript because the browser held stale assets.
         const refreshed = await api.getEvent(targetEvent.id);
-        if ((routeRef.current.eventId || event?.id) !== targetEvent.id) return;
+        if ((routeRef.current.eventId || event?.id) !== targetEvent.id) return false;
         extractionTarget = refreshed;
         setEvent(refreshed);
       }
       if (extractionAssetVersionIds(extractionTarget).length === 0) {
         setEventIssue({ code: "EVENT_NOT_READY", message: "当前材料还没有可用于分析的已完成版本。", status: 409 });
-        return;
+        return false;
       }
       const nextRun = await requestExtractionForEvent(extractionTarget);
+      clearAutoAnalysisIntent(targetEvent.id);
       setRun(nextRun);
       setRunPollCycle((value) => value + 1);
       setClaims([]);
       setClaimsState("idle");
-      flash("分析已经开始，可以稍后回来查看");
+      flash(automatic
+        ? "材料已就绪，正在自动整理重点；你可以先看逐字稿"
+        : "分析已经开始，可以稍后回来查看");
+      return true;
     } catch (error) {
       setEventIssue(toIssue(error));
+      return false;
     } finally {
       setBusyAction(null);
     }
   }
+
+  useEffect(() => {
+    if (!event || (screen !== "simple" && screen !== "event") || busyAction) return;
+    const intent = readAutoAnalysisIntent(event.id);
+    if (!intent) return;
+    const waitingForAudio = intent.waitForAudioAssetIds.some((audioAssetId) => {
+      const audioRun = transcriptionRunsByAssetId[audioAssetId];
+      if (audioRun?.status !== "succeeded" || !audioRun.derivedTranscriptAssetId) return true;
+      return !event.assets.some((asset) =>
+        asset.id === audioRun.derivedTranscriptAssetId && assetIsAnalyzable(asset));
+    });
+    const currentEventTranscriptionRunning = Object.values(transcriptionRunsByAssetId)
+      .some((item) => item.eventId === event.id && runInProgress.has(item.status));
+    const analyzableVersionIds = extractionAssetVersionIds(event);
+    const fingerprint = `${event.id}:${analyzableVersionIds.sort().join(",")}`;
+    const latestRunId = event.latestRun?.id || event.latestRunId;
+    const loadedLatestRun = event.latestRun
+      || (run && (run.eventId === event.id || (latestRunId && run.id === latestRunId)) ? run : null);
+    const decision = autoAnalysisDecision({
+      baseRunId: intent.baseRunId,
+      extractionFingerprint: intent.extractionFingerprint,
+      currentFingerprint: fingerprint,
+      latestRunId,
+      latestRunLoaded: !latestRunId || Boolean(loadedLatestRun),
+      latestRunInProgress: Boolean(loadedLatestRun && runInProgress.has(loadedLatestRun.status)),
+      waitingForAudio,
+      currentEventTranscriptionRunning,
+      hasAnalyzableAssets: analyzableVersionIds.length > 0,
+    });
+    if (decision === "wait") return;
+    if (decision === "clear") {
+      clearStoredAutoAnalysisIntent(event.id);
+      return;
+    }
+    if (autoAnalysisAttempts.current.has(fingerprint)) return;
+    autoAnalysisAttempts.current.add(fingerprint);
+    const idempotencyKey = intent.extractionFingerprint === fingerprint
+      ? intent.idempotencyKey
+      : crypto.randomUUID();
+    if (intent.extractionFingerprint !== fingerprint) {
+      storeAutoAnalysisIntent({ ...intent, extractionFingerprint: fingerprint, idempotencyKey });
+    }
+    extractionKeys.current.set(fingerprint, idempotencyKey);
+    void startExtractionForEvent(event, true).then((started) => {
+      if (!started) clearAutoAnalysisIntent(event.id);
+    });
+    // startExtractionForEvent deliberately owns the mutation. The primitive
+    // dependencies below are the complete readiness signal for this intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    autoAnalysisIntentRevision,
+    busyAction,
+    event,
+    run,
+    screen,
+    transcriptionRunsByAssetId,
+  ]);
 
   async function advanceProjectWorkflow() {
     if (!project) return;
@@ -3984,6 +4140,11 @@ export default function Home() {
       await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
+      armAutoAnalysis(
+        targetEvent.id,
+        kind === "audio" ? init.assetId : undefined,
+        targetEvent.latestRun?.id || targetEvent.latestRunId || (run?.eventId === targetEvent.id ? run.id : undefined),
+      );
       if (kind === "audio") {
         const targetProjectId = targetProject.id;
         const targetEventId = targetEvent.id;
@@ -3997,14 +4158,14 @@ export default function Home() {
         ).then(async (transcription) => {
           flash(transcription.orchestrationMode === "chunked"
             ? `“${file.name}”的 ${transcription.chunkCount ?? transcription.chunks.length} 段正在并行识别`
-            : `“${file.name}”正在识别说话人和时间点`);
+            : `“${file.name}”正在识别说话人和时间点，完成后会自动整理重点`);
           if (routeRef.current.projectId === targetProjectId && routeRef.current.eventId === targetEventId) {
             await loadSimpleProject(targetProjectId, targetEventId, "replace");
           }
         }).catch((error) => setEventIssue(toIssue(error)));
         return true;
       } else {
-        flash("材料已加入");
+        flash("材料已加入，正在准备自动分析");
       }
       await loadSimpleProject(targetProject.id, targetEvent.id);
       return true;
@@ -4348,7 +4509,7 @@ export default function Home() {
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
           onRetryArtifact={retryEventAiArtifact}
-          onStartAnalysis={async (targetEvent) => startExtractionForEvent(targetEvent)}
+          onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
           onFocusTranscriptArtifact={(eventId, tab) => {
             setTranscriptFocusRequest({ id: Date.now(), eventId, tab });
             if (routeRef.current.view === "simple") {
@@ -4406,6 +4567,11 @@ export default function Home() {
             await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType);
             await api.finalizeAsset(init.assetId);
             mutationKeys.current.delete(fingerprint);
+            armAutoAnalysis(
+              event.id,
+              preparedInput.kind === "audio" ? init.assetId : undefined,
+              event.latestRun?.id || event.latestRunId || (run?.eventId === event.id ? run.id : undefined),
+            );
             if (preparedInput.kind === "audio") {
               const transcription = await prepareLongAudioTranscription(
                 preparedInput.blob,
@@ -4415,9 +4581,9 @@ export default function Home() {
               );
               flash(transcription.orchestrationMode === "chunked"
                 ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
-                : "录音已保存，正在生成逐字稿");
+                : "录音已保存，正在生成逐字稿；完成后会自动整理重点");
             } else {
-              flash("材料已加入这次沟通");
+              flash("材料已加入这次沟通，正在准备自动分析");
             }
             await loadEvent(event.id);
           } catch (error) {
@@ -4489,7 +4655,8 @@ export default function Home() {
       }} busy={busyAction === "new-event"} />}
       {showImport && project && <ImportModal project={project} onClose={() => setShowImport(false)} onImported={async (created) => {
         setShowImport(false);
-        flash(`已建立 ${created.length} 次沟通`);
+        created.forEach((item) => armAutoAnalysis(item.id, undefined, item.latestRun?.id || item.latestRunId));
+        flash(`已建立 ${created.length} 次沟通，当前一条会自动开始分析`);
         if (simpleFlow) {
           await loadSimpleProject(project.id, created[0]?.id);
         } else {
@@ -5096,7 +5263,7 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
-      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</span><button className="button primary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button></div>)}
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>)}
     </section>
 
     {tab === "summary" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectArtifactTab(summaryArtifact && readableArtifact ? "readable" : "raw")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
@@ -5268,7 +5435,7 @@ function ArtifactFallback({ kind, run, busy, analysisRunning, analysisComplete, 
   }
   if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}正在启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
   if (analysisRunning) return <div className="artifact-fallback"><span className="spinner" /><h3>分析已启动，正在建立 {name} 任务</h3><p>原始逐字稿已经可以阅读，不需要重复点击。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
-  if (!analysisComplete) return <div className="artifact-fallback"><h3>逐字稿已经准备好</h3><p>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</p><div><button className="button primary" disabled={Boolean(busy)} onClick={() => void onStartAnalysis().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div></div>;
+  if (!analysisComplete) return <div className="artifact-fallback"><h3>逐字稿已经准备好</h3><p>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onStartAnalysis().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div></div>;
   return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
 }
 
@@ -5583,10 +5750,10 @@ function SimpleTestScreen({
       body: "这次沟通仍在上传或转写。系统会保留顺序，不会先处理后面的内容。",
     },
     ready: {
-      title: projectWorkflow.completed > 0 ? "可以继续下一次沟通" : "一次入口，按顺序处理整组沟通",
+      title: projectWorkflow.completed > 0 ? "下一次沟通已经就绪" : "一次入口，按顺序处理整组沟通",
       body: projectWorkflow.pendingTotal > 0
-        ? `前面还有 ${projectWorkflow.pendingTotal} 条 AI 草稿未核对，但不会阻止你分析下一次沟通。每次新的付费分析仍由你点击开始。`
-        : "每次处理一条沟通。AI 草稿生成后可以立即阅读；核对可以现在做，也可以稍后继续。",
+        ? `前面还有 ${projectWorkflow.pendingTotal} 条 AI 草稿未核对，但不会阻止下一次分析。进入整组流程后，系统会在材料就绪时自动继续。`
+        : "每次处理一条沟通。进入整组流程后会自动衔接分析；AI 草稿生成后可以立即阅读，核对可以现在做，也可以稍后继续。",
     },
     running: {
       title: `${extractionProgressLabel(run)} · 第 ${workflowPosition}/${projectWorkflow.total} 次沟通`,

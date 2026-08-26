@@ -160,7 +160,7 @@
 - 转写遇到 408、429、服务端临时错误、网络中断或超时，会在同一个 Run 和 Outbox 内有限重试。Provider 结果写入 R2 暂存区后，后续数据库持久化重试会复用同一结果，不重复调用 Provider。旧 Run 和旧 Lease 无权覆盖当前录音状态；dead letter 会在同一事务中更新 Run 和当前录音。
 - 较长或多人抢话的录音改用 OpenAI 的逐段流式返回，避免把整篇逐字稿塞进一个容易截断的 JSON。模型片段若因重叠说话而乱序，系统会在保留原始时间点的前提下稳定排序。流式结果缺少最终完成事件时仍会拒绝写入，避免把不完整逐字稿当成正式材料；失败页会显示后台保存的具体校验原因。
 - Evidence 文件读取支持单一 Byte Range，覆盖完整响应、指定起止、开放结束、后缀范围和越界 416。浏览器音频播放可以从时间点继续读取，同时保持 Workspace 和 Project 范围校验。
-- 最小测试页可以用一个大按钮处理 Project 中的一到十次沟通。系统严格使用服务端返回的沟通顺序，一次只处理一条。新买方项目直接固定场景；历史项目仍会停下来确认 Scenario。生成候选后 AI 草稿立即可读，Pending 不再阻止下一次沟通，但每次新的付费分析仍须用户点击。默认只继承 Verified Context；灰度 Draft Context 不能成为正式 Evidence、Relation target 或生命周期变化。
+- 最小测试页可以按服务端返回的顺序处理 Project 中的一到十次沟通，一次只处理一条。新项目可先确认场景；生成候选后 AI 草稿立即可读，Pending 不再阻止下一次沟通，材料就绪后自动衔接分析。默认只继承 Verified Context；灰度 Draft Context 不能成为正式 Evidence、Relation target 或生命周期变化。
 - 引导式页面只在浏览器保存最近 Project ID、Event ID 和“已开始整组处理”的导航意图，不保存 Claim、Evidence、Verdict 或报告。刷新后会从服务器恢复真实 Run、Scenario 和待核对数量。分析完成会直接进入 Scenario 或第一条审核；单条确认、拒绝或修改后自动进入下一条；本次清空后只准备下一次沟通，必须由用户再点击一次才产生下一次模型请求；整组完成后自动打开会前速览。
 - 连续审核桌面端使用“队列、Evidence、决定”三栏。手机端队列变为横向选择区。Relation 继续要求逐条接受或拒绝，Evidence 不完整时确认和修改继续锁定；批量处理被收进次级区域，没有削弱服务端 Evidence attestation。后台等待超时显示“仍在后台运行”，其“检查状态”动作只读取原 Run。
 - 分析完成后会先显示按业务主题分组的 AI 会议信息初稿，再进入逐条审核。用户对“初稿基本可用”的第一印象单独保存，不能改变任何 Claim 的 Verified 状态。人工可以从当前 Event 的完整 Transcript 中选择一到八段原文，补回 AI 漏掉的事实；新记录标记为人工补充、保持 Pending，并复用同一套 Evidence 和 Relation 审核门。
@@ -240,7 +240,7 @@
 - [x] 新建买方客户项目时固定 `real_estate_buyer_journey`，不让模型猜行业。
 - [x] 买方覆盖检查包含预算、融资、目标区域、时间线、决策人、硬性要求、偏好、不能接受项、房源反馈和下一步行动。
 - [x] Workflow 分开表示 `draft_ready / partially_reviewed / trusted`；Pending 不再阻止下一个 Event 进入“等待用户开始分析”。
-- [x] 下一次付费分析仍须用户点击；可选核对不能触发自动 Run。
+- [x] 上传、导入或整组流程推进到下一条材料时自动建立且只建立一个幂等 Run；仅浏览历史记录不会触发。
 - [x] Context Pack v3 分开 Verified、Draft 和本次材料；Draft Context 最多取前十次沟通、100 条有合法原始 Evidence 的当前 AI 草稿，并稳定冻结到 Run 输入指纹。
 - [x] Agent A 始终使用 Raw-only 本次材料；只有 Agent B 可在灰度开启时读取 Draft Context 和易读稿。
 - [x] Draft Claim 不能成为正式 Evidence 或正式 Relation target，不能关闭、取代、解决或再次确认 Verified Claim。
