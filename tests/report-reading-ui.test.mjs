@@ -36,18 +36,18 @@ test("verified results render typed timeline moments and preference history", ()
   assert.match(page, /recordArray\(item\.history\)/);
 });
 
-test("results use four buyer-journey entrances and move specialist reports behind more", () => {
+test("results use four general project entrances and move specialist reports behind more", () => {
   const primary = page.slice(page.indexOf("const primaryResultTabs"), page.indexOf("const secondaryResultTabs"));
-  assert.match(primary, /客户概览/);
+  assert.match(primary, /项目概览/);
   assert.match(primary, /时间线/);
   assert.match(primary, /下一步/);
   assert.match(primary, /会前准备/);
   assert.equal((primary.match(/\{ key: "/g) ?? []).length, 4);
   assert.match(page, /className="result-nav-more"/);
   assert.match(page, /更多报告/);
-  assert.match(page, /buyerOverviewSections/);
-  assert.match(page, /预算与融资/);
-  assert.match(page, /已看房源与反馈/);
+  assert.match(page, /projectOverviewSections/);
+  assert.match(page, /关键事实/);
+  assert.match(page, /关键对象与反馈/);
 });
 
 test("action and timeline empty states offer useful next steps", () => {
@@ -55,7 +55,7 @@ test("action and timeline empty states offer useful next steps", () => {
   assert.match(page, /从原文补充行动/);
   assert.match(page, /setMissingClaimDefaultType\("next_action"\)/);
   assert.match(page, /const timelineFilters/);
-  assert.match(page, /预算.*偏好.*房源.*行动.*发生变化/s);
+  assert.match(page, /金额.*要求与偏好.*对象.*行动.*发生变化/s);
   assert.match(page, /timelineMomentMatches/);
   assert.match(page, /filter === "all" \? "核对并确认内容后，变化会出现在这里。" : "切换到“全部”可查看其他已经确认的时间线节点。"/);
   assert.match(styles, /\.timeline-filter/);
@@ -71,7 +71,7 @@ test("meeting rail and selected header share the workflow snapshot status", () =
 });
 
 test("public uploads require a per-session safety acknowledgement", () => {
-  assert.match(page, /公开共享测试空间/);
+  assert.match(page, /公开共享演示空间/);
   assert.match(page, /只能使用公开、合成或已脱敏材料/);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);
   assert.match(page, /requirePublicWorkspaceAcknowledgement/);

@@ -24,7 +24,7 @@ function claim(data, id) {
   return match;
 }
 
-test("buyer overview executes the production classifier against Morgan and Oak claims", () => {
+test("project overview executes the production classifier across buyer and contractor claims", () => {
   const firstString = (object, keys) => {
     for (const key of keys) {
       const value = object[key];
@@ -32,17 +32,19 @@ test("buyer overview executes the production classifier against Morgan and Oak c
     }
     return undefined;
   };
-  const classify = executablePageFunction("buyerOverviewSectionFor", "BuyerOverviewGrid", { firstString });
+  const classify = executablePageFunction("projectOverviewSectionFor", "ProjectOverviewGrid", { firstString });
 
   assert.equal(classify(claim(realtor, "gt-r1-joint-offer-approval")), "people");
   assert.equal(classify({ type: "decision", statement: "Lena Morgan cannot commit on behalf of both buyers." }), "people");
   assert.equal(classify({ type: "decision", statement: "Lena Morgan and Evan Morgan must both approve any offer." }), "people");
-  assert.equal(classify(claim(oak, "gt-e1-cabinets-stay")), "preferences", "a decision is not automatically a decision-maker");
+  assert.equal(classify(claim(oak, "gt-e1-cabinets-stay")), "facts", "a decision is not automatically a person or preference");
   assert.equal(classify(claim(realtor, "gt-r1-bedrooms-three")), "requirements");
   assert.equal(classify(claim(oak, "gt-e3-moisture-recheck")), "requirements", "a hard requirement wins over action-like wording");
   assert.equal(classify(claim(realtor, "gt-r1-older-character-home")), "preferences", "generic home wording is not a specific property");
-  assert.equal(classify(claim(realtor, "gt-r2-redwood-rejected")), "properties");
+  assert.equal(classify(claim(realtor, "gt-r2-redwood-rejected")), "subjects");
   assert.equal(classify(claim(oak, "gt-e3-tile-purchase")), "actions", "a concrete future action is not buried in preferences");
+  assert.equal(classify({ type: "risk", statement: "The repair could expose hidden damage." }), "questions");
+  assert.equal(classify({ type: "other", statement: "The insurance claim includes water damage." }), "subjects");
 });
 
 test("duplicate project names get stable option labels without renaming projects", () => {

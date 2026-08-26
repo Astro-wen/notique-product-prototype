@@ -209,7 +209,7 @@ type ReadableDiffViewState =
   | { status: "fallback"; reason: "mapping_incomplete" };
 
 const primaryResultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
-  { key: "client-progress", label: "客户概览", short: "概览" },
+  { key: "client-progress", label: "项目概览", short: "概览" },
   { key: "timeline", label: "时间线", short: "时间线" },
   { key: "actions", label: "下一步", short: "行动" },
   { key: "brief-card", label: "会前准备", short: "会前" },
@@ -636,7 +636,7 @@ function typeLabel(value?: string): string {
     next_action: "下一步行动",
     budget: "预算",
     person_role: "人员与职责",
-    property_fact: "房源事实",
+    property_fact: "对象事实",
     concern: "顾虑",
     other: "其他重要信息",
     constraint: "限制",
@@ -1209,9 +1209,9 @@ type TimelineFilter = "all" | "budget" | "preference" | "property" | "action" | 
 
 const timelineFilters: Array<{ key: TimelineFilter; label: string }> = [
   { key: "all", label: "全部" },
-  { key: "budget", label: "预算" },
-  { key: "preference", label: "偏好" },
-  { key: "property", label: "房源" },
+  { key: "budget", label: "金额" },
+  { key: "preference", label: "要求与偏好" },
+  { key: "property", label: "对象" },
   { key: "action", label: "行动" },
   { key: "change", label: "发生变化" },
 ];
@@ -1231,9 +1231,9 @@ function timelineMomentMatches(moment: Record<string, unknown>, filter: Timeline
     firstString(after, ["statement"]),
   ].filter(Boolean).join(" ");
   if (filter === "change") return kind !== "new";
-  if (filter === "budget") return type === "budget" || /budget|financ|mortgage|price|loan|预算|融资|贷款|按揭|价格/i.test(text);
+  if (filter === "budget") return type === "budget" || /budget|financ|mortgage|price|loan|amount|cost|quote|预算|融资|贷款|按揭|价格|金额|费用|报价|赔付/i.test(text);
   if (filter === "preference") return type === "preference" || type === "requirement" || /prefer|must.?have|deal.?breaker|偏好|要求|必须|不能接受/i.test(text);
-  if (filter === "property") return type === "property_fact" || /property|listing|house|home|condo|apartment|房源|房子|住宅|公寓|看房/i.test(text);
+  if (filter === "property") return type === "property_fact" || /property|listing|house|home|condo|apartment|claim|damage|repair|estimate|contract|document|asset|房源|房子|住宅|公寓|看房|索赔|损坏|维修|报价|合同|文件|材料/i.test(text);
   return type === "next_action" || /next step|follow.?up|action|下一步|跟进|负责人|期限/i.test(text);
 }
 
@@ -1304,20 +1304,19 @@ const draftLinkLabels: Record<string, string> = {
   possibly_answered: "可能回答了旧问题",
 };
 
-type BuyerOverviewSection = "budget" | "areas" | "requirements" | "preferences" | "people" | "properties" | "questions" | "actions";
+type ProjectOverviewSection = "facts" | "requirements" | "preferences" | "people" | "subjects" | "questions" | "actions";
 
-const buyerOverviewSections: Array<{ key: BuyerOverviewSection; label: string; empty: string }> = [
-  { key: "budget", label: "预算与融资", empty: "还没有预算或贷款信息" },
-  { key: "areas", label: "目标区域", empty: "还没有目标区域" },
-  { key: "requirements", label: "房屋硬性要求", empty: "还没有确认硬性要求" },
-  { key: "preferences", label: "偏好与不能接受", empty: "还没有偏好或禁忌" },
-  { key: "people", label: "决策人", empty: "还没有确认决策人" },
-  { key: "properties", label: "已看房源与反馈", empty: "还没有看房反馈" },
-  { key: "questions", label: "尚未解决的问题", empty: "目前没有未决问题" },
+const projectOverviewSections: Array<{ key: ProjectOverviewSection; label: string; empty: string }> = [
+  { key: "facts", label: "关键事实", empty: "还没有已整理的关键事实" },
+  { key: "requirements", label: "需求与约束", empty: "还没有确认需求或约束" },
+  { key: "preferences", label: "偏好与条件", empty: "还没有偏好或适用条件" },
+  { key: "people", label: "相关人员与职责", empty: "还没有确认相关人员或职责" },
+  { key: "subjects", label: "关键对象与反馈", empty: "还没有对象或反馈记录" },
+  { key: "questions", label: "未决问题与风险", empty: "目前没有未决问题或风险" },
   { key: "actions", label: "下一步行动", empty: "目前没有下一步行动" },
 ];
 
-function buyerOverviewSectionFor(item: Record<string, unknown>): BuyerOverviewSection {
+function projectOverviewSectionFor(item: Record<string, unknown>): ProjectOverviewSection {
   const type = firstString(item, ["type", "claim_type"]) || "";
   const text = firstString(item, ["statement", "title", "text", "summary"]) || "";
   const dealbreaker = /deal.?breaker|must not|cannot accept|won't accept|unacceptable|绝不|不能接受|无法接受|排除/i.test(text);
@@ -1327,24 +1326,27 @@ function buyerOverviewSectionFor(item: Record<string, unknown>): BuyerOverviewSe
     || /\b[A-Z][A-Za-z0-9.'-]+(?:\s+[A-Z][A-Za-z0-9.'-]+){0,2}\s+(?:Street|Avenue|Road|Court|Lane|Drive|Boulevard|Way)\b/.test(text)
     || /\S+(?:路|街|大道|巷)\d+号/.test(text);
   const showingFeedback = /\b(?:showing|viewing|open house|home tour)\b|看房(?:反馈)?|房源反馈/i.test(text);
+  const subjectSignal = concreteProperty
+    || showingFeedback
+    || /\b(?:property|listing|claim|damage|repair|estimate|quote|contract|document|invoice|asset|case)\b|房源|索赔|损坏|维修|报价|合同|文件|材料|案件/i.test(text);
 
-  if (type === "next_action" || type === "timing") return "actions";
+  if (type === "next_action") return "actions";
   if (type === "person_role" || explicitDecisionMaker) return "people";
   if (type === "open_question" || type === "risk" || type === "concern") return "questions";
-  if (type === "budget" || /financ|mortgage|pre.?approv|loan|预算|融资|贷款|按揭/i.test(text)) return "budget";
-  if (/\b(?:(?:target|preferred|search) areas?|neighbou?rhood|location|district|school district|city|town)\b|区域|地段|学区|城市|社区/i.test(text)) return "areas";
-  if (type === "requirement" && !dealbreaker) return "requirements";
+  if (type === "requirement" || type === "budget" || type === "timing" || /financ|mortgage|pre.?approv|loan|预算|融资|贷款|按揭|期限|截止|deadline/i.test(text)) return "requirements";
   if (nextActionSignal) return "actions";
-  if (type === "property_fact" || concreteProperty || showingFeedback) return "properties";
-  return "preferences";
+  if (type === "property_fact" || concreteProperty || showingFeedback) return "subjects";
+  if (type === "preference" || dealbreaker) return "preferences";
+  if (subjectSignal) return "subjects";
+  return "facts";
 }
 
-function BuyerOverviewGrid({ items, onOpenClaim }: { items: Record<string, unknown>[]; onOpenClaim: (id: string) => void }) {
-  const grouped = Object.fromEntries(buyerOverviewSections.map(({ key }) => [
+function ProjectOverviewGrid({ items, onOpenClaim }: { items: Record<string, unknown>[]; onOpenClaim: (id: string) => void }) {
+  const grouped = Object.fromEntries(projectOverviewSections.map(({ key }) => [
     key,
-    items.filter((item) => buyerOverviewSectionFor(item) === key),
-  ])) as Record<BuyerOverviewSection, Record<string, unknown>[]>;
-  return <div className="buyer-overview-grid">{buyerOverviewSections.map((section) => <section className="buyer-overview-section" key={section.key}>
+    items.filter((item) => projectOverviewSectionFor(item) === key),
+  ])) as Record<ProjectOverviewSection, Record<string, unknown>[]>;
+  return <div className="project-overview-grid">{projectOverviewSections.map((section) => <section className="project-overview-section" key={section.key}>
     <header><h4>{section.label}</h4><span>{grouped[section.key].length}</span></header>
     {grouped[section.key].length > 0 ? <div>{grouped[section.key].map((item, index) => <ViewItem key={firstString(item, ["claim_id", "claimId"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div> : <p>{section.empty}</p>}
   </section>)}</div>;
@@ -1359,7 +1361,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const verified = isRecord(data.verified) ? data.verified : {};
     const trusted = recordArray(verified.currentClaims ?? verified.current_claims).map(claimViewItem);
     return <div className="summary-view client-progress-view">
-      <section className="memory-layer draft-layer"><header><span className="eyebrow">AI 当前理解</span><h3>可以立即参考，但仍可能有错</h3><p>这些内容来自原始 Evidence；未经核对的内容不会改变可信客户状态。</p></header>{drafts.length ? <BuyerOverviewGrid items={drafts.map((item) => ({ ...item, status: "AI 草稿" }))} onOpenClaim={onOpenClaim} /> : <p className="muted">目前没有待核对的 AI 草稿。</p>}</section>
+      <section className="memory-layer draft-layer"><header><span className="eyebrow">AI 当前理解</span><h3>可以立即参考，但仍可能有错</h3><p>这些内容来自原始 Evidence；未经核对的内容不会改变可信项目记录。</p></header>{drafts.length ? <ProjectOverviewGrid items={drafts.map((item) => ({ ...item, status: "AI 草稿" }))} onOpenClaim={onOpenClaim} /> : <p className="muted">目前没有待核对的 AI 草稿。</p>}</section>
       {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能的跨沟通联系</span><h3>先作为提示，不会自动改变可信记忆</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
         const linkId = firstString(link, ["id"]);
         const sourceId = firstString(link, ["source_claim_id"]);
@@ -1369,7 +1371,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
         const busy = Boolean(linkId && (busyAction === `draft-link:${linkId}:accept` || busyAction === `draft-link:${linkId}:reject`));
         return <article className="draft-link-card" key={linkId || index}><div className="view-card-top"><span className="status-badge warning">{draftLinkLabels[linkType] || linkType}</span><small>{Math.round(Number(link.confidence ?? 0) * 100)}% 置信</small></div><div className="draft-link-comparison"><p><span>这次草稿</span>{firstString(link, ["source_statement"]) || "内容未显示"}</p><p><span>旧草稿</span>{firstString(link, ["target_statement"]) || "内容未显示"}</p></div>{firstString(link, ["reason"]) && <p className="muted">AI 判断理由：{firstString(link, ["reason"])}</p>}<div className="action-card-buttons">{sourceId && <button className="text-button" onClick={() => onOpenClaim(sourceId)}>查看这次记录</button>}{targetId && <button className="text-button" onClick={() => onOpenClaim(targetId)}>查看旧记录</button>}{linkId && <button className="button primary small" disabled={!bothVerified || busy} title={bothVerified ? "建立正式关系" : "请先分别确认两条记录"} onClick={() => onDecideDraftLink(linkId, "accept")}>{busy ? "正在保存…" : bothVerified ? "接受为正式关系" : "两边确认后可接受"}</button>}{linkId && <button className="button quiet small" disabled={busy} onClick={() => onDecideDraftLink(linkId, "reject")}>不采纳关联</button>}</div></article>;
       })}</div></section>}
-      <section className="memory-layer trusted-layer"><header><span className="eyebrow">可信记忆</span><h3>只包含人工确认内容</h3><p>时间线、会前准备和正式报告只从这一层读取。</p></header>{trusted.length ? <BuyerOverviewGrid items={trusted} onOpenClaim={onOpenClaim} /> : <p className="muted">还没有人工确认的客户信息。</p>}</section>
+      <section className="memory-layer trusted-layer"><header><span className="eyebrow">可信记忆</span><h3>只包含人工确认内容</h3><p>时间线、会前准备和正式报告只从这一层读取。</p></header>{trusted.length ? <ProjectOverviewGrid items={trusted} onOpenClaim={onOpenClaim} /> : <p className="muted">还没有人工确认的项目信息。</p>}</section>
     </div>;
   }
   if (tab === "actions") {
@@ -1448,7 +1450,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   const rows = objectItems(data).map((item) => tab === "decisions" || tab === "open-questions" ? claimViewItem(item) : item);
   if (!rows.length) {
     const copy: Record<ResultTab, [string, string]> = {
-      "client-progress": ["还没有客户进展", "处理第一场沟通后，AI 草稿和可信记忆会分层显示。"],
+      "client-progress": ["还没有项目进展", "处理第一场沟通后，AI 草稿和可信记忆会分层显示。"],
       actions: ["目前没有下一步行动", "确认 AI 建议后，它会进入站内行动清单。"],
       "folder-summary": ["还没有事项概况", "先完成材料处理并确认有用的记录。"],
       timeline: ["时间线还没有内容", "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"],
@@ -3871,7 +3873,7 @@ export default function Home() {
       await api.completeProjectAction(claimId, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       await invalidateProjectReadModels(project.id);
-      flash("行动已完成，并已保留为一条人工确认的客户进展记录");
+      flash("行动已完成，并已保留为一条人工确认的项目进展记录");
       await loadView("actions", project.id, "replace");
     } catch (error) {
       setViewIssue(toIssue(error));
@@ -3911,11 +3913,11 @@ export default function Home() {
     setProjectsIssue(null);
     try {
       const now = new Date();
-      const name = `测试记录 ${new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(now)}`;
+      const name = `新项目 ${new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(now)}`;
       const fingerprint = `simple-project:${name}`;
       const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, key);
-      const created = await api.createProject({ name, profile: "real_estate_buyer_journey" }, key);
+      const created = await api.createProject({ name }, key);
       mutationKeys.current.delete(fingerprint);
       setProject(created);
       setEvents([]);
@@ -3926,7 +3928,7 @@ export default function Home() {
       await loadProjects();
       await loadSimpleProject(created.id);
       if (openTranscriptAfterCreate) setShowImport(true);
-      flash("空白测试已经建立。Transcript 会成为第一条沟通，录音或照片会自动建立第一条沟通。");
+      flash("新项目已经建立。Transcript 会成为第一条沟通，录音或照片会自动建立第一条沟通。");
       return { project: created, event: null };
     } catch (error) {
       setProjectsIssue(toIssue(error));
@@ -4298,10 +4300,10 @@ export default function Home() {
         >
           <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
         </button>
-        <button className="brand" onClick={goSimple} aria-label="Notique AI · 核心测试"><span className="brand-mark">⌁</span><span className="sidebar-label">Notique AI</span></button>
+        <button className="brand" onClick={goSimple} aria-label="Notique AI · 项目工作区"><span className="brand-mark">⌁</span><span className="sidebar-label">Notique AI</span></button>
         <div className="account"><span className="avatar">N</span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
         <nav aria-label="主要导航">
-          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="核心测试" title={sidebarCollapsed ? "核心测试" : undefined}><span className="sidebar-nav-icon">◎</span><span className="sidebar-nav-label">核心测试</span></button>
+          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon">◎</span><span className="sidebar-nav-label">项目工作区</span></button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon">▣</span><span className="sidebar-nav-label">高级工具</span></button>
           {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon">◫</span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
@@ -4310,8 +4312,8 @@ export default function Home() {
       <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
       <main>
         <aside className="public-workspace-notice" aria-label="公开共享测试空间提示">
-          <strong>公开共享测试空间</strong>
-          <span>所有访问者共享这个测试工作区。请勿上传真实客户姓名、联系方式、地址、财务信息或其他敏感材料；仅使用公开、合成或已脱敏内容。</span>
+          <strong>公开共享演示空间</strong>
+          <span>所有访问者共享这个演示空间。请勿上传真实人员姓名、联系方式、地址、财务信息或其他敏感材料；仅使用公开、合成或已脱敏内容。</span>
         </aside>
         {screen === "simple" && <SimpleTestScreen
           key={project?.id ?? "none"}
@@ -4457,7 +4459,7 @@ export default function Home() {
           const fingerprint = `create-project:${name}`;
           const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
           mutationKeys.current.set(fingerprint, idempotencyKey);
-          const created = await api.createProject({ name, profile: "real_estate_buyer_journey" }, idempotencyKey);
+          const created = await api.createProject({ name }, idempotencyKey);
           mutationKeys.current.delete(fingerprint);
           setShowNewProject(false);
           await loadProjects();
@@ -5164,7 +5166,7 @@ function TranscriptArtifactsPanel({
       <div><strong>{pendingReviewCount} 条重要信息可以确认</strong><span>金额、日期、责任人和变化会优先排在前面。</span></div>
       <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重点</button>
     </footer>}
-    {analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0 && <footer className="focus-action-bar complete" aria-label="重点已经存档"><div><strong>本次重点已经处理完成</strong><span>确认过的内容已进入客户档案，原始来源仍然保留。</span></div><span className="focus-complete-mark">✓</span></footer>}
+    {analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0 && <footer className="focus-action-bar complete" aria-label="重点已经存档"><div><strong>本次重点已经处理完成</strong><span>确认过的内容已进入项目档案，原始来源仍然保留。</span></div><span className="focus-complete-mark">✓</span></footer>}
     {analysisRun
       && !(analysisComplete && reviewReady && pendingReviewCount > 0)
       && !(analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0)
@@ -5558,7 +5560,7 @@ function SimpleTestScreen({
     waiting_scenario: "请先确认使用场景",
     waiting_review: "核对这次结果",
     draft_ready: "查看 AI 草稿",
-    partially_reviewed: "继续查看客户进展",
+    partially_reviewed: "继续查看项目进展",
     complete: "打开会前速览",
     error: "重新检查并继续",
   };
@@ -5607,7 +5609,7 @@ function SimpleTestScreen({
       body: `${projectWorkflow.pendingTotal} 条 AI 草稿等待核对。你可以先使用摘要，也可以新增下一次沟通；只有确认过的内容会进入可信报告。`,
     },
     partially_reviewed: {
-      title: "客户进展包含 AI 草稿和可信记忆",
+      title: "项目进展包含 AI 草稿和可信记忆",
       body: `${projectWorkflow.pendingTotal} 条内容仍待核对。未核对草稿不会进入 Timeline、Brief 或正式报告。`,
     },
     complete: {
@@ -5850,7 +5852,7 @@ function SimpleTestScreen({
       {!project && <header className="simple-header">
         <span className="eyebrow">Notique Workspace</span>
         <h1>把每次沟通变成可核对的项目记忆</h1>
-        <p>选择已有项目，或用 Transcript、录音和照片开始一次新测试。</p>
+        <p>选择已有项目，或用 Transcript、录音和照片开始一个新项目。</p>
       </header>}
 
       <section className="simple-session" aria-label="当前项目和沟通">
@@ -5891,7 +5893,7 @@ function SimpleTestScreen({
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="project-menu" align="end" sideOffset={7} collisionPadding={12}>
                 <DropdownMenu.Item asChild>
-                  <button onClick={() => afterProjectMenuCloses(onStartOwn)}>新建买方客户项目</button>
+                  <button onClick={() => afterProjectMenuCloses(onStartOwn)}>新建项目</button>
                 </DropdownMenu.Item>
                 <DropdownMenu.Item asChild>
                   <button onClick={() => afterProjectMenuCloses(onOpenTrash)}>回收站</button>
@@ -5920,7 +5922,7 @@ function SimpleTestScreen({
               </label>
             ))}
           </div>
-          <label className="field"><span>需要时可改成更合适的名称</span><input value={customScenario} onChange={(change) => setCustomScenario(change.target.value)} placeholder="例如：房屋翻修项目" /></label>
+          <label className="field"><span>需要时可改成更合适的名称</span><input value={customScenario} onChange={(change) => setCustomScenario(change.target.value)} placeholder="例如：保险理赔、房屋翻修或供应商评估" /></label>
           <button className="button primary" disabled={busy === "scenario" || (!scenario && !customScenario.trim())} onClick={() => void onConfirmScenario(scenario || "custom", customScenario.trim() || undefined)}>{busy === "scenario" ? "正在保存…" : "确认后继续"}</button>
         </section>
       )}
@@ -5962,7 +5964,7 @@ function SimpleTestScreen({
               <DropdownMenu.Portal>
                 <DropdownMenu.Content className="meeting-more-menu" align="end" sideOffset={5} collisionPadding={12}>
                   <DropdownMenu.Item asChild><button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}><span>✓</span><b>待确认</b><small>{pendingCount > 0 ? `${pendingCount} 条重点` : "当前无待确认"}</small></button></DropdownMenu.Item>
-                  <DropdownMenu.Item asChild><button aria-label="结果" className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}><span>▤</span><b>客户档案</b><small>查看长期记录</small></button></DropdownMenu.Item>
+                  <DropdownMenu.Item asChild><button aria-label="结果" className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}><span>▤</span><b>项目档案</b><small>查看长期记录</small></button></DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
@@ -6084,7 +6086,7 @@ function SimpleTestScreen({
 
           {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewReady ? "优先检查金额、日期、责任人、矛盾和低置信内容。" : workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div>{workflowReviewReady && <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重要内容</button>}</div></div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{needsScenario ? "先确认工作场景，再进入客户档案。" : analysisDone ? "客户概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从客户概览了解预算、偏好、决策人和下一步。"}</p></div><button className="button primary" disabled={needsScenario || !analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开客户概览</button></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{needsScenario ? "先确认工作场景，再进入项目档案。" : analysisDone ? "项目概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从项目概览了解关键事实、需求、负责人和下一步。"}</p></div><button className="button primary" disabled={needsScenario || !analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开项目概览</button></div></div>}
         </article>
       </section>
 
@@ -6556,7 +6558,7 @@ function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment,
         })}</ol></section>}
         {runOccurrences.length > 0 && <section className="panel draft-section draft-occurrences"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}
         {runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}
-        <section className="draft-actions panel"><div><h2>按重要程度决定要不要现在核对</h2><p>金额、期限、责任人、矛盾和低置信内容建议优先核对；其余内容可以稍后继续。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button secondary" disabled={Boolean(busy)} onClick={onContinueLater}>稍后核对，继续客户旅程</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>核对重要内容</button></div></section>
+        <section className="draft-actions panel"><div><h2>按重要程度决定要不要现在核对</h2><p>金额、期限、责任人、矛盾和低置信内容建议优先核对；其余内容可以稍后继续。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button secondary" disabled={Boolean(busy)} onClick={onContinueLater}>稍后核对，继续处理项目</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>核对重要内容</button></div></section>
       </>}
     </div>
   );
@@ -6573,7 +6575,7 @@ function MissingClaimModal({ eventId, initialType = "other", busy, onClose, onCr
   useEffect(() => { let active = true; void api.listEventTranscriptSegments(eventId).then((items) => { if (!active) return; setSegments(items); setState(items.length ? "ready" : "empty"); }).catch((error) => { if (!active) return; setIssue(toIssue(error)); setState("error"); }); return () => { active = false; }; }, [eventId]);
   const shown = segments.filter((segment) => !query.trim() || `${displaySpeakerLabel(segment.speaker)} ${segment.speaker || ""} ${segment.text}`.toLowerCase().includes(query.trim().toLowerCase()));
   async function submit() { if (!statement.trim() || selected.size === 0) return; setIssue(null); try { await onCreate({ statement: statement.trim(), type, segmentIds: [...selected] }); } catch (error) { setIssue(toIssue(error)); } }
-  return <Modal title={initialType === "next_action" ? "从原文补充下一步行动" : "补上 AI 漏掉的重要信息"} description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：经纪人周五前发送三套符合预算的房源。" : "例如：客户确认总预算上限为 21,500 美元。"} /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
+  return <Modal title={initialType === "next_action" ? "从原文补充下一步行动" : "补上 AI 漏掉的重要信息"} description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：负责人周五前发送三份候选方案。" : "例如：项目预算上限为 21,500 美元。"} /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
 }
 
 function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
@@ -6830,7 +6832,7 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDur
   const content = <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} onCompleteAction={onCompleteAction} onDecideDraftLink={onDecideDraftLink} onOpenAiSuggestions={onOpenAiSuggestions} onAddAction={onAddAction} busyAction={busy} />;
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="客户进展" body="客户概览会分开显示 AI 草稿与可信记忆；时间线、下一步和会前准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
+      <PageHeader eyebrow={project?.name} title="项目进展" body="项目概览会分开显示 AI 草稿与可信记忆；时间线、下一步和会前准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</div><details className="result-nav-more" open={secondaryTabActive || undefined}><summary>更多报告 <span>{secondaryResultTabs.length}</span></summary><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</div></details></aside><section className="result-content"><div className="section-heading"><div><span className="section-kicker">{tab === "client-progress" ? "AI 草稿 + 可信记忆" : tab === "actions" ? "站内行动" : "只读可信记忆"}</span><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
@@ -6839,7 +6841,21 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDur
 
 function NewProjectModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (name: string) => Promise<void>; busy: boolean }) {
   const [name, setName] = useState("");
-  return <Modal title="新建买方客户项目" description="Notique 会持续追踪同一买家的预算、偏好、看房反馈、未决问题和下一步。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) void onCreate(name.trim()); }}><label className="field"><span>客户或项目名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：Wilson 买房旅程" /></label><p className="form-note">场景会直接设为“买方客户旅程”，不再要求 AI 猜测。AI 草稿可立即阅读，只有你确认过的内容会进入可信报告。</p><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!name.trim() || busy}>{busy ? "正在创建…" : "创建买方项目"}</button></div></form></Modal>;
+  return (
+    <Modal title="新建项目" description="Notique 会持续整理同一项目中的沟通重点、已确认信息、未决问题和下一步。" onClose={onClose}>
+      <form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) void onCreate(name.trim()); }}>
+        <label className="field">
+          <span>项目名称</span>
+          <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：Oak Street Renovation" />
+        </label>
+        <p className="form-note">AI 草稿会先生成供你阅读；分析第一批材料后，只需确认一次工作场景。只有你确认过的内容会进入可信记忆。</p>
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={onClose}>取消</button>
+          <button className="button primary" disabled={!name.trim() || busy}>{busy ? "正在创建…" : "创建项目"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
 }
 
 function NewEventModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (input: { title: string; event_type: string; occurred_at: string }) => Promise<void>; busy: boolean }) {

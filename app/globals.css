@@ -661,15 +661,15 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .memory-layer > header { display: grid; gap: 4px; }
 .memory-layer > header h3 { margin: 0; font-size: 15px; }
 .memory-layer > header p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
-.buyer-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-.buyer-overview-section { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 11px; }
-.buyer-overview-section > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.buyer-overview-section > header h4 { margin: 0; font-size: 11px; }
-.buyer-overview-section > header span { min-width: 21px; height: 21px; border-radius: 999px; background: #edf2ef; color: var(--green); display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 850; }
-.buyer-overview-section > p { margin: 12px 0 2px; color: var(--subtle); font-size: 9px; }
-.buyer-overview-section > div { margin-top: 8px; display: grid; gap: 7px; }
-.buyer-overview-section .view-card { border-color: #e6ebe8; border-radius: 7px; padding: 10px; box-shadow: none; }
-.buyer-overview-section .view-card h3 { font-size: 10px; }
+.project-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.project-overview-section { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 11px; }
+.project-overview-section > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-overview-section > header h4 { margin: 0; font-size: 11px; }
+.project-overview-section > header span { min-width: 21px; height: 21px; border-radius: 999px; background: #edf2ef; color: var(--green); display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 850; }
+.project-overview-section > p { margin: 12px 0 2px; color: var(--subtle); font-size: 9px; }
+.project-overview-section > div { margin-top: 8px; display: grid; gap: 7px; }
+.project-overview-section .view-card { border-color: #e6ebe8; border-radius: 7px; padding: 10px; box-shadow: none; }
+.project-overview-section .view-card h3 { font-size: 10px; }
 .draft-layer { border-color: #d7dfea; background: #f8faff; }
 .trusted-layer { border-color: #bfdccd; background: #f8fcfa; }
 .draft-link-layer { border-color: #ead39b; background: #fffaf0; }
@@ -1280,7 +1280,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .focus-action-bar { align-items: stretch; flex-direction: column; }
   .focus-action-bar .button { width: 100%; }
   .draft-link-comparison { grid-template-columns: 1fr; }
-  .buyer-overview-grid { grid-template-columns: 1fr; }
+  .project-overview-grid { grid-template-columns: 1fr; }
   .action-empty-state > div { width: 100%; display: grid; grid-template-columns: 1fr; }
   .timeline-filter { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px; }
   .timeline-filter button { flex: 0 0 auto; }

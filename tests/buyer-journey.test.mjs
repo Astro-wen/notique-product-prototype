@@ -278,10 +278,12 @@ test("buyer journey APIs keep draft links separate from formal relations and act
   assert.match(repository, /The user marked this confirmed action as completed/);
   assert.match(route, /segments\[0\] === "draft-links"[\s\S]*applyDraftLinkVerdict/);
   assert.match(route, /segments\[0\] === "actions"[\s\S]*completeProjectAction/);
-  assert.match(page, /新建买方客户项目/);
+  assert.match(page, /新建项目/);
   assert.match(page, /onStartOwn=\{\(\) => \{ setSimpleFlow\(true\); setShowNewProject\(true\); \}\}/);
   assert.match(page, /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/);
-  assert.match(page, /稍后核对，继续客户旅程/);
+  assert.match(page, /稍后核对，继续处理项目/);
+  assert.equal((page.match(/api\.createProject\(\{ name \},/g) ?? []).length, 2);
+  assert.doesNotMatch(page, /api\.createProject\(\{ name, profile: "real_estate_buyer_journey"/);
   assert.match(page, /两边确认后可接受/);
   assert.match(page, /AI 当前理解/);
   assert.match(page, /可信记忆/);

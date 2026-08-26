@@ -21,7 +21,7 @@ test("project menu supports keyboard movement, Escape, and outside dismissal", a
 
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
   await trigger.press("ArrowDown");
-  const createItem = page.getByRole("menuitem", { name: "新建买方客户项目" });
+  const createItem = page.getByRole("menuitem", { name: "新建项目" });
   const trashItem = page.getByRole("menuitem", { name: "回收站", exact: true });
   await expect(createItem).toBeFocused();
 

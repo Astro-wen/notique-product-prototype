@@ -82,7 +82,7 @@ test("desktop sidebar collapses, restores, and keeps navigation accessible", asy
   await page.getByRole("button", { name: "收起侧栏" }).click();
   await expect(shell).toHaveClass(/sidebar-collapsed/);
   await expect(sidebar).toHaveCSS("width", "68px");
-  await expect(page.getByRole("button", { name: "核心测试", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "项目工作区", exact: true })).toBeVisible();
   expect((await main.boundingBox())?.x ?? expandedMainX).toBeLessThan(expandedMainX);
   await expect.poll(() => page.evaluate(() => localStorage.getItem("notique.ui.sidebar-collapsed"))).toBe("1");
 
