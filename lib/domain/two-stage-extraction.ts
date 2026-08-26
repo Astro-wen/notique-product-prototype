@@ -6,8 +6,8 @@ import type {
   ModelProvider,
   ModelUsage,
 } from "./model-contract";
-// @ts-expect-error Node's native TypeScript runner requires the explicit extension;
-// the application bundler resolves this same source module without emitting it.
+// The explicit extension keeps Node's native TypeScript runner and the
+// application bundler resolving this same source module identically.
 import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";

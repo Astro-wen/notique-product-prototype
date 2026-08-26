@@ -1,22 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import ts from "typescript";
+import { projectOverviewSectionFor } from "../lib/domain/project-overview.ts";
+import { projectSelectionLabel } from "../lib/domain/project-label.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const realtor = JSON.parse(await readFile(new URL("../eval/cases/synthetic-realtor-v1/ground-truth.json", import.meta.url), "utf8"));
 const oak = JSON.parse(await readFile(new URL("../eval/cases/synthetic-contractor-v1/ground-truth.json", import.meta.url), "utf8"));
-
-function executablePageFunction(name, nextName, dependencies) {
-  const start = page.indexOf(`function ${name}`);
-  const end = page.indexOf(`\n}\n\nfunction ${nextName}`, start);
-  assert.ok(start >= 0 && end >= 0, `${name} must have a stable function boundary`);
-  const javascript = ts.transpileModule(page.slice(start, end + 2), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText;
-  const names = Object.keys(dependencies);
-  return new Function(...names, `${javascript}\nreturn ${name};`)(...names.map((key) => dependencies[key]));
-}
 
 function claim(data, id) {
   const match = data.claims.find((item) => item.id === id);
@@ -25,14 +15,7 @@ function claim(data, id) {
 }
 
 test("project overview executes the production classifier across buyer and contractor claims", () => {
-  const firstString = (object, keys) => {
-    for (const key of keys) {
-      const value = object[key];
-      if (typeof value === "string" && value.trim()) return value;
-    }
-    return undefined;
-  };
-  const classify = executablePageFunction("projectOverviewSectionFor", "ProjectOverviewGrid", { firstString });
+  const classify = projectOverviewSectionFor;
 
   assert.equal(classify(claim(realtor, "gt-r1-joint-offer-approval")), "people");
   assert.equal(classify({ type: "decision", statement: "Lena Morgan cannot commit on behalf of both buyers." }), "people");
@@ -47,8 +30,13 @@ test("project overview executes the production classifier across buyer and contr
   assert.equal(classify({ type: "other", statement: "The insurance claim includes water damage." }), "subjects");
 });
 
+test("the page renders the overview through the shared production classifier", () => {
+  assert.match(page, /import \{ projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection \} from "@\/lib\/domain\/project-overview"/);
+  assert.doesNotMatch(page, /function projectOverviewSectionFor/, "the classifier must live in the domain layer, not in the page");
+});
+
 test("duplicate project names get stable option labels without renaming projects", () => {
-  const labelFor = executablePageFunction("projectSelectionLabel", "formatReviewDuration", { formatDate: (value) => value });
+  const labelFor = projectSelectionLabel;
   const projects = [
     { id: "prj_alpha111", name: "Morgan Family", eventCount: 4, updatedAt: "2026-08-15T08:30:00.000Z" },
     { id: "prj_beta222", name: "Morgan Family", eventCount: 4, updatedAt: "2026-08-15T08:30:00.000Z" },
@@ -57,7 +45,7 @@ test("duplicate project names get stable option labels without renaming projects
 
   const first = labelFor(projects[0], projects);
   const second = labelFor(projects[1], projects);
-  assert.match(first, /^Morgan Family · 4 次沟通 · 更新 2026-08-15T08:30:00\.000Z/);
+  assert.match(first, /^Morgan Family · 4 次沟通 · 更新 /);
   assert.notEqual(first, second);
   assert.match(first, /pha111$/);
   assert.match(second, /eta222$/);

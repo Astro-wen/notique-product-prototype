@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { projectOverviewSections } from "../lib/domain/project-overview.ts";
 
 const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -46,8 +47,19 @@ test("results use four general project entrances and move specialist reports beh
   assert.match(page, /className="result-nav-more"/);
   assert.match(page, /更多报告/);
   assert.match(page, /projectOverviewSections/);
-  assert.match(page, /关键事实/);
-  assert.match(page, /关键对象与反馈/);
+  const overviewLabels = projectOverviewSections.map((section) => section.label);
+  assert.deepEqual(overviewLabels, [
+    "关键事实",
+    "需求与约束",
+    "偏好与条件",
+    "相关人员与职责",
+    "关键对象与反馈",
+    "未决问题与风险",
+    "下一步行动",
+  ]);
+  for (const section of projectOverviewSections) {
+    assert.ok(section.empty.trim(), `${section.key} must offer empty-state copy`);
+  }
 });
 
 test("action and timeline empty states offer useful next steps", () => {
