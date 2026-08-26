@@ -51,6 +51,10 @@ test("results use four general project entrances and move specialist reports beh
   assert.equal((primary.match(/\{ key: "/g) ?? []).length, 4);
   assert.match(page, /className="result-nav-more"/);
   assert.match(page, /更多报告/);
+  // The first character of a label is not an icon; the label carries itself.
+  assert.doesNotMatch(page, /item\.short\.slice\(0, 1\)/, "report entries must not fake an icon from a truncated label");
+  // Internal measurements are not product copy.
+  assert.doesNotMatch(page, /报告读取|report-load-timing/, "the view load timing must not be shown to readers");
   assert.match(page, /projectOverviewSections/);
   const overviewLabels = projectOverviewSections.map((section) => section.label);
   assert.deepEqual(overviewLabels, [

@@ -1439,7 +1439,6 @@ export default function Home() {
   const [viewData, setViewData] = useState<unknown>(null);
   const [viewState, setViewState] = useState<AsyncState>("idle");
   const [viewIssue, setViewIssue] = useState<ApiIssue | null>(null);
-  const [viewLoadDurationMs, setViewLoadDurationMs] = useState<number | null>(null);
   const [runDebug, setRunDebug] = useState<RunDebug | null>(null);
   const [runDebugState, setRunDebugState] = useState<AsyncState>("idle");
   const [runDebugIssue, setRunDebugIssue] = useState<ApiIssue | null>(null);
@@ -2538,7 +2537,6 @@ export default function Home() {
     if (!targetProjectId) return;
     const token = requestEpochs.current.view + 1;
     requestEpochs.current.view = token;
-    const loadStartedAt = performance.now();
     setViewTab(tab);
     const currentOrigin = routeRef.current.view === "results"
       ? routeRef.current.origin
@@ -2554,7 +2552,6 @@ export default function Home() {
     }, historyMode);
     setViewState("loading");
     setViewIssue(null);
-    setViewLoadDurationMs(null);
     try {
       const loadVerifiedView = (projectId: string, view: ProjectViewName) =>
         queryClient.fetchQuery(verifiedViewQuery(projectId, view));
@@ -2598,7 +2595,6 @@ export default function Home() {
       setViewData(null);
     } finally {
       if (requestEpochs.current.view !== token) return;
-      setViewLoadDurationMs(Math.max(0, Math.round(performance.now() - loadStartedAt)));
     }
   }, [event?.id, events, navigateRoute, project, queryClient]);
 
@@ -4407,7 +4403,7 @@ export default function Home() {
           destination={reviewSummaryDestination}
           onContinue={() => void continueAfterReviewSummary()}
         />}
-        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} loadDurationMs={viewLoadDurationMs} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setShowMissingClaim(true); }} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setShowMissingClaim(true); }} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={navigateBack} onRetry={() => run && void openRunDebug(run.id, "replace")} />}
       </main>
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
@@ -6780,7 +6776,7 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
   );
 }
 
-function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDurationMs, onBack, backLabel, onSelect, onRetry, onOpenClaim, onResolveContradiction, onCompleteAction, onDecideDraftLink, onOpenAiSuggestions, onAddAction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; loadDurationMs: number | null; onBack: () => void; backLabel: string; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; onCompleteAction: (claimId: string) => void; onDecideDraftLink: (linkId: string, action: "accept" | "reject") => void; onOpenAiSuggestions: () => void; onAddAction: () => void }) {
+function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack, backLabel, onSelect, onRetry, onOpenClaim, onResolveContradiction, onCompleteAction, onDecideDraftLink, onOpenAiSuggestions, onAddAction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; backLabel: string; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; onCompleteAction: (claimId: string) => void; onDecideDraftLink: (linkId: string, action: "accept" | "reject") => void; onOpenAiSuggestions: () => void; onAddAction: () => void }) {
   const current = resultTabs.find((item) => item.key === tab)!;
   const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
   const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
@@ -6788,9 +6784,9 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, loadDur
   const content = <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} onCompleteAction={onCompleteAction} onDecideDraftLink={onDecideDraftLink} onOpenAiSuggestions={onOpenAiSuggestions} onAddAction={onAddAction} busyAction={busy} />;
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="项目进展" body="项目概览会分开显示 AI 草稿与可信记忆；时间线、下一步和会前准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} actions={loadDurationMs == null ? undefined : <span className="report-load-timing">报告读取 {formatReviewDuration(loadDurationMs)}</span>} />
+      <PageHeader eyebrow={project?.name} title="项目进展" body="项目概览逐条标明 AI 草稿或已确认；时间线、下一步和会前准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} />
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
-      <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</div><details className="result-nav-more" open={secondaryTabActive || undefined}><summary>更多报告 <span>{secondaryResultTabs.length}</span></summary><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span>{item.short.slice(0, 1)}</span>{item.label}<b>›</b></button>)}</div></details></aside><section className="result-content"><div className="section-heading"><div><span className="section-kicker">{tab === "client-progress" ? "AI 草稿 + 可信记忆" : tab === "actions" ? "站内行动" : "只读可信记忆"}</span><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
+      <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}>{item.label}<b>›</b></button>)}</div><details className="result-nav-more" open={secondaryTabActive || undefined}><summary>更多报告 <span>{secondaryResultTabs.length}</span></summary><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}>{item.label}<b>›</b></button>)}</div></details></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
   );
 }
