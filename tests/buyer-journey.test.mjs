@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { uiSource } from "./helpers/ui-source.mjs";
 import { buildContextPack } from "../lib/domain/context-pack.ts";
 import { planProjectWorkflow } from "../lib/domain/project-workflow.ts";
 
@@ -285,7 +286,10 @@ test("buyer journey APIs keep draft links separate from formal relations and act
   assert.equal((page.match(/api\.createProject\(\{ name \},/g) ?? []).length, 2);
   assert.doesNotMatch(page, /api\.createProject\(\{ name, profile: "real_estate_buyer_journey"/);
   assert.match(page, /两边确认后可接受/);
-  assert.match(page, /AI 当前理解/);
-  assert.match(page, /可信记忆/);
+  // Draft and verified records now share one list and are told apart per row,
+  // so the distinction is asserted where it is actually rendered.
+  assert.match(uiSource, /已确认内容可信，AI 草稿仅供参考/);
+  assert.match(uiSource, /row\.verified \? "已确认" : "AI 草稿"/);
+  assert.match(uiSource, /只看已确认/);
   assert.match(provider, /Use type next_action only for a concrete future action/);
 });

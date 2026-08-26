@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { declarationSource } from "./helpers/ui-source.mjs";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 import { projectOverviewSections } from "../lib/domain/project-overview.ts";
+import { typeLabel } from "../lib/domain/labels.ts";
 
-const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+const page = uiSource;
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
 test("AI draft is a chronological, evidence-linked view of existing Agent B claims", () => {
@@ -165,5 +166,6 @@ test("review empty states and completed workflow cards avoid duplicate primary a
 test("evidence copy stays clear in both review and read-only modes", () => {
   assert.doesNotMatch(page, /\$\{typeLabel\(evidence\.role\)\}证据/);
   assert.match(page, /下面保留这条已确认记录的原句、前后文和来源/);
-  assert.match(page, /other: "其他重要信息"/);
+  assert.equal(typeLabel("other"), "其他重要信息");
+  assert.equal(typeLabel("direct"), "直接证据");
 });

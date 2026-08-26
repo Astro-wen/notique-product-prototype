@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir, stat } from "node:fs/promises";
 import test from "node:test";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -199,7 +200,7 @@ test("reasoning effort is frozen per Run and Run Debug exposes execution limits"
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const provider = await read("lib/server/ai/model-provider.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.doesNotMatch(modelConfig, /OPENAI_REASONING_EFFORTS\s*=\s*\[[\s\S]{0,200}["']max["']/);
   assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']xhigh["']/);
@@ -554,7 +555,7 @@ test("legacy batch confirmation remains server-gated while the simplified UI sta
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(schema, /claimEvidenceReviewAttestations[\s\S]{0,1000}actorId[\s\S]{0,500}claimVersionId/);
   assert.match(
@@ -578,7 +579,7 @@ test("model-proposed Claim relations require explicit human decisions", async ()
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const confirmSection = repository.slice(
     repository.indexOf('if (input.action === "confirm")'),
     repository.indexOf('} else if (input.action === "reject")'),
@@ -1055,7 +1056,7 @@ test("verdict retries use a persisted idempotency key and replay one result", as
 
 test("frontend never auto-retains evidence for a factual edit and reuses extraction retry keys", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const verdictClient = client.slice(
     client.indexOf("async saveVerdict"),
     client.indexOf("async batchConfirm"),
@@ -1086,23 +1087,10 @@ test("frontend never auto-retains evidence for a factual edit and reuses extract
 });
 
 test("claim review stays locked until the exact complete evidence set is loaded", async () => {
-  const page = await read("app/page.tsx");
-  const readinessHelper = page.slice(
-    page.indexOf("function isCompleteEvidenceSet"),
-    page.indexOf("function uncertaintyParts"),
-  );
-  const evidenceLoader = page.slice(
-    page.indexOf("async function openClaim"),
-    page.indexOf("async function runVerdict"),
-  );
-  const verdictHandler = page.slice(
-    page.indexOf("async function runVerdict"),
-    page.indexOf("async function withdrawClaim"),
-  );
-  const claimScreen = page.slice(
-    page.indexOf("function ClaimScreen"),
-    page.indexOf("function ResultsScreen"),
-  );
+  const readinessHelper = declarationSource("isCompleteEvidenceSet");
+  const evidenceLoader = declarationSource("openClaim");
+  const verdictHandler = declarationSource("runVerdict");
+  const claimScreen = declarationSource("ClaimScreen");
 
   assert.match(readinessHelper, /!everyFetchSucceeded/,
     "one failed Evidence request must keep the Claim locked");
@@ -1127,7 +1115,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
 
 test("frontend preserves creation keys until the server returns and resumes multi-step uploads", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const clientMethods = [
     ["createProject", "getProject"],
     ["createEvent", "getEvent"],
@@ -1165,7 +1153,7 @@ test("frontend preserves creation keys until the server returns and resumes mult
 
 test("frontend consumes the canonical evidence and deterministic view contracts", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const evidenceNormalizer = client.slice(
     client.indexOf("function normalizeEvidence"),
     client.indexOf("export function normalizeClaim"),
@@ -1208,15 +1196,10 @@ test("frontend consumes the canonical evidence and deterministic view contracts"
 });
 
 test("Brief Card resolves deterministic IDs into readable source content", async () => {
-  const page = await read("app/page.tsx");
-  const loader = page.slice(
-    page.indexOf("async function loadBriefDisplayData"),
-    page.indexOf("function ViewItem"),
-  );
-  const briefRenderer = page.slice(
-    page.indexOf("type BriefItemKind"),
-    page.indexOf("export default function Home"),
-  );
+  const loader = declarationSource("loadBriefDisplayData");
+  const briefRenderer = ["briefItemText", "briefSourceId", "BriefGroup"]
+    .map(declarationSource)
+    .join("\n");
 
   assert.match(loader, /loadVerifiedView:[\s\S]*?api\.getView\(id, view\)/,
     "Brief Card's injectable cached loader must still default to the canonical View API");
@@ -1367,7 +1350,7 @@ test("glossary management is scoped, audited, idempotent, and context-safe", asy
   const route = await read("app/api/v1/[...segments]/route.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const contextPack = await read("lib/domain/context-pack.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(
     repository,
@@ -1422,7 +1405,7 @@ test("Project and Event review counts stay separate from verified-only views", a
   const records = await read("lib/server/db/records.ts");
   const types = await read("lib/shared/api-types.ts");
   const views = await read("lib/domain/views.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(types, /\bevent_count\b/, "Project API types must expose the Event count");
   assert.match(records, /event_count:\s*integer\(row, ["']event_count["']\)/, "Project records must map the Event count");
@@ -1500,7 +1483,7 @@ test("manual Claim relations are scoped, atomic, idempotent, and visible after c
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(route, /segments\[2\] === ["']relation-targets["']/);
   assert.match(route, /segments\[0\] === ["']claim-relations["']/);
@@ -1545,7 +1528,7 @@ test("AI draft stays outside the ledger and human missed facts require canonical
   const repository = await read("lib/server/db/ai-draft-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(route, /segments\[2\] === ["']draft-assessment["']/);
   assert.match(route, /segments\[2\] === ["']transcript-segments["']/);

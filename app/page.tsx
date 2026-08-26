@@ -48,11 +48,13 @@ import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
 import { autoAnalysisDecision } from "@/lib/domain/auto-analysis";
 import { formatTimestamp } from "@/lib/domain/display-format";
+import { typeLabel } from "@/lib/domain/labels";
+import { ViewItem } from "@/app/components/view-item";
+import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { Modal } from "@/app/components/modal";
 import { TranscriptViewer } from "@/app/components/transcript-viewer";
 import { firstString, isRecord, stringValue } from "@/lib/domain/claim-fields";
 import { formatDate, projectSelectionLabel } from "@/lib/domain/project-label";
-import { projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection } from "@/lib/domain/project-overview";
 import {
   backLabelForRoute,
   fallbackBackRoute,
@@ -634,30 +636,6 @@ function EvidenceRequirementNotice({ claim, compact = false }: { claim: Claim; c
   return <p className="uncertainty">{compact ? "仍需补充证据" : "这条记录仍需补充证据，确认前请检查现有材料是否足够。"}</p>;
 }
 
-function typeLabel(value?: string): string {
-  const labels: Record<string, string> = {
-    fact: "事实",
-    preference: "偏好",
-    commitment: "承诺",
-    decision: "决定",
-    risk: "风险",
-    open_question: "待确认问题",
-    question: "待确认问题",
-    requirement: "要求",
-    next_action: "下一步行动",
-    budget: "预算",
-    person_role: "人员与职责",
-    property_fact: "对象事实",
-    concern: "顾虑",
-    other: "其他重要信息",
-    constraint: "限制",
-    direct: "直接证据",
-    corroborating: "佐证材料",
-    contextual: "背景参考",
-  };
-  return labels[(value ?? "").toLowerCase()] ?? (value || "记录").replaceAll("_", " ");
-}
-
 function statusLabel(value?: string): string {
   const labels: Record<string, string> = {
     draft: "等待材料",
@@ -989,35 +967,6 @@ function viewEmptyReason(value: unknown): string | undefined {
   return isRecord(value) ? stringValue(value.empty_reason) : undefined;
 }
 
-function ViewItem({ item, onOpenClaim }: { item: Record<string, unknown>; onOpenClaim: (id: string) => void }) {
-  const title = firstString(item, ["statement", "displayText", "display_text", "summary", "title", "question", "label", "text", "slot", "delta_text", "current_value"]) ?? "已确认记录";
-  const description = firstString(item, ["description", "reason", "detail", "answer", "change", "previous_value"]);
-  const type = firstString(item, ["type", "claim_type", "sourceKind", "source_kind", "delta_type", "status", "materiality"]);
-  const date = firstString(item, ["occurredAt", "occurred_at", "event_date", "openedAt", "opened_at", "updatedAt", "updated_at", "createdAt", "created_at"]);
-  const claimId = firstString(item, ["claim_id", "claimId"]);
-  const versionId = firstString(item, ["claim_version_id", "claimVersionId", "version_id"]);
-  const rejected = item.rejectedOptions ?? item.rejected_options;
-  const selected = stringValue(item.selectedOption ?? item.selected_option);
-  const reason = stringValue(item.reason);
-  const openDays = typeof (item.openDays ?? item.open_days) === "number" ? Number(item.openDays ?? item.open_days) : undefined;
-  const repeatCount = typeof (item.repeatCount ?? item.repeat_count) === "number" ? Number(item.repeatCount ?? item.repeat_count) : undefined;
-  const evidenceIds = Array.isArray(item.evidence_ref_ids) ? item.evidence_ref_ids.map(stringValue).filter(Boolean) : [];
-  return (
-    <article className="view-card">
-      <div className="view-card-top">
-        <div>{type && <span className="eyebrow">{typeLabel(type)}</span>}<h3>{title}</h3></div>
-        {date && <time>{formatDate(date)}</time>}
-      </div>
-      {description && description !== title && <p>{description}</p>}
-      {selected && <p><b>已选择：</b>{selected}</p>}
-      {Array.isArray(rejected) && <p><b>未选择：</b>{rejected.map(stringValue).filter(Boolean).join("、") || "尚未记录"}</p>}
-      {reason && reason !== description && <p><b>原因：</b>{reason}</p>}
-      {(openDays !== undefined || repeatCount !== undefined) && <p>{openDays !== undefined ? `已开放 ${openDays} 天` : ""}{openDays !== undefined && repeatCount !== undefined ? " · " : ""}{repeatCount !== undefined ? `在 ${repeatCount} 次后续沟通中再次出现` : ""}</p>}
-      {evidenceIds.length > 0 && <p>{evidenceIds.length} 条原始证据</p>}
-      {(claimId || versionId) && <button className="text-button" onClick={() => onOpenClaim(claimId || versionId!)}>查看记录与证据</button>}
-    </article>
-  );
-}
 
 function ContradictionCard({
   item,
@@ -1244,16 +1193,6 @@ const draftLinkLabels: Record<string, string> = {
   possibly_answered: "可能回答了旧问题",
 };
 
-function ProjectOverviewGrid({ items, onOpenClaim }: { items: Record<string, unknown>[]; onOpenClaim: (id: string) => void }) {
-  const grouped = Object.fromEntries(projectOverviewSections.map(({ key }) => [
-    key,
-    items.filter((item) => projectOverviewSectionFor(item) === key),
-  ])) as Record<ProjectOverviewSection, Record<string, unknown>[]>;
-  return <div className="project-overview-grid">{projectOverviewSections.map((section) => <section className="project-overview-section" key={section.key}>
-    <header><h4>{section.label}</h4><span>{grouped[section.key].length}</span></header>
-    {grouped[section.key].length > 0 ? <div>{grouped[section.key].map((item, index) => <ViewItem key={firstString(item, ["claim_id", "claimId"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div> : <p>{section.empty}</p>}
-  </section>)}</div>;
-}
 
 function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveContradiction, onCompleteAction, onDecideDraftLink, onOpenAiSuggestions, onAddAction, busyAction }: { tab: ResultTab; data: unknown; events: Event[]; onOpenClaim: (id: string) => void; onSelect: (tab: ResultTab) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; onCompleteAction: (claimId: string) => void; onDecideDraftLink: (linkId: string, action: "accept" | "reject") => void; onOpenAiSuggestions: () => void; onAddAction: () => void; busyAction: string | null }) {
   const emptyReason = viewEmptyReason(data);
@@ -1264,7 +1203,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const verified = isRecord(data.verified) ? data.verified : {};
     const trusted = recordArray(verified.currentClaims ?? verified.current_claims).map(claimViewItem);
     return <div className="summary-view client-progress-view">
-      <section className="memory-layer draft-layer"><header><span className="eyebrow">AI 当前理解</span><h3>可以立即参考，但仍可能有错</h3><p>这些内容来自原始 Evidence；未经核对的内容不会改变可信项目记录。</p></header>{drafts.length ? <ProjectOverviewGrid items={drafts.map((item) => ({ ...item, status: "AI 草稿" }))} onOpenClaim={onOpenClaim} /> : <p className="muted">目前没有待核对的 AI 草稿。</p>}</section>
+      <section className="memory-layer"><header><span className="eyebrow">项目记录</span><h3>已确认内容可信，AI 草稿仅供参考</h3><p>每条记录都标明状态。时间线、会前准备和正式报告只读取已确认内容。</p></header><ProjectOverviewList drafts={drafts} trusted={trusted} onOpenClaim={onOpenClaim} /></section>
       {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能的跨沟通联系</span><h3>先作为提示，不会自动改变可信记忆</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
         const linkId = firstString(link, ["id"]);
         const sourceId = firstString(link, ["source_claim_id"]);
@@ -1274,7 +1213,6 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
         const busy = Boolean(linkId && (busyAction === `draft-link:${linkId}:accept` || busyAction === `draft-link:${linkId}:reject`));
         return <article className="draft-link-card" key={linkId || index}><div className="view-card-top"><span className="status-badge warning">{draftLinkLabels[linkType] || linkType}</span><small>{Math.round(Number(link.confidence ?? 0) * 100)}% 置信</small></div><div className="draft-link-comparison"><p><span>这次草稿</span>{firstString(link, ["source_statement"]) || "内容未显示"}</p><p><span>旧草稿</span>{firstString(link, ["target_statement"]) || "内容未显示"}</p></div>{firstString(link, ["reason"]) && <p className="muted">AI 判断理由：{firstString(link, ["reason"])}</p>}<div className="action-card-buttons">{sourceId && <button className="text-button" onClick={() => onOpenClaim(sourceId)}>查看这次记录</button>}{targetId && <button className="text-button" onClick={() => onOpenClaim(targetId)}>查看旧记录</button>}{linkId && <button className="button primary small" disabled={!bothVerified || busy} title={bothVerified ? "建立正式关系" : "请先分别确认两条记录"} onClick={() => onDecideDraftLink(linkId, "accept")}>{busy ? "正在保存…" : bothVerified ? "接受为正式关系" : "两边确认后可接受"}</button>}{linkId && <button className="button quiet small" disabled={busy} onClick={() => onDecideDraftLink(linkId, "reject")}>不采纳关联</button>}</div></article>;
       })}</div></section>}
-      <section className="memory-layer trusted-layer"><header><span className="eyebrow">可信记忆</span><h3>只包含人工确认内容</h3><p>时间线、会前准备和正式报告只从这一层读取。</p></header>{trusted.length ? <ProjectOverviewGrid items={trusted} onOpenClaim={onOpenClaim} /> : <p className="muted">还没有人工确认的项目信息。</p>}</section>
     </div>;
   }
   if (tab === "actions") {
@@ -6157,7 +6095,7 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
         <button className="button primary" disabled={busy || (!scenario && !custom.trim())} onClick={() => void onConfirmScenario(scenario || "custom", custom.trim() || undefined)}>{busy ? "正在保存…" : "确认使用场景"}</button>
       </section>}
       {project.scenarioStatus === "confirmed" && <section className="project-status-row"><div><span className="section-kicker">已确认使用场景</span><strong>{project.scenario?.label || project.scenario?.key || "已确认"}</strong></div><button className="button secondary" onClick={() => onResults("folder-summary")}>打开当前结果</button></section>}
-      <div className="project-overview-grid">
+      <div className="project-screen-grid">
         <section className="panel event-panel">
           <div className="section-heading"><div><h2>沟通记录</h2><p>每份 Transcript 对应一次真实发生的沟通。</p></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
           {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><b>›</b></button>)}</div>}

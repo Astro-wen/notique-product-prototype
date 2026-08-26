@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { projectOverviewSectionFor } from "../lib/domain/project-overview.ts";
 import { projectSelectionLabel } from "../lib/domain/project-label.ts";
-import { uiSource } from "./helpers/ui-source.mjs";
+import { declarationFile, uiSource } from "./helpers/ui-source.mjs";
 const realtor = JSON.parse(await readFile(new URL("../eval/cases/synthetic-realtor-v1/ground-truth.json", import.meta.url), "utf8"));
 const oak = JSON.parse(await readFile(new URL("../eval/cases/synthetic-contractor-v1/ground-truth.json", import.meta.url), "utf8"));
 
@@ -29,9 +29,10 @@ test("project overview executes the production classifier across buyer and contr
   assert.equal(classify({ type: "other", statement: "The insurance claim includes water damage." }), "subjects");
 });
 
-test("the page renders the overview through the shared production classifier", () => {
-  assert.match(uiSource, /import \{ projectOverviewSectionFor, projectOverviewSections, type ProjectOverviewSection \} from "@\/lib\/domain\/project-overview"/);
-  assert.doesNotMatch(uiSource, /function projectOverviewSectionFor/, "the classifier must live in the domain layer, not in the page");
+test("the overview renders through the shared production classifier", () => {
+  assert.match(uiSource, /from "@\/lib\/domain\/project-overview"/);
+  assert.doesNotMatch(uiSource, /function projectOverviewSectionFor/, "the classifier must live in the domain layer, not in a component");
+  assert.equal(declarationFile("ProjectOverviewList"), "app/components/project-overview-list.tsx");
 });
 
 test("duplicate project names get stable option labels without renaming projects", () => {
