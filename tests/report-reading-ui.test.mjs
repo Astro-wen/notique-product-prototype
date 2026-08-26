@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 import { projectOverviewSections } from "../lib/domain/project-overview.ts";
-import { typeLabel } from "../lib/domain/labels.ts";
+import { summarySectionLabel, typeLabel } from "../lib/domain/labels.ts";
 
 const page = uiSource;
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -168,6 +168,22 @@ test("review empty states and completed workflow cards avoid duplicate primary a
   assert.match(page, /workflowReviewReady && <button className="button primary"/);
   assert.match(page, /compactWorkflowCard/);
   assert.match(styles, /\.project-workflow-card\.compact/);
+});
+
+test("summary sections are named in the reader's language, not by model enum", () => {
+  // The model returns a machine kind next to an English title; printing the
+  // kind verbatim rendered "OVERVIEW" directly above "Overview".
+  assert.doesNotMatch(page, /firstString\(section, \["kind"\]\)\?\.replaceAll/);
+  assert.match(page, /summarySectionLabel\(firstString\(section, \["kind"\]\)\)/);
+  for (const [kind, label] of [
+    ["overview", "整体情况"],
+    ["key_fact", "关键事实"],
+    ["open_question", "待确认问题"],
+    ["next_step", "下一步"],
+  ]) {
+    assert.equal(summarySectionLabel(kind), label);
+  }
+  assert.equal(summarySectionLabel("unknown_kind"), "", "an unmapped kind shows nothing rather than a raw enum");
 });
 
 test("evidence copy stays clear in both review and read-only modes", () => {

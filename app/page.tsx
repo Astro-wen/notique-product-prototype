@@ -48,7 +48,7 @@ import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
 import { autoAnalysisDecision } from "@/lib/domain/auto-analysis";
 import { formatTimestamp } from "@/lib/domain/display-format";
-import { typeLabel } from "@/lib/domain/labels";
+import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
@@ -5020,7 +5020,7 @@ function TranscriptArtifactsPanel({
       {tab === "summary" && (summaryArtifact ? <div className="summary-card-content">
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
         {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
-          <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
+          <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
           <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
             const ids = stringValues(item.source_segment_ids);
             const matchedClaims = matchingSummarySourceIndexes(

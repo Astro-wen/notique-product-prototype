@@ -25,3 +25,21 @@ export function typeLabel(value?: string): string {
   };
   return labels[(value ?? "").toLowerCase()] ?? (value || "记录").replaceAll("_", " ");
 }
+
+/**
+ * Section names for the AI summary. The model returns a machine kind and an
+ * English title; rendering the kind verbatim printed "OVERVIEW" directly above
+ * "Overview". The reader gets a name in their own language instead.
+ */
+export function summarySectionLabel(value?: string): string {
+  const labels: Record<string, string> = {
+    overview: "整体情况",
+    key_fact: "关键事实",
+    decision: "决定",
+    preference: "偏好",
+    open_question: "待确认问题",
+    risk: "风险",
+    next_step: "下一步",
+  };
+  return labels[(value ?? "").toLowerCase()] ?? "";
+}
