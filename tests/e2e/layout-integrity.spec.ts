@@ -54,3 +54,19 @@ test("no control is smaller than a readable, tappable target", async ({ page }) 
   });
   expect(offenders, "controls below 11px are not readable").toEqual([]);
 });
+
+test("the workspace reaches its content without a screenful of chrome", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile shell assertion");
+
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await page.waitForLoadState("networkidle");
+
+  // The context card once stacked an identity line, two labelled selects and
+  // two full-width actions, so the first tab sat 661px down a 375px screen.
+  const tabsTop = await page.evaluate(() => {
+    const tabs = document.querySelector(".meeting-tabs");
+    return tabs ? tabs.getBoundingClientRect().top + window.scrollY : -1;
+  });
+  expect(tabsTop).toBeGreaterThan(0);
+  expect(tabsTop, `${tabsTop}px of chrome before the first tab`).toBeLessThan(560);
+});

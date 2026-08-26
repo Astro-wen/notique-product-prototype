@@ -1197,8 +1197,24 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .simple-page { padding-top: 22px; }
   .simple-header h1 { font-size: var(--text-2xl); }
   .simple-header p { font-size: var(--text-sm); }
-  .simple-session, .simple-steps, .simple-import-actions { grid-template-columns: 1fr; }
-  .simple-session-copy { grid-column: auto; }
+  .simple-steps, .simple-import-actions { grid-template-columns: 1fr; }
+  /* The context card used to stack five full-width rows, pushing the first
+     line of actual content past 660px on a 375px screen. Two selects share a
+     row, their printed labels give way to the value the closed select already
+     shows (the accessible name stays on the control), and the two actions sit
+     beside each other. */
+  .simple-session { grid-template-columns: minmax(0, 1fr) auto auto; padding: var(--space-3); gap: var(--space-2); align-items: center; }
+  /* The second line repeats the communication header directly underneath, so
+     only it goes; the project name has no other textual home on this screen. */
+  .simple-session-copy { grid-column: 1 / -1; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+  .simple-session-copy small { display: none; }
+  .simple-session-copy .context-mark { width: 28px; height: 28px; font-size: var(--text-sm); }
+  .simple-session label > span { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
+  .simple-session label:first-of-type { grid-column: 1 / -1; }
+  .simple-session select { min-height: 38px; }
+  .simple-new-event-mobile { justify-self: end; }
+  .simple-session .project-menu-wrap { justify-self: end; }
+  .simple-session .project-menu-trigger { width: auto; white-space: nowrap; }
   .simple-new-project { width: 100%; }
   .simple-workspace { margin-top: 11px; }
   .simple-meeting-list { grid-auto-columns: minmax(230px, 86vw); }
