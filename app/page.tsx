@@ -283,13 +283,17 @@ function readAutoAnalysisIntent(eventId: string): AutoAnalysisIntent | null {
   }
 }
 
-function storeAutoAnalysisIntent(intent: AutoAnalysisIntent): void {
-  if (typeof window === "undefined") return;
+function storeAutoAnalysisIntent(intent: AutoAnalysisIntent): boolean {
+  if (typeof window === "undefined") return false;
   try {
     window.sessionStorage.setItem(autoAnalysisIntentKey(intent.eventId), JSON.stringify(intent));
+    return true;
   } catch {
     // Same-tab automation is an enhancement. Server Runs and their
-    // idempotency/concurrency guards remain authoritative.
+    // idempotency/concurrency guards remain authoritative. The caller is told
+    // so it can promise manual recovery instead of an automatic start that a
+    // browser with storage disabled will never perform.
+    return false;
   }
 }
 
@@ -1481,13 +1485,13 @@ export default function Home() {
   const summaryReturnContext = useRef<{ eventId: string; scrollY: number } | null>(null);
   const [autoAnalysisIntentRevision, setAutoAnalysisIntentRevision] = useState(0);
 
-  function armAutoAnalysis(eventId: string, audioAssetId?: string, baseRunId?: string): void {
+  function armAutoAnalysis(eventId: string, audioAssetId?: string, baseRunId?: string): boolean {
     const current = readAutoAnalysisIntent(eventId);
     const waitForAudioAssetIds = Array.from(new Set([
       ...(current?.waitForAudioAssetIds ?? []),
       ...(audioAssetId ? [audioAssetId] : []),
     ]));
-    storeAutoAnalysisIntent({
+    const armed = storeAutoAnalysisIntent({
       eventId,
       waitForAudioAssetIds,
       armedAt: Date.now(),
@@ -1498,6 +1502,7 @@ export default function Home() {
       if (key === eventId || key.startsWith(`${eventId}:`)) autoAnalysisAttempts.current.delete(key);
     }
     setAutoAnalysisIntentRevision((value) => value + 1);
+    return armed;
   }
 
   function clearAutoAnalysisIntent(eventId: string): void {
@@ -3637,7 +3642,12 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!event || (screen !== "simple" && screen !== "event") || busyAction) return;
+    if (!event || busyAction) return;
+    // The intent belongs to an Event, not to a screen. Material can finish
+    // transcribing while the reader is in the project record or the review
+    // queue, and the paid Run must still start exactly once rather than wait
+    // for them to navigate back.
+    if (routeRef.current.eventId && routeRef.current.eventId !== event.id) return;
     const intent = readAutoAnalysisIntent(event.id);
     if (!intent) return;
     const waitingForAudio = intent.waitForAudioAssetIds.some((audioAssetId) => {
@@ -3689,7 +3699,6 @@ export default function Home() {
     busyAction,
     event,
     run,
-    screen,
     transcriptionRunsByAssetId,
   ]);
 
@@ -3922,7 +3931,7 @@ export default function Home() {
       await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
-      armAutoAnalysis(
+      const armed = armAutoAnalysis(
         targetEvent.id,
         kind === "audio" ? init.assetId : undefined,
         targetEvent.latestRun?.id || targetEvent.latestRunId || (run?.eventId === targetEvent.id ? run.id : undefined),
@@ -3947,7 +3956,7 @@ export default function Home() {
         }).catch((error) => setEventIssue(toIssue(error)));
         return true;
       } else {
-        flash("材料已加入，正在准备自动分析");
+        flash(armed ? "材料已加入，正在准备自动分析" : "材料已加入。这个浏览器不允许保存会话状态，请点击“重新启动分析”。");
       }
       await loadSimpleProject(targetProject.id, targetEvent.id);
       return true;
@@ -4349,7 +4358,7 @@ export default function Home() {
             await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType);
             await api.finalizeAsset(init.assetId);
             mutationKeys.current.delete(fingerprint);
-            armAutoAnalysis(
+            const armed = armAutoAnalysis(
               event.id,
               preparedInput.kind === "audio" ? init.assetId : undefined,
               event.latestRun?.id || event.latestRunId || (run?.eventId === event.id ? run.id : undefined),
@@ -4365,7 +4374,7 @@ export default function Home() {
                 ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
                 : "录音已保存，正在生成逐字稿；完成后会自动整理重点");
             } else {
-              flash("材料已加入这次沟通，正在准备自动分析");
+              flash(armed ? "材料已加入这次沟通，正在准备自动分析" : "材料已加入这次沟通。这个浏览器不允许保存会话状态，请点击“重新启动分析”。");
             }
             await loadEvent(event.id);
           } catch (error) {

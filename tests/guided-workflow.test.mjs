@@ -121,4 +121,13 @@ test("new material auto-starts one idempotent analysis only after its final tran
   assert.match(effect, /extractionKeys\.current\.set\(fingerprint, idempotencyKey\)/);
   assert.match(effect, /autoAnalysisAttempts\.current\.has\(fingerprint\)/);
   assert.match(effect, /startExtractionForEvent\(event, true\)/);
+  // The intent belongs to an Event: transcription can finish while the reader
+  // is in the project record or the review queue, and the Run must still start.
+  assert.doesNotMatch(effect, /screen !== "simple"/, "auto-start must not depend on which screen is open");
+  assert.match(effect, /routeRef\.current\.eventId !== event\.id\) return;/, "a stale Event must still be refused");
+  // A browser that refuses session storage can never arm the intent, so the
+  // message must offer the manual path instead of promising an automatic one.
+  assert.match(uiSource, /const armed = armAutoAnalysis\(/);
+  assert.match(uiSource, /armed \? "材料已加入，正在准备自动分析" : /);
+  assert.match(uiSource, /这个浏览器不允许保存会话状态，请点击“重新启动分析”。/);
 });
