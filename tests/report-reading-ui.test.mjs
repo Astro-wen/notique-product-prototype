@@ -24,7 +24,10 @@ test("evidence cards use the scoped context endpoint and exact quote highlightin
   assert.match(evidenceCard, /context\.target/);
   assert.match(evidenceCard, /context\.after/);
   assert.match(evidenceCard, /highlightExactPhrase\(text, quote\)/);
-  assert.match(styles, /\.evidence-card blockquote\.evidence-target-quote[^}]*font-size: 22px/);
+  // The evidence quote is the largest reading size in the app, and stays a
+  // scale step rather than a hand-picked pixel value.
+  assert.match(styles, /\.evidence-card blockquote\.evidence-target-quote[^}]*font-size: var\(--text-xl\)/);
+  assert.match(styles, /--text-xl: 22px;/);
 });
 
 test("verified results render typed timeline moments and preference history", () => {
