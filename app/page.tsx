@@ -51,6 +51,7 @@ import { formatTimestamp } from "@/lib/domain/display-format";
 import { typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
+import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
 import { TranscriptViewer } from "@/app/components/transcript-viewer";
 import { firstString, isRecord, stringValue } from "@/lib/domain/claim-fields";
@@ -6768,6 +6769,20 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
               <button className="button primary" disabled={Boolean(busy) || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", "", undefined, acceptedRelationIds)} aria-label="确认并加入正式结果">确认</button>
               <button className="button secondary" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)} aria-label="修改后确认">修改</button>
               <button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", "")} aria-label="不采纳这条记录">不采纳</button>
+              <ReviewShortcuts
+                enabled={reviewQueue.length > 0}
+                canConfirm={!busy && evidenceReady && relationsReviewed}
+                canEdit={!busy && evidenceReady}
+                canReject={!busy}
+                onConfirm={() => onVerdict("confirm", "", undefined, acceptedRelationIds)}
+                onEdit={() => setEdit(true)}
+                onReject={() => onVerdict("reject", "")}
+                onStep={(delta) => {
+                  const index = reviewQueue.findIndex((item) => item.id === claim.id);
+                  const next = reviewQueue[index + delta];
+                  if (next) onOpenReviewClaim(next.id);
+                }}
+              />
             </div>
           </div>}
         </>}{!readonly && verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或风险</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>

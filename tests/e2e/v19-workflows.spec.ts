@@ -253,3 +253,38 @@ test("local-only allowlist covers Action completion and trash restore without to
     expect(write.body).toEqual({});
   }
 });
+
+test("the review queue can be worked from the keyboard", async ({ page, apiFixture }) => {
+  apiFixture.allowMutation("POST", "/api/v1/projects/project-a/review-sessions");
+  apiFixture.allowMutation("POST", "/api/v1/claims/claim-summary-pending/verdicts");
+
+  await page.goto("/?project=project-a&event=event-a&view=review&origin=simple");
+  await page.getByRole("button", { name: /预算上限是 120 万美元/ }).first().click();
+  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+
+  // The hints are shown rather than hidden, so the shortcuts are discoverable.
+  await expect(page.locator(".review-shortcut-hints")).toBeVisible();
+  await expect(page.locator(".review-shortcut-hints kbd").first()).toHaveText("Enter");
+
+  // E opens the edit form without deciding anything.
+  await page.locator("body").press("e");
+  const statement = page.locator(".edit-form textarea").first();
+  await expect(statement).toBeVisible();
+  expect(apiFixture.writes.filter(({ path }) => path.includes("verdicts"))).toEqual([]);
+
+  // A decision key typed into a field is text, never a verdict.
+  await statement.click();
+  await statement.press("x");
+  await statement.press("Enter");
+  await expect(statement).toBeVisible();
+  expect(apiFixture.writes.filter(({ path }) => path.includes("verdicts"))).toEqual([]);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await page.locator("body").press("Enter");
+  await expect
+    .poll(() => apiFixture.writes.filter(({ path }) => path.includes("verdicts")).length)
+    .toBe(1);
+  const verdict = apiFixture.writes.find(({ path }) => path.includes("verdicts"));
+  expect(verdict?.body).toMatchObject({ action: "confirm" });
+});
