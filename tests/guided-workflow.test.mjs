@@ -50,7 +50,7 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(uiSource, /key=\{project\?\.id \?\? "none"\}/);
   assert.match(uiSource, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);
   assert.match(uiSource, /projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\)/);
-  assert.match(uiSource, /onClick=\{\(\) => onResult\("client-progress"\)\}>打开项目概览/);
+  assert.match(uiSource, /onResult\("client-progress"\); return; \}/, "the project record opens directly from the workspace nav");
   assert.match(uiSource, /await openClaim\(nextId, "review", undefined, "replace"\)/);
   assert.match(uiSource, /await finishGuidedReview\(\)/);
   const finishGuidedReview = declarationSource("finishGuidedReview");

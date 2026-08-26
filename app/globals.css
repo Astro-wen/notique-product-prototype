@@ -290,14 +290,9 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .meeting-tabs button.active::after { background: var(--brand-green); }
 .meeting-tabs button span { margin-left: 5px; border-radius: 999px; background: #eef1f0; padding: 3px 6px; font-size: 8px; }
 .meeting-tabs button b { font: inherit; }
-.meeting-more-trigger { margin-left: auto; display: flex; align-items: center; justify-content: center; gap: 6px; }
-.meeting-more-trigger i { color: inherit; font-size: 9px; font-style: normal; }
-.meeting-more-menu { z-index: 80; width: 230px; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 7px; display: grid; gap: 4px; box-shadow: var(--shadow); }
-.meeting-more-menu > button { min-height: 52px; width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 8px; display: grid; grid-template-columns: 28px minmax(0, 1fr); grid-template-rows: auto auto; gap: 2px 8px; text-align: left; }
-.meeting-more-menu > button:hover, .meeting-more-menu > button.active, .meeting-more-menu > button[data-highlighted] { background: var(--brand-green-soft); outline: none; }
-.meeting-more-menu > button > span { grid-row: 1 / 3; width: 28px; height: 28px; display: grid; place-items: center; }
-.meeting-more-menu > button b { align-self: end; color: var(--ink); font-size: 10px; }
-.meeting-more-menu > button small { color: var(--muted); font-size: 8px; }
+.meeting-tabs-scope { margin-left: auto; align-self: center; width: 1px; height: 18px; background: var(--line-strong); }
+.meeting-tabs-project { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.meeting-tabs-project i { color: inherit; font-size: 11px; font-style: normal; }
 .workflow-reading-banner { margin: 12px 17px 0; border: 1px solid #b8d8c9; border-radius: 10px; background: #f4fbf7; padding: 11px 12px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .workflow-reading-banner.ready { border-color: #c5d5e9; background: #f6f9fd; }
 .workflow-reading-banner.legacy { border-color: var(--line); background: #fafcfb; }
@@ -1179,7 +1174,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .current-event-header h2 { font-size: 18px; }
   .meeting-tabs { padding: 0 7px; }
   .meeting-tabs button { min-width: 84px; padding: 0 9px; }
-  .meeting-more-menu { width: min(280px, calc(100vw - 24px)); padding: 10px; }
   .workflow-reading-banner { margin: 10px 11px 0; grid-template-columns: 30px minmax(0, 1fr); }
   .workflow-reading-banner > .button, .workflow-reading-actions { grid-column: 1 / -1; width: 100%; }
   .workflow-reading-actions { align-items: stretch; flex-direction: column; }

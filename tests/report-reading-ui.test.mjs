@@ -114,13 +114,21 @@ test("summary sources open in an in-place drawer and artifact polling does not r
   assert.match(styles, /\.source-drawer \{/);
 });
 
-test("the core workspace keeps two primary tabs and one contextual review action", () => {
+test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {
   assert.match(page, /aria-label="Transcript · 本次重点"/);
-  assert.match(page, /className="meeting-more-menu"/);
-  assert.match(page, /<DropdownMenu\.Portal>/);
+  assert.match(page, /aria-label="待核对"/);
+  assert.match(page, /aria-label="结果"/);
+  assert.doesNotMatch(page, /meeting-more-menu|meeting-more-trigger/, "the workspace nav must not hide entries behind a dropdown");
+  assert.doesNotMatch(styles, /\.meeting-more-menu|\.meeting-more-trigger/);
+  assert.match(page, /className="meeting-tabs-scope"/, "event scope and project scope stay visually separated");
+  assert.match(styles, /\.meeting-tabs-project/);
+  // The project entry navigates straight to the record; it must not render an
+  // interstitial whose only content is another button.
+  assert.match(page, /if \(next === "results" && !needsScenario && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
+  assert.match(page, /if \(next === "review" && workflowReviewReady\) \{ onReview\(\); return; \}/);
+  assert.doesNotMatch(page, />打开项目概览</, "the dead interstitial button is replaced by direct navigation");
   assert.match(page, /className="focus-action-bar"/);
   assert.match(page, />核对重点</);
-  assert.match(styles, /\.meeting-more-menu/);
   assert.match(styles, /\.focus-action-bar/);
   assert.match(page, /tab === "summary" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
   assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);

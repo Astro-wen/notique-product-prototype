@@ -59,16 +59,14 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 test("an explicit workspace tab choice is never replaced when Summary finishes", async ({ page, apiFixture }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
-  const more = page.getByRole("button", { name: /^更多/ });
-  await more.click();
-  await page.getByRole("menuitem", { name: "结果", exact: true }).click();
-  await expect(page.getByRole("menuitem", { name: "结果", exact: true })).toHaveCount(0);
-  await expect(more).toHaveClass(/active/);
+  const projectScope = page.getByRole("button", { name: "结果", exact: true });
+  await projectScope.click();
+  await expect(projectScope).toHaveClass(/active/);
 
   apiFixture.completeSummary();
 
   await expect(page.getByRole("button", { name: "先看 AI 摘要" })).toBeVisible();
-  await expect(more).toHaveClass(/active/);
+  await expect(projectScope).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
   expect(apiFixture.writes).toEqual([]);
 });

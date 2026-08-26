@@ -5517,7 +5517,6 @@ function SimpleTestScreen({
     : project
       ? project.pendingClaimCount + project.pendingOccurrenceCount
       : 0;
-  const verifiedCount = claims.filter((claim) => claim.reviewStatus === "verified" && claim.lifecycle !== "withdrawn").length;
   const loadingSelection = projectState === "loading" || eventState === "loading";
   const issue = eventIssue ?? projectIssue ?? projectsIssue;
   const audioAssets = event?.assets.filter((asset) =>
@@ -5824,6 +5823,13 @@ function SimpleTestScreen({
 
   function selectWorkspaceTab(next: "materials" | "transcript" | "review" | "results") {
     markUserNavigation();
+    // A project-scope entry opens the record itself. The panel underneath is
+    // only the explanation shown while that record is not reachable yet, so
+    // reaching it costs one click rather than a menu, a card and a button.
+    if (!busy) {
+      if (next === "results" && !needsScenario && analysisDone) { onResult("client-progress"); return; }
+      if (next === "review" && workflowReviewReady) { onReview(); return; }
+    }
     setActiveTab(next);
     if (next === "transcript" && event) {
       onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
@@ -5968,17 +5974,9 @@ function SimpleTestScreen({
           <nav className="meeting-tabs" aria-label="当前沟通内容">
             <button aria-label="Transcript · 本次重点" className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b>{transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
             <button className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className={`meeting-more-trigger${activeTab === "review" || activeTab === "results" ? " active" : ""}`}>更多{pendingCount > 0 && <span>{pendingCount}</span>}<i aria-hidden="true">⌄</i></button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content className="meeting-more-menu" align="end" sideOffset={5} collisionPadding={12}>
-                  <DropdownMenu.Item asChild><button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}><span>✓</span><b>待确认</b><small>{pendingCount > 0 ? `${pendingCount} 条重点` : "当前无待确认"}</small></button></DropdownMenu.Item>
-                  <DropdownMenu.Item asChild><button aria-label="结果" className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}><span>▤</span><b>项目档案</b><small>查看长期记录</small></button></DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
+            <button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待确认{pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            <span className="meeting-tabs-scope" aria-hidden="true" />
+            <button aria-label="结果" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<i aria-hidden="true">→</i></button>
           </nav>
 
           {(currentAudioPreparations.length > 0 || currentTranscriptionRuns.some((item) => item.status !== "succeeded")) && <div className="transcription-journey-slot">
@@ -6097,7 +6095,7 @@ function SimpleTestScreen({
 
           {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewReady ? "优先检查金额、日期、责任人、矛盾和低置信内容。" : workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div>{workflowReviewReady && <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重要内容</button>}</div></div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{needsScenario ? "先确认工作场景，再进入项目档案。" : analysisDone ? "项目概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从项目概览了解关键事实、需求、负责人和下一步。"}</p></div><button className="button primary" disabled={needsScenario || !analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开项目概览</button></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认工作场景后，这里会直接打开项目概览。" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p></div></div></div>}
         </article>
       </section>
 
