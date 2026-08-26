@@ -23,6 +23,8 @@ test("fact analysis shows honest stage percentage and distance to review", async
   await expect(card).toContainText("已完成 1/4 步");
 
   const journey = page.getByTestId("analysis-progress-journey");
+  await expect(journey).toBeHidden();
+  await card.getByText("处理详情", { exact: true }).click();
   await expect(journey).toBeVisible();
   await expect(journey.locator(".analysis-progress-node.completed")).toHaveCount(1);
   await expect(journey.locator(".analysis-progress-node.processing")).toHaveCount(1);

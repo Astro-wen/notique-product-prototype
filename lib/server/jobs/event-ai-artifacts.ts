@@ -613,7 +613,9 @@ export async function dispatchDueEventAiArtifactRuns(input?: {
     .prepare(
       `SELECT * FROM event_ai_artifact_runs
         WHERE ${clauses.join(" AND ")}
-        ORDER BY next_attempt_at, created_at LIMIT ?`,
+        ORDER BY next_attempt_at,
+                 CASE kind WHEN 'summary' THEN 0 ELSE 1 END,
+                 created_at, id LIMIT ?`,
     )
     .bind(...bindings, limit)
     .all<Row>();

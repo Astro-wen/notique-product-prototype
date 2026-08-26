@@ -818,6 +818,13 @@ test("long readable transcripts split deterministically and merge in raw order",
   assert.equal(new Set(merged.segments.map((segment) => segment.readable_key)).size, 7);
 });
 
+test("artifact backlog gives Summary a stable tie-break without serializing targeted pairs", async () => {
+  const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'summary' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
+  assert.match(jobs, /input\?\.extractionRunId \? 2 : 2/);
+  assert.match(jobs, /await Promise\.all\(\(rows\.results \?\? \[\]\)\.map/);
+});
+
 test("summary provider output gets a deterministic raw quote before persistence", () => {
   const valid = validateEventSummaryProviderOutput({
     schema_version: "event-summary.v2",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DropdownMenu } from "radix-ui";
 import {
@@ -96,8 +96,12 @@ import {
 } from "./api-client";
 import { DirectRecorder } from "./direct-recorder";
 import {
+  claimHistoryQuery,
   draftMemoryQuery,
+  evidenceContextQuery,
+  evidenceQuery,
   eventArtifactsQuery,
+  eventTranscriptSegmentsQuery,
   notiqueQueryKeys,
   projectActionsQuery,
   verifiedViewQuery,
@@ -190,6 +194,13 @@ type TranscriptFocusRequest = {
   eventId: string;
   tab: TranscriptArtifactTab;
   restoreScrollY?: number;
+};
+
+type SummarySourceDrawerState = {
+  sourceIds: string[];
+  summaryText: string;
+  supportQuote: string;
+  returnFocusId: string;
 };
 
 type ReadableDiffViewState =
@@ -1618,6 +1629,7 @@ export default function Home() {
   const localDispatchTranscriptionRuns = useRef(new Set<string>());
   const activeTranscriptionDispatches = useRef(new Set<string>());
   const completingReviewSessions = useRef(new Set<string>());
+  const reviewRefreshEpoch = useRef(0);
   const projectWorkflowRefreshToken = useRef(0);
   const guidedTransitionKey = useRef("");
   const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "draft_ready" | "partially_reviewed" | "complete") => void>(() => undefined);
@@ -2548,6 +2560,29 @@ export default function Home() {
     if (latest?.status === "completed") mutationKeys.current.delete(`review-start:${latestProject.id}`);
   }, [flash]);
 
+  const refreshReviewSnapshotInBackground = useCallback((targetProjectId: string) => {
+    const token = reviewRefreshEpoch.current + 1;
+    reviewRefreshEpoch.current = token;
+    const requestIsCurrent = () => reviewRefreshEpoch.current === token
+      && routeRef.current.projectId === targetProjectId;
+    void (async () => {
+      try {
+        await invalidateProjectReadModels(targetProjectId);
+        const [latestProject, latestEvents] = await Promise.all([
+          api.getProject(targetProjectId),
+          api.listEvents(targetProjectId),
+        ]);
+        if (!requestIsCurrent()) return;
+        setProject(latestProject);
+        setEvents(latestEvents);
+        await syncReviewTiming(latestProject, requestIsCurrent);
+      } catch {
+        // The verdict is already durable. Counts and the server-owned review
+        // timer will reconcile on the next queue/workflow refresh.
+      }
+    })();
+  }, [invalidateProjectReadModels, syncReviewTiming]);
+
   const loadReviewQueue = useCallback(async (
     destination: "review" | "draft" = "review",
     projectIdOverride?: string,
@@ -2734,7 +2769,7 @@ export default function Home() {
       let lookupId = listClaim?.id ?? claimOrVersionId;
       let history: unknown;
       try {
-        history = await api.getClaimHistory(lookupId);
+        history = await queryClient.fetchQuery(claimHistoryQuery(lookupId, listClaim?.versionId));
       } catch (error) {
         const issue = toIssue(error);
         const targetProjectId = projectIdOverride || project?.id || routeRef.current.projectId;
@@ -2748,7 +2783,7 @@ export default function Home() {
           .find((item) => item.id === claimOrVersionId || item.versionId === claimOrVersionId) ?? null;
         if (!listClaim) throw error;
         lookupId = listClaim.id;
-        history = await api.getClaimHistory(lookupId);
+        history = await queryClient.fetchQuery(claimHistoryQuery(lookupId, listClaim.versionId));
       }
       if (isRecord(history)) {
         const detailed = normalizeClaim(history.current_claim ?? history.claim ?? history);
@@ -2788,7 +2823,9 @@ export default function Home() {
     try {
       const embedded = nextClaim.evidenceRefs;
       const missingIds = nextClaim.evidenceRefIds.filter((id) => !embedded.some((item) => item.id === id));
-      const fetched = await Promise.allSettled(missingIds.map((id) => api.getEvidence(id)));
+      const fetched = await Promise.allSettled(
+        missingIds.map((id) => queryClient.fetchQuery(evidenceQuery(id))),
+      );
       if (requestEpochs.current.claim !== token) return;
       const refs = [...embedded, ...fetched.flatMap((item) => item.status === "fulfilled" ? [item.value] : [])];
       setEvidence(refs);
@@ -2800,10 +2837,17 @@ export default function Home() {
             ? "empty"
             : "error",
       );
+      refs.forEach((ref) => {
+        void queryClient.prefetchQuery(evidenceContextQuery(ref.id));
+      });
       const followingClaimId = nextPendingClaimId(claims, nextClaim.id);
       const followingClaim = claims.find((item) => item.id === followingClaimId);
-      if (followingClaim?.evidenceRefIds.length) {
-        void Promise.allSettled(followingClaim.evidenceRefIds.map((id) => api.getEvidence(id)));
+      if (followingClaim) {
+        void queryClient.prefetchQuery(claimHistoryQuery(followingClaim.id, followingClaim.versionId));
+        followingClaim.evidenceRefIds.forEach((id) => {
+          void queryClient.prefetchQuery(evidenceQuery(id));
+          void queryClient.prefetchQuery(evidenceContextQuery(id));
+        });
       }
     } catch {
       if (requestEpochs.current.claim !== token) return;
@@ -3030,27 +3074,22 @@ export default function Home() {
         edit,
       });
       mutationKeys.current.delete(fingerprint);
-      if (project) await invalidateProjectReadModels(project.id);
+      queryClient.removeQueries({
+        queryKey: ["notique", "claim", reviewedClaimId, "history"],
+      });
       setSelectedClaim(updated);
       const updatedClaims = claims.map((item) => item.id === reviewedClaimId ? updated : item);
       setClaims(updatedClaims);
-      if (project) {
-        const [latestProject, latestEvents] = await Promise.all([
-          api.getProject(project.id),
-          api.listEvents(project.id),
-        ]);
-        setProject(latestProject);
-        setEvents(latestEvents);
-        await syncReviewTiming(latestProject);
-      }
       flash(action === "reject" ? "已记录为不采纳" : action === "edit" ? "修改已保存并确认" : "记录已确认");
-      if (!wasPending) {
-        if (action === "edit") await openClaim(updated.id, routeRef.current.origin, undefined, "replace");
+      const nextId = wasPending ? nextPendingClaimId(updatedClaims, reviewedClaimId) : null;
+      if (nextId) {
+        if (project) refreshReviewSnapshotInBackground(project.id);
+        await openClaim(nextId, "review", undefined, "replace");
         return;
       }
-      const nextId = nextPendingClaimId(updatedClaims, reviewedClaimId);
-      if (nextId) {
-        await openClaim(nextId, "review", undefined, "replace");
+      if (!wasPending) {
+        if (project) refreshReviewSnapshotInBackground(project.id);
+        if (action === "edit") await openClaim(updated.id, routeRef.current.origin, undefined, "replace");
         return;
       }
       const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
@@ -4571,8 +4610,12 @@ function TranscriptArtifactsPanel({
   transcriptionRun,
   analysisRun,
   claims,
+  pendingReviewCount,
+  reviewReady,
+  reviewBlocked,
   busy,
   onOpenClaim,
+  onReview,
   onRetryArtifact,
   onStartAnalysis,
   onSelectTab,
@@ -4583,8 +4626,12 @@ function TranscriptArtifactsPanel({
   transcriptionRun: TranscriptionRun | null;
   analysisRun: ExtractionRun | null;
   claims: Claim[];
+  pendingReviewCount: number;
+  reviewReady: boolean;
+  reviewBlocked: boolean;
   busy: string | null;
   onOpenClaim: (id: string) => void;
+  onReview: () => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onSelectTab: (tab: TranscriptArtifactTab) => void;
@@ -4599,6 +4646,7 @@ function TranscriptArtifactsPanel({
   const [state, setState] = useState<AsyncState>("loading");
   const [issue, setIssue] = useState<ApiIssue | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [sourceDrawer, setSourceDrawer] = useState<SummarySourceDrawerState | null>(null);
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
   const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
   const [activePlaybackKey, setActivePlaybackKey] = useState<string | null>(null);
@@ -4607,12 +4655,25 @@ function TranscriptArtifactsPanel({
   const pendingPlaybackTarget = useRef<{ key: string; startMs: number } | null>(null);
   const programmaticAudioSeek = useRef(false);
   const loadEpoch = useRef(0);
+  const transcriptLoadEpoch = useRef(0);
   const activeDiffEventId = useRef(event.id);
   const diffLoadsInFlight = useRef(new Set<string>());
   const summaryScrollY = useRef(0);
   const manuallySelectedTab = useRef(false);
   const handledFocusRequestId = useRef<number | null>(null);
   const scrollRestoreCleanup = useRef<() => void>(() => undefined);
+  const sourceDrawerExitTarget = useRef<string | null>(null);
+  const transcriptRevision = [
+    transcriptionRun?.id || "",
+    transcriptionRun?.status || "",
+    transcriptionRun?.derivedTranscriptAssetId || "",
+    transcriptionRun?.segmentCount ?? transcriptionRun?.segments.length ?? 0,
+    ...event.assets
+      .filter((asset) => asset.kind === "audio" || asset.kind === "transcript" || stringValue(asset.metadata.transcription_status))
+      .map((asset) => [asset.id, asset.versionId || "", asset.status || "", stringValue(asset.metadata.transcription_status) || ""].join(":"))
+      .sort(),
+  ].join("|");
+  const previousTranscriptRevision = useRef(transcriptRevision);
 
   useEffect(() => () => scrollRestoreCleanup.current(), []);
 
@@ -4628,9 +4689,20 @@ function TranscriptArtifactsPanel({
     loadEpoch.current = token;
     if (!quiet) setState("loading");
     try {
+      if (quiet) {
+        const artifactData = await queryClient.fetchQuery({
+          ...eventArtifactsQuery(event.id),
+          staleTime: 0,
+        });
+        if (loadEpoch.current !== token) return;
+        setRuns(artifactData.runs);
+        setArtifacts(artifactData.artifacts);
+        setIssue(null);
+        return;
+      }
       const [artifactData, segments] = await Promise.all([
         queryClient.fetchQuery(eventArtifactsQuery(event.id)),
-        api.listEventTranscriptSegments(event.id),
+        queryClient.fetchQuery(eventTranscriptSegmentsQuery(event.id)),
       ]);
       if (loadEpoch.current !== token) return;
       setRuns(artifactData.runs);
@@ -4647,14 +4719,42 @@ function TranscriptArtifactsPanel({
     }
   }, [event.id, queryClient]);
 
+  const refreshTranscript = useCallback(async () => {
+    const token = transcriptLoadEpoch.current + 1;
+    transcriptLoadEpoch.current = token;
+    try {
+      await queryClient.invalidateQueries({
+        queryKey: eventTranscriptSegmentsQuery(event.id).queryKey,
+        exact: true,
+      });
+      const segments = await queryClient.fetchQuery(eventTranscriptSegmentsQuery(event.id));
+      if (transcriptLoadEpoch.current !== token) return;
+      setRawSegments(segments);
+      setIssue(null);
+      setState(segments.length || artifacts.length ? "ready" : "empty");
+    } catch (error) {
+      if (transcriptLoadEpoch.current !== token) return;
+      setIssue(toIssue(error));
+      setState("error");
+    }
+  }, [artifacts.length, event.id, queryClient]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => void load().catch(() => undefined), 0);
     return () => {
       window.clearTimeout(timer);
       loadEpoch.current += 1;
+      transcriptLoadEpoch.current += 1;
       void queryClient.cancelQueries({ queryKey: eventArtifactsQuery(event.id).queryKey, exact: true });
+      void queryClient.cancelQueries({ queryKey: eventTranscriptSegmentsQuery(event.id).queryKey, exact: true });
     };
   }, [event.id, load, queryClient]);
+
+  useEffect(() => {
+    if (previousTranscriptRevision.current === transcriptRevision) return;
+    previousTranscriptRevision.current = transcriptRevision;
+    void refreshTranscript();
+  }, [refreshTranscript, transcriptRevision]);
 
   const artifactRunning = runs.some((run) => run.status === "queued" || run.status === "processing");
   useEffect(() => {
@@ -4735,6 +4835,9 @@ function TranscriptArtifactsPanel({
       needsCheck: false,
     })),
   );
+  const sourceDrawerGroups = sourceDrawer
+    ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => sourceDrawer.sourceIds.includes(id)))
+    : [];
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
 
   useEffect(() => {
@@ -4828,9 +4931,9 @@ function TranscriptArtifactsPanel({
     setActivePlaybackKey(groupKey ? playbackKey(groupKey) : null);
   }
 
-  function playAt(milliseconds: number | null, targetKey: string) {
+  function playAt(milliseconds: number | null, targetKey: string, surface: "readable" | "raw" = readerTab) {
     if (!audioRef.current || milliseconds == null) return;
-    const key = playbackKey(targetKey);
+    const key = `${surface}:${targetKey}`;
     pendingPlaybackTarget.current = { key, startMs: milliseconds };
     setActivePlaybackKey(key);
     programmaticAudioSeek.current = true;
@@ -4849,16 +4952,35 @@ function TranscriptArtifactsPanel({
     }
   }
 
-  function locateRawSources(sourceIds: string[]) {
+  function locateRawSources(
+    sourceIds: string[],
+    summaryText: string,
+    supportQuote: string,
+    returnFocusId: string,
+  ) {
     if (!sourceIds.length) return;
     summaryScrollY.current = window.scrollY;
+    sourceDrawerExitTarget.current = null;
     setSelectedSourceIds(new Set(sourceIds));
+    setSourceDrawer({ sourceIds, summaryText, supportQuote, returnFocusId });
+  }
+
+  function openSourcesInFullTranscript() {
+    if (!sourceDrawer?.sourceIds.length) return;
+    const sourceIds = sourceDrawer.sourceIds;
+    const targetGroup = rawDisplayGroups.find((group) => group.sourceIds.includes(sourceIds[0]!));
+    const targetId = `raw-group-${targetGroup?.sourceIds[0] || sourceIds[0]}`;
+    sourceDrawerExitTarget.current = targetId;
+    setSourceDrawer(null);
     selectArtifactTab("raw");
     window.setTimeout(() => {
-      document.getElementById(`raw-segment-${sourceIds[0]}`)?.scrollIntoView({
+      const target = document.getElementById(targetId);
+      target?.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
+      target?.focus({ preventScroll: true });
+      sourceDrawerExitTarget.current = null;
     }, 60);
   }
 
@@ -4928,9 +5050,9 @@ function TranscriptArtifactsPanel({
     <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
       <header className="summary-overview-header">
         <div>
-          <button className={`summary-card-title${tab === "summary" ? " active" : ""}`} onClick={() => selectArtifactTab("summary")}>
+          <button aria-label="AI 摘要 · 本次重点" className={`summary-card-title${tab === "summary" ? " active" : ""}`} onClick={() => selectArtifactTab("summary")}>
             <span className="summary-spark" aria-hidden="true">✦</span>
-            AI 摘要
+            本次重点 <small>AI 草稿</small>
             {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
           </button>
           <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要正在启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
@@ -4938,7 +5060,7 @@ function TranscriptArtifactsPanel({
         {summaryArtifact && <span className="summary-ready-check" aria-label="AI 摘要生成完成">✓</span>}
       </header>
 
-      {summaryArtifact ? <div className="summary-card-content">
+      {tab === "summary" && (summaryArtifact ? <div className="summary-card-content">
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
         {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
           <header><span className="section-kicker">{firstString(section, ["kind"])?.replaceAll("_", " ")}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
@@ -4948,16 +5070,22 @@ function TranscriptArtifactsPanel({
               ids,
               claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
             ).map((index) => claims[index]);
-            const matchedClaim = matchedClaims.length === 1 ? matchedClaims[0] : null;
+            const availableMatchedClaims = reviewReady
+              ? matchedClaims
+              : matchedClaims.filter((claim) => claim.reviewStatus !== "pending");
+            const matchedClaim = availableMatchedClaims.length === 1 ? availableMatchedClaims[0] : null;
             const revealIndex = sectionIndex * 4 + itemIndex;
+            const summaryText = firstString(item, ["text"]) || "摘要内容";
+            const supportQuote = firstString(item, ["support_quote"]) || "";
+            const sourceTriggerId = `summary-source-${sectionIndex}-${itemIndex}`;
             return <article className="summary-reveal-line" style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={firstString(item, ["item_key"]) || itemIndex}>
-              <div className="summary-point-copy"><mark>{firstString(item, ["text"]) || "摘要内容"}</mark><q>{firstString(item, ["support_quote"]) || ""}</q></div>
+              <div className="summary-point-copy"><mark>{summaryText}</mark><q>{supportQuote}</q></div>
               <div className="summary-point-actions">
-                <button className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => locateRawSources(ids)}>定位原文</button>
+                <button id={sourceTriggerId} className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => locateRawSources(ids, summaryText, supportQuote, sourceTriggerId)}>查看来源</button>
                 {matchedClaim && <button className="text-button" onClick={() => openClaimFromSummary(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
-                {matchedClaims.length > 1 && <details className="summary-related-claims">
-                  <summary className="text-button">{matchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{matchedClaims.length}）</summary>
-                  <div>{matchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
+                {availableMatchedClaims.length > 1 && <details className="summary-related-claims">
+                  <summary className="text-button">{availableMatchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{availableMatchedClaims.length}）</summary>
+                  <div>{availableMatchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
                 </details>}
               </div>
             </article>;
@@ -4966,13 +5094,15 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
-      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</span><button className="button primary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button></div>}
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>开始本次分析后，AI 摘要、易读逐字稿和事实识别会一起生成。</span><button className="button primary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "开始分析并生成"}</button></div>)}
     </section>
 
-    <nav className="transcript-subtabs" aria-label="逐字稿版本">
+    {tab === "summary" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectArtifactTab(summaryArtifact && readableArtifact ? "readable" : "raw")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
+
+    {tab !== "summary" && <nav className="transcript-subtabs" aria-label="逐字稿版本">
       <button className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       <button className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
-    </nav>
+    </nav>}
     {transcriptionRun?.audioAssetId && <audio
       ref={audioRef}
       controls
@@ -4993,7 +5123,7 @@ function TranscriptArtifactsPanel({
       }}
     />}
 
-    {readerTab === "readable" && <div className="artifact-panel readable-artifact">
+    {tab !== "summary" && readerTab === "readable" && <div className="artifact-panel readable-artifact">
       {readableArtifact ? readableDisplayGroups.map((group) => {
         const diffKey = `${event.id}:${group.key}`;
         const groupPlaybackKey = `readable:${group.key}`;
@@ -5017,18 +5147,59 @@ function TranscriptArtifactsPanel({
       }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
-    {readerTab === "raw" && <div className="artifact-panel raw-artifact">
+    {tab !== "summary" && readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
       {rawSegments.length ? rawDisplayGroups.map((group) => {
         const groupPlaybackKey = `raw:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
         const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
-        return <article ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${selected ? "selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
+        return <article id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${selected ? "selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
           <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)} 前三秒播放`} onClick={() => playAt(group.startMs, group.key)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
         </article>;
       }) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
+
+    {analysisComplete && reviewReady && pendingReviewCount > 0 && <footer className="focus-action-bar" aria-label="重点工作下一步">
+      <div><strong>{pendingReviewCount} 条重要信息可以确认</strong><span>金额、日期、责任人和变化会优先排在前面。</span></div>
+      <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重点</button>
+    </footer>}
+    {analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0 && <footer className="focus-action-bar complete" aria-label="重点已经存档"><div><strong>本次重点已经处理完成</strong><span>确认过的内容已进入客户档案，原始来源仍然保留。</span></div><span className="focus-complete-mark">✓</span></footer>}
+    {analysisRun
+      && !(analysisComplete && reviewReady && pendingReviewCount > 0)
+      && !(analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0)
+      && <div className="focus-action-placeholder" aria-hidden="true" />}
+
+    {sourceDrawer && <Dialog.Root open onOpenChange={(open) => { if (!open) setSourceDrawer(null); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="source-drawer-backdrop" />
+        <Dialog.Content
+          className="source-drawer"
+          onCloseAutoFocus={(closeEvent) => {
+            if (sourceDrawerExitTarget.current) {
+              closeEvent.preventDefault();
+              return;
+            }
+            const target = document.getElementById(sourceDrawer.returnFocusId);
+            if (!target) return;
+            closeEvent.preventDefault();
+            target.focus();
+          }}
+        >
+          <header className="source-drawer-header">
+            <div><span className="section-kicker">重点来源</span><Dialog.Title>{sourceDrawer.summaryText}</Dialog.Title><Dialog.Description>原句和时间只帮助定位；重要含义仍需人工确认。</Dialog.Description></div>
+            <Dialog.Close asChild><button className="icon-button" aria-label="关闭来源">×</button></Dialog.Close>
+          </header>
+          <div className="source-drawer-body">
+            {sourceDrawerGroups.length ? sourceDrawerGroups.map((group) => <article key={group.key}>
+              <header><button onClick={() => playAt(group.startMs, group.key, "raw")} disabled={!transcriptionRun?.audioAssetId}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}{transcriptionRun?.audioAssetId ? " · 播放" : ""}</button><strong>{displaySpeakerLabel(group.speaker)}</strong></header>
+              <p>{highlightExactPhrase(group.text, sourceDrawer.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
+            </article>) : <p className="source-drawer-empty">当前摘要保留了来源编号，但原句暂时无法显示。完整原始逐字稿仍然安全保留。</p>}
+          </div>
+          <footer className="source-drawer-footer"><span>{sourceDrawer.sourceIds.length} 段原始记录</span><button className="text-button" onClick={openSourcesInFullTranscript}>在完整原稿中打开</button></footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>}
   </section>;
 }
 
@@ -5782,10 +5953,19 @@ function SimpleTestScreen({
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
+            <button aria-label="Transcript · 本次重点" className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b>{transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
             <button className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
-            <button className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}>Transcript {transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
-            <button className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待核对 {pendingCount > 0 && <span>{pendingCount}</span>}</button>
-            <button className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}>结果</button>
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button className={`meeting-more-trigger${activeTab === "review" || activeTab === "results" ? " active" : ""}`}>更多{pendingCount > 0 && <span>{pendingCount}</span>}<i aria-hidden="true">⌄</i></button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content className="meeting-more-menu" align="end" sideOffset={5} collisionPadding={12}>
+                  <DropdownMenu.Item asChild><button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}><span>✓</span><b>待确认</b><small>{pendingCount > 0 ? `${pendingCount} 条重点` : "当前无待确认"}</small></button></DropdownMenu.Item>
+                  <DropdownMenu.Item asChild><button aria-label="结果" className={activeTab === "results" ? "active" : ""} onClick={() => selectWorkspaceTab("results")}><span>▤</span><b>客户档案</b><small>查看长期记录</small></button></DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           </nav>
 
           {(currentAudioPreparations.length > 0 || currentTranscriptionRuns.some((item) => item.status !== "succeeded")) && <div className="transcription-journey-slot">
@@ -5811,17 +5991,17 @@ function SimpleTestScreen({
               />)}
           </div>}
 
-          {factsRunningInBackground && readingAid && <aside className="workflow-reading-banner" aria-live="polite">
+          {factsRunningInBackground && readingAid && activeTab !== "transcript" && <aside className="workflow-reading-banner" aria-live="polite">
             <span className="workflow-reading-icon">✓</span>
             <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 原文定位不代表语义已经核对。" : " 原始逐字稿仍是最终核对依据。"}</p></div>
-            {activeTab !== "transcript" && <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : readingAid === "readable" ? "先看易读稿" : "查看原始逐字稿"}</button>}
+            <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : readingAid === "readable" ? "先看易读稿" : "查看原始逐字稿"}</button>
           </aside>}
 
-          {!factsRunningInBackground && factsCanBeReviewed && <aside className="workflow-reading-banner ready" aria-live="polite">
+          {!factsRunningInBackground && factsCanBeReviewed && activeTab === "materials" && <aside className="workflow-reading-banner ready" aria-live="polite">
             <span className="workflow-reading-icon">✓</span>
             <div><strong>事实识别已经完成</strong><p>你可以继续阅读当前摘要，重要内容已经可以核对；系统不会把你从这里跳走。</p></div>
             <span className="workflow-reading-actions">
-              {readingAid === "raw" && activeTab !== "transcript" && <button className="text-button" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>}
+              {readingAid === "raw" && <button className="text-button" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>}
               <button className="button secondary" onClick={() => { markUserNavigation(); onReview(); }}>核对重要内容</button>
             </span>
           </aside>}
@@ -5836,12 +6016,17 @@ function SimpleTestScreen({
             {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
               <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
               {analysisProgress ? <div className="project-workflow-progress analysis"><div><span>本次分析</span><strong>{analysisProgress.percent}%</strong></div><progress aria-label="本次事实分析进度" max={100} value={analysisProgress.percent} /><small>已完成 {analysisProgress.completed}/{analysisProgress.total} 步</small></div> : projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
-              {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
-              {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
-                <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>测试版本 · 每秒更新</small></header>
-                <p className="workflow-timing-explanation">后端会保存进度，并定期检查同一个模型任务是否完成。这里显示的是系统继续原任务的等待时间，不是重新调用模型，也不会重复收费。</p>
-                <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
-              </div>}
+              {(analysisProgress || runTimingItems.length > 0) && <details className="workflow-diagnostics">
+                <summary>处理详情</summary>
+                <div>
+                  {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
+                  {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
+                    <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>测试版本 · 每秒更新</small></header>
+                    <p className="workflow-timing-explanation">后端会保存进度，并定期检查同一个模型任务是否完成。这里显示的是系统继续原任务的等待时间，不是重新调用模型，也不会重复收费。</p>
+                    <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
+                  </div>}
+                </div>
+              </details>}
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
@@ -5879,8 +6064,12 @@ function SimpleTestScreen({
                 transcriptionRun={transcriptionRun}
                 analysisRun={run}
                 claims={claims}
+                pendingReviewCount={pendingCount}
+                reviewReady={factsCanBeReviewed}
+                reviewBlocked={needsScenario}
                 busy={busy}
                 onOpenClaim={onOpenClaim}
+                onReview={() => { markUserNavigation(); onReview(); }}
                 onRetryArtifact={onRetryArtifact}
                 onStartAnalysis={onStartAnalysis}
                 onSelectTab={(tab) => {
@@ -5895,7 +6084,7 @@ function SimpleTestScreen({
 
           {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewReady ? "优先检查金额、日期、责任人、矛盾和低置信内容。" : workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div>{workflowReviewReady && <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重要内容</button>}</div></div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{analysisDone ? "客户概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从客户概览了解预算、偏好、决策人和下一步。"}</p></div><button className="button primary" disabled={!analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开客户概览</button></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">AI 草稿 + 可信记忆</span><h3>{verifiedCount > 0 ? `已有 ${verifiedCount} 条确认内容` : "先看 AI 当前理解，再核对可信结果"}</h3><p>{needsScenario ? "先确认工作场景，再进入客户档案。" : analysisDone ? "客户概览会分开显示尚未核对的 AI 草稿和已经人工确认的可信记忆。" : "先完成分析，再从客户概览了解预算、偏好、决策人和下一步。"}</p></div><button className="button primary" disabled={needsScenario || !analysisDone || Boolean(busy)} onClick={() => onResult("client-progress")}>打开客户概览</button></div></div>}
         </article>
       </section>
 
@@ -6424,21 +6613,10 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
 }
 
 function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
-  const [context, setContext] = useState<EvidenceContext | null>(null);
-  const [contextIssue, setContextIssue] = useState<ApiIssue | null>(null);
-  const [contextLoading, setContextLoading] = useState(true);
-  const [contextAttempt, setContextAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    void api.getEvidenceContext(evidence.id).then((result) => {
-      if (active) setContext(result);
-    }).catch((error) => {
-      if (active) setContextIssue(toIssue(error));
-    }).finally(() => {
-      if (active) setContextLoading(false);
-    });
-    return () => { active = false; };
-  }, [contextAttempt, evidence.id]);
+  const contextQuery = useQuery(evidenceContextQuery(evidence.id));
+  const context = contextQuery.data ?? null;
+  const contextIssue = contextQuery.error ? toIssue(contextQuery.error) : null;
+  const contextLoading = contextQuery.isPending || (contextQuery.isFetching && !context);
   const audioStartSeconds = context?.audio?.start_ms != null
     ? Math.max(0, context.audio.start_ms / 1000)
     : typeof evidence.timestampStart === "number"
@@ -6464,7 +6642,7 @@ function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
       {(context?.asset_view_url || evidence.viewUrl) && !evidence.imageUrl && <a className="evidence-open" href={context?.asset_view_url || evidence.viewUrl} target="_blank" rel="noreferrer">打开原始文件</a>}
       {quote && <blockquote className="evidence-target-quote">“{quote}”</blockquote>}
       {contextLoading && <p className="evidence-context-loading">正在定位目标原句和前后文…</p>}
-      {contextIssue && <ErrorNotice issue={contextIssue} onRetry={() => { setContextLoading(true); setContextIssue(null); setContextAttempt((value) => value + 1); }} compact />}
+      {contextIssue && <ErrorNotice issue={contextIssue} onRetry={() => { void contextQuery.refetch(); }} compact />}
       {context && (beforeSegments.length > 0 || targetSegments.length > 0 || afterSegments.length > 0) && <div className="evidence-context" aria-label="目标原句的前后文">{beforeSegments.map((segment) => renderContextSegment(segment))}{targetSegments.map((segment) => renderContextSegment(segment, true))}{afterSegments.map((segment) => renderContextSegment(segment))}</div>}
       {evidence.caption && evidence.caption !== evidence.quote && <p>{evidence.caption}</p>}
       {!evidence.quote && !evidence.imageUrl && !evidence.caption && <p className="muted">这条证据已记录，但服务器没有返回可在页面预览的内容。</p>}

@@ -15,7 +15,7 @@ test("AI draft is a chronological, evidence-linked view of existing Agent B clai
 
 test("evidence cards use the scoped context endpoint and exact quote highlighting", () => {
   const evidenceCard = page.slice(page.indexOf("function EvidenceCard"), page.indexOf("function uncertaintyForEdit"));
-  assert.match(evidenceCard, /api\.getEvidenceContext\(evidence\.id\)/);
+  assert.match(evidenceCard, /useQuery\(evidenceContextQuery\(evidence\.id\)\)/);
   assert.doesNotMatch(evidenceCard, /listEventTranscriptSegments/);
   assert.match(evidenceCard, /context\.before/);
   assert.match(evidenceCard, /context\.target/);
@@ -86,6 +86,33 @@ test("completed analysis opens the summary and restores it after reading evidenc
   assert.match(page, /hasReadable \? "readable" : hasSummary \? "summary" : "raw"/);
   assert.match(page, /summaryRun\?\.status === "queued"/);
   assert.match(page, /readableRun\?\.status === "processing"/);
+});
+
+test("summary sources open in an in-place drawer and artifact polling does not refetch raw transcript", () => {
+  assert.match(page, /setSourceDrawer\(\{ sourceIds, summaryText, supportQuote, returnFocusId \}\)/);
+  assert.match(page, /className="source-drawer"/);
+  assert.match(page, /在完整原稿中打开/);
+  assert.match(page, /highlightExactPhrase\(group\.text, sourceDrawer\.supportQuote\)/);
+  assert.match(page, /if \(quiet\)[\s\S]{0,500}eventArtifactsQuery/);
+  assert.doesNotMatch(
+    page.slice(page.indexOf("if (quiet)"), page.indexOf("const [artifactData, segments]")),
+    /eventTranscriptSegmentsQuery/,
+  );
+  assert.match(styles, /\.source-drawer \{/);
+});
+
+test("the core workspace keeps two primary tabs and one contextual review action", () => {
+  assert.match(page, /aria-label="Transcript · 本次重点"/);
+  assert.match(page, /className="meeting-more-menu"/);
+  assert.match(page, /<DropdownMenu\.Portal>/);
+  assert.match(page, /className="focus-action-bar"/);
+  assert.match(page, />核对重点</);
+  assert.match(styles, /\.meeting-more-menu/);
+  assert.match(styles, /\.focus-action-bar/);
+  assert.match(page, /tab === "summary" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
+  assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);
+  assert.match(page, /reviewReady && pendingReviewCount > 0/);
+  assert.match(page, /reviewBlocked=\{needsScenario\}/);
 });
 
 test("a transcript without an analysis offers one valid start action instead of broken artifact retries", () => {

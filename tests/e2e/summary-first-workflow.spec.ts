@@ -26,7 +26,8 @@ test("a finished Summary opens once while facts continue without creating anothe
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Transcript/ })).toHaveClass(/active/);
-  await expect(page.getByText("事实识别仍在后台", { exact: false })).toBeVisible();
+  await expect(page.locator(".focus-action-placeholder")).toBeVisible();
+  await expect(page.locator('[aria-label="重点工作下一步"]')).toHaveCount(0);
   await expect(page.locator(".summary-trust-note")).toContainText("原文定位不代表语义已经核对");
 
   const nonWakeWrites = apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
@@ -46,7 +47,7 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Transcript/ })).toHaveClass(/active/);
-  await expect(page.getByText("事实识别已经完成", { exact: true })).toBeVisible();
+  await expect(page.locator('[aria-label="重点工作下一步"]')).toContainText("条重要信息可以确认");
 
   await page.reload();
 
@@ -58,13 +59,16 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 test("an explicit workspace tab choice is never replaced when Summary finishes", async ({ page, apiFixture }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "结果", exact: true }).click();
-  await expect(page.getByRole("button", { name: "结果", exact: true })).toHaveClass(/active/);
+  const more = page.getByRole("button", { name: /^更多/ });
+  await more.click();
+  await page.getByRole("menuitem", { name: "结果", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "结果", exact: true })).toHaveCount(0);
+  await expect(more).toHaveClass(/active/);
 
   apiFixture.completeSummary();
 
   await expect(page.getByRole("button", { name: "先看 AI 摘要" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "结果", exact: true })).toHaveClass(/active/);
+  await expect(more).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
   expect(apiFixture.writes).toEqual([]);
 });
@@ -100,7 +104,7 @@ test("facts finishing preserves the open Summary and its scroll position", async
 
   apiFixture.completeFacts();
 
-  await expect(page.getByText("事实识别已经完成", { exact: true })).toBeVisible();
+  await expect(page.locator('[aria-label="重点工作下一步"]')).toContainText("条重要信息可以确认");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page).toHaveURL(/view=simple/);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 60);
@@ -138,7 +142,7 @@ test("a Summary sentence with two overlapping Claims requires an explicit choice
   await expect(page.getByRole("heading", { name: "客户仍需确认 120 万美元是否包含装修预算", exact: true })).toBeVisible();
 });
 
-test("opening Raw from a Summary sentence stays on Raw when another reading artifact finishes", async ({ page, apiFixture }) => {
+test("a Summary source drawer stays open when another reading artifact finishes", async ({ page, apiFixture }) => {
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "succeeded", readableStatus: "processing" });
   await page.goto("/?project=project-a&event=event-a&view=simple");
@@ -146,12 +150,17 @@ test("opening Raw from a Summary sentence stays on Raw when another reading arti
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.getByRole("button", { name: /查看 1 段原文/ }).click();
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元" })).toBeVisible();
 
   apiFixture.completeReadableTranscript();
   await expect.poll(() => apiFixture.completedReadCount("/api/v1/events/event-a/ai-artifacts"), { timeout: 8_000 }).toBeGreaterThan(1);
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "在完整原稿中打开" }).click();
   await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-  await expect(page.getByText("预算上限是 120 万美元。", { exact: true }).last()).toBeVisible();
+  const selectedSource = page.locator(".raw-artifact article.selected");
+  await expect(selectedSource).toContainText("预算上限是 120 万美元。");
+  await expect(selectedSource).toBeFocused();
 });
 
 test("an old Run without reading artifacts falls back to the original transcript", async ({ page, apiFixture }) => {
@@ -190,6 +199,7 @@ test("manual Raw selection replaces the route and survives reload from a Summary
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
 
+  await page.getByRole("button", { name: "查看完整逐字稿", exact: true }).click();
   await page.getByRole("button", { name: /^原始逐字稿/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);

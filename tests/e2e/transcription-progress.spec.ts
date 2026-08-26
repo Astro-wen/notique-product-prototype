@@ -30,7 +30,7 @@ test("chunked transcription shows percentage, nodes, remaining work, and numbere
   await expect(page.getByRole("button", { name: "开始处理全部沟通", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: /^Transcript/ }).click();
-  await page.getByRole("button", { name: /^原始逐字稿/ }).click();
+  await page.getByRole("button", { name: "先看原始逐字稿", exact: true }).click();
   await expect(page.getByText("Speaker 1", { exact: true })).toBeVisible();
   await expect(page.getByText("Speaker 2", { exact: true })).toBeVisible();
   await expect(page.getByText("Speaker 3", { exact: true })).toBeVisible();

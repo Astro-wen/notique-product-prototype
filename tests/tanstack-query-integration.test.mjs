@@ -55,14 +55,26 @@ test("cancelling a Notique query aborts the fetch signal", async () => {
 });
 
 test("Notique read models use scoped cache keys and forward AbortSignal", () => {
-  for (const scope of ["workflow", "artifacts", "draft-memory", "actions", "view"]) {
+  for (const scope of ["workflow", "artifacts", "transcript-segments", "claimHistory", "evidenceContext", "draft-memory", "actions", "view"]) {
     assert.match(querySource, new RegExp(`\\b${scope.replace("-", "[A-Za-z-]*")}\\b`, "i"));
   }
   assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.getWorkflowSnapshot\(projectId, signal\)/);
   assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.getEventAiArtifacts\(eventId, signal\)/);
+  assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.listEventTranscriptSegments\(eventId, signal\)/);
+  assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.getClaimHistory\(claimId, signal\)/);
+  assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.getEvidence\(refId, signal\)/);
+  assert.match(querySource, /queryFn:\s*\(\{ signal \}\) => api\.getEvidenceContext\(refId, signal\)/);
   assert.match(apiSource, /getWorkflowSnapshot\(projectId: Id, signal\?: AbortSignal\)/);
   assert.match(apiSource, /getEventAiArtifacts\(eventId: Id, signal\?: AbortSignal\)/);
+  assert.match(apiSource, /getClaimHistory\(claimId: Id, signal\?: AbortSignal\)/);
+  assert.match(apiSource, /getEvidence\(refId: Id, signal\?: AbortSignal\)/);
+  assert.match(apiSource, /getEvidenceContext\(refId: Id, signal\?: AbortSignal\)/);
   assert.match(pageSource, /queryClient\.cancelQueries\(\{ queryKey: \["notique"\] \}\)/);
   assert.match(pageSource, /queryClient\.fetchQuery\(eventArtifactsQuery\(event\.id\)\)/);
+  assert.match(querySource, /eventTranscriptSegmentsQuery[\s\S]{0,400}staleTime: 0/);
+  assert.match(pageSource, /previousTranscriptRevision\.current === transcriptRevision/);
+  assert.match(pageSource, /queryClient\.invalidateQueries\(\{[\s\S]{0,180}eventTranscriptSegmentsQuery/);
+  assert.match(pageSource, /queryClient\.prefetchQuery\(claimHistoryQuery\(followingClaim\.id, followingClaim\.versionId\)\)/);
+  assert.match(pageSource, /queryClient\.prefetchQuery\(evidenceContextQuery\(id\)\)/);
   assert.match(pageSource, /queryClient\.fetchQuery\(verifiedViewQuery\(projectId, view\)\)/);
 });

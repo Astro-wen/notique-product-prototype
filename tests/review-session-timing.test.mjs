@@ -68,6 +68,16 @@ test("the real UI starts, resumes, and completes the server timer", () => {
   assert.equal(
     page.match(/await syncReviewTiming\(latestProject(?:, requestIsCurrent)?\);/g)?.length,
     3,
-    "queue loads and single-record verdicts must refresh the server-owned remaining count, with stale-response guards where needed",
+    "queue loads and the fast background refresh must update server-owned counts with stale-response guards",
   );
+  const verdict = page.slice(page.indexOf("async function runVerdict"), page.indexOf("async function withdrawClaim"));
+  assert.ok(
+    verdict.indexOf("await openClaim(nextId") < verdict.indexOf('loadReviewQueue("review"'),
+    "a successful non-final verdict must open the locally known next claim before a full queue reload",
+  );
+  assert.match(verdict, /refreshReviewSnapshotInBackground\(project\.id\)[\s\S]{0,120}await openClaim\(nextId/);
+  assert.doesNotMatch(verdict, /await invalidateProjectReadModels/);
+  assert.match(page, /const refreshReviewSnapshotInBackground/);
+  assert.match(page, /const reviewRefreshEpoch = useRef\(0\)/);
+  assert.match(page, /reviewRefreshEpoch\.current === token/);
 });

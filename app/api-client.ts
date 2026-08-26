@@ -1184,10 +1184,10 @@ export const api = {
     return event;
   },
 
-  async listEventTranscriptSegments(eventId: Id): Promise<TranscriptSegment[]> {
+  async listEventTranscriptSegments(eventId: Id, signal?: AbortSignal): Promise<TranscriptSegment[]> {
     const body = await request<ApiSuccess<{ segments: TranscriptSegment[] }>>(
       `/api/v1/events/${encodeURIComponent(eventId)}/transcript-segments`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     if (!Array.isArray(body.data.segments)) {
       invalidContract("The server returned an invalid Transcript segment list.");
@@ -1448,21 +1448,21 @@ export const api = {
     };
   },
 
-  async getClaimHistory(claimId: Id): Promise<unknown> {
-    return unwrap(await request<unknown>(`/api/v1/claims/${encodeURIComponent(claimId)}/history`, { cache: "no-store" }));
+  async getClaimHistory(claimId: Id, signal?: AbortSignal): Promise<unknown> {
+    return unwrap(await request<unknown>(`/api/v1/claims/${encodeURIComponent(claimId)}/history`, { cache: "no-store", signal }));
   },
 
-  async getEvidence(refId: Id): Promise<EvidenceRef> {
-    const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store" });
+  async getEvidence(refId: Id, signal?: AbortSignal): Promise<EvidenceRef> {
+    const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store", signal });
     const result = normalizeEvidence(dataValue(body, ["evidence_ref", "evidence"]));
     if (!result) throw new ApiClientError({ status: 502, code: "INVALID_EVIDENCE_RESPONSE", message: "The server returned an invalid evidence record." });
     return result;
   },
 
-  async getEvidenceContext(refId: Id): Promise<EvidenceContext> {
+  async getEvidenceContext(refId: Id, signal?: AbortSignal): Promise<EvidenceContext> {
     const body = await request<EvidenceContextResponse>(
       `/api/v1/evidence-refs/${encodeURIComponent(refId)}/context`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     const result = body.data.evidence_context;
     if (

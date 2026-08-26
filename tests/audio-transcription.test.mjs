@@ -184,6 +184,172 @@ test("silent chunk boundaries reuse the prior local speaker map instead of creat
   ]));
 });
 
+test("a speaker returning without boundary evidence stays unresolved instead of becoming Speaker 4", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "first", segments: [
+        { speaker: "A", text: "Agent opening.", startSeconds: 20, endSeconds: 24 },
+        { speaker: "B", text: "Buyer response.", startSeconds: 60, endSeconds: 64 },
+        { speaker: "C", text: "Partner response.", startSeconds: 100, endSeconds: 104 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: "second", segments: [
+        { speaker: "A", text: "Agent follow-up.", startSeconds: 30, endSeconds: 34 },
+        { speaker: "B", text: "Buyer follow-up.", startSeconds: 70, endSeconds: 74 },
+      ] },
+    },
+    {
+      index: 2, startMs: 330_000, endMs: 510_000, assetVersionId: "av2",
+      transcript: { durationSeconds: 180, text: "third", segments: [
+        { speaker: "C", text: "Partner returns.", startSeconds: 30, endSeconds: 34 },
+      ] },
+    },
+  ]);
+  assert.equal(merged.segments.find((segment) => segment.text === "Partner returns.")?.speaker, "Speaker unknown");
+  assert.equal(merged.segments.some((segment) => segment.speaker === "Speaker 4"), false);
+});
+
+test("normalized anonymous labels reuse one identity across silent boundaries", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "first", segments: [
+        { speaker: "A", text: "Opening statement.", startSeconds: 30, endSeconds: 34 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: "second", segments: [
+        { speaker: "speaker-a", text: "Later statement.", startSeconds: 40, endSeconds: 44 },
+      ] },
+    },
+  ]);
+  assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set(["Speaker 1"]));
+});
+
+test("a split boundary sentence aligns rotated labels and deduplicates only the proven copy", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "first", segments: [
+        { speaker: "A", text: "Agent setup.", startSeconds: 40, endSeconds: 44 },
+        { speaker: "B", text: "The client needs three bedrooms near the station.", startSeconds: 170, endSeconds: 174 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: "second", segments: [
+        { speaker: "A", text: "three bedrooms near the station", startSeconds: 5, endSeconds: 9 },
+        { speaker: "B", text: "I will send matching listings.", startSeconds: 20, endSeconds: 24 },
+      ] },
+    },
+  ]);
+  assert.equal(merged.segments.filter((segment) => segment.text.includes("three bedrooms")).length, 1);
+  assert.equal(merged.segments.find((segment) => segment.text.startsWith("The client needs"))?.speaker, "Speaker 2");
+  assert.equal(merged.segments.find((segment) => segment.text.startsWith("I will send"))?.speaker, "Speaker 1");
+});
+
+test("Chinese partial boundary text aligns without whitespace tokenization", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "first", segments: [
+        { speaker: "A", text: "客户希望三房并且靠近地铁站", startSeconds: 170, endSeconds: 174 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: "second", segments: [
+        { speaker: "B", text: "三房并且靠近地铁站", startSeconds: 5, endSeconds: 9 },
+      ] },
+    },
+  ]);
+  assert.deepEqual(merged.segments.map((segment) => segment.text), ["客户希望三房并且靠近地铁站"]);
+});
+
+test("nearby generic acknowledgements do not establish identity or delete real turns", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "first", segments: [
+        { speaker: "B", text: "Buyer context.", startSeconds: 100, endSeconds: 104 },
+        { speaker: "A", text: "Okay", startSeconds: 175, endSeconds: 176 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: "second", segments: [
+        { speaker: "B", text: "Okay", startSeconds: 10.4, endSeconds: 11.4 },
+      ] },
+    },
+  ]);
+  const acknowledgements = merged.segments.filter((segment) => segment.text === "Okay");
+  assert.equal(acknowledgements.length, 2);
+  assert.deepEqual(new Set(acknowledgements.map((segment) => segment.speaker)), new Set(["Speaker 1", "Speaker 2"]));
+});
+
+test("boundary dedup keeps conflicting amounts, dates, units, and negations", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const mergePair = (leftText, rightText) => mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: leftText, segments: [
+        { speaker: "A", text: leftText, startSeconds: 170, endSeconds: 174 },
+      ] },
+    },
+    {
+      index: 1, startMs: 165_000, endMs: 345_000, assetVersionId: "av1",
+      transcript: { durationSeconds: 180, text: rightText, segments: [
+        { speaker: "A", text: rightText, startSeconds: 5, endSeconds: 9 },
+      ] },
+    },
+  ]).segments.map((segment) => segment.text);
+
+  assert.deepEqual(mergePair(
+    "The budget is 500,000 dollars.",
+    "The budget is 550,000 dollars.",
+  ), ["The budget is 500,000 dollars.", "The budget is 550,000 dollars."]);
+  assert.deepEqual(mergePair(
+    "Closing is on 2026-09-12.",
+    "Closing is on 2026-09-21.",
+  ), ["Closing is on 2026-09-12.", "Closing is on 2026-09-21."]);
+  assert.deepEqual(mergePair(
+    "The lot is 5 acres.",
+    "The lot is 5 hectares.",
+  ), ["The lot is 5 acres.", "The lot is 5 hectares."]);
+  assert.deepEqual(mergePair(
+    "I can waive the inspection.",
+    "I can't waive the inspection.",
+  ), ["I can waive the inspection.", "I can't waive the inspection."]);
+  assert.deepEqual(mergePair(
+    "客户想要临街的房子。",
+    "客户不想要临街的房子。",
+  ), ["客户想要临街的房子。", "客户不想要临街的房子。"]);
+});
+
+test("provider unknown labels never become a numbered Speaker", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const merged = mergeChunkTranscripts([
+    {
+      index: 0, startMs: 0, endMs: 180_000, assetVersionId: "av0",
+      transcript: { durationSeconds: 180, text: "voices", segments: [
+        { speaker: "Speaker unknown", text: "Unclear background voice.", startSeconds: 20, endSeconds: 24 },
+        { speaker: "A", text: "Known speaker.", startSeconds: 40, endSeconds: 44 },
+      ] },
+    },
+  ]);
+  assert.equal(merged.segments.find((segment) => segment.text.startsWith("Unclear"))?.speaker, "Speaker unknown");
+  assert.equal(merged.segments.find((segment) => segment.text.startsWith("Known"))?.speaker, "Speaker 1");
+});
+
 test("chunk merging fails closed on missing indices or non-overlapping source ranges", async () => {
   const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
   const transcript = {
