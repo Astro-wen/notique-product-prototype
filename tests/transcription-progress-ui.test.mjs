@@ -119,7 +119,8 @@ test("the meeting workspace uses the persistent progress journey instead of per-
   assert.match(page, /\$\{progress\.processing\} 段正在识别/);
   assert.match(page, /\$\{progress\.queued\} 段等待并行空位/);
   assert.match(page, /系统会自动继续，不需要手动开启后台任务/);
-  assert.match(page, /\}\>\(plan, 4, async/);
+  assert.match(page, /audioPreparationConcurrency\(\{/);
+  assert.match(page, /\}\>\(plan, preparationConcurrency, async/);
   assert.match(page, /后端最多 6 段同时识别/);
   assert.match(page, /currentAudioPreparations\.map/);
   assert.match(page, /transcriptionRunsByAssetId\[asset\.id\]/);

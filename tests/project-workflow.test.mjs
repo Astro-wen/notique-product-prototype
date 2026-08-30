@@ -367,7 +367,11 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   );
   assert.match(simpleScreen, /const materialPreparationActive = busy === "asset"[\s\S]*\|\| transcriptionRunning/);
   assert.match(simpleScreen, /const workflowInputActuallyReady = materialsReady && !materialPreparationActive/);
-  assert.match(simpleScreen, /const showProjectWorkflowCard = Boolean\(project\)[\s\S]*projectWorkflow\.phase === "ready"[\s\S]*workflowInputActuallyReady/);
+  assert.match(
+    simpleScreen,
+    /const showProjectWorkflowCard = Boolean\(project\) && \["running", "error", "empty_output"\]\.includes/,
+    "the old workflow card is now recovery/progress UI, not the normal walkthrough",
+  );
   assert.match(simpleScreen, /\{showProjectWorkflowCard && <section className=\{`project-workflow-card/);
   assert.doesNotMatch(simpleScreen, /\{project && <section className=\{`project-workflow-card/);
   assert.doesNotMatch(
@@ -376,6 +380,7 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
     "waiting and running states must not render a disabled primary action",
   );
   assert.match(simpleScreen, /issueRetry[\s\S]*onProjectWorkflowAction/);
-  assert.match(simpleScreen, /workflowReviewReady = pendingCount > 0 && analysisDone && !needsScenario/);
+  assert.match(simpleScreen, /workflowReviewReady = pendingCount > 0 && analysisDone/);
+  assert.match(simpleScreen, /needsScenarioConfirmation: false/);
   assert.match(simpleScreen, /\{workflowReviewReady && <button[\s\S]*核对重要内容/);
 });

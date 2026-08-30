@@ -14,6 +14,7 @@ import {
 import {
   AUDIO_FILE_ACCEPT,
   MAX_AUDIO_BYTES,
+  audioPreparationConcurrency,
   audioMimeFor,
 } from "@/lib/domain/audio-transcription";
 import { shouldChunkAudio } from "@/lib/domain/audio-chunking";
@@ -90,6 +91,7 @@ import {
   OccurrenceCandidate,
   OccurrenceNewClaim,
   Project,
+  ProjectAction,
   ProjectDeletePreview,
   ProjectViewName,
   RelationTarget,
@@ -213,6 +215,15 @@ type SummarySourceDrawerState = {
   returnFocusId: string;
 };
 
+type SelectedSummaryPoint = SummarySourceDrawerState & {
+  key: string;
+  sectionLabel: string;
+  claimIds: string[];
+};
+
+type ReadingWorkspaceView = "points" | "chapters" | "speakers" | "transcript";
+type ReadingActionView = "source" | "pending" | "actions";
+
 type ReadableDiffViewState =
   | { status: "loading" }
   | ReadableWordDiffResult
@@ -261,7 +272,10 @@ function autoAnalysisIntentKey(eventId: string): string {
 function readAutoAnalysisIntent(eventId: string): AutoAnalysisIntent | null {
   if (typeof window === "undefined") return null;
   try {
-    const value = JSON.parse(window.sessionStorage.getItem(autoAnalysisIntentKey(eventId)) || "null") as unknown;
+    const key = autoAnalysisIntentKey(eventId);
+    const persisted = window.localStorage.getItem(key);
+    const legacySession = persisted ? null : window.sessionStorage.getItem(key);
+    const value = JSON.parse(persisted || legacySession || "null") as unknown;
     if (
       !isRecord(value)
       || value.eventId !== eventId
@@ -269,16 +283,26 @@ function readAutoAnalysisIntent(eventId: string): AutoAnalysisIntent | null {
       || typeof value.idempotencyKey !== "string"
       || !value.idempotencyKey
     ) return null;
-    return {
+    const armedAt = typeof value.armedAt === "number" ? value.armedAt : Date.now();
+    if (Date.now() - armedAt > 7 * 24 * 60 * 60 * 1_000) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    const intent: AutoAnalysisIntent = {
       eventId,
       waitForAudioAssetIds: value.waitForAudioAssetIds.filter((id): id is string => typeof id === "string" && Boolean(id)),
-      armedAt: typeof value.armedAt === "number" ? value.armedAt : Date.now(),
+      armedAt,
       idempotencyKey: value.idempotencyKey,
       ...(typeof value.extractionFingerprint === "string"
         ? { extractionFingerprint: value.extractionFingerprint }
         : {}),
       ...(typeof value.baseRunId === "string" ? { baseRunId: value.baseRunId } : {}),
     };
+    if (!persisted && legacySession) {
+      window.localStorage.setItem(key, JSON.stringify(intent));
+      window.sessionStorage.removeItem(key);
+    }
+    return intent;
   } catch {
     return null;
   }
@@ -287,13 +311,13 @@ function readAutoAnalysisIntent(eventId: string): AutoAnalysisIntent | null {
 function storeAutoAnalysisIntent(intent: AutoAnalysisIntent): boolean {
   if (typeof window === "undefined") return false;
   try {
-    window.sessionStorage.setItem(autoAnalysisIntentKey(intent.eventId), JSON.stringify(intent));
+    window.localStorage.setItem(autoAnalysisIntentKey(intent.eventId), JSON.stringify(intent));
+    window.sessionStorage.removeItem(autoAnalysisIntentKey(intent.eventId));
     return true;
   } catch {
-    // Same-tab automation is an enhancement. Server Runs and their
-    // idempotency/concurrency guards remain authoritative. The caller is told
-    // so it can promise manual recovery instead of an automatic start that a
-    // browser with storage disabled will never perform.
+    // Server Runs and their idempotency/concurrency guards remain authoritative.
+    // The caller is told so it can promise manual recovery instead of an
+    // automatic start that a browser with storage disabled will never perform.
     return false;
   }
 }
@@ -301,6 +325,7 @@ function storeAutoAnalysisIntent(intent: AutoAnalysisIntent): boolean {
 function clearStoredAutoAnalysisIntent(eventId: string): void {
   if (typeof window === "undefined") return;
   try {
+    window.localStorage.removeItem(autoAnalysisIntentKey(eventId));
     window.sessionStorage.removeItem(autoAnalysisIntentKey(eventId));
   } catch {
     // A blocked storage API must not affect the analysis Run itself.
@@ -3232,12 +3257,16 @@ export default function Home() {
         completed: 0,
         chunks: plan.map((item) => ({ index: item.index, status: "queued", fraction: 0 })),
       });
+      const preparationConcurrency = audioPreparationConcurrency({
+        mobile: /iPhone|iPad|iPod|Android/i.test(navigator.userAgent),
+        hardwareConcurrency: navigator.hardwareConcurrency,
+      });
       const uploadedChunks = await mapWithConcurrency<typeof plan[number], {
         assetId: string;
         index: number;
         startMs: number;
         endMs: number;
-      }>(plan, 4, async (item) => {
+      }>(plan, preparationConcurrency, async (item) => {
         const updateChunk = (status: AudioPreparationProgress["chunks"][number]["status"], fraction: number) => {
           setPreparation((current) => {
             if (!current) return current;
@@ -3806,21 +3835,24 @@ export default function Home() {
     }
   }
 
-  async function completeAction(claimId: string) {
+  async function completeAction(claimId: string, stayInWorkspace = false) {
     if (!project) return;
     const fingerprint = `complete-action:${claimId}`;
     const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
     mutationKeys.current.set(fingerprint, idempotencyKey);
     setBusyAction(fingerprint);
     setViewIssue(null);
+    if (stayInWorkspace) setEventIssue(null);
     try {
       await api.completeProjectAction(claimId, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       await invalidateProjectReadModels(project.id);
       flash("行动已完成，并已保留为一条人工确认的项目进展记录");
-      await loadView("actions", project.id, "replace");
+      if (!stayInWorkspace) await loadView("actions", project.id, "replace");
     } catch (error) {
-      setViewIssue(toIssue(error));
+      const issue = toIssue(error);
+      setViewIssue(issue);
+      if (stayInWorkspace) setEventIssue(issue);
     } finally {
       setBusyAction(null);
     }
@@ -3882,7 +3914,7 @@ export default function Home() {
     }
   }
 
-  async function attachSimpleFile(file: File): Promise<boolean> {
+  async function attachSimpleFile(file: File, metadata: Record<string, unknown> = {}): Promise<boolean> {
     const localIssue = photoUploadIssue(file.name, file.type, file.size)
       ?? audioUploadIssue(file.name, file.type, file.size);
     if (localIssue) {
@@ -3921,10 +3953,10 @@ export default function Home() {
       const audioMime = audioMimeFor(file.name, file.type);
       const kind = imageMime ? "photo" : audioMime ? "audio" : file.type === "application/pdf" ? "pdf" : "text";
       const contentType = imageMime || audioMime || file.type || "text/plain";
-      const fingerprint = ["asset-init", targetEvent.id, kind, file.name, contentType, file.size].join(":");
+      const fingerprint = ["asset-init", targetEvent.id, kind, file.name, contentType, file.size, JSON.stringify(metadata)].join(":");
       const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, idempotencyKey);
-      const init = await api.initAsset(targetEvent.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size }, idempotencyKey);
+      const init = await api.initAsset(targetEvent.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size, ...(Object.keys(metadata).length ? { metadata } : {}) }, idempotencyKey);
       await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
       await api.finalizeAsset(init.assetId);
       mutationKeys.current.delete(fingerprint);
@@ -4256,7 +4288,7 @@ export default function Home() {
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon">▣</span><span className="sidebar-nav-label">高级工具</span></button>
           {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon">◫</span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
-        <div className="sidebar-note"><strong>核心工作区</strong><p>按沟通顺序添加材料、分析、核对，再从确认内容生成报告。</p></div>
+        <div className="sidebar-note"><strong>个人项目秘书</strong><p>导入一次沟通，自动整理重点；在同一页对照原音、手写笔记和行动。</p></div>
       </aside>
       <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
       <main>
@@ -4296,6 +4328,7 @@ export default function Home() {
           onReview={() => void enterAiDraft()}
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
+          onCompleteAction={(claimId) => void completeAction(claimId, true)}
           onRetryArtifact={retryEventAiArtifact}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
           onFocusTranscriptArtifact={(eventId, tab) => {
@@ -4484,13 +4517,14 @@ type SimpleTestScreenProps = {
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
   onAddTranscript: () => void;
-  onAddFile: (file: File) => Promise<boolean>;
+  onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
   onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onReview: () => void;
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
+  onCompleteAction: (claimId: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onFocusTranscriptArtifact: (eventId: string, tab: TranscriptArtifactTab) => void;
@@ -4572,6 +4606,8 @@ function TranscriptArtifactsPanel({
   reviewBlocked,
   busy,
   onOpenClaim,
+  onCompleteAction,
+  onAddPhoto,
   onReview,
   onRetryArtifact,
   onStartAnalysis,
@@ -4588,6 +4624,8 @@ function TranscriptArtifactsPanel({
   reviewBlocked: boolean;
   busy: string | null;
   onOpenClaim: (id: string) => void;
+  onCompleteAction: (claimId: string) => void;
+  onAddPhoto: () => void;
   onReview: () => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
@@ -4596,27 +4634,49 @@ function TranscriptArtifactsPanel({
   onFocusHandled: (requestId: number) => void;
 }) {
   const queryClient = useQueryClient();
+  const projectActions = useQuery({
+    ...projectActionsQuery(event.projectId || "no-project"),
+    enabled: Boolean(event.projectId),
+  });
   const [tab, setTab] = useState<TranscriptArtifactTab>("readable");
+  const [workspaceView, setWorkspaceView] = useState<ReadingWorkspaceView>("points");
+  const [actionView, setActionView] = useState<ReadingActionView>("source");
+  const [mobilePane, setMobilePane] = useState<"reading" | "actions">("reading");
+  const [selectedPoint, setSelectedPoint] = useState<SelectedSummaryPoint | null>(null);
+  const [transcriptSearch, setTranscriptSearch] = useState("");
+  const [speakerFilter, setSpeakerFilter] = useState("all");
+  const [onlyKeySources, setOnlyKeySources] = useState(false);
+  const [visibleTranscriptGroups, setVisibleTranscriptGroups] = useState(240);
   const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
   const [runs, setRuns] = useState<EventAiArtifactRun[]>([]);
   const [artifacts, setArtifacts] = useState<EventAiArtifact[]>([]);
   const [state, setState] = useState<AsyncState>("loading");
+  const [artifactState, setArtifactState] = useState<"loading" | "ready" | "error">("loading");
+  const [transcriptState, setTranscriptState] = useState<"loading" | "ready" | "error">("loading");
   const [issue, setIssue] = useState<ApiIssue | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
   const [sourceDrawer, setSourceDrawer] = useState<SummarySourceDrawerState | null>(null);
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
   const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
   const [activePlaybackKey, setActivePlaybackKey] = useState<string | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioRate, setAudioRate] = useState(1);
+  const [activeAudioAssetId, setActiveAudioAssetId] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playbackNodes = useRef(new Map<string, HTMLElement>());
-  const pendingPlaybackTarget = useRef<{ key: string; startMs: number } | null>(null);
+  const pendingPlaybackTarget = useRef<{ key: string; startMs: number; audioAssetId: string } | null>(null);
   const programmaticAudioSeek = useRef(false);
   const loadEpoch = useRef(0);
   const transcriptLoadEpoch = useRef(0);
   const activeDiffEventId = useRef(event.id);
   const diffLoadsInFlight = useRef(new Set<string>());
   const summaryScrollY = useRef(0);
+  const mobileReadingScrollY = useRef(0);
+  const mobileActionsScrollY = useRef(0);
   const manuallySelectedTab = useRef(false);
+  const requestedWorkspaceView = useRef<ReadingWorkspaceView | null>(null);
   const handledFocusRequestId = useRef<number | null>(null);
   const scrollRestoreCleanup = useRef<() => void>(() => undefined);
   const sourceDrawerExitTarget = useRef<string | null>(null);
@@ -4644,7 +4704,12 @@ function TranscriptArtifactsPanel({
   const load = useCallback(async (quiet = false) => {
     const token = loadEpoch.current + 1;
     loadEpoch.current = token;
-    if (!quiet) setState("loading");
+    if (!quiet) {
+      setState("loading");
+      setArtifactState("loading");
+      setTranscriptState("loading");
+      setIssue(null);
+    }
     try {
       if (quiet) {
         const artifactData = await queryClient.fetchQuery({
@@ -4654,19 +4719,47 @@ function TranscriptArtifactsPanel({
         if (loadEpoch.current !== token) return;
         setRuns(artifactData.runs);
         setArtifacts(artifactData.artifacts);
-        setIssue(null);
+        setArtifactState("ready");
         return;
       }
-      const [artifactData, segments] = await Promise.all([
-        queryClient.fetchQuery(eventArtifactsQuery(event.id)),
-        queryClient.fetchQuery(eventTranscriptSegmentsQuery(event.id)),
+      let nextArtifactCount = 0;
+      let nextSegmentCount = 0;
+      const artifactRequest = queryClient.fetchQuery(eventArtifactsQuery(event.id)).then((artifactData) => {
+        if (loadEpoch.current !== token) return artifactData;
+        nextArtifactCount = artifactData.artifacts.length;
+        setRuns(artifactData.runs);
+        setArtifacts(artifactData.artifacts);
+        setArtifactState("ready");
+        if (artifactData.artifacts.length) setState("ready");
+        return artifactData;
+      });
+      const transcriptRequest = queryClient.fetchQuery(eventTranscriptSegmentsQuery(event.id)).then((segments) => {
+        if (loadEpoch.current !== token) return segments;
+        nextSegmentCount = segments.length;
+        setRawSegments(segments);
+        setTranscriptState("ready");
+        if (segments.length) setState("ready");
+        return segments;
+      });
+      const [artifactResult, transcriptResult] = await Promise.allSettled([
+        artifactRequest,
+        transcriptRequest,
       ]);
       if (loadEpoch.current !== token) return;
-      setRuns(artifactData.runs);
-      setArtifacts(artifactData.artifacts);
-      setRawSegments(segments);
-      setIssue(null);
-      setState(segments.length || artifactData.artifacts.length ? "ready" : "empty");
+      if (artifactResult.status === "rejected" && transcriptResult.status === "rejected") {
+        setArtifactState("error");
+        setTranscriptState("error");
+        throw artifactResult.reason;
+      }
+      if (artifactResult.status === "rejected") setArtifactState("error");
+      if (transcriptResult.status === "rejected") setTranscriptState("error");
+      const partialFailure = artifactResult.status === "rejected"
+        ? artifactResult.reason
+        : transcriptResult.status === "rejected"
+          ? transcriptResult.reason
+          : null;
+      setIssue(partialFailure ? toIssue(partialFailure) : null);
+      setState(nextSegmentCount || nextArtifactCount ? "ready" : "empty");
     } catch (error) {
       if (loadEpoch.current !== token) return;
       if (!quiet) {
@@ -4687,12 +4780,14 @@ function TranscriptArtifactsPanel({
       const segments = await queryClient.fetchQuery(eventTranscriptSegmentsQuery(event.id));
       if (transcriptLoadEpoch.current !== token) return;
       setRawSegments(segments);
+      setTranscriptState("ready");
       setIssue(null);
       setState(segments.length || artifacts.length ? "ready" : "empty");
     } catch (error) {
       if (transcriptLoadEpoch.current !== token) return;
       setIssue(toIssue(error));
-      setState("error");
+      setTranscriptState("error");
+      setState(artifacts.length ? "ready" : "error");
     }
   }, [artifacts.length, event.id, queryClient]);
 
@@ -4792,10 +4887,78 @@ function TranscriptArtifactsPanel({
       needsCheck: false,
     })),
   );
+  const audioAssetIdByTranscriptVersion = new Map(
+    event.assets.flatMap((asset) => {
+      const sourceAudioAssetId = stringValue(asset.transform?.source_audio_asset_id);
+      return asset.kind === "transcript" && asset.versionId && sourceAudioAssetId
+        ? [[asset.versionId, sourceAudioAssetId] as const]
+        : [];
+    }),
+  );
+  const mappedAudioAssetIds = new Set(audioAssetIdByTranscriptVersion.values());
+  const hasPlayableAudio = Boolean(transcriptionRun?.audioAssetId || mappedAudioAssetIds.size);
+  const playbackAudioAssetId = activeAudioAssetId
+    || transcriptionRun?.audioAssetId
+    || [...mappedAudioAssetIds][0]
+    || "";
+  const audioAssetIdForVersion = (assetVersionId: string | null): string | null => {
+    const mapped = assetVersionId ? audioAssetIdByTranscriptVersion.get(assetVersionId) : null;
+    if (mapped) return mapped;
+    // Legacy imported transcripts do not expose a source transform. Falling
+    // back is safe only when this Event has at most one possible recording.
+    if (mappedAudioAssetIds.size <= 1) return transcriptionRun?.audioAssetId ?? [...mappedAudioAssetIds][0] ?? null;
+    return null;
+  };
   const sourceDrawerGroups = sourceDrawer
     ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => sourceDrawer.sourceIds.includes(id)))
     : [];
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
+  const summarySourceIds = new Set(
+    summarySections.flatMap((section) => recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids))),
+  );
+  const availableSpeakers = [...new Set(rawDisplayGroups.map((group) => displaySpeakerLabel(group.speaker)))];
+  const normalizedSearch = transcriptSearch.trim().toLocaleLowerCase();
+  const groupMatchesFilters = (group: { speaker: unknown; sourceIds: string[]; text: string }) => {
+    if (speakerFilter !== "all" && displaySpeakerLabel(group.speaker) !== speakerFilter) return false;
+    if (onlyKeySources && !group.sourceIds.some((id) => summarySourceIds.has(id))) return false;
+    if (normalizedSearch && !group.text.toLocaleLowerCase().includes(normalizedSearch)) return false;
+    return true;
+  };
+  const filteredReadableGroups = readableDisplayGroups.filter(groupMatchesFilters);
+  const filteredRawGroups = rawDisplayGroups.filter(groupMatchesFilters);
+  const visibleReadableGroups = filteredReadableGroups.slice(0, visibleTranscriptGroups);
+  const visibleRawGroups = filteredRawGroups.slice(0, visibleTranscriptGroups);
+  const speakerSummaries = availableSpeakers.map((speaker) => {
+    const groups = rawDisplayGroups.filter((group) => displaySpeakerLabel(group.speaker) === speaker);
+    return {
+      speaker,
+      groups,
+      firstStartMs: groups[0]?.startMs ?? null,
+      excerpt: groups.slice(0, 2).map((group) => group.text).join(" "),
+    };
+  });
+  const pendingClaims = claims.filter((claim) => claim.reviewStatus === "pending");
+  const actionItems = (projectActions.data ?? []) as ProjectAction[];
+  const eventActionItems = actionItems.filter((action) => action.event_id === event.id);
+  const selectedClaims = selectedPoint
+    ? claims.filter((claim) => selectedPoint.claimIds.includes(claim.id))
+    : [];
+  const selectedSourceGroups = selectedPoint
+    ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => selectedPoint.sourceIds.includes(id)))
+    : [];
+  const selectedPhotoEvidence = selectedClaims.flatMap((claim) => claim.evidenceRefs).filter((ref) => ref.kind === "photo");
+  const photoAssets = event.assets.filter((asset) => asset.kind === "photo");
+  const selectedPointStatus = !selectedPoint
+    ? "待选择"
+    : selectedClaims.some((claim) => claim.reviewStatus === "pending")
+      ? "需确认"
+      : selectedClaims.length
+        ? "已核对"
+        : photoAssets.length
+          ? "录音 + 笔记"
+          : hasPlayableAudio
+            ? "仅录音"
+            : "仅原文";
 
   useEffect(() => {
     if (!activePlaybackKey) return;
@@ -4828,6 +4991,7 @@ function TranscriptArtifactsPanel({
       && focusRequest.eventId === event.id
       && handledFocusRequestId.current !== focusRequest.id
     ) {
+      if (focusRequest.tab !== "raw" && (artifactState === "loading" || transcriptState === "loading")) return;
       const shouldFallbackUnavailable = !manuallySelectedTab.current;
       const requestedTab = shouldFallbackUnavailable && focusRequest.tab === "summary" && !hasSummary
         ? fallbackTab
@@ -4840,6 +5004,9 @@ function TranscriptArtifactsPanel({
       // immediately falling back to the preferred readable transcript.
       manuallySelectedTab.current = true;
       setTab(requestedTab);
+      const localWorkspaceView = requestedWorkspaceView.current;
+      requestedWorkspaceView.current = null;
+      setWorkspaceView(requestedTab === "summary" ? localWorkspaceView ?? "points" : "transcript");
       const restoreScrollY = focusRequest.restoreScrollY;
       if (restoreScrollY != null) {
         summaryScrollY.current = restoreScrollY;
@@ -4852,9 +5019,13 @@ function TranscriptArtifactsPanel({
       }
       return;
     }
-    if (!focusRequest && !manuallySelectedTab.current) setTab(fallbackTab);
+    if (!focusRequest && !manuallySelectedTab.current) {
+      setTab(fallbackTab);
+      setWorkspaceView(fallbackTab === "summary" ? "points" : "transcript");
+    }
   }, [
     event.id,
+    artifactState,
     focusRequest,
     onFocusHandled,
     readableArtifact,
@@ -4862,6 +5033,7 @@ function TranscriptArtifactsPanel({
     state,
     summaryArtifact,
     summaryRun,
+    transcriptState,
   ]);
 
   function playbackKey(groupKey: string): string {
@@ -4878,25 +5050,46 @@ function TranscriptArtifactsPanel({
     if (!audio) return;
     const currentMs = audio.currentTime * 1_000;
     const pending = pendingPlaybackTarget.current;
-    if (pending && currentMs < pending.startMs - 80) {
+    if (pending && pending.audioAssetId === playbackAudioAssetId && currentMs < pending.startMs - 80) {
       setActivePlaybackKey(pending.key);
       return;
     }
     pendingPlaybackTarget.current = null;
-    const groups = readerTab === "readable" ? readableDisplayGroups : rawDisplayGroups;
+    const groups = (readerTab === "readable" ? readableDisplayGroups : rawDisplayGroups)
+      .filter((group) => audioAssetIdForVersion(group.assetVersionId) === playbackAudioAssetId);
     const groupKey = activeTranscriptGroupKeyAt(groups, currentMs);
     setActivePlaybackKey(groupKey ? playbackKey(groupKey) : null);
   }
 
-  function playAt(milliseconds: number | null, targetKey: string, surface: "readable" | "raw" = readerTab) {
-    if (!audioRef.current || milliseconds == null) return;
-    const key = `${surface}:${targetKey}`;
-    pendingPlaybackTarget.current = { key, startMs: milliseconds };
-    setActivePlaybackKey(key);
+  function resumePendingPlayback() {
+    const audio = audioRef.current;
+    const pending = pendingPlaybackTarget.current;
+    if (!audio || !pending || pending.audioAssetId !== playbackAudioAssetId) return;
     programmaticAudioSeek.current = true;
-    audioRef.current.currentTime = Math.max(0, milliseconds / 1_000 - 3);
+    audio.currentTime = Math.max(0, pending.startMs / 1_000 - 3);
     window.setTimeout(() => { programmaticAudioSeek.current = false; }, 500);
-    void audioRef.current.play().catch(() => undefined);
+    void audio.play().catch(() => undefined);
+  }
+
+  function playAt(
+    milliseconds: number | null,
+    targetKey: string,
+    surface: "readable" | "raw" = readerTab,
+    assetVersionId: string | null = null,
+  ) {
+    if (milliseconds == null) return;
+    const audioAssetId = audioAssetIdForVersion(assetVersionId);
+    if (!audioAssetId) return;
+    const key = `${surface}:${targetKey}`;
+    pendingPlaybackTarget.current = { key, startMs: milliseconds, audioAssetId };
+    setActivePlaybackKey(key);
+    if (playbackAudioAssetId !== audioAssetId) {
+      setAudioCurrentTime(0);
+      setAudioDuration(0);
+      setActiveAudioAssetId(audioAssetId);
+      return;
+    }
+    resumePendingPlayback();
   }
 
   function selectArtifactTab(next: TranscriptArtifactTab) {
@@ -4907,6 +5100,34 @@ function TranscriptArtifactsPanel({
     if (next === "summary") {
       window.setTimeout(() => window.scrollTo({ top: summaryScrollY.current }), 0);
     }
+  }
+
+  function selectWorkspaceSurface(next: ReadingWorkspaceView) {
+    requestedWorkspaceView.current = next;
+    setWorkspaceView(next);
+    switchMobilePane("reading");
+    if (next === "transcript") {
+      selectArtifactTab(readableArtifact ? "readable" : "raw");
+      return;
+    }
+    selectArtifactTab("summary");
+  }
+
+  function switchMobilePane(next: "reading" | "actions") {
+    if (next === mobilePane) return;
+    if (mobilePane === "reading") mobileReadingScrollY.current = window.scrollY;
+    else mobileActionsScrollY.current = window.scrollY;
+    const targetScrollY = next === "reading" ? mobileReadingScrollY.current : mobileActionsScrollY.current;
+    setMobilePane(next);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => window.scrollTo({ top: targetScrollY }));
+    });
+  }
+
+  function selectSummaryPoint(point: SelectedSummaryPoint, revealActions = true) {
+    setSelectedPoint(point);
+    setActionView("source");
+    if (revealActions) switchMobilePane("actions");
   }
 
   function locateRawSources(
@@ -4929,6 +5150,12 @@ function TranscriptArtifactsPanel({
     const targetId = `raw-group-${targetGroup?.sourceIds[0] || sourceIds[0]}`;
     sourceDrawerExitTarget.current = targetId;
     setSourceDrawer(null);
+    setWorkspaceView("transcript");
+    setSpeakerFilter("all");
+    setOnlyKeySources(false);
+    setTranscriptSearch("");
+    const targetIndex = rawDisplayGroups.findIndex((group) => group.sourceIds.includes(sourceIds[0]!));
+    if (targetIndex >= 0) setVisibleTranscriptGroups(Math.max(240, targetIndex + 40));
     selectArtifactTab("raw");
     window.setTimeout(() => {
       const target = document.getElementById(targetId);
@@ -5004,14 +5231,31 @@ function TranscriptArtifactsPanel({
   if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className="transcript-workspace" aria-label="逐字稿阅读区">
-    <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
+    <header className="reading-workspace-heading">
+      <div><span className="section-kicker">一次沟通，一个工作台</span><h2>边读、边听、边处理</h2><p>重点、原文、手写笔记和下一步保持在同一处，不需要来回跳页。</p></div>
+      <span className={`reading-workspace-state ${analysisRunning ? "running" : summaryArtifact ? "ready" : "source-ready"}`}>{analysisRunning ? "整理中 · 已可阅读" : summaryArtifact ? "重点已就绪" : "原文已就绪"}</span>
+    </header>
+    {issue && state === "ready" && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
+    <nav className="reader-view-tabs" aria-label="阅读方式">
+      <button aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true">✦</span>重点</button>
+      <button className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true">≡</span>章节</button>
+      <button className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true">◉</span>发言人</button>
+      <button className={workspaceView === "transcript" ? "active" : ""} onClick={() => selectWorkspaceSurface("transcript")}><span aria-hidden="true">T</span>逐字稿</button>
+    </nav>
+    <div className="reader-mobile-switch" aria-label="移动端工作区">
+      <button className={mobilePane === "reading" ? "active" : ""} onClick={() => switchMobilePane("reading")}>阅读</button>
+      <button className={mobilePane === "actions" ? "active" : ""} onClick={() => switchMobilePane("actions")}>处理{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
+    </div>
+    <div className="reader-workspace-layout" data-mobile-pane={mobilePane}>
+      <div className="reader-reading-pane" role="region" aria-label="阅读内容">
+    {workspaceView === "points" && <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
       <header className="summary-overview-header">
         <div>
-          <button aria-label="AI 摘要 · 本次重点" className={`summary-card-title${tab === "summary" ? " active" : ""}`} onClick={() => selectArtifactTab("summary")}>
+          <div className="summary-card-title active">
             <span className="summary-spark" aria-hidden="true">✦</span>
             本次重点 <small>AI 草稿</small>
             {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
-          </button>
+          </div>
           <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要正在启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
         </div>
         {summaryArtifact && <span className="summary-ready-check" aria-label="AI 摘要生成完成">✓</span>}
@@ -5035,10 +5279,20 @@ function TranscriptArtifactsPanel({
             const summaryText = firstString(item, ["text"]) || "摘要内容";
             const supportQuote = firstString(item, ["support_quote"]) || "";
             const sourceTriggerId = `summary-source-${sectionIndex}-${itemIndex}`;
-            return <article className="summary-reveal-line" style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={firstString(item, ["item_key"]) || itemIndex}>
-              <div className="summary-point-copy"><mark>{summaryText}</mark><q>{supportQuote}</q></div>
+            const pointKey = firstString(item, ["item_key"]) || `${sectionIndex}-${itemIndex}`;
+            const point: SelectedSummaryPoint = {
+              key: pointKey,
+              sectionLabel: summarySectionLabel(firstString(section, ["kind"])) || "重点",
+              sourceIds: ids,
+              summaryText,
+              supportQuote,
+              returnFocusId: sourceTriggerId,
+              claimIds: matchedClaims.map((claim) => claim.id),
+            };
+            return <article className={`summary-reveal-line${selectedPoint?.key === pointKey ? " selected" : ""}`} style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={pointKey}>
+              <button className="summary-point-copy" onClick={() => selectSummaryPoint(point)}><mark>{summaryText}</mark><q>{supportQuote}</q><span>在右侧查看与处理</span></button>
               <div className="summary-point-actions">
-                <button id={sourceTriggerId} className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => locateRawSources(ids, summaryText, supportQuote, sourceTriggerId)}>查看来源</button>
+                <button id={sourceTriggerId} className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => { selectSummaryPoint(point, false); locateRawSources(ids, summaryText, supportQuote, sourceTriggerId); }}>查看来源</button>
                 {matchedClaim && <button className="text-button" onClick={() => openClaimFromSummary(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
                 {availableMatchedClaims.length > 1 && <details className="summary-related-claims">
                   <summary className="text-button">{availableMatchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{availableMatchedClaims.length}）</summary>
@@ -5052,21 +5306,67 @@ function TranscriptArtifactsPanel({
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>)}
-    </section>
+    </section>}
 
-    {tab === "summary" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectArtifactTab(summaryArtifact && readableArtifact ? "readable" : "raw")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
+    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
+      <header><div><span className="section-kicker">章节速览</span><h2>按主题快速回到上下文</h2></div><span>{summarySections.length} 章</span></header>
+      {summaryArtifact && summarySections.length ? <div>{summarySections.map((section, sectionIndex) => {
+        const items = recordArray(section.items);
+        const sourceIds = items.flatMap((item) => stringValues(item.source_segment_ids));
+        const sourceGroup = rawDisplayGroups.find((group) => group.sourceIds.some((id) => sourceIds.includes(id)));
+        const title = firstString(section, ["title"]) || summarySectionLabel(firstString(section, ["kind"])) || `第 ${sectionIndex + 1} 章`;
+        const summaryText = items.map((item) => firstString(item, ["text"])).filter(Boolean).join(" ");
+        const point: SelectedSummaryPoint = {
+          key: `chapter-${sectionIndex}`,
+          sectionLabel: summarySectionLabel(firstString(section, ["kind"])) || "章节",
+          sourceIds,
+          summaryText: title,
+          supportQuote: firstString(items[0] || {}, ["support_quote"]) || "",
+          returnFocusId: `chapter-${sectionIndex}`,
+          claimIds: claims.filter((claim) => claim.evidenceRefs.some((ref) => ref.segmentIds.some((id) => sourceIds.includes(id)))).map((claim) => claim.id),
+        };
+        return <article key={point.key}>
+          <button id={point.returnFocusId} onClick={() => selectSummaryPoint(point)}><time>{formatTimestamp(sourceGroup?.startMs == null ? undefined : sourceGroup.startMs / 1_000)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这一章的原文已经可以直接阅读。"}</p></span><i aria-hidden="true">→</i></button>
+        </article>;
+      })}</div> : <div className="reader-section-empty"><strong>章节正在整理</strong><p>原始逐字稿已经可以阅读，不需要等章节生成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
+    </section>}
 
-    {tab !== "summary" && <nav className="transcript-subtabs" aria-label="逐字稿版本">
+    {workspaceView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="发言人速览">
+      <header><div><span className="section-kicker">发言人</span><h2>先找到谁说了什么</h2></div><span>{speakerSummaries.length} 人</span></header>
+      {speakerSummaries.length ? <div>{speakerSummaries.map((speaker) => <article key={speaker.speaker}>
+        <button onClick={() => { setSpeakerFilter(speaker.speaker); setWorkspaceView("transcript"); selectArtifactTab(readableArtifact ? "readable" : "raw"); }}>
+          <span className="speaker-avatar" aria-hidden="true">{speaker.speaker.slice(0, 1)}</span><span><strong>{speaker.speaker}</strong><small>{speaker.groups.length} 段 · 从 {formatTimestamp(speaker.firstStartMs == null ? undefined : speaker.firstStartMs / 1_000)} 开始</small><p>{speaker.excerpt}</p></span><i aria-hidden="true">→</i>
+        </button>
+      </article>)}</div> : <div className="reader-section-empty"><strong>还没有可用的发言人分段</strong><p>转写完成后会显示 Speaker A、Speaker B，并保留每段时间点。</p></div>}
+    </section>}
+
+    {workspaceView === "points" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectWorkspaceSurface("transcript")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
+
+    {workspaceView === "transcript" && <div className="reader-filter-bar">
+      <label className="reader-search"><span className="visually-hidden">搜索逐字稿</span><i aria-hidden="true">⌕</i><input value={transcriptSearch} onChange={(change) => { setTranscriptSearch(change.target.value); setVisibleTranscriptGroups(240); }} placeholder="搜索原话" /></label>
+      <label><span className="visually-hidden">筛选发言人</span><select value={speakerFilter} onChange={(change) => { setSpeakerFilter(change.target.value); setVisibleTranscriptGroups(240); }}><option value="all">全部发言人</option>{availableSpeakers.map((speaker) => <option key={speaker} value={speaker}>{speaker}</option>)}</select></label>
+      <label className="reader-source-filter"><input type="checkbox" checked={onlyKeySources} onChange={(change) => { setOnlyKeySources(change.target.checked); setVisibleTranscriptGroups(240); }} /><span>只看重点来源</span></label>
+    </div>}
+
+    {workspaceView === "transcript" && <nav className="transcript-subtabs" aria-label="逐字稿版本">
       <button className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       <button className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
     </nav>}
-    {transcriptionRun?.audioAssetId && <audio
+    {playbackAudioAssetId && <audio
+      key={playbackAudioAssetId}
+      className="reader-audio-element"
       ref={audioRef}
-      controls
       preload="metadata"
-      src={`/api/v1/assets/${encodeURIComponent(transcriptionRun.audioAssetId)}/evidence-view`}
-      onPlay={syncPlaybackHighlight}
-      onTimeUpdate={syncPlaybackHighlight}
+      src={`/api/v1/assets/${encodeURIComponent(playbackAudioAssetId)}/evidence-view`}
+      onLoadedMetadata={() => {
+        setAudioDuration(Number.isFinite(audioRef.current?.duration) ? audioRef.current?.duration || 0 : 0);
+        if (audioRef.current) audioRef.current.playbackRate = audioRate;
+        resumePendingPlayback();
+      }}
+      onDurationChange={() => setAudioDuration(Number.isFinite(audioRef.current?.duration) ? audioRef.current?.duration || 0 : 0)}
+      onPlay={() => { setAudioPlaying(true); syncPlaybackHighlight(); }}
+      onPause={() => setAudioPlaying(false)}
+      onTimeUpdate={() => { setAudioCurrentTime(audioRef.current?.currentTime || 0); syncPlaybackHighlight(); }}
       onSeeking={() => {
         if (!programmaticAudioSeek.current) pendingPlaybackTarget.current = null;
       }}
@@ -5077,17 +5377,18 @@ function TranscriptArtifactsPanel({
       onEnded={() => {
         pendingPlaybackTarget.current = null;
         setActivePlaybackKey(null);
+        setAudioPlaying(false);
       }}
     />}
 
-    {tab !== "summary" && readerTab === "readable" && <div className="artifact-panel readable-artifact">
-      {readableArtifact ? readableDisplayGroups.map((group) => {
+    {workspaceView === "transcript" && readerTab === "readable" && <div className="artifact-panel readable-artifact">
+      {readableArtifact ? <>{visibleReadableGroups.map((group) => {
         const diffKey = `${event.id}:${group.key}`;
         const groupPlaybackKey = `readable:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
         return <article ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${group.needsCheck ? "needs-check" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           <div className="readable-meta">
-            <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)} 前三秒播放`} onClick={() => playAt(group.startMs, group.key)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
+            <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)} 前三秒播放`} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
             <strong>{displaySpeakerLabel(group.speaker)}</strong>
             {group.needsCheck && <em>请核对</em>}
             {(group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
@@ -5098,34 +5399,85 @@ function TranscriptArtifactsPanel({
           <p>{group.text}</p>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
-      }) : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
+      })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
         await onRetryArtifact(event.id, "readable_transcript");
         await load(true);
       }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
-    {tab !== "summary" && readerTab === "raw" && <div className="artifact-panel raw-artifact">
+    {workspaceView === "transcript" && readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
-      {rawSegments.length ? rawDisplayGroups.map((group) => {
+      {rawSegments.length ? <>{visibleRawGroups.map((group) => {
         const groupPlaybackKey = `raw:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
         const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
         return <article id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${selected ? "selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
-          <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)} 前三秒播放`} onClick={() => playAt(group.startMs, group.key)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
+          <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)} 前三秒播放`} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
         </article>;
-      }) : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
 
-    {analysisComplete && reviewReady && pendingReviewCount > 0 && <footer className="focus-action-bar" aria-label="重点工作下一步">
-      <div><strong>{pendingReviewCount} 条重要信息可以确认</strong><span>金额、日期、责任人和变化会优先排在前面。</span></div>
-      <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重点</button>
+      </div>
+      <aside className="reader-action-rail" aria-label="本次操作">
+        <header className="reader-action-heading">
+          <div><span className="section-kicker">本次操作</span><strong>{selectedPoint ? selectedPoint.sectionLabel : "把重点变成下一步"}</strong></div>
+          <span className={`point-trust-state ${selectedPointStatus === "已核对" ? "verified" : selectedPointStatus === "需确认" ? "pending" : "source"}`}>{selectedPointStatus}</span>
+        </header>
+        <nav className="reader-action-tabs" aria-label="操作类型">
+          <button className={actionView === "source" ? "active" : ""} onClick={() => setActionView("source")}>来源</button>
+          <button className={actionView === "pending" ? "active" : ""} onClick={() => setActionView("pending")}>待确认{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
+          <button className={actionView === "actions" ? "active" : ""} onClick={() => setActionView("actions")}>行动{eventActionItems.filter((action) => action.status === "confirmed").length > 0 && <span>{eventActionItems.filter((action) => action.status === "confirmed").length}</span>}</button>
+        </nav>
+
+        {actionView === "source" && <div className="reader-action-body source-view">
+          {selectedPoint ? <>
+            <section className="selected-point-card"><small>{selectedPoint.sectionLabel}</small><h3>{selectedPoint.summaryText}</h3>{selectedPoint.supportQuote && <q>{selectedPoint.supportQuote}</q>}</section>
+            <section className="rail-source-section">
+              <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
+              {selectedSourceGroups.length ? selectedSourceGroups.map((group) => <article key={group.key}>
+                <button onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}><span aria-hidden="true">▶</span>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
+              </article>) : <p className="rail-muted">来源编号已保留，原句仍在完整逐字稿中。</p>}
+              {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds, selectedPoint.summaryText, selectedPoint.supportQuote, selectedPoint.returnFocusId)}>展开来源上下文</button>}
+            </section>
+            <section className="rail-review-section">
+              <header><strong>这条意思</strong><span>{selectedClaims.length ? `${selectedClaims.length} 条记录` : "尚未提取为记录"}</span></header>
+              {selectedClaims.map((claim) => <button className="rail-review-item" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>)}
+            </section>
+            <section className="handwriting-check-section">
+              <header><strong>手写笔记核对</strong><span>{selectedPhotoEvidence.length ? "已关联" : photoAssets.length ? "待关联" : "可选"}</span></header>
+              {selectedPhotoEvidence.map((ref) => <HandwrittenEvidencePreview evidence={ref} key={ref.id} />)}
+              {!selectedPhotoEvidence.length && photoAssets.length > 0 && <p>本次已有 {photoAssets.length} 张照片，但这条重点还没有直接引用。核对时可把两种来源并排确认。</p>}
+              {!photoAssets.length && <p>笔通过 USB-C 接入手机后，可以直接补拍或选择手写笔记；它不会阻塞录音重点先出现。</p>}
+              <button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}>＋ 添加手写笔记</button>
+            </section>
+          </> : <div className="rail-empty-state"><span aria-hidden="true">↖</span><strong>点左侧任意重点</strong><p>这里会立即显示对应原话、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}>＋ 添加手写笔记</button></div>}
+        </div>}
+
+        {actionView === "pending" && <div className="reader-action-body pending-view">
+          <div className="rail-explainer"><strong>核对是可选的可信度层</strong><p>你可以先用摘要和行动；金额、日期、责任人等高风险内容会一直保留“需确认”标记，确认后才进入可信存档。</p></div>
+          {reviewBlocked && <p className="rail-context-note">使用场景尚未补充，不影响阅读和逐条查看；正式项目报告前再补即可。</p>}
+          {pendingClaims.length ? <div className="rail-pending-list">{pendingClaims.slice(0, 10).map((claim) => <button key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><i aria-hidden="true">→</i></button>)}</div> : <div className="rail-complete-state"><span aria-hidden="true">✓</span><strong>{claims.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
+          {reviewReady && pendingReviewCount > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={onReview}>连续核对 {pendingReviewCount} 条</button>}
+        </div>}
+
+        {actionView === "actions" && <div className="reader-action-body actions-view">
+          <div className="rail-explainer"><strong>只把确认过的事当作行动</strong><p>AI 建议先留在“待确认”；这里的清单来自已确认记录，可直接完成并写回项目进展。</p></div>
+          {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
+          {projectActions.isError && <div className="rail-inline-error"><span>行动暂时没有读到，其他内容不受影响。</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
+          {!projectActions.isLoading && !eventActionItems.length && <div className="rail-complete-state"><span aria-hidden="true">＋</span><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
+          {eventActionItems.length > 0 && <div className="rail-action-list">{eventActionItems.map((action) => <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : action.status === "not_adopted" ? `${action.statement} 不采纳` : action.status === "ai_suggested" ? `${action.statement} 待确认` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? "✓" : ""}</button><span><small>{action.status === "completed" ? "已完成" : action.status === "confirmed" ? "已确认行动" : action.status === "not_adopted" ? "不采纳" : "AI 建议"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>)}</div>}
+        </div>}
+      </aside>
+    </div>
+
+    {playbackAudioAssetId && <footer className="reader-audio-player" aria-label="录音播放器">
+      <button className="audio-play-button" aria-label={audioPlaying ? "暂停录音" : "播放录音"} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? "Ⅱ" : "▶"}</button>
+      <time>{formatTimestamp(audioCurrentTime)}</time>
+      <input aria-label="录音进度" type="range" min={0} max={Math.max(audioDuration, 1)} step={0.1} value={Math.min(audioCurrentTime, Math.max(audioDuration, 1))} onChange={(change) => { const next = Number(change.target.value); if (audioRef.current) audioRef.current.currentTime = next; setAudioCurrentTime(next); }} />
+      <time>{formatTimestamp(audioDuration)}</time>
+      <label><span className="visually-hidden">播放速度</span><select aria-label="播放速度" value={audioRate} onChange={(change) => { const next = Number(change.target.value); setAudioRate(next); if (audioRef.current) audioRef.current.playbackRate = next; }}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
     </footer>}
-    {analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0 && <footer className="focus-action-bar complete" aria-label="重点已经存档"><div><strong>本次重点已经处理完成</strong><span>确认过的内容已进入项目档案，原始来源仍然保留。</span></div><span className="focus-complete-mark">✓</span></footer>}
-    {analysisRun
-      && !(analysisComplete && reviewReady && pendingReviewCount > 0)
-      && !(analysisComplete && !reviewBlocked && pendingReviewCount === 0 && claims.length > 0)
-      && <div className="focus-action-placeholder" aria-hidden="true" />}
 
     {sourceDrawer && <Dialog.Root open onOpenChange={(open) => { if (!open) setSourceDrawer(null); }}>
       <Dialog.Portal>
@@ -5149,7 +5501,7 @@ function TranscriptArtifactsPanel({
           </header>
           <div className="source-drawer-body">
             {sourceDrawerGroups.length ? sourceDrawerGroups.map((group) => <article key={group.key}>
-              <header><button onClick={() => playAt(group.startMs, group.key, "raw")} disabled={!transcriptionRun?.audioAssetId}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}{transcriptionRun?.audioAssetId ? " · 播放" : ""}</button><strong>{displaySpeakerLabel(group.speaker)}</strong></header>
+              <header><button onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}{audioAssetIdForVersion(group.assetVersionId) ? " · 播放" : ""}</button><strong>{displaySpeakerLabel(group.speaker)}</strong></header>
               <p>{highlightExactPhrase(group.text, sourceDrawer.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
             </article>) : <p className="source-drawer-empty">当前摘要保留了来源编号，但原句暂时无法显示。完整原始逐字稿仍然安全保留。</p>}
           </div>
@@ -5158,6 +5510,24 @@ function TranscriptArtifactsPanel({
       </Dialog.Portal>
     </Dialog.Root>}
   </section>;
+}
+
+function HandwrittenEvidencePreview({ evidence }: { evidence: EvidenceRef }) {
+  const contextQuery = useQuery(evidenceContextQuery(evidence.id));
+  const context = contextQuery.data ?? null;
+  const imageUrl = context?.asset_view_url || evidence.imageUrl || evidence.viewUrl;
+  const bbox = context?.target.bbox;
+  const label = context?.filename || evidence.filename || "手写笔记";
+  const observation = context?.target.observation || evidence.caption || "与录音原话一起核对";
+  return <article className="handwritten-evidence-preview">
+    <div className="handwriting-image-wrap">
+      {/* Signed evidence URLs cannot use the build-time image loader. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {imageUrl ? <img src={imageUrl} alt={observation} /> : <span className="handwriting-image-placeholder">IMG</span>}
+      {bbox && <span className="handwriting-bbox" aria-label="这条重点在手写笔记中的位置" style={{ left: `${bbox[0] * 100}%`, top: `${bbox[1] * 100}%`, width: `${(bbox[2] - bbox[0]) * 100}%`, height: `${(bbox[3] - bbox[1]) * 100}%` }} />}
+    </div>
+    <span><strong>{label}</strong><small>{context?.target.page_number || evidence.page ? `第 ${context?.target.page_number || evidence.page} 页 · ` : ""}{observation}{bbox ? " · 已定位原笔记区域" : ""}</small></span>
+  </article>;
 }
 
 const readableDiffRiskLabels: Record<ReadableDiffRisk, string> = {
@@ -5399,6 +5769,7 @@ function SimpleTestScreen({
   onReview,
   onResult,
   onOpenClaim,
+  onCompleteAction,
   onRetryArtifact,
   onStartAnalysis,
   onFocusTranscriptArtifact,
@@ -5413,12 +5784,15 @@ function SimpleTestScreen({
   const [showImportChoices, setShowImportChoices] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
   const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
+  const [readerWasOpened, setReaderWasOpened] = useState(false);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
   const [timingNow, setTimingNow] = useState(() => Date.now());
   const audioFileRef = useRef<HTMLInputElement>(null);
   const photoFileRef = useRef<HTMLInputElement>(null);
+  const workspaceAudioFileRef = useRef<HTMLInputElement>(null);
+  const workspacePhotoFileRef = useRef<HTMLInputElement>(null);
   const interactionScope = useRef("");
   const userNavigatedFromWaiting = useRef(false);
   const autoFocusedSummaryKeys = useRef(new Set<string>());
@@ -5477,7 +5851,9 @@ function SimpleTestScreen({
   const factsCanBeReviewed = factsReadyForReview({
     extractionStatus,
     pendingCount,
-    needsScenarioConfirmation: needsScenario,
+    // Scenario improves later comparison, but it must not block reading or
+    // fact verification. The unconfirmed state stays visible as context debt.
+    needsScenarioConfirmation: false,
   });
   const readingAidLabel = readingAid === "summary"
     ? "AI 摘要"
@@ -5492,7 +5868,7 @@ function SimpleTestScreen({
         transcriptionStatus: transcriptionRun?.status,
         runStatus: run?.status,
         pipelineStage: run?.pipelineStage,
-        needsScenarioConfirmation: needsScenario,
+        needsScenarioConfirmation: false,
         pendingCount,
       });
   const workflowPosition = projectWorkflow.currentPosition || Math.min(projectWorkflow.completed + 1, projectWorkflow.total);
@@ -5659,13 +6035,7 @@ function SimpleTestScreen({
     || currentAudioPreparations.length > 0
     || transcriptionRunning;
   const workflowInputActuallyReady = materialsReady && !materialPreparationActive;
-  const showProjectWorkflowCard = Boolean(project) && (
-    projectWorkflow.phase === "empty"
-      ? visibleAssets.length === 0 && !materialPreparationActive
-      : projectWorkflow.phase === "ready"
-        ? workflowInputActuallyReady
-        : !["idle", "loading", "waiting_material"].includes(projectWorkflow.phase)
-  );
+  const showProjectWorkflowCard = Boolean(project) && ["running", "error", "empty_output"].includes(projectWorkflow.phase);
   const workflowStepActionable = projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed"
@@ -5694,7 +6064,7 @@ function SimpleTestScreen({
   const workflowStepBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
     ? `当前顺序应处理“${projectWorkflow.currentEventTitle || "前一次沟通"}”，这里不会越过它。`
     : currentWorkflowCopy.body;
-  const workflowReviewReady = pendingCount > 0 && analysisDone && !needsScenario;
+  const workflowReviewReady = pendingCount > 0 && analysisDone;
   const workflowReviewBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
     ? `请先选择“${projectWorkflow.currentEventTitle || "当前沟通"}”。`
     : projectWorkflow.phase === "waiting_scenario"
@@ -5740,6 +6110,7 @@ function SimpleTestScreen({
     autoFocusedSummaryKeys.current.add(summaryFirstScopeKey);
     storeSummaryFirstNavigationMark(summaryFirstScopeKey, "auto");
     const timer = window.setTimeout(() => {
+      setReaderWasOpened(true);
       setActiveTab("transcript");
       onFocusTranscriptArtifact(event.id, "summary");
     }, 0);
@@ -5756,7 +6127,10 @@ function SimpleTestScreen({
 
   useEffect(() => {
     if (!transcriptFocusRequest || transcriptFocusRequest.eventId !== event?.id) return;
-    const timer = window.setTimeout(() => setActiveTab("transcript"), 0);
+    const timer = window.setTimeout(() => {
+      setReaderWasOpened(true);
+      setActiveTab("transcript");
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [event?.id, transcriptFocusRequest]);
 
@@ -5776,6 +6150,7 @@ function SimpleTestScreen({
     }
     setActiveTab(next);
     if (next === "transcript" && event) {
+      setReaderWasOpened(true);
       onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
     } else if (next !== "transcript") {
       onClearTranscriptArtifact();
@@ -5785,6 +6160,7 @@ function SimpleTestScreen({
   function selectEvent(nextEventId: string) {
     interactionScope.current = "";
     userNavigatedFromWaiting.current = false;
+    setReaderWasOpened(false);
     setActiveTab("materials");
     onUseEvent(nextEventId);
   }
@@ -5792,6 +6168,7 @@ function SimpleTestScreen({
   function openReadingAid(target: ReadingAidTarget) {
     if (!event) return;
     markUserNavigation();
+    setReaderWasOpened(true);
     setActiveTab("transcript");
     onFocusTranscriptArtifact(event.id, target);
   }
@@ -5808,12 +6185,18 @@ function SimpleTestScreen({
     if (file) void onAddFile(file);
   }
 
+  function chooseHandwrittenPhoto(change: ChangeEvent<HTMLInputElement>) {
+    const file = change.target.files?.[0];
+    change.target.value = "";
+    if (file) void onAddFile(file, { capture_role: "handwritten_note" });
+  }
+
   return (
     <div className="page simple-page">
       {!project && <header className="simple-header">
         <span className="eyebrow">Notique Workspace</span>
-        <h1>把每次沟通变成可核对的项目记忆</h1>
-        <p>选择已有项目，或用 Transcript、录音和照片开始一个新项目。</p>
+        <h1>把散落的沟通，变成随时能调出的重点</h1>
+        <p>录音是主线，手写照片是补充；Notique 自动整理，核对可以边用边做。</p>
       </header>}
 
       <section className="simple-session" aria-label="当前项目和沟通">
@@ -5868,13 +6251,16 @@ function SimpleTestScreen({
         </DropdownMenu.Root>
       </section>
 
+      <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+      <input ref={workspacePhotoFileRef} className="visually-hidden" type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
+
+      {issue && <ErrorNotice issue={issue} onRetry={issueRetry} compact />}
+
       {needsScenario && (
-        <section className="simple-scenario-panel" aria-label="确认使用场景">
-          <div>
-            <span className="section-kicker">分析后的第一次确认</span>
-            <h2>这组材料属于哪种工作场景？</h2>
-            <p>只需要确认一次。后续记录会沿用这个场景，系统才能正确比较前后变化。</p>
-          </div>
+        <details className="scenario-context-optional">
+          <summary><span><b>使用场景待补充</b><small>可稍后 · 不影响阅读和核对</small></span><i aria-hidden="true">⌄</i></summary>
+          <div className="scenario-context-body">
+            <header><span className="section-kicker">项目上下文</span><h2>这组材料属于哪种工作场景？</h2><p>确认后，跨多次沟通的比较会更准确；当前重点、逐字稿和逐条核对都可以先使用。</p></header>
           <div className="scenario-options">
             {project?.scenarioCandidates?.map((item) => (
               <label className={scenario === item.key ? "selected" : ""} key={item.key}>
@@ -5885,7 +6271,8 @@ function SimpleTestScreen({
           </div>
           <label className="field"><span>需要时可改成更合适的名称</span><input value={customScenario} onChange={(change) => setCustomScenario(change.target.value)} placeholder="例如：保险理赔、房屋翻修或供应商评估" /></label>
           <button className="button primary" disabled={busy === "scenario" || (!scenario && !customScenario.trim())} onClick={() => void onConfirmScenario(scenario || "custom", customScenario.trim() || undefined)}>{busy === "scenario" ? "正在保存…" : "确认后继续"}</button>
-        </section>
+          </div>
+        </details>
       )}
 
       <section className="simple-workspace" aria-label="项目工作区">
@@ -5917,7 +6304,7 @@ function SimpleTestScreen({
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
             <button aria-label="Transcript · 本次重点" className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b>{transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
-            <button className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
+            <button aria-label="材料 · 来源" className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>来源 <span>{visibleAssets.length}</span></button>
             <button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待确认{pendingCount > 0 && <span>{pendingCount}</span>}</button>
             <span className="meeting-tabs-scope" aria-hidden="true" />
             <button aria-label="结果" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<i aria-hidden="true">→</i></button>
@@ -5986,7 +6373,7 @@ function SimpleTestScreen({
             </section>}
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
-              <header><div><h3>材料</h3><p>{event ? `所有新文件都会加入“${event.title}”` : "还没有当前沟通时，系统会自动建立。"}</p></div>{visibleAssets.length > 0 && <button className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加材料"}</button>}</header>
+              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份来源时，系统会自动建立沟通。"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "＋ 添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加来源"}</button>}</header>
               {(busy === "asset" || busy === "simple-start") && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以看到上传的材料。" : "文件已上传，正在刷新材料列表。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
@@ -5994,8 +6381,8 @@ function SimpleTestScreen({
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => audioFileRef.current?.click())}><span className="material-action-icon">↑</span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span></button>
                   <input ref={audioFileRef} className="visually-hidden" type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span className="material-action-icon">T</span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon">▧</span><span><strong>添加照片</strong><small>JPG、PNG、WebP</small></span></button>
-                  <input ref={photoFileRef} className="visually-hidden" type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon">▧</span><span><strong>手写笔记照片</strong><small>JPG、PNG、WebP</small></span></button>
+                  <input ref={photoFileRef} className="visually-hidden" type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
                 </div>
                 {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
               </div>}
@@ -6007,11 +6394,15 @@ function SimpleTestScreen({
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
                   return <article key={asset.id}><span className="file-kind">{asset.kind === "audio" ? "AUD" : asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
                 })}
-              </div> : <div className="materials-empty"><span>＋</span><strong>还没有材料</strong><p>可以直接开始录音，也可以上传已有材料。</p><div className="materials-empty-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}>直接录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices(true)}>添加材料</button></div></div>}
+              </div> : <section className="capture-launchpad" aria-label="开始一次沟通">
+                <header><span className="capture-launchpad-mark" aria-hidden="true">⌁</span><div><span className="section-kicker">从真实沟通开始</span><h3>录下来，其余交给 Notique</h3><p>录音先形成重点；手写照片可以同时上传或稍后补充，不阻塞阅读。</p></div></header>
+                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>笔或手机录音</strong><small>独立记录，不需要一直开着 App</small></span><span><b>2</b><strong>USB-C 接入手机</strong><small>选择录音，也可补拍手写内容</small></span><span><b>3</b><strong>直接进入工作台</strong><small>重点、原话、待确认和行动同屏</small></span></div>
+                <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}>导入笔 / 录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}>直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}>先拍手写笔记</button></div>
+              </section>}
             </section>
           </div>}
 
-          {activeTab === "transcript" && <div className="meeting-tab-panel">
+          {(activeTab === "transcript" || readerWasOpened) && <div className="meeting-tab-panel" hidden={activeTab !== "transcript"}>
             {event ? <>
               <TranscriptArtifactsPanel
                 key={event.id}
@@ -6021,9 +6412,11 @@ function SimpleTestScreen({
                 claims={claims}
                 pendingReviewCount={pendingCount}
                 reviewReady={factsCanBeReviewed}
-                reviewBlocked={needsScenario}
+                reviewBlocked={false}
                 busy={busy}
                 onOpenClaim={onOpenClaim}
+                onCompleteAction={onCompleteAction}
+                onAddPhoto={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}
                 onReview={() => { markUserNavigation(); onReview(); }}
                 onRetryArtifact={onRetryArtifact}
                 onStartAnalysis={onStartAnalysis}

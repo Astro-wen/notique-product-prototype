@@ -51,7 +51,7 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
-  await expect(page.getByRole("heading", { name: "把每次沟通变成可核对的项目记忆" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "把散落的沟通，变成随时能调出的重点" })).toBeVisible();
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);

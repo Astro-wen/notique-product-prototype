@@ -190,6 +190,7 @@ export type Asset = {
   sizeBytes?: number;
   status?: string;
   metadata: Record<string, unknown>;
+  transform?: Record<string, unknown>;
 };
 
 export type TranscriptionRun = {
@@ -542,6 +543,9 @@ function normalizeAsset(value: unknown): Asset | null {
     metadata: isRecord(pick(value, ["metadata"]))
       ? pick(value, ["metadata"]) as Record<string, unknown>
       : {},
+    transform: isRecord(pick(version, ["transform"]))
+      ? pick(version, ["transform"]) as Record<string, unknown>
+      : undefined,
   };
 }
 
@@ -883,11 +887,45 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("content-type", "application/json");
   }
   headers.set("accept", "application/json");
-  const response = await fetch(path, { ...init, headers });
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text().catch(() => "");
-  if (!response.ok) throw new ApiClientError(issueFrom(response.status, response.headers, body));
-  return body as T;
+  // A stalled read used to leave the entire workspace in a loading state with
+  // no recovery path. Large Blob uploads intentionally keep their own lifetime;
+  // all control-plane requests get a bounded wait and a user-retryable error.
+  const shouldTimeOut = !(init.body instanceof Blob) && !(init.body instanceof ArrayBuffer);
+  const controller = shouldTimeOut ? new AbortController() : null;
+  const upstreamSignal = init.signal;
+  let timedOut = false;
+  const forwardAbort = () => controller?.abort(upstreamSignal?.reason);
+  if (controller && upstreamSignal) {
+    if (upstreamSignal.aborted) forwardAbort();
+    else upstreamSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
+  const timeout = controller ? globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 25_000) : null;
+  try {
+    const response = await fetch(path, {
+      ...init,
+      headers,
+      signal: controller?.signal ?? init.signal,
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text().catch(() => "");
+    if (!response.ok) throw new ApiClientError(issueFrom(response.status, response.headers, body));
+    return body as T;
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiClientError({
+        status: 0,
+        code: "REQUEST_TIMEOUT",
+        message: "读取时间过长。内容已经保留，可以重试这一部分。",
+      });
+    }
+    throw error;
+  } finally {
+    if (timeout != null) globalThis.clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", forwardAbort);
+  }
 }
 
 function jsonBody(value: unknown): string {

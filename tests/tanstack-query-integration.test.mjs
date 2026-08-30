@@ -70,7 +70,7 @@ test("Notique read models use scoped cache keys and forward AbortSignal", () => 
   assert.match(apiSource, /getEvidenceContext\(refId: Id, signal\?: AbortSignal\)/);
   assert.match(uiSource, /queryClient\.cancelQueries\(\{ queryKey: \["notique"\] \}\)/);
   assert.match(uiSource, /queryClient\.fetchQuery\(eventArtifactsQuery\(event\.id\)\)/);
-  assert.match(querySource, /eventTranscriptSegmentsQuery[\s\S]{0,400}staleTime: 0/);
+  assert.match(querySource, /eventTranscriptSegmentsQuery[\s\S]{0,500}staleTime: 30_000/);
   assert.match(uiSource, /previousTranscriptRevision\.current === transcriptRevision/);
   assert.match(uiSource, /queryClient\.invalidateQueries\(\{[\s\S]{0,180}eventTranscriptSegmentsQuery/);
   assert.match(uiSource, /queryClient\.prefetchQuery\(claimHistoryQuery\(followingClaim\.id, followingClaim\.versionId\)\)/);

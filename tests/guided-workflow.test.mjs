@@ -106,7 +106,8 @@ test("starting analysis rechecks a stale Event once before reporting not ready",
 test("new material auto-starts one idempotent analysis only after its final transcript is ready", () => {
   const effect = effectContaining("const intent = readAutoAnalysisIntent(event.id)");
 
-  assert.match(uiSource, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
+  assert.match(uiSource, /localStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
+  assert.match(uiSource, /Date\.now\(\) - armedAt > 7 \* 24 \* 60 \* 60 \* 1_000/);
   assert.match(uiSource, /armedAt: Date\.now\(\),\s*idempotencyKey: crypto\.randomUUID\(\)/);
   assert.match(uiSource, /armAutoAnalysis\(\s*targetEvent\.id,\s*kind === "audio" \? init\.assetId : undefined/);
   assert.match(uiSource, /created\.forEach\(\(item\) => armAutoAnalysis\(item\.id, undefined, item\.latestRun\?\.id \|\| item\.latestRunId\)\)/);

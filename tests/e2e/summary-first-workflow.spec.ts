@@ -1,4 +1,4 @@
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 import { NotiqueApiFixture } from "./notique-api-fixture";
 
@@ -16,7 +16,16 @@ const test = base.extend<Fixtures>({
   }, { auto: true }],
 });
 
-test("a finished Summary opens once while facts continue without creating another Run", async ({ page, apiFixture }) => {
+function isMobile(testInfo: TestInfo): boolean {
+  return testInfo.project.name === "mobile-chromium";
+}
+
+async function openOperationsOnMobile(page: Page, testInfo: TestInfo): Promise<void> {
+  if (!isMobile(testInfo)) return;
+  await page.locator(".reader-mobile-switch").getByRole("button", { name: /^处理/ }).click();
+}
+
+test("a finished Summary opens once while facts continue without creating another Run", async ({ page, apiFixture }, testInfo) => {
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
@@ -26,8 +35,9 @@ test("a finished Summary opens once while facts continue without creating anothe
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Transcript/ })).toHaveClass(/active/);
-  await expect(page.locator(".focus-action-placeholder")).toBeVisible();
-  await expect(page.locator('[aria-label="重点工作下一步"]')).toHaveCount(0);
+  if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toBeHidden();
+  else await expect(page.locator(".reader-action-rail")).toBeVisible();
+  await expect(page.getByRole("button", { name: /连续核对/ })).toHaveCount(0);
   await expect(page.locator(".summary-trust-note")).toContainText("原文定位不代表语义已经核对");
 
   const nonWakeWrites = apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
@@ -38,7 +48,7 @@ test("a finished Summary opens once while facts continue without creating anothe
   }
 });
 
-test("the first completed snapshot opens Summary and a refresh restores it without another paid Run", async ({ page, apiFixture }) => {
+test("the first completed snapshot opens Summary and a refresh restores it without another paid Run", async ({ page, apiFixture }, testInfo) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
@@ -47,7 +57,9 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Transcript/ })).toHaveClass(/active/);
-  await expect(page.locator('[aria-label="重点工作下一步"]')).toContainText("条重要信息可以确认");
+  await openOperationsOnMobile(page, testInfo);
+  await page.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
+  await expect(page.getByRole("button", { name: /连续核对 .* 条/ })).toBeVisible();
 
   await page.reload();
 
@@ -89,7 +101,7 @@ test("a completed Summary never closes an open direct-recording material interac
   expect(apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch")).toEqual([]);
 });
 
-test("facts finishing preserves the open Summary and its scroll position", async ({ page, apiFixture }) => {
+test("facts finishing preserves the open Summary and its scroll position", async ({ page, apiFixture }, testInfo) => {
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple");
   apiFixture.completeSummary();
@@ -102,10 +114,21 @@ test("facts finishing preserves the open Summary and its scroll position", async
 
   apiFixture.completeFacts();
 
-  await expect(page.locator('[aria-label="重点工作下一步"]')).toContainText("条重要信息可以确认");
+  if (isMobile(testInfo)) {
+    await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 60);
+  }
+  await openOperationsOnMobile(page, testInfo);
+  await page.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
+  await expect(page.getByRole("button", { name: /连续核对 .* 条/ })).toBeVisible();
+  if (isMobile(testInfo)) {
+    await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+  }
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page).toHaveURL(/view=simple/);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 60);
+  if (!isMobile(testInfo)) {
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 60);
+  }
 });
 
 test("a readable transcript is offered when Summary is unavailable", async ({ page, apiFixture }) => {
@@ -159,6 +182,77 @@ test("a Summary source drawer stays open when another reading artifact finishes"
   const selectedSource = page.locator(".raw-artifact article.selected");
   await expect(selectedSource).toContainText("预算上限是 120 万美元。");
   await expect(selectedSource).toBeFocused();
+});
+
+test("a Summary point opens a persistent operation rail without covering the reader", async ({ page, apiFixture }, testInfo) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.locator(".summary-point-copy").click();
+
+  const rail = page.locator(".reader-action-rail");
+  await expect(rail).toBeVisible();
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元" })).toBeVisible();
+  await expect(rail).toContainText("录音与原话");
+  await expect(page.locator(".source-drawer-backdrop")).toHaveCount(0);
+  if (isMobile(testInfo)) {
+    await expect(page.locator(".reader-reading-pane")).toBeHidden();
+    await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+  }
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+});
+
+test("chapter and speaker views stay selected while the Summary URL is synchronized", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+
+  const chapters = page.getByRole("button", { name: "章节", exact: true });
+  await chapters.click();
+  await expect(chapters).toHaveClass(/active/);
+  await expect(page.getByRole("heading", { name: "按主题快速回到上下文" })).toBeVisible();
+  await expect(page).toHaveURL(/readingTab=summary/);
+
+  const speakers = page.getByRole("button", { name: "发言人", exact: true });
+  await speakers.click();
+  await expect(speakers).toHaveClass(/active/);
+  await expect(page.getByRole("heading", { name: "先找到谁说了什么" })).toBeVisible();
+});
+
+test("mobile reading and operations use one pane at a time without horizontal overflow", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.locator(".summary-point-copy").click();
+  await expect(page.locator(".reader-action-rail")).toBeVisible();
+  await expect(page.locator(".reader-reading-pane")).toBeHidden();
+  await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("briefly viewing sources keeps the selected point and warm transcript state", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.locator(".summary-point-copy").click();
+  const transcriptReads = apiFixture.completedReadCount("/api/v1/events/event-a/transcript-segments");
+
+  await page.getByRole("button", { name: /^材料/ }).click();
+  await page.getByRole("button", { name: /^Transcript/ }).click();
+
+  await expect(page.locator(".selected-point-card")).toContainText("预算上限是 120 万美元");
+  expect(apiFixture.completedReadCount("/api/v1/events/event-a/transcript-segments")).toBe(transcriptReads);
 });
 
 test("an old Run without reading artifacts falls back to the original transcript", async ({ page, apiFixture }) => {

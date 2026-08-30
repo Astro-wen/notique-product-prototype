@@ -8,6 +8,21 @@ export const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
 export const AUDIO_FILE_ACCEPT = ".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm";
 
+export function audioPreparationConcurrency(input: {
+  mobile: boolean;
+  hardwareConcurrency?: number;
+}): number {
+  // Each browser-side lane decodes the source and holds an uncompressed WAV.
+  // Mobile gets one responsive lane; stronger desktops keep the fast path.
+  if (input.mobile) return 1;
+  const cores = Number.isFinite(input.hardwareConcurrency)
+    ? Math.max(1, Math.floor(input.hardwareConcurrency ?? 1))
+    : 4;
+  if (cores <= 4) return 2;
+  if (cores <= 8) return 3;
+  return 4;
+}
+
 export const AUDIO_MIME_TYPES = [
   "audio/mpeg",
   "audio/mp3",

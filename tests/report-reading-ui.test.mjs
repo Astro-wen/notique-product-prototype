@@ -24,6 +24,9 @@ test("evidence cards use the scoped context endpoint and exact quote highlightin
   assert.match(evidenceCard, /context\.target/);
   assert.match(evidenceCard, /context\.after/);
   assert.match(evidenceCard, /highlightExactPhrase\(text, quote\)/);
+  assert.match(page, /function HandwrittenEvidencePreview/);
+  assert.match(page, /context\?\.target\.bbox/);
+  assert.match(styles, /\.handwriting-bbox/);
   // The evidence quote is the largest reading size in the app, and stays a
   // scale step rather than a hand-picked pixel value.
   assert.match(styles, /\.evidence-card blockquote\.evidence-target-quote[^}]*font-size: var\(--text-xl\)/);
@@ -109,17 +112,30 @@ test("completed analysis opens the summary and restores it after reading evidenc
   assert.match(page, /readableRun\?\.status === "processing"/);
 });
 
-test("summary sources open in an in-place drawer and artifact polling does not refetch raw transcript", () => {
+test("summary sources stay available in the action rail and artifact polling does not refetch raw transcript", () => {
   assert.match(page, /setSourceDrawer\(\{ sourceIds, summaryText, supportQuote, returnFocusId \}\)/);
+  assert.match(page, /className="reader-action-rail"/);
+  assert.match(page, /selectedSourceGroups/);
   assert.match(page, /className="source-drawer"/);
   assert.match(page, /在完整原稿中打开/);
   assert.match(page, /highlightExactPhrase\(group\.text, sourceDrawer\.supportQuote\)/);
   assert.match(page, /if \(quiet\)[\s\S]{0,500}eventArtifactsQuery/);
   assert.doesNotMatch(
-    page.slice(page.indexOf("if (quiet)"), page.indexOf("const [artifactData, segments]")),
+    page.slice(page.indexOf("if (quiet)"), page.indexOf("let nextArtifactCount")),
     /eventTranscriptSegmentsQuery/,
   );
   assert.match(styles, /\.source-drawer \{/);
+});
+
+test("the continuous workspace preserves its local view and fails visibly at partial boundaries", () => {
+  assert.match(page, /requestedWorkspaceView\.current = next/);
+  assert.match(page, /localWorkspaceView \?\? "points"/);
+  assert.match(page, /asset\.transform\?\.source_audio_asset_id/);
+  assert.match(page, /audioAssetIdForVersion\(group\.assetVersionId\)/);
+  assert.match(page, /const partialFailure = artifactResult\.status === "rejected"/);
+  assert.match(page, /className="reader-partial-error"/);
+  assert.match(page, /transcriptState === "error"/);
+  assert.match(page, /if \(stayInWorkspace\) setEventIssue\(issue\)/);
 });
 
 test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {
@@ -135,13 +151,13 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(page, /if \(next === "results" && !needsScenario && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
   assert.match(page, /if \(next === "review" && workflowReviewReady\) \{ onReview\(\); return; \}/);
   assert.doesNotMatch(page, />打开项目概览</, "the dead interstitial button is replaced by direct navigation");
-  assert.match(page, /className="focus-action-bar"/);
-  assert.match(page, />核对重点</);
-  assert.match(styles, /\.focus-action-bar/);
-  assert.match(page, /tab === "summary" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
+  assert.match(page, /className="reader-action-rail"/);
+  assert.match(page, /连续核对 \{pendingReviewCount\} 条/);
+  assert.match(styles, /\.reader-action-rail/);
+  assert.match(page, /workspaceView === "points" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
   assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);
   assert.match(page, /reviewReady && pendingReviewCount > 0/);
-  assert.match(page, /reviewBlocked=\{needsScenario\}/);
+  assert.match(page, /reviewBlocked=\{false\}/);
 });
 
 test("a transcript without a Run explains auto-start and keeps one recovery action", () => {

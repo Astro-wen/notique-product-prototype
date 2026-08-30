@@ -40,15 +40,15 @@ test("client shell starts empty and delegates all durable data to the API", asyn
   assert.match(page, /api\.getView\(/);
   assert.doesNotMatch(page, /const\s+claimSets\s*[:=]/i);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);
-  assert.equal((page.match(/window\.sessionStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 7);
+  assert.equal((page.match(/window\.sessionStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 8);
   assert.match(page, /notique\.ui\.summary-first:/);
   assert.match(page, /notique\.ui\.auto-analysis:/);
-  assert.match(page, /sessionStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
+  assert.match(page, /localStorage\.setItem\(autoAnalysisIntentKey\(intent\.eventId\), JSON\.stringify\(intent\)\)/);
   assert.doesNotMatch(page, /sessionStorage\.(?:setItem|removeItem)\([^\n]+(?:TranscriptSegment|Claim|EvidenceRef)/);
   assert.match(page, /notique\.ui\.recent-project-id/);
   assert.match(page, /notique\.ui\.recent-event-id/);
   assert.match(page, /notique\.ui\.workflow-intent-project-id/);
-  assert.equal((page.match(/window\.localStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 3);
+  assert.equal((page.match(/window\.localStorage\.(?:getItem|setItem|removeItem)/g) ?? []).length, 8);
   const preferenceTargets = [...page.matchAll(/storeId\(([^,\n]+)/g)].map((match) => match[1].trim());
   assert.ok(preferenceTargets.every((target) =>
     target === "key: string"

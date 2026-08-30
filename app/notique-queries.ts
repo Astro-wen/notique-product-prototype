@@ -33,10 +33,10 @@ export function eventTranscriptSegmentsQuery(eventId: string) {
   return queryOptions({
     queryKey: notiqueQueryKeys.transcriptSegments(eventId),
     queryFn: ({ signal }) => api.listEventTranscriptSegments(eventId, signal),
-    // The Event may still be receiving its canonical transcript. Artifact
-    // polling reuses local component state, while an explicit load must never
-    // keep a pre-completion empty result fresh.
-    staleTime: 0,
+    // The Event revision watcher invalidates this query when transcription
+    // changes. Keeping a completed transcript warm avoids a full reread every
+    // time the user briefly opens Materials or a Claim and comes back.
+    staleTime: 30_000,
   });
 }
 

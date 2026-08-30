@@ -29,6 +29,10 @@ test("audio policy accepts only the transcription provider formats and enforces 
   assert.equal(policy.audioMimeFor("meeting.mp3", "text/plain"), null);
   assert.equal(policy.MAX_AUDIO_BYTES, 100 * 1024 * 1024);
   assert.equal(policy.AUDIO_FILE_ACCEPT.includes(".m4a"), true);
+  assert.equal(policy.audioPreparationConcurrency({ mobile: true, hardwareConcurrency: 12 }), 1);
+  assert.equal(policy.audioPreparationConcurrency({ mobile: false, hardwareConcurrency: 4 }), 2);
+  assert.equal(policy.audioPreparationConcurrency({ mobile: false, hardwareConcurrency: 8 }), 3);
+  assert.equal(policy.audioPreparationConcurrency({ mobile: false, hardwareConcurrency: 12 }), 4);
 });
 
 test("long audio is split into deterministic overlapping time chunks without coverage gaps", async () => {
