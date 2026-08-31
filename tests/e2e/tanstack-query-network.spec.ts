@@ -70,7 +70,7 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
   await expect(page.getByRole("heading", { name: "B 初次沟通", exact: true })).toBeVisible();
   await expect(page.locator(".current-event-status")).toHaveText("已完成");
-  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "B 项目会议重点" })).toBeVisible();
   await expect(page.getByText("预算上限是 120 万美元", { exact: true })).toHaveCount(0);

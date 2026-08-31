@@ -1286,7 +1286,7 @@ test("raw Transcript listing and human-added Evidence exclude readable derived s
     repository.indexOf("export async function createManualClaim"),
   );
   for (const block of [listBlock, manualBlock]) {
-    assert.match(block, /JOIN assets a ON a\.id = ts\.asset_id/);
+    assert.match(block, /JOIN assets a[\s\S]{0,180}a\.id = ts\.asset_id/);
     assert.match(block, /\$\{RAW_TRANSCRIPT_ASSET_PREDICATE\}/);
   }
   assert.match(manualBlock, /selected passages are not raw Transcript evidence/);
@@ -1335,6 +1335,204 @@ test("raw Transcript listing and human-added Evidence exclude readable derived s
     "seg-raw-explicit",
     "seg-text-file",
   ]);
+});
+
+test("source-backed actions can precede fact completion without weakening Event scope", async () => {
+  const [repository, route] = await Promise.all([
+    readFile(new URL("../lib/server/db/ai-draft-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+  ]);
+  const manualBlock = repository.slice(
+    repository.indexOf("export async function createManualClaim"),
+  );
+
+  assert.match(
+    manualBlock,
+    /isEarlySourceBackedAction[\s\S]{0,100}input\.type === "next_action"/,
+    "only a next_action may use the Summary-first exception",
+  );
+  assert.match(
+    manualBlock,
+    /!uniqueSegmentIds\.length[\s\S]{0,180}EVIDENCE_SCOPE_INVALID/,
+    "the repository must reject an unbacked action even if a route is bypassed",
+  );
+  assert.match(
+    manualBlock,
+    /a\.workspace_id = ts\.workspace_id[\s\S]{0,120}a\.project_id = ts\.project_id[\s\S]{0,120}a\.event_id = ts\.event_id/,
+    "raw Evidence ownership must match the selected Segment at every scope level",
+  );
+  assert.match(
+    manualBlock,
+    /av\.id = ts\.asset_version_id AND av\.asset_id = a\.id/,
+    "the selected Segment's Asset Version must belong to its scoped Asset",
+  );
+  assert.match(
+    manualBlock,
+    /activeSummarySourceSegmentIds\([\s\S]{0,700}uniqueSegmentIds\.every\(\(segmentId\) => summarySegmentIds\.has\(segmentId\)\)/,
+    "an early action must cite source passages exposed by the active Summary",
+  );
+  assert.match(
+    route,
+    /segment_ids:\s*stringArray\(body\.segment_ids, "segment_ids", \{ min: 1, max: 8 \}\)/,
+    "the HTTP contract must also reject an action with no source",
+  );
+
+  const summaryQueryMatch = repository.match(
+    /async function activeSummarySourceSegmentIds[\s\S]*?\.prepare\(\s*`([\s\S]*?)`,\s*\)/,
+  );
+  assert.ok(summaryQueryMatch, "the active Summary query must remain inspectable");
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT
+    );
+    CREATE TABLE event_ai_artifact_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      extraction_run_id TEXT, kind TEXT, status TEXT
+    );
+    CREATE TABLE event_ai_artifacts (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      run_id TEXT, kind TEXT, artifact_version INTEGER, content_json TEXT, created_at TEXT
+    );
+    INSERT INTO extraction_runs VALUES
+      ('run-active', 'ws-a', 'project-a', 'event-a'),
+      ('run-other', 'ws-a', 'project-a', 'event-other');
+    INSERT INTO event_ai_artifact_runs VALUES
+      ('summary-active', 'ws-a', 'project-a', 'event-a', 'run-active', 'summary', 'succeeded'),
+      ('summary-other-event', 'ws-a', 'project-a', 'event-other', 'run-other', 'summary', 'succeeded'),
+      ('summary-wrong-scope', 'ws-b', 'project-a', 'event-a', 'run-active', 'summary', 'succeeded');
+    INSERT INTO event_ai_artifacts VALUES
+      ('artifact-active', 'ws-a', 'project-a', 'event-a', 'summary-active', 'summary', 1,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-active"]}]}]}', '2026-08-30T01:00:00.000Z'),
+      ('artifact-other-event', 'ws-a', 'project-a', 'event-other', 'summary-other-event', 'summary', 1,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-other"]}]}]}', '2026-08-30T01:00:00.000Z'),
+      ('artifact-wrong-scope', 'ws-b', 'project-a', 'event-a', 'summary-wrong-scope', 'summary', 2,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-wrong"]}]}]}', '2026-08-30T02:00:00.000Z');
+  `);
+  const active = database.prepare(summaryQueryMatch[1]).get(
+    "ws-a",
+    "project-a",
+    "event-a",
+    "run-active",
+  );
+  assert.match(active.content_json, /seg-active/);
+  assert.doesNotMatch(active.content_json, /seg-other|seg-wrong/);
+  assert.equal(
+    database.prepare(summaryQueryMatch[1]).get("ws-a", "project-a", "event-a", "run-other"),
+    undefined,
+    "a Summary from another Event cannot unlock the early-action exception",
+  );
+});
+
+test("a human action can coexist with the later AI batch while a repeated AI batch stays blocked", async () => {
+  const processor = await readFile(
+    new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url),
+    "utf8",
+  );
+  const aiClaimGuard = processor.match(
+    /AND NOT EXISTS \(\s*(SELECT 1 FROM claims\s+WHERE extraction_run_id = r\.id AND source = 'ai')\s*\)/,
+  );
+  assert.ok(aiClaimGuard, "fact persistence must distinguish human actions from an existing AI batch");
+
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE claims (id TEXT PRIMARY KEY, extraction_run_id TEXT, source TEXT);
+    INSERT INTO claims VALUES ('human-action', 'run-active', 'human');
+  `);
+  const canPersist = database.prepare(
+    `SELECT NOT EXISTS (${aiClaimGuard[1].replaceAll("r.id", "?")}) AS allowed`,
+  );
+  assert.equal(canPersist.get("run-active").allowed, 1, "a source-backed human action must not block facts");
+  database.exec("INSERT INTO claims VALUES ('ai-fact', 'run-active', 'ai')");
+  assert.equal(canPersist.get("run-active").allowed, 0, "a repeated AI persistence batch must remain blocked");
+  assert.equal(canPersist.get("run-other").allowed, 1, "AI claims from another Run must not interfere");
+});
+
+test("source-backed action verdicts wait for terminal facts across single and batch endpoints", async () => {
+  const [verdicts, route] = await Promise.all([
+    readFile(new URL("../lib/server/db/verdict-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+  ]);
+  const fromSql = verdicts.match(
+    /const RUNNING_SOURCE_BACKED_ACTION_FROM_SQL = `([\s\S]*?)`;/,
+  );
+  const predicateSql = verdicts.match(
+    /const RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL = `([\s\S]*?)`;/,
+  );
+  assert.ok(fromSql && predicateSql, "the verdict lock must have one shared, inspectable scope predicate");
+
+  const singleVerdictBlock = verdicts.slice(
+    verdicts.indexOf("export async function applyClaimVerdict"),
+    verdicts.indexOf("export async function withdrawClaim"),
+  );
+  const batchVerdictBlock = verdicts.slice(
+    verdicts.indexOf("export async function applyBatchVerdicts"),
+    verdicts.indexOf("export async function applyOccurrenceVerdict"),
+  );
+  assert.match(
+    singleVerdictBlock,
+    /assertSourceBackedActionVerdictsReady\(scope, \[claimId\]\)[\s\S]*if \(input\.action === "confirm"\)/,
+    "the shared preflight must run before confirm, reject, or edit branches",
+  );
+  assert.equal(
+    [...singleVerdictBlock.matchAll(/sourceBackedActionVerdictGuardSql\(\)/g)].length,
+    3,
+    "confirm, reject, and edit must each repeat the lock inside their atomic D1 guard",
+  );
+  assert.match(batchVerdictBlock, /assertSourceBackedActionVerdictsReady\(/);
+  assert.match(batchVerdictBlock, /sourceBackedActionVerdictGuardSql\(\)/);
+  assert.match(verdicts, /assertSourceBackedActionVerdictsReady[\s\S]{0,1600}"RUN_STATE_CONFLICT"/);
+  assert.match(route, /segments\[0\] === "claims"[\s\S]{0,500}applyClaimVerdict\(/);
+  assert.match(route, /segments\[1\] === "batch-verdicts"[\s\S]{0,1600}applyBatchVerdicts\(/);
+
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE claims (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      extraction_run_id TEXT, source TEXT, type TEXT
+    );
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, active_run_id TEXT
+    );
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT, status TEXT
+    );
+    INSERT INTO events VALUES
+      ('event-a', 'ws-a', 'project-a', 'run-a'),
+      ('event-b', 'ws-a', 'project-a', 'run-b');
+    INSERT INTO extraction_runs VALUES
+      ('run-a', 'ws-a', 'project-a', 'event-a', 'processing'),
+      ('run-b', 'ws-a', 'project-a', 'event-b', 'processing'),
+      ('run-cross-scope', 'ws-b', 'project-a', 'event-a', 'processing');
+    INSERT INTO claims VALUES
+      ('early-action', 'ws-a', 'project-a', 'event-a', 'run-a', 'human', 'next_action'),
+      ('ai-action', 'ws-a', 'project-a', 'event-a', 'run-a', 'ai', 'next_action'),
+      ('human-fact', 'ws-a', 'project-a', 'event-a', 'run-a', 'human', 'budget'),
+      ('other-event-action', 'ws-a', 'project-a', 'event-a', 'run-b', 'human', 'next_action'),
+      ('cross-scope-action', 'ws-a', 'project-a', 'event-a', 'run-cross-scope', 'human', 'next_action');
+  `);
+  const blocked = database.prepare(`
+    SELECT EXISTS (
+      SELECT 1
+      ${fromSql[1]}
+      WHERE protected_claim.workspace_id = ? AND protected_claim.id = ?
+        AND ${predicateSql[1]}
+    ) AS blocked
+  `);
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1);
+  assert.equal(blocked.get("ws-a", "ai-action").blocked, 0, "AI Claims keep their existing verdict contract");
+  assert.equal(blocked.get("ws-a", "human-fact").blocked, 0, "the exception remains narrow to next_action");
+  assert.equal(blocked.get("ws-a", "other-event-action").blocked, 0, "another Event's Run cannot lock this Claim");
+  assert.equal(blocked.get("ws-a", "cross-scope-action").blocked, 0, "a Run from another workspace cannot lock this Claim");
+
+  for (const terminal of ["succeeded", "completed_with_warnings", "failed", "cancelled"]) {
+    database.prepare("UPDATE extraction_runs SET status = ? WHERE id = 'run-a'").run(terminal);
+    assert.equal(blocked.get("ws-a", "early-action").blocked, 0, `${terminal} must unlock verdicts`);
+  }
+  database.prepare("UPDATE extraction_runs SET status = 'queued' WHERE id = 'run-a'").run();
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1, "queued facts are still non-terminal");
+  database.prepare("UPDATE extraction_runs SET status = 'unexpected' WHERE id = 'run-a'").run();
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1, "an unknown non-terminal state must fail closed");
 });
 
 test("Summary source loading accepts raw Transcript and pasted text but excludes readable derived segments", async () => {

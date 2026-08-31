@@ -4,7 +4,10 @@ import {
   planProjectWorkflow,
   projectNeedsScenarioConfirmation,
 } from "@/lib/domain/project-workflow";
-import { getProject } from "@/lib/server/db/core-repository";
+import {
+  expireStaleAssetUploads,
+  getProject,
+} from "@/lib/server/db/core-repository";
 import type { RequestScope } from "@/lib/server/http/context";
 import type {
   ExtractionModelStageName,
@@ -59,6 +62,7 @@ export async function getWorkflowSnapshot(
   projectId: string,
 ): Promise<WorkflowSnapshotRecord> {
   const project = await getProject(scope, projectId);
+  await expireStaleAssetUploads(scope, { projectId });
   const result = await getD1()
     .prepare(
       `WITH material_counts AS (
@@ -69,6 +73,7 @@ export async function getWorkflowSnapshot(
                 SUM(CASE WHEN processing_status = 'failed' THEN 1 ELSE 0 END) AS material_failed
            FROM assets
           WHERE workspace_id = ?
+            AND COALESCE(failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
             AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
             AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
           GROUP BY event_id

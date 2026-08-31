@@ -9,7 +9,12 @@ export const MODEL_IMAGE_FILE_ACCEPT = [
   ".jpeg",
   ".png",
   ".webp",
+  ".heic",
+  ".heif",
+  ".hif",
   ...MODEL_IMAGE_MIME_TYPES,
+  "image/heic",
+  "image/heif",
 ].join(",");
 
 export const MAX_IMAGE_BYTES = 15 * 1024 * 1024;

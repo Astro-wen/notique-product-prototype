@@ -326,6 +326,7 @@ export type ExtractionRunRecord = {
   status: ExtractionRunStatus;
   idempotency_key: string;
   input_hash: string;
+  input_asset_version_ids: string[];
   context_version: number;
   provider: string | null;
   model: string | null;

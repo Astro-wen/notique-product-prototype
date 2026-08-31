@@ -340,8 +340,8 @@ test("workflow material counts exclude generated readable transcript assets", as
 
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
   assert.doesNotMatch(uiSource, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
-  assert.match(uiSource, /开始处理全部沟通/);
-  assert.match(uiSource, /继续处理下一次沟通/);
+  assert.match(uiSource, /材料就绪后自动处理/);
+  assert.match(uiSource, /下一次沟通已准备好，正在自动开始分析/);
   assert.match(uiSource, /loadWorkflowSnapshot\(projectId(?:, true)?\)/);
   assert.match(uiSource, /workflowSnapshotQuery\(projectId\)/);
   assert.match(uiSource, /candidateCount: summary\?\.candidate_count/);
@@ -380,7 +380,8 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
     "waiting and running states must not render a disabled primary action",
   );
   assert.match(simpleScreen, /issueRetry[\s\S]*onProjectWorkflowAction/);
-  assert.match(simpleScreen, /workflowReviewReady = pendingCount > 0 && analysisDone/);
   assert.match(simpleScreen, /needsScenarioConfirmation: false/);
-  assert.match(simpleScreen, /\{workflowReviewReady && <button[\s\S]*核对重要内容/);
+  assert.match(simpleScreen, /if \(\(next === "transcript" \|\| next === "review"\) && event\)/);
+  assert.match(simpleScreen, /reviewMode=\{activeTab === "review"\}/);
+  assert.doesNotMatch(simpleScreen, /next === "review"[\s\S]{0,120}onReview\(\)/);
 });

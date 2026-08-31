@@ -144,6 +144,12 @@ export function extractionRunRecord(
     status: text(row, "status") as ExtractionRunRecord["status"],
     idempotency_key: text(row, "idempotency_key"),
     input_hash: text(row, "input_hash"),
+    input_asset_version_ids: parseJson<Array<{ asset_version_id?: unknown }>>(
+      nullableText(row, "input_manifest_json"),
+      [],
+    ).flatMap((item) => typeof item.asset_version_id === "string" && item.asset_version_id
+      ? [item.asset_version_id]
+      : []),
     context_version: integer(row, "context_version"),
     provider: nullableText(row, "provider"),
     model: nullableText(row, "model"),

@@ -2,7 +2,44 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Dialog, DropdownMenu } from "radix-ui";
+import { DropdownMenu } from "radix-ui";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  AudioLines,
+  Camera,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FileAudio,
+  FileImage,
+  FileText,
+  FolderOpen,
+  Image as ImageIcon,
+  Inbox,
+  LayoutDashboard,
+  ListChecks,
+  ListTree,
+  Mic,
+  MoreHorizontal,
+  NotebookPen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pause,
+  Play,
+  Plus,
+  Search,
+  Settings2,
+  Sparkles,
+  Upload,
+  Users,
+  X,
+} from "lucide-react";
 import {
   isHeifLike,
   MAX_IMAGE_BYTES,
@@ -33,8 +70,8 @@ import {
   deriveGuidedDisplayStatus,
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
-import { ACTIVE_BACKGROUND_WAKE_MS, buildRunTimingItems, runNeedsRecovery, runPollDelayMs, runTotalDurationMs } from "@/lib/domain/run-timing";
-import { buildAnalysisProgress, type AnalysisProgress } from "@/lib/domain/analysis-progress";
+import { ACTIVE_BACKGROUND_WAKE_MS, runNeedsRecovery, runPollDelayMs } from "@/lib/domain/run-timing";
+import { buildAnalysisProgress } from "@/lib/domain/analysis-progress";
 import {
   factsReadyForReview,
   factsStillRunning,
@@ -146,6 +183,102 @@ type AudioPreparationProgress = {
   }>;
 };
 
+type AssetUploadProgress = {
+  eventId: string;
+  filename: string;
+  kind: "audio" | "photo" | "pdf" | "text" | "transcript";
+  phase: "initializing" | "uploading" | "finalizing";
+  loaded: number;
+  total: number;
+};
+
+type PendingAssetInit = {
+  eventId: string;
+  input: {
+    kind: string;
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    metadata?: Record<string, unknown>;
+  };
+  idempotencyKey: string;
+};
+
+async function recoverAndAbortAssetUpload(
+  pending: PendingAssetInit,
+  knownAssetId: string | null,
+): Promise<boolean> {
+  try {
+    // A cancelled/timed-out init can still commit on the server after the
+    // browser loses its response. Replaying the exact idempotent init recovers
+    // that Asset id (or creates the one terminal row), so it can be aborted.
+    const assetId = knownAssetId ?? (await api.initAsset(
+      pending.eventId,
+      pending.input,
+      pending.idempotencyKey,
+    )).assetId;
+    await api.abortAsset(assetId);
+    return true;
+  } catch {
+    // Keep the idempotency key when cleanup is uncertain. Selecting the same
+    // file again then resumes/replays this Asset instead of making a duplicate;
+    // the server lease is the final fallback if the browser disappears.
+    return false;
+  }
+}
+
+async function initializeAssetUploadWithReplayRecovery(
+  pending: PendingAssetInit,
+  signal: AbortSignal,
+  onRotateKey: (rotated: PendingAssetInit) => void,
+): Promise<{ assetId: string; uploadUrl?: string; status?: string }> {
+  try {
+    return await api.initAsset(
+      pending.eventId,
+      pending.input,
+      pending.idempotencyKey,
+      signal,
+    );
+  } catch (error) {
+    if (toIssue(error).code !== "EVENT_NOT_READY") throw error;
+    // The retained key can point at a terminal tombstone when an earlier abort
+    // succeeded but its response was lost. Rotate exactly once so one new file
+    // selection is enough to continue, while keeping the new attempt replayable.
+    const rotated = { ...pending, idempotencyKey: crypto.randomUUID() };
+    onRotateKey(rotated);
+    return api.initAsset(
+      rotated.eventId,
+      rotated.input,
+      rotated.idempotencyKey,
+      signal,
+    );
+  }
+}
+
+function assetUploadNeedsContent(status?: string): boolean {
+  return status !== "parsing" && status !== "ready";
+}
+
+async function finalizeAssetWithReplayRecovery(assetId: string) {
+  try {
+    return await api.finalizeAsset(assetId);
+  } catch (error) {
+    const issue = toIssue(error);
+    if (issue.status !== 0 && issue.status < 500) throw error;
+    // Finalize is idempotent. One immediate replay covers both a brief server
+    // outage and the common case where the commit succeeded but its response
+    // was lost on the way back to the browser.
+    return api.finalizeAsset(assetId);
+  }
+}
+
+type MissingClaimSeed = {
+  eventId: string;
+  sourceText: string;
+  statement: string;
+  segmentIds: string[];
+};
+
 type ContradictionResolutionInput = {
   relationId: string;
   sourceClaimVersionId: string;
@@ -173,6 +306,14 @@ type ImportRow = {
   title: string;
   occurredAt: string;
   eventType: "meeting" | "showing" | "estimate" | "walkthrough";
+};
+
+type TranscriptImportProgress = {
+  label: string;
+  filename?: string;
+  loaded?: number;
+  total?: number;
+  cancelable: boolean;
 };
 
 type ProjectWorkflowState = Omit<ProjectWorkflowPlan, "phase"> & {
@@ -217,12 +358,23 @@ type SummarySourceDrawerState = {
 
 type SelectedSummaryPoint = SummarySourceDrawerState & {
   key: string;
+  claimId?: string;
+  sectionKind: string;
   sectionLabel: string;
-  claimIds: string[];
 };
 
 type ReadingWorkspaceView = "points" | "chapters" | "speakers" | "transcript";
 type ReadingActionView = "source" | "pending" | "actions";
+
+function claimEvidenceFitsSourceRail(claim: Claim, visibleSourceIds: string[]): boolean {
+  if (!claim.evidenceRefs.length || !visibleSourceIds.length) return false;
+  const visible = new Set(visibleSourceIds);
+  return claim.evidenceRefs.every((ref) =>
+    ref.kind.includes("transcript")
+    && ref.segmentIds.length > 0
+    && ref.segmentIds.every((id) => visible.has(id)),
+  );
+}
 
 type ReadableDiffViewState =
   | { status: "loading" }
@@ -233,7 +385,7 @@ const primaryResultTabs: Array<{ key: ResultTab; label: string; short: string }>
   { key: "client-progress", label: "项目概览", short: "概览" },
   { key: "timeline", label: "时间线", short: "时间线" },
   { key: "actions", label: "下一步", short: "行动" },
-  { key: "brief-card", label: "会前准备", short: "会前" },
+  { key: "brief-card", label: "下次沟通准备", short: "准备" },
 ];
 
 const secondaryResultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
@@ -248,9 +400,36 @@ const secondaryResultTabs: Array<{ key: ResultTab; label: string; short: string 
 
 const resultTabs = [...primaryResultTabs, ...secondaryResultTabs];
 
+function resultTabIcon(key: ResultTab): ReactNode {
+  switch (key) {
+    case "client-progress": return <LayoutDashboard />;
+    case "timeline": return <ListTree />;
+    case "actions":
+    case "next-meeting-agenda": return <ListChecks />;
+    case "brief-card": return <NotebookPen />;
+    case "folder-summary": return <FolderOpen />;
+    case "decisions": return <CheckCircle2 />;
+    case "preferences": return <Sparkles />;
+    case "open-questions": return <Search />;
+    case "risks": return <AlertTriangle />;
+    case "gap-check": return <FileText />;
+  }
+}
+
 const runInProgress = new Set(["queued", "processing", "extracting"]);
 const runComplete = new Set(["succeeded", "completed", "completed_with_warnings"]);
 const acceptedTranscriptTypes = [".txt", ".vtt", ".srt", ".json"];
+
+function transcriptMimeFor(filename: string, mimeType: string): string | null {
+  const normalized = normalizeMimeType(mimeType);
+  if (/\.vtt$/i.test(filename)) return "text/vtt";
+  if (/\.srt$/i.test(filename)) return "application/x-subrip";
+  if (/\.json$/i.test(filename)) return "application/json";
+  if (/\.txt$/i.test(filename)) return "text/plain";
+  return ["text/plain", "text/vtt", "application/json", "application/x-subrip"].includes(normalized)
+    ? normalized
+    : null;
+}
 const recentProjectStorageKey = "notique.ui.recent-project-id";
 const workflowIntentStorageKey = "notique.ui.workflow-intent-project-id";
 const sidebarCollapsedStorageKey = "notique.ui.sidebar-collapsed";
@@ -413,6 +592,124 @@ function formatBytes(value?: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function compactTranscriptTimestamp(startMs: number | null | undefined): string {
+  return startMs == null ? "无时间点" : formatTimestamp(startMs / 1_000);
+}
+
+function transcriptPlaybackLabel(
+  startMs: number | null | undefined,
+  action: "前三秒播放" | "播放原话",
+): string {
+  return startMs == null
+    ? "这个片段没有可播放的时间点"
+    : `从 ${compactTranscriptTimestamp(startMs)} ${action}`;
+}
+
+const MAX_HANDWRITING_IMAGE_EDGE = 4096;
+const MAX_HEIF_SOURCE_BYTES = 30 * 1024 * 1024;
+
+async function canvasJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("IMAGE_CONVERSION_EMPTY"));
+    }, "image/jpeg", quality);
+  });
+}
+
+async function normalizeHandwrittenPhoto(file: File): Promise<File> {
+  if (!isHeifLike(file.name, file.type)) return file;
+  if (typeof document === "undefined") return file;
+  if (file.size > MAX_HEIF_SOURCE_BYTES) {
+    throw new ApiClientError({
+      code: "ASSET_TOO_LARGE",
+      message: "这张 HEIC/HEIF 原图超过 30 MB，为避免手机内存不足，没有开始转换。",
+      status: 413,
+      details: {
+        kind: "photo",
+        filename: file.name,
+        size_bytes: file.size,
+        max_size_bytes: MAX_HEIF_SOURCE_BYTES,
+      },
+    });
+  }
+
+  let width = 0;
+  let height = 0;
+  let draw: ((context: CanvasRenderingContext2D, width: number, height: number) => void) | null = null;
+  let close: () => void = () => undefined;
+
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      width = bitmap.width;
+      height = bitmap.height;
+      draw = (context, targetWidth, targetHeight) => context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+      close = () => bitmap.close();
+    } catch {
+      // Safari can decode camera HEIC files through an image element even
+      // when createImageBitmap cannot. Continue to that path below.
+    }
+  }
+
+  let objectUrl = "";
+  if (!draw) {
+    objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.decoding = "async";
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("IMAGE_CONVERSION_UNSUPPORTED"));
+        image.src = objectUrl;
+      });
+      width = image.naturalWidth;
+      height = image.naturalHeight;
+      draw = (context, targetWidth, targetHeight) => context.drawImage(image, 0, 0, targetWidth, targetHeight);
+    } catch {
+      URL.revokeObjectURL(objectUrl);
+      throw new ApiClientError({
+        code: "ASSET_UNSUPPORTED_FORMAT",
+        message: "当前浏览器无法转换这张 HEIC/HEIF 照片。请使用下方拍照入口，或在照片 App 中导出为 JPG。",
+        status: 415,
+        details: { kind: "photo", filename: file.name, mime_type: file.type },
+      });
+    }
+  }
+
+  try {
+    if (!draw || width <= 0 || height <= 0) throw new Error("IMAGE_CONVERSION_INVALID_DIMENSIONS");
+    const scale = Math.min(1, MAX_HANDWRITING_IMAGE_EDGE / Math.max(width, height));
+    const targetWidth = Math.max(1, Math.round(width * scale));
+    const targetHeight = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("IMAGE_CONVERSION_CANVAS_UNAVAILABLE");
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, targetWidth, targetHeight);
+    draw(context, targetWidth, targetHeight);
+    const blob = await canvasJpegBlob(canvas, 0.9);
+    const baseName = file.name.replace(/\.(?:heic|heif|hif)$/i, "") || "handwritten-note";
+    return new File([blob], `${baseName}.jpg`, {
+      type: "image/jpeg",
+      lastModified: file.lastModified,
+    });
+  } catch (error) {
+    if (error instanceof ApiClientError) throw error;
+    throw new ApiClientError({
+      code: "ASSET_UNSUPPORTED_FORMAT",
+      message: "这张 HEIC/HEIF 照片没有转换成功。请重新拍摄，或在照片 App 中导出为 JPG。",
+      status: 415,
+      details: { kind: "photo", filename: file.name, mime_type: file.type },
+    });
+  } finally {
+    close();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
 function photoUploadIssue(
   filename: string,
   mimeType: string,
@@ -427,7 +724,7 @@ function photoUploadIssue(
   if (isHeifLike(filename, normalizedMime) || !imageMime) {
     return {
       code: "ASSET_UNSUPPORTED_FORMAT",
-      message: "照片只支持 JPG、PNG 或 WebP。当前测试版不会转换 HEIC/HEIF。",
+      message: "这张照片没有转换成可读取的 JPG、PNG 或 WebP。",
       status: 415,
       details: {
         kind: "photo",
@@ -521,13 +818,13 @@ function workflowEventDisplayStatus(summary?: WorkflowEventSummary): {
   const labels: Record<WorkflowEventSummary["display_status"], string> = {
     waiting_material: "等待材料",
     transcribing: "正在转写",
-    ready: "可以分析",
+    ready: "等待自动整理",
     queued: "正在启动分析",
     inventory: "正在识别事实",
     verify: "正在查漏纠错",
     verify_escalated: "需要加强复核",
     waiting_scenario: "等待场景确认",
-    waiting_review: "等待人工核对",
+    waiting_review: "有内容待确认",
     complete: "已完成",
     needs_attention: "需要处理",
   };
@@ -680,7 +977,7 @@ function statusLabel(value?: string): string {
     completed_with_warnings: "完成，有部分提醒",
     failed: "处理失败",
     cancelled: "已取消",
-    pending: "待审核",
+    pending: "待确认",
     verified: "已确认",
     rejected: "未采纳",
     active: "当前有效",
@@ -716,6 +1013,10 @@ function extractionProgressBody(run?: ExtractionRun | null): string {
 
 function issueTitle(issue: ApiIssue): string {
   if (issue.code === "EXTRACTION_POLL_TIMEOUT" || issue.code === "TRANSCRIPTION_POLL_TIMEOUT") return "仍在后台运行";
+  if (issue.code === "UPLOAD_TIMEOUT") return "上传等待过久";
+  if (issue.code === "UPLOAD_NETWORK_ERROR") return "上传连接中断";
+  if (issue.code === "UPLOAD_ABORTED") return "上传已取消";
+  if (issue.code === "REQUEST_TIMEOUT") return "读取等待过久";
   if (issue.code === "MODEL_PROVIDER_NOT_CONFIGURED") return "模型服务尚未配置";
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音转写服务尚未配置";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音转写超时";
@@ -732,6 +1033,8 @@ function issueTitle(issue: ApiIssue): string {
 function issueMessage(issue: ApiIssue): string {
   if (issue.code === "EXTRACTION_POLL_TIMEOUT") return "页面暂时停止等待，但原来的事实识别任务仍由服务器保存。重新检查只会读取同一个任务，不会重复付费。";
   if (issue.code === "TRANSCRIPTION_POLL_TIMEOUT") return "页面暂时停止等待，但录音和原来的转写任务仍然保留。重新检查不会重复上传录音。";
+  if (issue.code === "UPLOAD_TIMEOUT" || issue.code === "UPLOAD_NETWORK_ERROR" || issue.code === "UPLOAD_ABORTED") return issue.message;
+  if (issue.code === "REQUEST_TIMEOUT") return "这一部分读取超过 25 秒，页面已经停止等待。已有内容和后台任务仍然保留，可以单独重试。";
   if (issue.code === "RUN_BUDGET_EXCEEDED") {
     return "这次材料超过当前单次分析上限。本次分析没有启动，请减少材料后重试。";
   }
@@ -739,7 +1042,7 @@ function issueMessage(issue: ApiIssue): string {
   if (issue.code === "TRANSCRIPTION_PROVIDER_NOT_CONFIGURED") return "录音已经安全保存，但服务端还没有配置 OpenAI 转写模型。本次没有生成逐字稿，配置完成后可以重新提交。";
   if (issue.code === "TRANSCRIPTION_TIMEOUT") return "录音已经保存，但本次转写在时限内没有完成。可以安全重试，不需要重新上传。";
   if (issue.code === "TRANSCRIPTION_OUTPUT_INVALID") return "模型返回的逐字稿缺少可核对的说话人或时间点，系统没有把它写进正式材料。";
-  if (issue.code === "REVIEW_SESSION_CONFLICT") return "审核内容发生了变化，系统没有写入错误的计时结果。请刷新审核区后继续。";
+  if (issue.code === "REVIEW_SESSION_CONFLICT") return "待确认内容发生了变化，系统没有写入错误的计时结果。请刷新确认区后继续。";
   if (issue.code === "AUDIO_TRANSCRIPTION_FAILED") return "录音已经保存，但转写没有完成。请保留 Request ID，稍后重新提交转写。";
   if (issue.code === "QUEUE_NOT_CONFIGURED") return "后台处理队列还没有配置。本次任务没有开始，也没有写入半成品。";
   if (issue.code === "DATABASE_UNAVAILABLE") return "当前无法读取数据库中的真实记录，请稍后重试。";
@@ -765,7 +1068,7 @@ function issueMessage(issue: ApiIssue): string {
       return "录音支持 MP3、M4A、WAV、WebM、MP4、MPEG 或 MPGA。页面没有上传这份不支持的文件。";
     }
     if (details.kind === "photo") {
-      return "照片只支持 JPG、PNG 或 WebP。当前测试版不会转换 HEIC/HEIF，请先在手机或电脑上转成支持的格式。";
+      return issue.message || "这张照片无法读取。iPhone 拍摄的 HEIC/HEIF 会先在浏览器中自动转换为 JPG；如果仍失败，请重新拍摄或选择 JPG、PNG、WebP。";
     }
     return "当前文件格式暂不支持。页面没有上传或保存这份文件。";
   }
@@ -790,7 +1093,7 @@ function ErrorNotice({ issue, onRetry, compact = false }: { issue: ApiIssue; onR
       : "重试";
   return (
     <section className={`notice notice-error ${compact ? "notice-compact" : ""}`} role="alert">
-      <span className="notice-mark">!</span>
+      <span className="notice-mark" aria-hidden="true"><AlertTriangle /></span>
       <div>
         <strong>{issueTitle(issue)}</strong>
         <p>{issueMessage(issue)}</p>
@@ -804,7 +1107,7 @@ function ErrorNotice({ issue, onRetry, compact = false }: { issue: ApiIssue; onR
 function EmptyState({ title, body, action }: { title: string; body: string; action?: ReactNode }) {
   return (
     <div className="empty-state">
-      <span className="empty-symbol">○</span>
+      <span className="empty-symbol" aria-hidden="true"><Inbox /></span>
       <h2>{title}</h2>
       <p>{body}</p>
       {action}
@@ -812,11 +1115,39 @@ function EmptyState({ title, body, action }: { title: string; body: string; acti
   );
 }
 
+function FileKindIcon({ kind }: { kind?: string }) {
+  const normalized = kind?.toLowerCase() ?? "";
+  const Icon = normalized.includes("audio")
+    ? FileAudio
+    : normalized.includes("photo") || normalized.includes("image")
+      ? FileImage
+      : FileText;
+  return <span className="file-kind" aria-hidden="true"><Icon /></span>;
+}
+
 function LoadingBlock({ label = "正在读取…" }: { label?: string }) {
   return <div className="loading-block" role="status"><span /><span /><span /><small>{label}</small></div>;
 }
 
-function MaterialSyncingCard({ detail = "文件已上传，正在更新这次沟通。" }: { detail?: string }) {
+function AssetUploadProgressCard({ progress, onCancel }: { progress: AssetUploadProgress; onCancel: () => void }) {
+  const finalizing = progress.phase === "finalizing";
+  const title = progress.phase === "initializing"
+    ? `正在准备上传 ${progress.filename}`
+    : finalizing
+      ? `正在保存 ${progress.filename}`
+      : `正在上传 ${progress.filename}`;
+  const detail = progress.phase === "initializing"
+    ? "正在建立上传通道 · 可以取消"
+    : finalizing
+      ? "文件已经上传，正在生成可用材料；此时无需继续等待上传"
+      : `${formatBytes(progress.loaded)} / ${formatBytes(progress.total)} · 上传完成后会自动继续`;
+  return <section className="asset-upload-progress" role="status" aria-live="polite">
+    <div><span className="spinner" /><span><strong>{title}</strong><small>{detail}</small></span>{!finalizing && <button type="button" className="text-button upload-cancel" onClick={onCancel}><X aria-hidden="true" />取消</button>}</div>
+    <progress max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />
+  </section>;
+}
+
+function MaterialSyncingCard({ detail = "正在转换或保存材料；完成后会自动继续。" }: { detail?: string }) {
   return <div className="material-syncing-card" role="status" aria-live="polite" aria-busy="true">
     <span className="material-syncing-spinner" aria-hidden="true" />
     <div><strong>正在同步材料…</strong><p>{detail}</p></div>
@@ -838,19 +1169,19 @@ function PublicWorkspaceConfirmationModal({ onCancel, onConfirm }: { onCancel: (
   const [confirmed, setConfirmed] = useState(false);
   return <Modal
     title="上传前先确认材料安全"
-    description="这是公开共享的测试空间，不适合保存真实客户的敏感资料。"
+    description="这是公开共享的测试空间，不适合保存真实人员或项目的敏感资料。"
     onClose={onCancel}
   >
     <div className="public-workspace-confirmation">
       <div className="public-workspace-warning">
         <strong>只能使用公开、合成或已脱敏材料</strong>
         <ul>
-          <li>不要包含真实客户姓名、电话、邮箱或精确住址。</li>
+          <li>不要包含真实人员姓名、电话、邮箱或精确住址。</li>
           <li>不要包含贷款、银行、身份证件或其他财务与身份信息。</li>
           <li>录音前请确认所有参与者知情，并避免谈论敏感资料。</li>
         </ul>
       </div>
-      <label className="public-workspace-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我确认这次材料不含真实客户敏感信息。</span></label>
+      <label className="public-workspace-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我确认这次材料不含真实人员或项目敏感信息。</span></label>
       <div className="modal-actions"><button className="button secondary" onClick={onCancel}>取消</button><button className="button primary" disabled={!confirmed} onClick={onConfirm}>确认并继续</button></div>
     </div>
   </Modal>;
@@ -884,7 +1215,7 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
 }) {
   const [permanentTarget, setPermanentTarget] = useState<Project | null>(null);
   const [confirmation, setConfirmation] = useState("");
-  return <Modal title="回收站" description="恢复会带回项目的全部材料、核对记录、Evidence 和报告。这里不会自动按天清理。" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".project-menu-trigger" wide>
+  return <Modal title="回收站" description="恢复会带回项目的全部材料、确认记录、原始依据和报告。这里不会自动按天清理。" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".project-menu-trigger" wide>
     <div className="trash-list">
       {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
@@ -1233,7 +1564,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const verified = isRecord(data.verified) ? data.verified : {};
     const trusted = recordArray(verified.currentClaims ?? verified.current_claims).map(claimViewItem);
     return <div className="summary-view client-progress-view">
-      <section className="memory-layer"><header><span className="eyebrow">项目记录</span><h3>已确认内容可信，AI 草稿仅供参考</h3><p>每条记录都标明状态。时间线、会前准备和正式报告只读取已确认内容。</p></header><ProjectOverviewList drafts={drafts} trusted={trusted} onOpenClaim={onOpenClaim} /></section>
+      <section className="memory-layer"><header><span className="eyebrow">项目记录</span><h3>已确认内容可信，AI 草稿仅供参考</h3><p>每条记录都标明状态。时间线、下次沟通准备和正式报告只读取已确认内容。</p></header><ProjectOverviewList drafts={drafts} trusted={trusted} onOpenClaim={onOpenClaim} /></section>
       {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能的跨沟通联系</span><h3>先作为提示，不会自动改变可信记忆</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
         const linkId = firstString(link, ["id"]);
         const sourceId = firstString(link, ["source_claim_id"]);
@@ -1251,14 +1582,14 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     return <div className="action-list">{actions.map((item, index) => {
       const claimId = firstString(item, ["claim_id"]);
       const status = firstString(item, ["status"]) || "ai_suggested";
-      return <article className={`view-card action-card ${status}`} key={claimId || index}><div className="view-card-top"><div><span className="eyebrow">{status === "ai_suggested" ? "AI 建议" : status === "confirmed" ? "已确认" : status === "completed" ? "已完成" : "不采纳"}</span><h3>{firstString(item, ["statement"]) || "未命名行动"}</h3></div><StatusBadge value={status} /></div>{firstString(item, ["owner"]) && <p><b>负责人：</b>{firstString(item, ["owner"])}</p>}{firstString(item, ["due_at"]) && <p><b>期限：</b>{formatDate(firstString(item, ["due_at"]), true)}</p>}<p className="muted">来源：{firstString(item, ["event_title"]) || "一次沟通"}</p><div className="action-card-buttons">{claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与 Evidence</button>}{claimId && status === "confirmed" && <button className="button primary small" disabled={busyAction === `complete-action:${claimId}`} onClick={() => onCompleteAction(claimId)}>{busyAction === `complete-action:${claimId}` ? "正在完成…" : "标记完成"}</button>}</div></article>;
+      return <article className={`view-card action-card ${status}`} key={claimId || index}><div className="view-card-top"><div><span className="eyebrow">{status === "ai_suggested" ? "AI 建议" : status === "confirmed" ? "已确认" : status === "completed" ? "已完成" : "不采纳"}</span><h3>{firstString(item, ["statement"]) || "未命名行动"}</h3></div><StatusBadge value={status} /></div>{firstString(item, ["owner"]) && <p><b>负责人：</b>{firstString(item, ["owner"])}</p>}{firstString(item, ["due_at"]) && <p><b>期限：</b>{formatDate(firstString(item, ["due_at"]), true)}</p>}<p className="muted">来源：{firstString(item, ["event_title"]) || "一次沟通"}</p><div className="action-card-buttons">{claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与原始依据</button>}{claimId && status === "confirmed" && <button className="button primary small" disabled={busyAction === `complete-action:${claimId}`} onClick={() => onCompleteAction(claimId)}>{busyAction === `complete-action:${claimId}` ? "正在完成…" : "标记完成"}</button>}</div></article>;
     })}</div>;
   }
   if (tab === "folder-summary" && isRecord(data)) {
     const scenario = firstString(data, ["scenario", "scenario_label"]);
     const claims = recordArray(data.currentClaims ?? data.current_claims).map(claimViewItem);
     const deltas = recordArray(data.recentDeltas ?? data.recent_deltas);
-    if (!scenario && !claims.length && !deltas.length) return <EmptyState title="还没有事项概况" body={emptyReason || firstString(data, ["emptyReason"]) || "先完成材料处理并确认有用的记录。待审核内容不会出现在这里。"} />;
+    if (!scenario && !claims.length && !deltas.length) return <EmptyState title="还没有事项概况" body={emptyReason || firstString(data, ["emptyReason"]) || "先完成材料处理并确认有用的记录。待确认内容不会出现在这里。"} />;
     return (
       <div className="summary-view">
         {scenario && <span className="scenario-chip">使用场景：{scenario.replaceAll("_", " ")}</span>}
@@ -1309,7 +1640,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const deltaItems = recordArray(data.deltaItems);
     const agendaItems = recordArray(data.agendaItems);
     const missing = Number(data.missingSlotCount ?? data.missing_slot_count ?? 0);
-    if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="会前速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
+    if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="下次沟通速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
     return <div className="brief-grid"><div className="brief-overview-action"><div><span className="section-kicker">下一步</span><strong>需要更多细节？</strong><p>完整报告会展开事项概况、时间线、决定、偏好、问题、风险和下次沟通清单。</p></div><button className="button secondary" onClick={() => onSelect("folder-summary")}>查看完整报告</button></div>
       <BriefGroup title="当前最重要的情况" items={stateItem ? [stateItem] : []} kind="state" empty="还没有可用记录" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="最近变化" items={deltaItems} kind="delta" empty="还没有变化" onOpenClaim={onOpenClaim} onSelect={onSelect} />
@@ -1325,13 +1656,13 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
       actions: ["目前没有下一步行动", "确认 AI 建议后，它会进入站内行动清单。"],
       "folder-summary": ["还没有事项概况", "先完成材料处理并确认有用的记录。"],
       timeline: ["时间线还没有内容", "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"],
-      decisions: ["目前没有已确认的决定", "待审核的决定不会提前出现在这里。"],
+      decisions: ["目前没有已确认的决定", "待确认的决定不会提前出现在这里。"],
       preferences: ["目前没有已确认的偏好", "确认偏好后，这里会保留当前内容和变化过程。"],
       "open-questions": ["目前没有待确认问题", "新问题经过审核后会显示首次出现、重提次数和开放天数。"],
       risks: ["目前没有已确认的风险或未解决矛盾", "这不代表没有风险，只代表现有已确认记录中没有。"],
       "gap-check": ["还不能运行资料缺口检查", "先确认使用场景。只有已配置检查规则的场景才会生成缺口。"],
       "next-meeting-agenda": ["目前没有下次必须确认的内容", "资料缺口、开放问题和未解决矛盾会汇总到这里。"],
-      "brief-card": ["会前速览的信息还不够", "系统不会为了填满六项而编造内容。"],
+      "brief-card": ["下次沟通速览的信息还不够", "系统不会为了填满六项而编造内容。"],
     };
     return <EmptyState title={copy[tab][0]} body={emptyReason || copy[tab][1]} />;
   }
@@ -1345,14 +1676,14 @@ function ResultSection({ title, empty, hasContent = true, children }: { title: s
 function slotLabel(value: string): string {
   const labels: Record<string, string> = {
     budget: "预算",
-    financing: "资金或贷款",
-    target_areas: "目标区域",
-    timeline: "购买时间线",
+    financing: "资金安排",
+    target_areas: "目标范围",
+    timeline: "目标时间线",
     decision_makers: "谁参与决定",
-    must_haves: "房屋硬性要求",
+    must_haves: "硬性要求",
     preferences: "偏好与条件",
     dealbreakers: "明确不能接受的事项",
-    property_feedback: "已看房源与反馈",
+    property_feedback: "对象与反馈",
     next_actions: "下一步行动",
   };
   return labels[value] || value.replaceAll("_", " ");
@@ -1386,7 +1717,7 @@ function briefSourceId(item: Record<string, unknown>, kind: BriefItemKind): stri
 
 function BriefGroup({ title, items, kind, empty, onOpenClaim, onSelect, warning = false }: { title: string; items: Record<string, unknown>[]; kind: BriefItemKind; empty: string; onOpenClaim: (id: string) => void; onSelect: (tab: ResultTab) => void; warning?: boolean }) {
   return <article className={`view-card brief-group ${warning ? "brief-warning" : ""}`}>
-    <span className="eyebrow">会前速览</span>
+    <span className="eyebrow">下次沟通速览</span>
     <h3>{title}</h3>
     {items.length ? <ol className="brief-item-list">{items.map((item, index) => {
       const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
@@ -1448,10 +1779,14 @@ export default function Home() {
   const [transcriptionRun, setTranscriptionRun] = useState<TranscriptionRun | null>(null);
   const [transcriptionRunsByAssetId, setTranscriptionRunsByAssetId] = useState<Record<string, TranscriptionRun>>({});
   const [audioPreparationProgressByAssetId, setAudioPreparationProgressByAssetId] = useState<Record<string, AudioPreparationProgress>>({});
+  const [assetUploadProgress, setAssetUploadProgress] = useState<AssetUploadProgress | null>(null);
+  const assetUploadAbortRef = useRef<AbortController | null>(null);
+  const assetUploadOperationRef = useRef<symbol | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
   const [draftAssessment, setDraftAssessment] = useState<AiDraftAssessment | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
   const [missingClaimDefaultType, setMissingClaimDefaultType] = useState<OccurrenceNewClaim["type"]>("other");
+  const [missingClaimSeed, setMissingClaimSeed] = useState<MissingClaimSeed | null>(null);
   const [reviewSummaryDestination, setReviewSummaryDestination] = useState<ReviewSummaryDestination | null>(null);
   const [reviewClockNow, setReviewClockNow] = useState(() => Date.now());
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -1667,7 +2002,7 @@ export default function Home() {
     const eventId = event?.id;
     if (!projectId || !eventId) return;
     if (eventWorkflowSummaries[eventId]?.statusSummary.summaryStatus !== "succeeded") return;
-    // The user commonly moves from the newly available Summary to the buyer
+    // The user commonly moves from the newly available Summary to the project
     // overview. Warm those read-only layers without blocking Summary or
     // starting any model/ledger mutation.
     void Promise.allSettled([
@@ -2797,7 +3132,7 @@ export default function Home() {
     if (snapshot.plan.phase === "complete") {
       storeId(workflowIntentStorageKey, null);
       setWorkflowIntentProjectId(null);
-      flash("整组沟通已经核对完成，正在打开会前速览");
+      flash("整组沟通已经核对完成，正在打开下次沟通速览");
       await loadView("brief-card", projectId, "replace");
       return;
     }
@@ -2816,7 +3151,7 @@ export default function Home() {
     if (reviewSummaryDestination.complete) {
       storeId(workflowIntentStorageKey, null);
       setWorkflowIntentProjectId(null);
-      flash("整组沟通已经核对完成，正在打开会前速览");
+      flash("整组沟通已经核对完成，正在打开下次沟通速览");
       await loadView("brief-card");
     } else if (reviewSummaryDestination.nextEventId) {
       const nextEvent = events.find((item) => item.id === reviewSummaryDestination.nextEventId);
@@ -2915,7 +3250,7 @@ export default function Home() {
       targetSummary?.statusSummary.summaryStatus === "succeeded"
       || targetSummary?.statusSummary.readableTranscriptStatus === "succeeded"
     ) {
-      flash("整组处理已经完成；当前阅读位置已保留，可随时打开会前速览");
+      flash("整组处理已经完成；当前阅读位置已保留，可随时打开下次沟通速览");
       return;
     }
     storeId(workflowIntentStorageKey, null);
@@ -2942,6 +3277,16 @@ export default function Home() {
     workflowIntentProjectId,
   ]);
 
+  function claimVerdictIsTemporarilyLocked(claim: Claim): boolean {
+    const targetEventId = claim.eventId || routeRef.current.eventId || event?.id || null;
+    const activeEventStatus = targetEventId && targetEventId === event?.id
+      ? run?.status ?? eventWorkflowSummaries[targetEventId]?.statusSummary.extractionStatus
+      : targetEventId
+        ? eventWorkflowSummaries[targetEventId]?.statusSummary.extractionStatus
+        : run?.status;
+    return runInProgress.has(activeEventStatus ?? "");
+  }
+
   async function runVerdict(
     action: "confirm" | "reject" | "edit",
     reason?: string,
@@ -2949,6 +3294,10 @@ export default function Home() {
     retainRelationIds?: string[],
   ) {
     if (!selectedClaim) return;
+    if (claimVerdictIsTemporarilyLocked(selectedClaim)) {
+      flash("这次重点还在整理中。记录已经保存，分析完成后再确认，避免打断当前处理");
+      return;
+    }
     const reviewedClaimId = selectedClaim.id;
     const wasPending = selectedClaim.reviewStatus === "pending";
     if ((action === "confirm" || action === "edit") && evidenceState !== "ready") {
@@ -3016,6 +3365,78 @@ export default function Home() {
     }
   }
 
+  async function quickVerdictFromWorkspace(claimId: string, action: "confirm" | "reject", visibleSourceIds: string[]): Promise<void> {
+    const target = claims.find((claim) => claim.id === claimId);
+    if (!target || target.reviewStatus !== "pending") return;
+    if (claimVerdictIsTemporarilyLocked(target)) {
+      setEventIssue({
+        status: 409,
+        code: "RUN_STATE_CONFLICT",
+        message: "这次重点还在整理中。记录已经保存，分析完成后再确认，避免打断当前处理。",
+      });
+      return;
+    }
+    const proposedRelations = target.relationsForReview.filter((relation) => relation.status === "proposed");
+    if (action === "confirm" && (target.needsAdditionalEvidence || !claimEvidenceFitsSourceRail(target, visibleSourceIds))) {
+      setEventIssue({
+        status: 409,
+        code: "EVIDENCE_REVIEW_REQUIRED",
+        message: "右侧还没有完整展示这条信息的全部证据，请打开详情核对后再确认。",
+      });
+      return;
+    }
+    if (action === "confirm" && proposedRelations.length > 0) {
+      setEventIssue({
+        status: 409,
+        code: "RELATION_REVIEW_REQUIRED",
+        message: "这条信息还涉及与旧记录的关系，请先打开详情决定关系后再确认。",
+      });
+      return;
+    }
+    const busyKey = `quick-verdict:${action}:${claimId}`;
+    setBusyAction(busyKey);
+    setEventIssue(null);
+    try {
+      const fingerprint = ["workspace-verdict", target.id, target.versionId, action].join(":");
+      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, idempotencyKey);
+      const updated = await api.saveVerdict(target, action, {
+        idempotencyKey,
+        ...(action === "confirm" ? { retainRelationIds: [] } : {}),
+      });
+      mutationKeys.current.delete(fingerprint);
+      setClaims((current) => current.map((claim) => claim.id === updated.id ? updated : claim));
+      queryClient.removeQueries({ queryKey: ["notique", "claim", claimId, "history"] });
+      if (project) {
+        const targetProjectId = project.id;
+        void queryClient.invalidateQueries({ queryKey: projectActionsQuery(targetProjectId).queryKey });
+        // A one-off decision beside the source should not silently start the
+        // timed continuous-review session. Reconcile counts in the background
+        // while keeping this lightweight reading interaction in place.
+        void (async () => {
+          try {
+            await invalidateProjectReadModels(targetProjectId);
+            const [latestProject, latestEvents] = await Promise.all([
+              api.getProject(targetProjectId),
+              api.listEvents(targetProjectId),
+            ]);
+            if (routeRef.current.projectId !== targetProjectId) return;
+            setProject(latestProject);
+            setEvents(latestEvents);
+          } catch {
+            // The verdict is already durable; counts reconcile on the next
+            // workflow read without turning a successful decision into error.
+          }
+        })();
+      }
+      flash(action === "confirm" ? "这条信息已确认，当前位置已保留" : "这条信息已记录为不采纳，当前位置已保留");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function withdrawClaim(reason: string) {
     if (!selectedClaim) return;
     setBusyAction("withdraw");
@@ -3056,7 +3477,7 @@ export default function Home() {
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
-      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新审核区后重新决定");
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新确认区后重新决定");
     } finally {
       setBusyAction(null);
     }
@@ -3081,7 +3502,7 @@ export default function Home() {
       const converted = await api.convertOccurrenceToClaims(candidate, newClaims, idempotencyKey);
       mutationKeys.current.delete(fingerprint);
       if (project) await invalidateProjectReadModels(project.id);
-      flash(`已生成 ${converted.length} 条待审核记录，原记录没有改动`);
+      flash(`已生成 ${converted.length} 条待确认记录，原记录没有改动`);
       const reviewSnapshot = await loadReviewQueue("review", undefined, "replace");
       const firstConverted = reviewSnapshot?.claims.find((item) => converted.some((created) => created.id === item.id));
       const remainingClaim = firstConverted ?? reviewSnapshot?.claims.find((item) => item.reviewStatus === "pending");
@@ -3089,7 +3510,7 @@ export default function Home() {
     } catch (error) {
       const issue = toIssue(error);
       setClaimsIssue(issue);
-      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新审核区后重新决定");
+      if (issue.code === "CLAIM_VERSION_CONFLICT") flash("原记录已经变化，请刷新确认区后重新决定");
     } finally {
       setBusyAction(null);
     }
@@ -3321,14 +3742,16 @@ export default function Home() {
           },
         }, key);
         updateChunk("processing", 0.88);
-        await api.uploadAsset(
-          initialized.assetId,
-          initialized.uploadUrl,
-          prepared.blob,
-          prepared.mimeType,
-        );
+        if (assetUploadNeedsContent(initialized.status)) {
+          await api.uploadAsset(
+            initialized.assetId,
+            initialized.uploadUrl,
+            prepared.blob,
+            prepared.mimeType,
+          );
+        }
         updateChunk("processing", 0.96);
-        await api.finalizeAsset(initialized.assetId);
+        await finalizeAssetWithReplayRecovery(initialized.assetId);
         mutationKeys.current.delete(fingerprint);
         updateChunk("succeeded", 0);
         return { assetId: initialized.assetId, ...item };
@@ -3507,6 +3930,9 @@ export default function Home() {
     setTranscriptionRun(null);
     setTranscriptionRunsByAssetId({});
     setAudioPreparationProgressByAssetId({});
+    assetUploadAbortRef.current?.abort();
+    assetUploadAbortRef.current = null;
+    setAssetUploadProgress(null);
     setClaims([]);
     setOccurrenceCandidates([]);
     setProjectWorkflow(idleProjectWorkflow);
@@ -3693,7 +4119,11 @@ export default function Home() {
       baseRunId: intent.baseRunId,
       extractionFingerprint: intent.extractionFingerprint,
       currentFingerprint: fingerprint,
+      currentAssetVersionIds: analyzableVersionIds,
+      intentIdempotencyKey: intent.idempotencyKey,
       latestRunId,
+      latestRunIdempotencyKey: loadedLatestRun?.idempotencyKey,
+      latestRunAssetVersionIds: loadedLatestRun?.inputAssetVersionIds,
       latestRunLoaded: !latestRunId || Boolean(loadedLatestRun),
       latestRunInProgress: Boolean(loadedLatestRun && runInProgress.has(loadedLatestRun.status)),
       waitingForAudio,
@@ -3779,7 +4209,7 @@ export default function Home() {
       if (snapshot.plan.phase === "complete") {
         storeId(workflowIntentStorageKey, null);
         setWorkflowIntentProjectId(null);
-        flash("全部沟通都已处理并核对完成，正在打开会前速览");
+        flash("全部沟通都已处理并核对完成，正在打开下次沟通速览");
         await loadView("brief-card");
         return;
       }
@@ -3883,9 +4313,10 @@ export default function Home() {
 
   async function beginSimpleTest(
     openTranscriptAfterCreate = false,
+    manageBusyState = true,
   ): Promise<{ project: Project; event: Event | null } | null> {
     setSimpleFlow(true);
-    setBusyAction("simple-start");
+    if (manageBusyState) setBusyAction("simple-start");
     setProjectsIssue(null);
     try {
       const now = new Date();
@@ -3910,15 +4341,39 @@ export default function Home() {
       setProjectsIssue(toIssue(error));
       return null;
     } finally {
-      setBusyAction(null);
+      if (manageBusyState) setBusyAction(null);
     }
   }
 
   async function attachSimpleFile(file: File, metadata: Record<string, unknown> = {}): Promise<boolean> {
-    const localIssue = photoUploadIssue(file.name, file.type, file.size)
-      ?? audioUploadIssue(file.name, file.type, file.size);
+    if (assetUploadOperationRef.current) {
+      flash("上一份材料仍在处理中，请完成或取消后再添加下一份");
+      return false;
+    }
+    const uploadOperation = Symbol("asset-upload");
+    assetUploadOperationRef.current = uploadOperation;
+    setBusyAction("asset");
+    setEventIssue(null);
+    let uploadFile = file;
+    let uploadController: AbortController | null = null;
+    let initializedAssetId: string | null = null;
+    let uploadFingerprint: string | null = null;
+    let pendingAssetInit: PendingAssetInit | null = null;
+    let finalizeStarted = false;
+    try {
+      uploadFile = await normalizeHandwrittenPhoto(file);
+    } catch (error) {
+      setEventIssue(toIssue(error));
+      setBusyAction(null);
+      if (assetUploadOperationRef.current === uploadOperation) assetUploadOperationRef.current = null;
+      return false;
+    }
+    const localIssue = photoUploadIssue(uploadFile.name, uploadFile.type, uploadFile.size)
+      ?? audioUploadIssue(uploadFile.name, uploadFile.type, uploadFile.size);
     if (localIssue) {
       setEventIssue(localIssue);
+      setBusyAction(null);
+      if (assetUploadOperationRef.current === uploadOperation) assetUploadOperationRef.current = null;
       return false;
     }
     let targetProject = project;
@@ -3927,7 +4382,9 @@ export default function Home() {
       const target = await resolveSimpleImportTarget({
         project: targetProject,
         event: targetEvent,
-        createTest: () => beginSimpleTest(false),
+        // The outer Asset operation owns the busy lifecycle. Letting project
+        // creation clear it here used to reopen the file controls mid-upload.
+        createTest: () => beginSimpleTest(false, false),
         createEvent: async (currentProject) => {
           const fingerprint = `simple-event:${currentProject.id}`;
           const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
@@ -3947,18 +4404,63 @@ export default function Home() {
       setProject(targetProject);
       setEvent(targetEvent);
       setEvents((current) => current.some((item) => item.id === targetEvent?.id) ? current : [...current, targetEvent!]);
-      setBusyAction("asset");
-      setEventIssue(null);
-      const imageMime = modelImageMimeFor(file.name, file.type);
-      const audioMime = audioMimeFor(file.name, file.type);
-      const kind = imageMime ? "photo" : audioMime ? "audio" : file.type === "application/pdf" ? "pdf" : "text";
-      const contentType = imageMime || audioMime || file.type || "text/plain";
-      const fingerprint = ["asset-init", targetEvent.id, kind, file.name, contentType, file.size, JSON.stringify(metadata)].join(":");
+      const imageMime = modelImageMimeFor(uploadFile.name, uploadFile.type);
+      const audioMime = audioMimeFor(uploadFile.name, uploadFile.type);
+      const transcriptMime = transcriptMimeFor(uploadFile.name, uploadFile.type);
+      const kind = imageMime ? "photo" : audioMime ? "audio" : transcriptMime ? "transcript" : uploadFile.type === "application/pdf" ? "pdf" : "text";
+      const contentType = imageMime || audioMime || transcriptMime || uploadFile.type || "text/plain";
+      setAssetUploadProgress({
+        eventId: targetEvent.id,
+        filename: uploadFile.name,
+        kind,
+        phase: "initializing",
+        loaded: 0,
+        total: uploadFile.size,
+      });
+      const fingerprint = ["asset-init", targetEvent.id, kind, uploadFile.name, contentType, uploadFile.size, JSON.stringify(metadata)].join(":");
+      uploadFingerprint = fingerprint;
       const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
       mutationKeys.current.set(fingerprint, idempotencyKey);
-      const init = await api.initAsset(targetEvent.id, { kind, filename: file.name, content_type: contentType, size_bytes: file.size, ...(Object.keys(metadata).length ? { metadata } : {}) }, idempotencyKey);
-      await api.uploadAsset(init.assetId, init.uploadUrl, file, contentType);
-      await api.finalizeAsset(init.assetId);
+      uploadController = new AbortController();
+      assetUploadAbortRef.current = uploadController;
+      pendingAssetInit = {
+        eventId: targetEvent.id,
+        input: {
+          kind,
+          filename: uploadFile.name,
+          content_type: contentType,
+          size_bytes: uploadFile.size,
+          ...(Object.keys(metadata).length ? { metadata } : {}),
+        },
+        idempotencyKey,
+      };
+      const init = await initializeAssetUploadWithReplayRecovery(
+        pendingAssetInit,
+        uploadController.signal,
+        (rotated) => {
+          pendingAssetInit = rotated;
+          mutationKeys.current.set(fingerprint, rotated.idempotencyKey);
+        },
+      );
+      initializedAssetId = init.assetId;
+      const uploadEventId = targetEvent.id;
+      if (assetUploadNeedsContent(init.status)) {
+        setAssetUploadProgress((current) => current && current.eventId === uploadEventId
+          ? { ...current, phase: "uploading" }
+          : current);
+        await api.uploadAsset(init.assetId, init.uploadUrl, uploadFile, contentType, (loaded, total) => {
+          setAssetUploadProgress((current) => current && current.eventId === uploadEventId
+            ? { ...current, phase: "uploading", loaded, total }
+            : current);
+        }, uploadController.signal);
+      }
+      if (assetUploadAbortRef.current === uploadController) assetUploadAbortRef.current = null;
+      setAssetUploadProgress((current) => current && current.eventId === uploadEventId
+        ? { ...current, phase: "finalizing", loaded: current.total }
+        : current);
+      finalizeStarted = true;
+      await finalizeAssetWithReplayRecovery(init.assetId);
+      setAssetUploadProgress(null);
       mutationKeys.current.delete(fingerprint);
       const armed = armAutoAnalysis(
         targetEvent.id,
@@ -3971,14 +4473,14 @@ export default function Home() {
         flash("录音已保存，正在规划分段；可以继续添加下一份录音");
         await loadSimpleProject(targetProjectId, targetEventId);
         void prepareLongAudioTranscription(
-          file,
-          file.name,
+          uploadFile,
+          uploadFile.name,
           init.assetId,
           targetEventId,
         ).then(async (transcription) => {
           flash(transcription.orchestrationMode === "chunked"
-            ? `“${file.name}”的 ${transcription.chunkCount ?? transcription.chunks.length} 段正在并行识别`
-            : `“${file.name}”正在识别说话人和时间点，完成后会自动整理重点`);
+            ? `“${uploadFile.name}”的 ${transcription.chunkCount ?? transcription.chunks.length} 段正在并行识别`
+            : `“${uploadFile.name}”正在识别说话人和时间点，完成后会自动整理重点`);
           if (routeRef.current.projectId === targetProjectId && routeRef.current.eventId === targetEventId) {
             await loadSimpleProject(targetProjectId, targetEventId, "replace");
           }
@@ -3991,14 +4493,32 @@ export default function Home() {
       return true;
     } catch (error) {
       const issue = toIssue(error);
+      const initCouldHaveCommitted = Boolean(
+        pendingAssetInit
+        && !initializedAssetId
+        && (issue.status === 0 || issue.status >= 500),
+      );
+      const cleanupResolved = !finalizeStarted && pendingAssetInit && (initializedAssetId || initCouldHaveCommitted)
+        ? await recoverAndAbortAssetUpload(pendingAssetInit, initializedAssetId)
+        : true;
+      if (uploadFingerprint && !finalizeStarted && cleanupResolved) mutationKeys.current.delete(uploadFingerprint);
       const targetEventId = targetEvent?.id;
       if (targetProject && targetEventId) {
         await loadSimpleProject(targetProject.id, targetEventId).catch(() => undefined);
       }
-      setEventIssue(issue);
+      setEventIssue(finalizeStarted && (issue.status === 0 || issue.status >= 500)
+        ? {
+            status: issue.status,
+            code: "ASSET_FINALIZE_RETRYABLE",
+            message: "文件已上传，保存暂未完成。请重新选择同一个文件继续保存。",
+          }
+        : issue);
       return false;
     } finally {
+      if (assetUploadAbortRef.current === uploadController) assetUploadAbortRef.current = null;
+      if (assetUploadOperationRef.current === uploadOperation) assetUploadOperationRef.current = null;
       setBusyAction(null);
+      setAssetUploadProgress(null);
     }
   }
 
@@ -4054,12 +4574,16 @@ export default function Home() {
   }
 
   async function createMissingClaim(input: {
+    eventId: string;
     statement: string;
     type: string;
     segmentIds: string[];
-  }): Promise<void> {
-    const targetEventId = projectWorkflow.currentEventId || event?.id;
+  }, stayInWorkspaceOverride?: boolean): Promise<void> {
+    const targetEventId = input.eventId;
     if (!targetEventId) return;
+    const stayInWorkspace = stayInWorkspaceOverride ?? Boolean(
+      missingClaimSeed && missingClaimSeed.eventId === targetEventId,
+    );
     setBusyAction("manual-claim");
     try {
       const fingerprint = [
@@ -4081,16 +4605,28 @@ export default function Home() {
         idempotencyKey,
       );
       mutationKeys.current.delete(fingerprint);
-      if (project) await invalidateProjectReadModels(project.id);
-      setShowMissingClaim(false);
-      const snapshot = await loadReviewQueue("draft");
-      if (snapshot) {
-        setClaims((items) => sortClaimsForReview([
-          ...items.filter((item) => item.id !== created.id),
-          created,
-        ]));
+      setClaims((items) => sortClaimsForReview([
+        ...items.filter((item) => item.id !== created.id),
+        created,
+      ]));
+      if (project) {
+        if (stayInWorkspace) {
+          void invalidateProjectReadModels(project.id);
+          void queryClient.invalidateQueries({
+            queryKey: projectActionsQuery(project.id).queryKey,
+          });
+        } else {
+          await invalidateProjectReadModels(project.id);
+        }
       }
-      flash("漏项已加入待核对队列；确认前不会进入正式报告");
+      setShowMissingClaim(false);
+      setMissingClaimSeed(null);
+      if (!stayInWorkspace) {
+        await loadReviewQueue("draft");
+      }
+      flash(stayInWorkspace
+        ? "行动已加入待确认；你可以继续查看本次重点"
+        : "漏项已加入待核对队列；确认前不会进入正式报告");
     } catch (error) {
       setClaimsIssue(toIssue(error));
       throw error;
@@ -4267,6 +4803,9 @@ export default function Home() {
   }, [invalidateNavigationRequests]);
 
   const claimRouteReadonly = isReadonlyClaimRoute(route, selectedClaim?.reviewStatus);
+  const selectedClaimVerdictLocked = selectedClaim
+    ? claimVerdictIsTemporarilyLocked(selectedClaim)
+    : false;
 
   return (
     <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
@@ -4279,22 +4818,22 @@ export default function Home() {
           aria-expanded={!sidebarCollapsed}
           title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
         >
-          <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
+          {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
         </button>
-        <button className="brand" onClick={goSimple} aria-label="Notique AI · 项目工作区"><span className="brand-mark">⌁</span><span className="sidebar-label">Notique AI</span></button>
-        <div className="account"><span className="avatar">N</span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
+        <button className="brand" onClick={goSimple} aria-label="Notique AI · 项目工作区"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
+        <div className="account"><span className="avatar"><Users aria-hidden="true" /></span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
         <nav aria-label="主要导航">
-          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon">◎</span><span className="sidebar-nav-label">项目工作区</span></button>
-          <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon">▣</span><span className="sidebar-nav-label">高级工具</span></button>
-          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon">◫</span><span className="sidebar-nav-label">{project.name}</span></button>}
+          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon"><LayoutDashboard aria-hidden="true" /></span><span className="sidebar-nav-label">项目工作区</span></button>
+          <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon"><Settings2 aria-hidden="true" /></span><span className="sidebar-nav-label">高级工具</span></button>
+          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
         <div className="sidebar-note"><strong>个人项目秘书</strong><p>导入一次沟通，自动整理重点；在同一页对照原音、手写笔记和行动。</p></div>
       </aside>
-      <header className="mobile-header"><button className="brand" onClick={goSimple}>⌁ Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具">···</button></header>
+      <header className="mobile-header"><button className="brand" onClick={goSimple}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具"><MoreHorizontal aria-hidden="true" /></button></header>
       <main>
         <aside className="public-workspace-notice" aria-label="公开共享测试空间提示">
-          <strong>公开共享演示空间</strong>
-          <span>所有访问者共享这个演示空间。请勿上传真实人员姓名、联系方式、地址、财务信息或其他敏感材料；仅使用公开、合成或已脱敏内容。</span>
+          <strong>公开演示空间</strong>
+          <span>请勿上传真实客户资料或其他敏感信息，仅使用公开、合成或已脱敏内容。</span>
         </aside>
         {screen === "simple" && <SimpleTestScreen
           key={project?.id ?? "none"}
@@ -4316,18 +4855,26 @@ export default function Home() {
           readingTab={route.readingTab}
           transcriptionRunsByAssetId={transcriptionRunsByAssetId}
           audioPreparationProgressByAssetId={audioPreparationProgressByAssetId}
+          assetUploadProgress={assetUploadProgress}
+          onCancelUpload={() => assetUploadAbortRef.current?.abort()}
           onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
-          onAddTranscript={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(true); if (project) setShowImport(true); else void beginSimpleTest(true); })}
+          onNewEvent={() => { setSimpleFlow(true); if (project) setShowNewEvent(true); }}
           onAddFile={attachSimpleFile}
           onProjectWorkflowAction={() => void advanceProjectWorkflow()}
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
           onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
-          onReview={() => void enterAiDraft()}
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
+          onQuickVerdict={(claimId, action, sourceIds) => void quickVerdictFromWorkspace(claimId, action, sourceIds)}
+          onCreateActionInline={(eventId, statement, segmentIds) => createMissingClaim({
+            eventId,
+            statement,
+            type: "next_action",
+            segmentIds,
+          }, true)}
           onCompleteAction={(claimId) => void completeAction(claimId, true)}
           onRetryArtifact={retryEventAiArtifact}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
@@ -4361,32 +4908,97 @@ export default function Home() {
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
         {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
-        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement} onStart={async () => {
+        {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} assetUploadProgress={assetUploadProgress?.eventId === event?.id ? assetUploadProgress : null} onCancelUpload={() => assetUploadAbortRef.current?.abort()} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement} onStart={async () => {
           if (event) await startExtractionForEvent(event);
         }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id, "event")} onAttach={async (input) => {
           if (!event) return;
-          const localIssue = photoUploadIssue(input.filename, input.contentType, input.blob.size)
-            ?? audioUploadIssue(input.filename, input.contentType, input.blob.size);
-          if (localIssue) {
-            setEventIssue(localIssue);
+          if (assetUploadOperationRef.current) {
+            flash("上一份材料仍在处理中，请完成或取消后再添加下一份");
             return;
           }
-          const imageMime = modelImageMimeFor(input.filename, input.contentType);
-          const audioMime = audioMimeFor(input.filename, input.contentType);
-          const preparedInput = imageMime
-            ? { ...input, kind: "photo", contentType: imageMime }
-            : audioMime
-              ? { ...input, kind: "audio", contentType: audioMime }
-              : input;
+          const uploadOperation = Symbol("asset-upload");
+          assetUploadOperationRef.current = uploadOperation;
+          let uploadController: AbortController | null = null;
+          let initializedAssetId: string | null = null;
+          let uploadFingerprint: string | null = null;
+          let pendingAssetInit: PendingAssetInit | null = null;
+          let finalizeStarted = false;
           setBusyAction("asset");
           setEventIssue(null);
           try {
+            let nextInput = input;
+            if (isHeifLike(input.filename, input.contentType)) {
+              const converted = await normalizeHandwrittenPhoto(new File(
+                [input.blob],
+                input.filename,
+                { type: input.contentType, lastModified: Date.now() },
+              ));
+              nextInput = {
+                ...input,
+                filename: converted.name,
+                contentType: converted.type,
+                blob: converted,
+              };
+            }
+            const localIssue = photoUploadIssue(nextInput.filename, nextInput.contentType, nextInput.blob.size)
+              ?? audioUploadIssue(nextInput.filename, nextInput.contentType, nextInput.blob.size);
+            if (localIssue) throw new ApiClientError(localIssue);
+            const imageMime = modelImageMimeFor(nextInput.filename, nextInput.contentType);
+            const audioMime = audioMimeFor(nextInput.filename, nextInput.contentType);
+            const preparedInput = imageMime
+              ? { ...nextInput, kind: "photo", contentType: imageMime }
+              : audioMime
+                ? { ...nextInput, kind: "audio", contentType: audioMime }
+                : nextInput;
             const fingerprint = ["asset-init", event.id, preparedInput.kind, preparedInput.filename, preparedInput.contentType, preparedInput.blob.size].join(":");
+            uploadFingerprint = fingerprint;
             const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
             mutationKeys.current.set(fingerprint, idempotencyKey);
-            const init = await api.initAsset(event.id, { kind: preparedInput.kind, filename: preparedInput.filename, content_type: preparedInput.contentType, size_bytes: preparedInput.blob.size }, idempotencyKey);
-            await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType);
-            await api.finalizeAsset(init.assetId);
+            const uploadKind: AssetUploadProgress["kind"] = preparedInput.kind === "audio"
+              ? "audio"
+              : preparedInput.kind === "photo"
+                ? "photo"
+                : preparedInput.kind === "pdf"
+                  ? "pdf"
+                  : "text";
+            setAssetUploadProgress({ eventId: event.id, filename: preparedInput.filename, kind: uploadKind, phase: "initializing", loaded: 0, total: preparedInput.blob.size });
+            uploadController = new AbortController();
+            assetUploadAbortRef.current = uploadController;
+            pendingAssetInit = {
+              eventId: event.id,
+              input: {
+                kind: preparedInput.kind,
+                filename: preparedInput.filename,
+                content_type: preparedInput.contentType,
+                size_bytes: preparedInput.blob.size,
+              },
+              idempotencyKey,
+            };
+            const init = await initializeAssetUploadWithReplayRecovery(
+              pendingAssetInit,
+              uploadController.signal,
+              (rotated) => {
+                pendingAssetInit = rotated;
+                mutationKeys.current.set(fingerprint, rotated.idempotencyKey);
+              },
+            );
+            initializedAssetId = init.assetId;
+            if (assetUploadNeedsContent(init.status)) {
+              setAssetUploadProgress((current) => current?.eventId === event.id
+                ? { ...current, phase: "uploading" }
+                : current);
+              await api.uploadAsset(init.assetId, init.uploadUrl, preparedInput.blob, preparedInput.contentType, (loaded, total) => {
+                setAssetUploadProgress((current) => current?.eventId === event.id
+                  ? { ...current, phase: "uploading", loaded, total }
+                  : current);
+              }, uploadController.signal);
+            }
+            if (assetUploadAbortRef.current === uploadController) assetUploadAbortRef.current = null;
+            setAssetUploadProgress((current) => current?.eventId === event.id
+              ? { ...current, phase: "finalizing", loaded: current.total }
+              : current);
+            finalizeStarted = true;
+            await finalizeAssetWithReplayRecovery(init.assetId);
             mutationKeys.current.delete(fingerprint);
             const armed = armAutoAnalysis(
               event.id,
@@ -4409,9 +5021,29 @@ export default function Home() {
             await loadEvent(event.id);
           } catch (error) {
             const issue = toIssue(error);
+            const initCouldHaveCommitted = Boolean(
+              pendingAssetInit
+              && !initializedAssetId
+              && (issue.status === 0 || issue.status >= 500),
+            );
+            const cleanupResolved = !finalizeStarted && pendingAssetInit && (initializedAssetId || initCouldHaveCommitted)
+              ? await recoverAndAbortAssetUpload(pendingAssetInit, initializedAssetId)
+              : true;
+            if (uploadFingerprint && !finalizeStarted && cleanupResolved) mutationKeys.current.delete(uploadFingerprint);
             await loadEvent(event.id).catch(() => undefined);
-            setEventIssue(issue);
-          } finally { setBusyAction(null); }
+            setEventIssue(finalizeStarted && (issue.status === 0 || issue.status >= 500)
+              ? {
+                  status: issue.status,
+                  code: "ASSET_FINALIZE_RETRYABLE",
+                  message: "文件已上传，保存暂未完成。请重新选择同一个文件继续保存。",
+                }
+              : issue);
+          } finally {
+            if (assetUploadAbortRef.current === uploadController) assetUploadAbortRef.current = null;
+            if (assetUploadOperationRef.current === uploadOperation) assetUploadOperationRef.current = null;
+            setAssetUploadProgress((current) => current?.eventId === event.id ? null : current);
+            setBusyAction(null);
+          }
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
         {screen === "draft" && <AiDraftScreen
           event={events.find((item) => item.id === projectWorkflow.currentEventId) ?? event}
@@ -4427,17 +5059,17 @@ export default function Home() {
           onAssessUsable={() => void recordCurrentDraftAssessment("basically_usable")}
           onStartReview={() => void startContinuousReviewFromDraft()}
           onContinueLater={() => void continueFromDraftWithoutReview()}
-          onAddMissing={() => { setMissingClaimDefaultType("other"); setShowMissingClaim(true); }}
+          onAddMissing={() => { setMissingClaimDefaultType("other"); setMissingClaimSeed(null); setShowMissingClaim(true); }}
         />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} onBack={navigateBack} onRetry={() => void loadReviewQueue("review", undefined, "replace")} onOpen={(id) => void openClaim(id, "review")} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} busy={busyAction} />}
-        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={claimRouteReadonly ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={claimRouteReadonly ? [] : claims} pendingOccurrenceCount={claimRouteReadonly ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
+        {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={claimRouteReadonly ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={claimRouteReadonly ? [] : claims} pendingOccurrenceCount={claimRouteReadonly ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} verdictLocked={selectedClaimVerdictLocked} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "review-summary" && <ReviewCompletionScreen
           project={project}
           session={reviewSession}
           destination={reviewSummaryDestination}
           onContinue={() => void continueAfterReviewSummary()}
         />}
-        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setShowMissingClaim(true); }} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setMissingClaimSeed(null); setShowMissingClaim(true); }} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={navigateBack} onRetry={() => run && void openRunDebug(run.id, "replace")} />}
       </main>
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
@@ -4455,10 +5087,13 @@ export default function Home() {
         } catch (error) { setProjectsIssue(toIssue(error)); } finally { setBusyAction(null); }
       }} busy={busyAction === "new-project"} />}
       {showMissingClaim && (projectWorkflow.currentEventId || event?.id) && <MissingClaimModal
-        eventId={projectWorkflow.currentEventId || event!.id}
+        eventId={missingClaimSeed?.eventId || projectWorkflow.currentEventId || event!.id}
         initialType={missingClaimDefaultType}
+        initialSourceText={missingClaimSeed?.sourceText}
+        initialStatement={missingClaimSeed?.statement}
+        initialSegmentIds={missingClaimSeed?.segmentIds}
         busy={busyAction === "manual-claim"}
-        onClose={() => setShowMissingClaim(false)}
+        onClose={() => { setShowMissingClaim(false); setMissingClaimSeed(null); }}
         onCreate={createMissingClaim}
       />}
       {showNewEvent && project && <NewEventModal onClose={() => setShowNewEvent(false)} onCreate={async (input) => {
@@ -4470,8 +5105,11 @@ export default function Home() {
           const created = await api.createEvent(project.id, input, idempotencyKey);
           mutationKeys.current.delete(fingerprint);
           setShowNewEvent(false);
-          await loadProject(project.id);
-          await loadEvent(created.id);
+          if (simpleFlow) await loadSimpleProject(project.id, created.id);
+          else {
+            await loadProject(project.id);
+            await loadEvent(created.id);
+          }
         } catch (error) { setProjectIssue(toIssue(error)); } finally { setBusyAction(null); }
       }} busy={busyAction === "new-event"} />}
       {showImport && project && <ImportModal project={project} onClose={() => setShowImport(false)} onImported={async (created) => {
@@ -4488,7 +5126,7 @@ export default function Home() {
       {showPublicWorkspaceConfirmation && <PublicWorkspaceConfirmationModal onCancel={cancelPublicWorkspaceAcknowledgement} onConfirm={confirmPublicWorkspaceAcknowledgement} />}
       {deletePreview && <ProjectDeleteModal preview={deletePreview} busy={busyAction === "project-delete"} onClose={() => setDeletePreview(null)} onConfirm={moveCurrentProjectToTrash} />}
       {showTrash && <ProjectTrashModal projects={trashProjects} state={trashState} issue={trashIssue} busy={busyAction} onClose={() => setShowTrash(false)} onRetry={loadTrash} onRestore={restoreDeletedProject} onPermanentDelete={permanentlyDeleteProject} />}
-      {toast && <div className="toast" role="status">✓ {toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}</div>}
+      {toast && <div className="toast" role="status"><Check aria-hidden="true" />{toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}</div>}
     </div>
   );
 }
@@ -4513,17 +5151,20 @@ type SimpleTestScreenProps = {
   projectWorkflow: ProjectWorkflowState;
   readingTab?: TranscriptArtifactTab;
   audioPreparationProgressByAssetId: Record<string, AudioPreparationProgress>;
+  assetUploadProgress: AssetUploadProgress | null;
+  onCancelUpload: () => void;
   onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
   onStartOwn: () => void;
-  onAddTranscript: () => void;
+  onNewEvent: () => void;
   onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
   onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
-  onReview: () => void;
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
+  onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
+  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
@@ -4604,11 +5245,13 @@ function TranscriptArtifactsPanel({
   pendingReviewCount,
   reviewReady,
   reviewBlocked,
+  reviewMode,
   busy,
   onOpenClaim,
+  onQuickVerdict,
+  onCreateActionInline,
   onCompleteAction,
   onAddPhoto,
-  onReview,
   onRetryArtifact,
   onStartAnalysis,
   onSelectTab,
@@ -4622,11 +5265,13 @@ function TranscriptArtifactsPanel({
   pendingReviewCount: number;
   reviewReady: boolean;
   reviewBlocked: boolean;
+  reviewMode: boolean;
   busy: string | null;
   onOpenClaim: (id: string) => void;
+  onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
+  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onAddPhoto: () => void;
-  onReview: () => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onSelectTab: (tab: TranscriptArtifactTab) => void;
@@ -4643,6 +5288,9 @@ function TranscriptArtifactsPanel({
   const [actionView, setActionView] = useState<ReadingActionView>("source");
   const [mobilePane, setMobilePane] = useState<"reading" | "actions">("reading");
   const [selectedPoint, setSelectedPoint] = useState<SelectedSummaryPoint | null>(null);
+  const [actionComposerOpen, setActionComposerOpen] = useState(false);
+  const [actionStatement, setActionStatement] = useState("");
+  const [actionComposerIssue, setActionComposerIssue] = useState<string | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [speakerFilter, setSpeakerFilter] = useState("all");
   const [onlyKeySources, setOnlyKeySources] = useState(false);
@@ -4655,7 +5303,6 @@ function TranscriptArtifactsPanel({
   const [transcriptState, setTranscriptState] = useState<"loading" | "ready" | "error">("loading");
   const [issue, setIssue] = useState<ApiIssue | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
-  const [sourceDrawer, setSourceDrawer] = useState<SummarySourceDrawerState | null>(null);
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
   const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
   const [activePlaybackKey, setActivePlaybackKey] = useState<string | null>(null);
@@ -4679,7 +5326,6 @@ function TranscriptArtifactsPanel({
   const requestedWorkspaceView = useRef<ReadingWorkspaceView | null>(null);
   const handledFocusRequestId = useRef<number | null>(null);
   const scrollRestoreCleanup = useRef<() => void>(() => undefined);
-  const sourceDrawerExitTarget = useRef<string | null>(null);
   const transcriptRevision = [
     transcriptionRun?.id || "",
     transcriptionRun?.status || "",
@@ -4693,6 +5339,15 @@ function TranscriptArtifactsPanel({
   const previousTranscriptRevision = useRef(transcriptRevision);
 
   useEffect(() => () => scrollRestoreCleanup.current(), []);
+
+  useEffect(() => {
+    if (!reviewMode) return;
+    const frame = window.requestAnimationFrame(() => {
+      setActionView("pending");
+      setMobilePane("actions");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [reviewMode]);
 
   useEffect(() => {
     activeDiffEventId.current = event.id;
@@ -4857,6 +5512,7 @@ function TranscriptArtifactsPanel({
   const readableArtifact = readablePair.artifact ?? undefined;
   const analysisRunning = Boolean(analysisRun && runInProgress.has(analysisRun.status));
   const analysisComplete = Boolean(analysisRun && runComplete.has(analysisRun.status));
+  const verdictsLocked = analysisRunning;
   const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
@@ -4901,6 +5557,8 @@ function TranscriptArtifactsPanel({
     || transcriptionRun?.audioAssetId
     || [...mappedAudioAssetIds][0]
     || "";
+  const playbackAudioLabel = event.assets.find((asset) => asset.id === playbackAudioAssetId)?.filename
+    || "本次录音";
   const audioAssetIdForVersion = (assetVersionId: string | null): string | null => {
     const mapped = assetVersionId ? audioAssetIdByTranscriptVersion.get(assetVersionId) : null;
     if (mapped) return mapped;
@@ -4909,9 +5567,6 @@ function TranscriptArtifactsPanel({
     if (mappedAudioAssetIds.size <= 1) return transcriptionRun?.audioAssetId ?? [...mappedAudioAssetIds][0] ?? null;
     return null;
   };
-  const sourceDrawerGroups = sourceDrawer
-    ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => sourceDrawer.sourceIds.includes(id)))
-    : [];
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
   const summarySourceIds = new Set(
     summarySections.flatMap((section) => recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids))),
@@ -4940,25 +5595,36 @@ function TranscriptArtifactsPanel({
   const pendingClaims = claims.filter((claim) => claim.reviewStatus === "pending");
   const actionItems = (projectActions.data ?? []) as ProjectAction[];
   const eventActionItems = actionItems.filter((action) => action.event_id === event.id);
-  const selectedClaims = selectedPoint
-    ? claims.filter((claim) => selectedPoint.claimIds.includes(claim.id))
+  const trustedEventActionItems = eventActionItems.filter(
+    (action) => action.status === "confirmed" || action.status === "completed",
+  );
+  const selectedClaims = selectedPoint?.claimId
+    ? claims.filter((claim) => claim.id === selectedPoint.claimId)
+    : selectedPoint
+      ? matchingSummarySourceIndexes(
+          selectedPoint.sourceIds,
+          claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
+        ).map((index) => claims[index])
     : [];
   const selectedSourceGroups = selectedPoint
     ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => selectedPoint.sourceIds.includes(id)))
     : [];
+  const displayedSourceIds = selectedSourceGroups.flatMap((group) => group.sourceIds);
   const selectedPhotoEvidence = selectedClaims.flatMap((claim) => claim.evidenceRefs).filter((ref) => ref.kind === "photo");
   const photoAssets = event.assets.filter((asset) => asset.kind === "photo");
   const selectedPointStatus = !selectedPoint
     ? "待选择"
     : selectedClaims.some((claim) => claim.reviewStatus === "pending")
       ? "需确认"
-      : selectedClaims.length
-        ? "已核对"
-        : photoAssets.length
-          ? "录音 + 笔记"
-          : hasPlayableAudio
-            ? "仅录音"
-            : "仅原文";
+      : selectedClaims.some((claim) => claim.reviewStatus === "verified")
+        ? selectedClaims.some((claim) => claim.reviewStatus === "rejected") ? "已处理" : "已确认"
+        : selectedClaims.length && selectedClaims.every((claim) => claim.reviewStatus === "rejected")
+          ? "未采纳"
+          : photoAssets.length
+            ? "录音 + 笔记"
+            : hasPlayableAudio
+              ? "仅录音"
+              : "仅原文";
 
   useEffect(() => {
     if (!activePlaybackKey) return;
@@ -5127,30 +5793,87 @@ function TranscriptArtifactsPanel({
   function selectSummaryPoint(point: SelectedSummaryPoint, revealActions = true) {
     setSelectedPoint(point);
     setActionView("source");
+    setActionComposerOpen(false);
+    setActionStatement("");
+    setActionComposerIssue(null);
     if (revealActions) switchMobilePane("actions");
+  }
+
+  function beginActionCreation() {
+    if (!selectedPoint) return;
+    setActionStatement(selectedPoint.sectionKind === "next_step" ? selectedPoint.summaryText : "");
+    setActionComposerIssue(null);
+    setActionComposerOpen(true);
+  }
+
+  async function submitInlineAction() {
+    if (!selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
+    setActionComposerIssue(null);
+    try {
+      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8));
+      setActionComposerOpen(false);
+      setActionStatement("");
+    } catch {
+      setActionComposerIssue("行动暂时没有保存，请重试。");
+    }
+  }
+
+  function renderActionComposer() {
+    if (!actionComposerOpen || !selectedPoint) return null;
+    return <form className="rail-action-composer" onSubmit={(submitEvent) => {
+      submitEvent.preventDefault();
+      void submitInlineAction();
+    }}>
+      <label><span>要完成什么</span><textarea autoFocus value={actionStatement} onChange={(change) => setActionStatement(change.target.value)} placeholder="例如：负责人周五前发送三份候选方案。" /></label>
+      <small>{selectedPoint.sourceIds.length > 8 ? `已关联最相关的 8 段原话（本重点共 ${selectedPoint.sourceIds.length} 段）` : `已关联 ${selectedPoint.sourceIds.length} 段原话`}；保存后进入待确认，不会直接写入可信存档。</small>
+      {actionComposerIssue && <p role="alert">{actionComposerIssue}</p>}
+      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={() => { setActionComposerOpen(false); setActionComposerIssue(null); }}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : "加入待确认"}</button></div>
+    </form>;
+  }
+
+  function selectClaimInRail(claim: Claim) {
+    const sourceIds = [...new Set(claim.evidenceRefs.flatMap((ref) => ref.segmentIds))];
+    const point: SelectedSummaryPoint = {
+      key: `claim-${claim.id}`,
+      claimId: claim.id,
+      sectionKind: claim.type,
+      sectionLabel: typeLabel(claim.type),
+      sourceIds,
+      summaryText: claim.statement,
+      supportQuote: claim.evidenceRefs.find((ref) => ref.quote)?.quote || "",
+      returnFocusId: `rail-pending-${claim.id}`,
+    };
+    setSelectedSourceIds(new Set(sourceIds));
+    selectSummaryPoint(point);
+  }
+
+  function selectTranscriptGroup(
+    group: { key: string; sourceIds: string[]; text: string },
+    surface: "readable" | "raw",
+  ) {
+    const point: SelectedSummaryPoint = {
+      key: `${surface}-${group.key}`,
+      sectionKind: "source_excerpt",
+      sectionLabel: "原话",
+      sourceIds: group.sourceIds,
+      summaryText: group.text,
+      supportQuote: group.text,
+      returnFocusId: `${surface}-group-${group.sourceIds[0] || group.key}`,
+    };
+    setSelectedSourceIds(new Set(group.sourceIds));
+    selectSummaryPoint(point);
   }
 
   function locateRawSources(
     sourceIds: string[],
-    summaryText: string,
-    supportQuote: string,
-    returnFocusId: string,
   ) {
     if (!sourceIds.length) return;
     summaryScrollY.current = window.scrollY;
-    sourceDrawerExitTarget.current = null;
     setSelectedSourceIds(new Set(sourceIds));
-    setSourceDrawer({ sourceIds, summaryText, supportQuote, returnFocusId });
-  }
-
-  function openSourcesInFullTranscript() {
-    if (!sourceDrawer?.sourceIds.length) return;
-    const sourceIds = sourceDrawer.sourceIds;
     const targetGroup = rawDisplayGroups.find((group) => group.sourceIds.includes(sourceIds[0]!));
     const targetId = `raw-group-${targetGroup?.sourceIds[0] || sourceIds[0]}`;
-    sourceDrawerExitTarget.current = targetId;
-    setSourceDrawer(null);
     setWorkspaceView("transcript");
+    switchMobilePane("reading");
     setSpeakerFilter("all");
     setOnlyKeySources(false);
     setTranscriptSearch("");
@@ -5164,7 +5887,6 @@ function TranscriptArtifactsPanel({
         block: "center",
       });
       target?.focus({ preventScroll: true });
-      sourceDrawerExitTarget.current = null;
     }, 60);
   }
 
@@ -5231,20 +5953,17 @@ function TranscriptArtifactsPanel({
   if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className="transcript-workspace" aria-label="逐字稿阅读区">
-    <header className="reading-workspace-heading">
-      <div><span className="section-kicker">一次沟通，一个工作台</span><h2>边读、边听、边处理</h2><p>重点、原文、手写笔记和下一步保持在同一处，不需要来回跳页。</p></div>
-      <span className={`reading-workspace-state ${analysisRunning ? "running" : summaryArtifact ? "ready" : "source-ready"}`}>{analysisRunning ? "整理中 · 已可阅读" : summaryArtifact ? "重点已就绪" : "原文已就绪"}</span>
-    </header>
     {issue && state === "ready" && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
     <nav className="reader-view-tabs" aria-label="阅读方式">
-      <button aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true">✦</span>重点</button>
-      <button className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true">≡</span>章节</button>
-      <button className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true">◉</span>发言人</button>
-      <button className={workspaceView === "transcript" ? "active" : ""} onClick={() => selectWorkspaceSurface("transcript")}><span aria-hidden="true">T</span>逐字稿</button>
+      <button aria-pressed={workspaceView === "points"} aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true"><Sparkles /></span>重点</button>
+      <button aria-pressed={workspaceView === "chapters"} className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true"><ListTree /></span>主题</button>
+      <button aria-pressed={workspaceView === "speakers"} className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true"><Users /></span>发言人</button>
+      <button aria-pressed={workspaceView === "transcript"} className={workspaceView === "transcript" ? "active" : ""} onClick={() => selectWorkspaceSurface("transcript")}><span aria-hidden="true"><FileText /></span>逐字稿</button>
+      <span className={`reading-workspace-state ${analysisRunning ? "running" : summaryArtifact ? "ready" : "source-ready"}`}>{analysisRunning ? "整理中 · 已可阅读" : summaryArtifact ? "重点已就绪" : "原文已就绪"}</span>
     </nav>
     <div className="reader-mobile-switch" aria-label="移动端工作区">
-      <button className={mobilePane === "reading" ? "active" : ""} onClick={() => switchMobilePane("reading")}>阅读</button>
-      <button className={mobilePane === "actions" ? "active" : ""} onClick={() => switchMobilePane("actions")}>处理{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
+      <button aria-pressed={mobilePane === "reading"} className={mobilePane === "reading" ? "active" : ""} onClick={() => switchMobilePane("reading")}>阅读</button>
+      <button aria-pressed={mobilePane === "actions"} className={mobilePane === "actions" ? "active" : ""} onClick={() => switchMobilePane("actions")}>处理{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
     </div>
     <div className="reader-workspace-layout" data-mobile-pane={mobilePane}>
       <div className="reader-reading-pane" role="region" aria-label="阅读内容">
@@ -5252,20 +5971,21 @@ function TranscriptArtifactsPanel({
       <header className="summary-overview-header">
         <div>
           <div className="summary-card-title active">
-            <span className="summary-spark" aria-hidden="true">✦</span>
+            <span className="summary-spark" aria-hidden="true"><Sparkles /></span>
             本次重点 <small>AI 草稿</small>
             {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
           </div>
           <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要正在启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
         </div>
-        {summaryArtifact && <span className="summary-ready-check" aria-label="AI 摘要生成完成">✓</span>}
+        {summaryArtifact && <span className="summary-ready-check" aria-hidden="true"><CheckCircle2 /></span>}
       </header>
 
       {tab === "summary" && (summaryArtifact ? <div className="summary-card-content">
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
         {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
-          <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "会议重点"}</h3></header>
+          <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "本次沟通重点"}</h3></header>
           <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
+            const sectionKind = firstString(section, ["kind"]) || "";
             const ids = stringValues(item.source_segment_ids);
             const matchedClaims = matchingSummarySourceIndexes(
               ids,
@@ -5282,21 +6002,20 @@ function TranscriptArtifactsPanel({
             const pointKey = firstString(item, ["item_key"]) || `${sectionIndex}-${itemIndex}`;
             const point: SelectedSummaryPoint = {
               key: pointKey,
-              sectionLabel: summarySectionLabel(firstString(section, ["kind"])) || "重点",
+              sectionKind,
+              sectionLabel: summarySectionLabel(sectionKind) || "重点",
               sourceIds: ids,
               summaryText,
               supportQuote,
               returnFocusId: sourceTriggerId,
-              claimIds: matchedClaims.map((claim) => claim.id),
             };
             return <article className={`summary-reveal-line${selectedPoint?.key === pointKey ? " selected" : ""}`} style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={pointKey}>
-              <button className="summary-point-copy" onClick={() => selectSummaryPoint(point)}><mark>{summaryText}</mark><q>{supportQuote}</q><span>在右侧查看与处理</span></button>
+              <button id={sourceTriggerId} className="summary-point-copy" onClick={() => selectSummaryPoint(point)}><mark>{summaryText}</mark><q>{supportQuote}</q><span>在右侧查看与处理</span></button>
               <div className="summary-point-actions">
-                <button id={sourceTriggerId} className="summary-locate-button" aria-label={`查看 ${ids.length} 段原文`} onClick={() => { selectSummaryPoint(point, false); locateRawSources(ids, summaryText, supportQuote, sourceTriggerId); }}>查看来源</button>
-                {matchedClaim && <button className="text-button" onClick={() => openClaimFromSummary(matchedClaim.id)}>{matchedClaim.reviewStatus === "pending" ? "核对这条意思" : "查看核对结果"}</button>}
+                {matchedClaim && <button className="text-button" onClick={() => selectClaimInRail(matchedClaim)}>{matchedClaim.reviewStatus === "pending" ? "在右侧确认" : "在右侧查看"}</button>}
                 {availableMatchedClaims.length > 1 && <details className="summary-related-claims">
                   <summary className="text-button">{availableMatchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{availableMatchedClaims.length}）</summary>
-                  <div>{availableMatchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
+                  <div>{availableMatchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => selectClaimInRail(claim)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
                 </details>}
               </div>
             </article>;
@@ -5308,49 +6027,50 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>)}
     </section>}
 
-    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
-      <header><div><span className="section-kicker">章节速览</span><h2>按主题快速回到上下文</h2></div><span>{summarySections.length} 章</span></header>
+    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="主题速览">
+      <header><div><span className="section-kicker">主题速览</span><h2>按沟通主题快速回到上下文</h2></div><span>{summarySections.length} 个主题</span></header>
       {summaryArtifact && summarySections.length ? <div>{summarySections.map((section, sectionIndex) => {
+        const sectionKind = firstString(section, ["kind"]) || "";
         const items = recordArray(section.items);
         const sourceIds = items.flatMap((item) => stringValues(item.source_segment_ids));
         const sourceGroup = rawDisplayGroups.find((group) => group.sourceIds.some((id) => sourceIds.includes(id)));
-        const title = firstString(section, ["title"]) || summarySectionLabel(firstString(section, ["kind"])) || `第 ${sectionIndex + 1} 章`;
+        const title = firstString(section, ["title"]) || summarySectionLabel(firstString(section, ["kind"])) || `主题 ${sectionIndex + 1}`;
         const summaryText = items.map((item) => firstString(item, ["text"])).filter(Boolean).join(" ");
         const point: SelectedSummaryPoint = {
           key: `chapter-${sectionIndex}`,
-          sectionLabel: summarySectionLabel(firstString(section, ["kind"])) || "章节",
+          sectionKind,
+          sectionLabel: summarySectionLabel(sectionKind) || "主题",
           sourceIds,
           summaryText: title,
           supportQuote: firstString(items[0] || {}, ["support_quote"]) || "",
           returnFocusId: `chapter-${sectionIndex}`,
-          claimIds: claims.filter((claim) => claim.evidenceRefs.some((ref) => ref.segmentIds.some((id) => sourceIds.includes(id)))).map((claim) => claim.id),
         };
         return <article key={point.key}>
-          <button id={point.returnFocusId} onClick={() => selectSummaryPoint(point)}><time>{formatTimestamp(sourceGroup?.startMs == null ? undefined : sourceGroup.startMs / 1_000)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这一章的原文已经可以直接阅读。"}</p></span><i aria-hidden="true">→</i></button>
+          <button id={point.returnFocusId} onClick={() => selectSummaryPoint(point)}><time>{compactTranscriptTimestamp(sourceGroup?.startMs)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这个主题的原文已经可以直接阅读。"}</p></span><ArrowRight aria-hidden="true" /></button>
         </article>;
-      })}</div> : <div className="reader-section-empty"><strong>章节正在整理</strong><p>原始逐字稿已经可以阅读，不需要等章节生成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
+      })}</div> : <div className="reader-section-empty"><strong>主题正在整理</strong><p>原始逐字稿已经可以阅读，不需要等待主题生成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
     </section>}
 
     {workspaceView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="发言人速览">
       <header><div><span className="section-kicker">发言人</span><h2>先找到谁说了什么</h2></div><span>{speakerSummaries.length} 人</span></header>
       {speakerSummaries.length ? <div>{speakerSummaries.map((speaker) => <article key={speaker.speaker}>
         <button onClick={() => { setSpeakerFilter(speaker.speaker); setWorkspaceView("transcript"); selectArtifactTab(readableArtifact ? "readable" : "raw"); }}>
-          <span className="speaker-avatar" aria-hidden="true">{speaker.speaker.slice(0, 1)}</span><span><strong>{speaker.speaker}</strong><small>{speaker.groups.length} 段 · 从 {formatTimestamp(speaker.firstStartMs == null ? undefined : speaker.firstStartMs / 1_000)} 开始</small><p>{speaker.excerpt}</p></span><i aria-hidden="true">→</i>
+          <span className="speaker-avatar" aria-hidden="true"><AudioLines /></span><span><strong>{speaker.speaker}</strong><small>{speaker.groups.length} 段 · {speaker.firstStartMs == null ? "无时间点" : `从 ${compactTranscriptTimestamp(speaker.firstStartMs)} 开始`}</small><p>{speaker.excerpt}</p></span><ArrowRight aria-hidden="true" />
         </button>
-      </article>)}</div> : <div className="reader-section-empty"><strong>还没有可用的发言人分段</strong><p>转写完成后会显示 Speaker A、Speaker B，并保留每段时间点。</p></div>}
+      </article>)}</div> : <div className="reader-section-empty"><strong>还没有可用的发言人分段</strong><p>转写完成后会显示 Speaker 1、Speaker 2，并保留每段时间点。</p></div>}
     </section>}
 
     {workspaceView === "points" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectWorkspaceSurface("transcript")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
 
     {workspaceView === "transcript" && <div className="reader-filter-bar">
-      <label className="reader-search"><span className="visually-hidden">搜索逐字稿</span><i aria-hidden="true">⌕</i><input value={transcriptSearch} onChange={(change) => { setTranscriptSearch(change.target.value); setVisibleTranscriptGroups(240); }} placeholder="搜索原话" /></label>
+      <label className="reader-search"><span className="visually-hidden">搜索逐字稿</span><Search aria-hidden="true" /><input value={transcriptSearch} onChange={(change) => { setTranscriptSearch(change.target.value); setVisibleTranscriptGroups(240); }} placeholder="搜索原话" /></label>
       <label><span className="visually-hidden">筛选发言人</span><select value={speakerFilter} onChange={(change) => { setSpeakerFilter(change.target.value); setVisibleTranscriptGroups(240); }}><option value="all">全部发言人</option>{availableSpeakers.map((speaker) => <option key={speaker} value={speaker}>{speaker}</option>)}</select></label>
       <label className="reader-source-filter"><input type="checkbox" checked={onlyKeySources} onChange={(change) => { setOnlyKeySources(change.target.checked); setVisibleTranscriptGroups(240); }} /><span>只看重点来源</span></label>
     </div>}
 
     {workspaceView === "transcript" && <nav className="transcript-subtabs" aria-label="逐字稿版本">
-      <button className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
-      <button className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
+      <button aria-pressed={readerTab === "readable"} className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 {readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
+      <button aria-pressed={readerTab === "raw"} className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <span>{rawSegments.length}</span></button>
     </nav>}
     {playbackAudioAssetId && <audio
       key={playbackAudioAssetId}
@@ -5386,17 +6106,17 @@ function TranscriptArtifactsPanel({
         const diffKey = `${event.id}:${group.key}`;
         const groupPlaybackKey = `readable:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
-        return <article ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${group.needsCheck ? "needs-check" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
+        return <article id={`readable-group-${group.sourceIds[0] || group.key}`} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${group.needsCheck ? "needs-check" : ""}${playing ? " playing" : ""}${selectedPoint?.key === `readable-${group.key}` ? " selected" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           <div className="readable-meta">
-            <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)} 前三秒播放`} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1000)}</button>
+            <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button>
             <strong>{displaySpeakerLabel(group.speaker)}</strong>
             {group.needsCheck && <em>请核对</em>}
             {(group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
-              <summary aria-label="查看整理详情">•••</summary>
+              <summary aria-label="查看整理详情"><MoreHorizontal aria-hidden="true" /></summary>
               <div><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(group.sourceIds)); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
             </details>}
           </div>
-          <p>{group.text}</p>
+          <button className="transcript-copy-button" onClick={() => selectTranscriptGroup(group, "readable")}><span>{group.text}</span><small>在右侧处理</small></button>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
       })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
@@ -5413,7 +6133,7 @@ function TranscriptArtifactsPanel({
         const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
         return <article id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`${selected ? "selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
-          <button aria-label={`从 ${formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)} 前三秒播放`} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{group.text}</p>
+          <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><button className="transcript-copy-button" onClick={() => selectTranscriptGroup(group, "raw")}><span>{group.text}</span><small>在右侧处理</small></button>
         </article>;
       })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
@@ -5422,12 +6142,12 @@ function TranscriptArtifactsPanel({
       <aside className="reader-action-rail" aria-label="本次操作">
         <header className="reader-action-heading">
           <div><span className="section-kicker">本次操作</span><strong>{selectedPoint ? selectedPoint.sectionLabel : "把重点变成下一步"}</strong></div>
-          <span className={`point-trust-state ${selectedPointStatus === "已核对" ? "verified" : selectedPointStatus === "需确认" ? "pending" : "source"}`}>{selectedPointStatus}</span>
+          <span className={`point-trust-state ${selectedPointStatus === "已确认" ? "verified" : selectedPointStatus === "未采纳" ? "rejected" : selectedPointStatus === "已处理" ? "processed" : selectedPointStatus === "需确认" ? "pending" : "source"}`}>{selectedPointStatus}</span>
         </header>
         <nav className="reader-action-tabs" aria-label="操作类型">
-          <button className={actionView === "source" ? "active" : ""} onClick={() => setActionView("source")}>来源</button>
-          <button className={actionView === "pending" ? "active" : ""} onClick={() => setActionView("pending")}>待确认{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
-          <button className={actionView === "actions" ? "active" : ""} onClick={() => setActionView("actions")}>行动{eventActionItems.filter((action) => action.status === "confirmed").length > 0 && <span>{eventActionItems.filter((action) => action.status === "confirmed").length}</span>}</button>
+          <button aria-pressed={actionView === "source"} className={actionView === "source" ? "active" : ""} onClick={() => setActionView("source")}>来源</button>
+          <button aria-pressed={actionView === "pending"} className={actionView === "pending" ? "active" : ""} onClick={() => setActionView("pending")}>待确认{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
+          <button aria-pressed={actionView === "actions"} className={actionView === "actions" ? "active" : ""} onClick={() => setActionView("actions")}>行动{trustedEventActionItems.length > 0 && <span>{trustedEventActionItems.length}</span>}</button>
         </nav>
 
         {actionView === "source" && <div className="reader-action-body source-view">
@@ -5436,79 +6156,76 @@ function TranscriptArtifactsPanel({
             <section className="rail-source-section">
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
               {selectedSourceGroups.length ? selectedSourceGroups.map((group) => <article key={group.key}>
-                <button onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}><span aria-hidden="true">▶</span>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
+                <button aria-label={transcriptPlaybackLabel(group.startMs, "播放原话")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}><Play aria-hidden="true" />{compactTranscriptTimestamp(group.startMs)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
               </article>) : <p className="rail-muted">来源编号已保留，原句仍在完整逐字稿中。</p>}
-              {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds, selectedPoint.summaryText, selectedPoint.supportQuote, selectedPoint.returnFocusId)}>展开来源上下文</button>}
+              {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds)}>在逐字稿中定位</button>}
             </section>
             <section className="rail-review-section">
               <header><strong>这条意思</strong><span>{selectedClaims.length ? `${selectedClaims.length} 条记录` : "尚未提取为记录"}</span></header>
-              {selectedClaims.map((claim) => <button className="rail-review-item" key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>)}
+              {verdictsLocked && selectedClaims.some((claim) => claim.reviewStatus === "pending") && <div className="rail-review-warning" id="rail-verdict-lock" role="status"><AlertTriangle aria-hidden="true" /><span>记录已经加入待确认。本次分析完成后才可确认、修改或不采纳，避免打断正在整理的结果。</span></div>}
+              {selectedClaims.map((claim) => {
+                const confirmNeedsDetail = claim.needsAdditionalEvidence
+                  || claim.relationsForReview.some((relation) => relation.status === "proposed")
+                  || !claimEvidenceFitsSourceRail(claim, displayedSourceIds)
+                  || claim.evidenceRefs.flatMap((ref) => ref.segmentIds).some((id) => !rawSegmentIds.has(id));
+                return <div className="rail-review-row" key={claim.id}>
+                  <button className="rail-review-item" onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>
+                  {claim.reviewStatus === "pending" && <div className="rail-quick-verdict" aria-label={`快速处理：${claim.statement}`}>
+                    <button
+                      className="confirm"
+                      disabled={Boolean(busy) || confirmNeedsDetail || verdictsLocked}
+                      aria-describedby={verdictsLocked ? "rail-verdict-lock" : confirmNeedsDetail ? `rail-review-warning-${claim.id}` : undefined}
+                      title={confirmNeedsDetail || verdictsLocked ? undefined : "已在右侧看到原话，可直接确认"}
+                      onClick={() => onQuickVerdict(claim.id, "confirm", displayedSourceIds)}
+                    ><Check aria-hidden="true" />确认</button>
+                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", displayedSourceIds)}><X aria-hidden="true" />不采纳</button>
+                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => openClaimFromSummary(claim.id)}>修改</button>
+                  </div>}
+                  {claim.reviewStatus === "pending" && confirmNeedsDetail && <div className="rail-review-warning" id={`rail-review-warning-${claim.id}`}><AlertTriangle aria-hidden="true" /><span>这条还需补证据或判断与旧记录的关系。</span><button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>打开详情核对</button></div>}
+                </div>;
+              })}
+              {selectedPoint.sourceIds.length > 0 && (actionComposerOpen ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从这条重点建立行动</button>)}
             </section>
             <section className="handwriting-check-section">
               <header><strong>手写笔记核对</strong><span>{selectedPhotoEvidence.length ? "已关联" : photoAssets.length ? "待关联" : "可选"}</span></header>
               {selectedPhotoEvidence.map((ref) => <HandwrittenEvidencePreview evidence={ref} key={ref.id} />)}
               {!selectedPhotoEvidence.length && photoAssets.length > 0 && <p>本次已有 {photoAssets.length} 张照片，但这条重点还没有直接引用。核对时可把两种来源并排确认。</p>}
-              {!photoAssets.length && <p>笔通过 USB-C 接入手机后，可以直接补拍或选择手写笔记；它不会阻塞录音重点先出现。</p>}
-              <button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}>＋ 添加手写笔记</button>
+              {!photoAssets.length && <p>需要时可以直接补拍或选择手写笔记；它不会阻塞录音重点先出现。</p>}
+              <button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button>
             </section>
-          </> : <div className="rail-empty-state"><span aria-hidden="true">↖</span><strong>点左侧任意重点</strong><p>这里会立即显示对应原话、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}>＋ 添加手写笔记</button></div>}
+          </> : <div className="rail-empty-state"><ArrowLeft aria-hidden="true" /><strong>点左侧任意重点或原话</strong><p>这里会立即显示对应原句、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button></div>}
         </div>}
 
         {actionView === "pending" && <div className="reader-action-body pending-view">
           <div className="rail-explainer"><strong>核对是可选的可信度层</strong><p>你可以先用摘要和行动；金额、日期、责任人等高风险内容会一直保留“需确认”标记，确认后才进入可信存档。</p></div>
           {reviewBlocked && <p className="rail-context-note">使用场景尚未补充，不影响阅读和逐条查看；正式项目报告前再补即可。</p>}
-          {pendingClaims.length ? <div className="rail-pending-list">{pendingClaims.slice(0, 10).map((claim) => <button key={claim.id} onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><i aria-hidden="true">→</i></button>)}</div> : <div className="rail-complete-state"><span aria-hidden="true">✓</span><strong>{claims.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
-          {reviewReady && pendingReviewCount > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={onReview}>连续核对 {pendingReviewCount} 条</button>}
+          {pendingClaims.length ? <div className="rail-pending-list">{pendingClaims.slice(0, 10).map((claim) => <button id={`rail-pending-${claim.id}`} key={claim.id} onClick={() => selectClaimInRail(claim)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}</div> : <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
+          {reviewReady && pendingClaims.length > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={() => selectClaimInRail(pendingClaims[0]!)}>从第一条开始确认</button>}
         </div>}
 
         {actionView === "actions" && <div className="reader-action-body actions-view">
           <div className="rail-explainer"><strong>只把确认过的事当作行动</strong><p>AI 建议先留在“待确认”；这里的清单来自已确认记录，可直接完成并写回项目进展。</p></div>
+          {selectedPoint?.sourceIds.length ? actionComposerOpen ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">在左侧先点一条重点，即可带着原文创建行动。</p>}
           {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
           {projectActions.isError && <div className="rail-inline-error"><span>行动暂时没有读到，其他内容不受影响。</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
-          {!projectActions.isLoading && !eventActionItems.length && <div className="rail-complete-state"><span aria-hidden="true">＋</span><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
-          {eventActionItems.length > 0 && <div className="rail-action-list">{eventActionItems.map((action) => <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : action.status === "not_adopted" ? `${action.statement} 不采纳` : action.status === "ai_suggested" ? `${action.statement} 待确认` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? "✓" : ""}</button><span><small>{action.status === "completed" ? "已完成" : action.status === "confirmed" ? "已确认行动" : action.status === "not_adopted" ? "不采纳" : "AI 建议"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>)}</div>}
+          {!projectActions.isLoading && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
+          {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
+            const actionClaim = claims.find((claim) => claim.id === action.claim_id);
+            return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>在右侧查看来源</button></span></article>;
+          })}</div>}
         </div>}
       </aside>
     </div>
 
     {playbackAudioAssetId && <footer className="reader-audio-player" aria-label="录音播放器">
-      <button className="audio-play-button" aria-label={audioPlaying ? "暂停录音" : "播放录音"} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? "Ⅱ" : "▶"}</button>
+      <button className="audio-play-button" aria-label={`${audioPlaying ? "暂停" : "播放"}录音：${playbackAudioLabel}`} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
+      <span className="reader-audio-label" title={playbackAudioLabel}><AudioLines aria-hidden="true" />{playbackAudioLabel}</span>
       <time>{formatTimestamp(audioCurrentTime)}</time>
       <input aria-label="录音进度" type="range" min={0} max={Math.max(audioDuration, 1)} step={0.1} value={Math.min(audioCurrentTime, Math.max(audioDuration, 1))} onChange={(change) => { const next = Number(change.target.value); if (audioRef.current) audioRef.current.currentTime = next; setAudioCurrentTime(next); }} />
       <time>{formatTimestamp(audioDuration)}</time>
       <label><span className="visually-hidden">播放速度</span><select aria-label="播放速度" value={audioRate} onChange={(change) => { const next = Number(change.target.value); setAudioRate(next); if (audioRef.current) audioRef.current.playbackRate = next; }}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
     </footer>}
 
-    {sourceDrawer && <Dialog.Root open onOpenChange={(open) => { if (!open) setSourceDrawer(null); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="source-drawer-backdrop" />
-        <Dialog.Content
-          className="source-drawer"
-          onCloseAutoFocus={(closeEvent) => {
-            if (sourceDrawerExitTarget.current) {
-              closeEvent.preventDefault();
-              return;
-            }
-            const target = document.getElementById(sourceDrawer.returnFocusId);
-            if (!target) return;
-            closeEvent.preventDefault();
-            target.focus();
-          }}
-        >
-          <header className="source-drawer-header">
-            <div><span className="section-kicker">重点来源</span><Dialog.Title>{sourceDrawer.summaryText}</Dialog.Title><Dialog.Description>原句和时间只帮助定位；重要含义仍需人工确认。</Dialog.Description></div>
-            <Dialog.Close asChild><button className="icon-button" aria-label="关闭来源">×</button></Dialog.Close>
-          </header>
-          <div className="source-drawer-body">
-            {sourceDrawerGroups.length ? sourceDrawerGroups.map((group) => <article key={group.key}>
-              <header><button onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}>{formatTimestamp(group.startMs == null ? undefined : group.startMs / 1_000)}{audioAssetIdForVersion(group.assetVersionId) ? " · 播放" : ""}</button><strong>{displaySpeakerLabel(group.speaker)}</strong></header>
-              <p>{highlightExactPhrase(group.text, sourceDrawer.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
-            </article>) : <p className="source-drawer-empty">当前摘要保留了来源编号，但原句暂时无法显示。完整原始逐字稿仍然安全保留。</p>}
-          </div>
-          <footer className="source-drawer-footer"><span>{sourceDrawer.sourceIds.length} 段原始记录</span><button className="text-button" onClick={openSourcesInFullTranscript}>在完整原稿中打开</button></footer>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>}
   </section>;
 }
 
@@ -5523,7 +6240,7 @@ function HandwrittenEvidencePreview({ evidence }: { evidence: EvidenceRef }) {
     <div className="handwriting-image-wrap">
       {/* Signed evidence URLs cannot use the build-time image loader. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      {imageUrl ? <img src={imageUrl} alt={observation} /> : <span className="handwriting-image-placeholder">IMG</span>}
+      {imageUrl ? <img src={imageUrl} alt={observation} /> : <span className="handwriting-image-placeholder" aria-hidden="true"><ImageIcon /></span>}
       {bbox && <span className="handwriting-bbox" aria-label="这条重点在手写笔记中的位置" style={{ left: `${bbox[0] * 100}%`, top: `${bbox[1] * 100}%`, width: `${(bbox[2] - bbox[0]) * 100}%`, height: `${(bbox[3] - bbox[1]) * 100}%` }} />}
     </div>
     <span><strong>{label}</strong><small>{context?.target.page_number || evidence.page ? `第 ${context?.target.page_number || evidence.page} 页 · ` : ""}{observation}{bbox ? " · 已定位原笔记区域" : ""}</small></span>
@@ -5562,7 +6279,7 @@ function ReadableTranscriptDiff({ state, edits, needsCheck }: {
 
   const hasChangedPart = state.parts.some((part) => part.added || part.removed);
   return <div className="readable-diff ready">
-    <header><div><strong>原稿 → 易读稿</strong><span>按本段映射的原始 Segment 完整比较；这里只帮助阅读，不是正式 Evidence。</span></div>{state.risks.length > 0 && <div className="readable-diff-risks">{state.risks.map((risk) => <em key={risk}>{readableDiffRiskLabels[risk]}</em>)}</div>}</header>
+    <header><div><strong>原稿 → 易读稿</strong><span>按本段映射的原始片段完整比较；这里只帮助阅读，不是正式依据。</span></div>{state.risks.length > 0 && <div className="readable-diff-risks">{state.risks.map((risk) => <em key={risk}>{readableDiffRiskLabels[risk]}</em>)}</div>}</header>
     {hasChangedPart ? <p className="readable-word-diff" aria-label="原始逐字稿与易读逐字稿的逐词差异">{state.parts.map((part, index) => {
       const className = part.risks.length > 0 ? `sensitive ${part.risks.map((risk) => `risk-${risk}`).join(" ")}` : undefined;
       if (part.added) return <ins className={className} key={index}>{part.value}</ins>;
@@ -5669,7 +6386,7 @@ function AudioTranscriptionProgressPanel({
 
   return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" data-testid="transcription-journey">
     <header>
-      <span className="file-kind">AUD</span>
+      <FileKindIcon kind="audio" />
       <div><span className="section-kicker">录音处理进度{preparation?.filename || label ? ` · ${preparation?.filename ?? label}` : ""}</span><h3>{title}</h3><p>{statusText}{timeText}</p></div>
       {!inspecting && total > 0 && <strong className="transcription-percent">{progress.percent}%</strong>}
     </header>
@@ -5679,62 +6396,19 @@ function AudioTranscriptionProgressPanel({
     </div>
     {progress.nodes.length > 0 && <div className="transcription-chunk-nodes" aria-label={`${progress.total} 个录音分段`}>
       {progress.nodes.map((node) => <span className={`transcription-chunk-node ${node.status}`} key={node.index} aria-label={`第 ${node.index + 1} 段：${node.status === "completed" ? "已完成" : node.status === "processing" ? "处理中" : node.status === "failed" ? "失败" : "等待"}`}>
-        <i>{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : node.index + 1}</i>
+        <i>{node.status === "completed" ? <Check aria-hidden="true" /> : node.status === "failed" ? <AlertTriangle aria-hidden="true" /> : node.index + 1}</i>
         <small>第{node.index + 1}段</small>
         <em>{node.status === "completed" ? "已完成" : node.status === "processing" ? preparing ? "准备中" : "识别中" : node.status === "failed" ? "需重试" : "等待"}</em>
       </span>)}
     </div>}
     <div className="transcription-next-step"><strong>{failedCount > 0 ? `${failedCount} 段需要重试` : nextStepText}</strong><span>系统会自动继续，不需要手动开启后台任务。</span></div>
-    <ol className="transcription-milestones" aria-label="距离可以开始分析的步骤">
-      <li className="complete"><span>✓</span><b>录音已保存</b></li>
-      <li className={chunksFinished ? "complete" : "active"}><span>{chunksFinished ? "✓" : "2"}</span><b>{hasChunkPlan ? "分段识别" : "识别逐字稿"}</b></li>
+    <ol className="transcription-milestones" aria-label="距离自动整理完成的步骤">
+      <li className="complete"><span><Check aria-hidden="true" /></span><b>录音已保存</b></li>
+      <li className={chunksFinished ? "complete" : "active"}><span>{chunksFinished ? <Check aria-hidden="true" /> : "2"}</span><b>{hasChunkPlan ? "分段识别" : "识别逐字稿"}</b></li>
       <li className={chunksFinished && !preparing ? "active" : "pending"}><span>3</span><b>合并逐字稿</b></li>
-      <li className="pending"><span>4</span><b>可开始分析</b></li>
+      <li className="pending"><span>4</span><b>自动整理重点</b></li>
     </ol>
     {failed && run && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetry(run.audioAssetId)}>{busy === "transcription" ? "正在重试…" : failedCount > 0 ? `重试失败的 ${failedCount} 段` : "重新转写"}</button>}
-  </section>;
-}
-
-function AnalysisProgressJourney({
-  progress,
-  timingItems,
-}: {
-  progress: AnalysisProgress;
-  timingItems: ReturnType<typeof buildRunTimingItems>;
-}) {
-  const timingForNode = (key: AnalysisProgress["nodes"][number]["key"]) => {
-    if (key === "verify") {
-      return timingItems.find((item) => item.key === "verify_escalated" && item.status === "running")
-        ?? timingItems.find((item) => item.key === "verify_escalated")
-        ?? timingItems.find((item) => item.key === "verify");
-    }
-    return timingItems.find((item) => item.key === key);
-  };
-  const statusText = (node: AnalysisProgress["nodes"][number]) => {
-    const timing = timingForNode(node.key);
-    const duration = timing?.durationMs == null ? "" : ` · ${formatReviewDuration(timing.durationMs)}`;
-    if (node.status === "completed") return `${node.key === "persist" ? "可以核对" : "已完成"}${duration}`;
-    if (node.status === "processing") {
-      if (node.key === "prepare") return `正在准备${duration}`;
-      if (node.key === "inventory") return `xhigh 处理中${duration}`;
-      if (node.key === "verify") return `${timing?.key === "verify_escalated" ? "加强复核" : "high 查漏中"}${duration}`;
-      return `正在验证并保存${duration}`;
-    }
-    if (node.status === "failed") return "这一步没有完成";
-    return "等待前一步";
-  };
-
-  return <section className="analysis-progress-journey" data-testid="analysis-progress-journey" aria-label="距离可以开始核对的分析进度">
-    <div className="analysis-progress-track">
-      {progress.nodes.map((node, index) => <div className={`analysis-progress-node ${node.status}`} key={node.key}>
-        <span className="analysis-progress-node-mark">{node.status === "completed" ? "✓" : node.status === "failed" ? "!" : index + 1}</span>
-        <span><strong>{node.label}</strong><small>{statusText(node)}</small></span>
-      </div>)}
-    </div>
-    <div className="analysis-progress-next">
-      <strong>{progress.remaining > 0 ? <>还差 {progress.remaining} 步即可开始核对</> : "分析已经完成，可以开始核对"}</strong>
-      <span>系统会自动继续，不需要手动启动后台任务。百分比只在真实阶段完成后前进。</span>
-    </div>
   </section>;
 }
 
@@ -5758,17 +6432,20 @@ function SimpleTestScreen({
   projectWorkflow,
   readingTab,
   audioPreparationProgressByAssetId,
+  assetUploadProgress,
+  onCancelUpload,
   onUseProject,
   onUseEvent,
   onStartOwn,
-  onAddTranscript,
+  onNewEvent,
   onAddFile,
   onProjectWorkflowAction,
   onRetryTranscription,
   onConfirmScenario,
-  onReview,
   onResult,
   onOpenClaim,
+  onQuickVerdict,
+  onCreateActionInline,
   onCompleteAction,
   onRetryArtifact,
   onStartAnalysis,
@@ -5790,8 +6467,10 @@ function SimpleTestScreen({
   const [customScenario, setCustomScenario] = useState("");
   const [timingNow, setTimingNow] = useState(() => Date.now());
   const audioFileRef = useRef<HTMLInputElement>(null);
+  const transcriptFileRef = useRef<HTMLInputElement>(null);
   const photoFileRef = useRef<HTMLInputElement>(null);
   const workspaceAudioFileRef = useRef<HTMLInputElement>(null);
+  const workspaceTranscriptFileRef = useRef<HTMLInputElement>(null);
   const workspacePhotoFileRef = useRef<HTMLInputElement>(null);
   const interactionScope = useRef("");
   const userNavigatedFromWaiting = useRef(false);
@@ -5811,7 +6490,6 @@ function SimpleTestScreen({
       }).filter((item) => item.eventId === event.id)
     : [];
   const transcriptionRunning = currentTranscriptionRuns.some((item) => runInProgress.has(item.status));
-  const transcriptionDone = transcriptionRun?.status === "succeeded";
   const analysisRunning = Boolean(run && runInProgress.has(run.status));
   const analysisDone = Boolean(run && runComplete.has(run.status));
   const analysisFailed = Boolean(run && !analysisRunning && !analysisDone);
@@ -5884,14 +6562,14 @@ function SimpleTestScreen({
     loading: "正在检查整组材料",
     empty: "请先导入材料",
     waiting_material: "等待当前材料准备完成",
-    ready: projectWorkflow.completed > 0 ? "继续处理下一次沟通" : "开始处理全部沟通",
+    ready: projectWorkflow.completed > 0 ? "下一次沟通将自动处理" : "材料就绪后自动处理",
     running: "正在处理，请稍候",
     empty_output: "检查材料并重新处理",
     waiting_scenario: "请先确认使用场景",
     waiting_review: "核对这次结果",
     draft_ready: "查看 AI 草稿",
     partially_reviewed: "继续查看项目进展",
-    complete: "打开会前速览",
+    complete: "打开下次沟通速览",
     error: "重新检查并继续",
   };
   const workflowActionLabel = workflowActionLabels[projectWorkflow.phase];
@@ -5957,57 +6635,12 @@ function SimpleTestScreen({
   const workflowSelectedCurrent = Boolean(
     event?.id && event.id === projectWorkflow.currentEventId,
   );
-  const showLiveTiming = transcriptionRunning || Boolean(
-    run && workflowSelectedCurrent && (
-      runInProgress.has(run.status)
-      || projectWorkflow.phase === "waiting_scenario"
-      || projectWorkflow.phase === "waiting_review"
-    ),
-  );
+  const showLiveTiming = transcriptionRunning;
   useEffect(() => {
     if (!showLiveTiming) return;
     const timer = window.setInterval(() => setTimingNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [run?.id, showLiveTiming]);
-  const runTimingItems = run && workflowSelectedCurrent
-    ? buildRunTimingItems(
-        {
-          status: run.status,
-          createdAt: run.createdAt,
-          queuedAt: run.queuedAt,
-          firstQueuedAt: run.firstQueuedAt,
-          currentQueuedAt: run.currentQueuedAt,
-          startedAt: run.startedAt,
-          firstStartedAt: run.firstStartedAt,
-          currentStartedAt: run.currentStartedAt,
-          processingAttemptNo: run.processingAttemptNo,
-          dispatchAttemptNo: run.dispatchAttemptNo,
-          finishedAt: run.finishedAt,
-          stages: run.stages,
-        },
-        timingNow,
-        {
-          awaitingReview: projectWorkflow.phase === "waiting_scenario"
-            || projectWorkflow.phase === "waiting_review",
-        },
-      )
-    : [];
-  const totalRunDurationMs = run && workflowSelectedCurrent
-    ? runTotalDurationMs({
-        status: run.status,
-        createdAt: run.createdAt,
-        queuedAt: run.queuedAt,
-        firstQueuedAt: run.firstQueuedAt,
-        currentQueuedAt: run.currentQueuedAt,
-        startedAt: run.startedAt,
-        firstStartedAt: run.firstStartedAt,
-        currentStartedAt: run.currentStartedAt,
-        processingAttemptNo: run.processingAttemptNo,
-        dispatchAttemptNo: run.dispatchAttemptNo,
-        finishedAt: run.finishedAt,
-        stages: run.stages,
-      }, timingNow)
-    : null;
+  }, [showLiveTiming, transcriptionRun?.id]);
   const analysisProgress = run && workflowSelectedCurrent && projectWorkflow.phase === "running"
     ? buildAnalysisProgress({
         runStatus: run.status,
@@ -6030,6 +6663,9 @@ function SimpleTestScreen({
   const currentAudioPreparations = event
     ? Object.values(audioPreparationProgressByAssetId).filter((item) => item.eventId === event.id)
     : [];
+  const currentAssetUpload = event && assetUploadProgress?.eventId === event.id
+    ? assetUploadProgress
+    : null;
   const materialPreparationActive = busy === "asset"
     || busy === "simple-start"
     || currentAudioPreparations.length > 0
@@ -6064,14 +6700,6 @@ function SimpleTestScreen({
   const workflowStepBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
     ? `当前顺序应处理“${projectWorkflow.currentEventTitle || "前一次沟通"}”，这里不会越过它。`
     : currentWorkflowCopy.body;
-  const workflowReviewReady = pendingCount > 0 && analysisDone;
-  const workflowReviewBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
-    ? `请先选择“${projectWorkflow.currentEventTitle || "当前沟通"}”。`
-    : projectWorkflow.phase === "waiting_scenario"
-      ? "先确认使用场景，再核对本次生成的记录。"
-      : workflowReviewReady
-        ? `${pendingCount} 条内容等你确认`
-        : "当前沟通处理完成后才能核对。";
   const compactWorkflowCard = projectWorkflow.phase === "empty"
     || projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
@@ -6146,13 +6774,12 @@ function SimpleTestScreen({
     // reaching it costs one click rather than a menu, a card and a button.
     if (!busy) {
       if (next === "results" && !needsScenario && analysisDone) { onResult("client-progress"); return; }
-      if (next === "review" && workflowReviewReady) { onReview(); return; }
     }
     setActiveTab(next);
-    if (next === "transcript" && event) {
+    if ((next === "transcript" || next === "review") && event) {
       setReaderWasOpened(true);
       onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
-    } else if (next !== "transcript") {
+    } else if (next !== "transcript" && next !== "review") {
       onClearTranscriptArtifact();
     }
   }
@@ -6201,7 +6828,7 @@ function SimpleTestScreen({
 
       <section className="simple-session" aria-label="当前项目和沟通">
         <div className="simple-session-copy">
-          <span className="context-mark">N</span>
+          <span className="context-mark" aria-hidden="true"><FolderOpen /></span>
           <span><strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "尚未选择项目"}</strong><small>{event ? event.title : project ? "请选择一次沟通" : "可以先创建空白项目，也可以直接上传材料"}</small></span>
         </div>
         <label>
@@ -6227,12 +6854,12 @@ function SimpleTestScreen({
               {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           </label>
-          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button>
+          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加一次沟通"><Plus aria-hidden="true" /></button>
         </>}
         <DropdownMenu.Root open={showProjectMenu} onOpenChange={setShowProjectMenu}>
           <div className="project-menu-wrap">
             <DropdownMenu.Trigger asChild>
-              <button className="button secondary project-menu-trigger" disabled={Boolean(busy)}>项目菜单 ···</button>
+              <button className="button secondary project-menu-trigger" aria-label="项目菜单" disabled={Boolean(busy)}><span>项目菜单</span><MoreHorizontal aria-hidden="true" /></button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="project-menu" align="end" sideOffset={7} collisionPadding={12}>
@@ -6251,14 +6878,15 @@ function SimpleTestScreen({
         </DropdownMenu.Root>
       </section>
 
-      <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
-      <input ref={workspacePhotoFileRef} className="visually-hidden" type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
+      <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+      <input ref={workspaceTranscriptFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择 Transcript 文件" accept={acceptedTranscriptTypes.join(",")} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+      <input ref={workspacePhotoFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="拍摄手写笔记照片" accept={MODEL_IMAGE_FILE_ACCEPT} capture="environment" disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
 
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} compact />}
 
       {needsScenario && (
         <details className="scenario-context-optional">
-          <summary><span><b>使用场景待补充</b><small>可稍后 · 不影响阅读和核对</small></span><i aria-hidden="true">⌄</i></summary>
+          <summary><span><b>使用场景待补充</b><small>可稍后 · 打开整个项目前补充</small></span><i aria-hidden="true"><ChevronDown /></i></summary>
           <div className="scenario-context-body">
             <header><span className="section-kicker">项目上下文</span><h2>这组材料属于哪种工作场景？</h2><p>确认后，跨多次沟通的比较会更准确；当前重点、逐字稿和逐条核对都可以先使用。</p></header>
           <div className="scenario-options">
@@ -6277,7 +6905,7 @@ function SimpleTestScreen({
 
       <section className="simple-workspace" aria-label="项目工作区">
         <aside className="simple-meeting-rail">
-          <header><div><span className="section-kicker">沟通记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onAddTranscript} aria-label="添加一次沟通">＋</button>}</header>
+          <header><div><span className="section-kicker">沟通记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加一次沟通"><Plus aria-hidden="true" /></button>}</header>
           <div className="simple-meeting-list">
             {events.map((item, index) => {
               const itemSummary = eventWorkflowSummaries[item.id];
@@ -6303,12 +6931,14 @@ function SimpleTestScreen({
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
-            <button aria-label="Transcript · 本次重点" className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b>{transcriptionDone && <span>{transcriptionRun?.segments.length}</span>}</button>
-            <button aria-label="材料 · 来源" className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>来源 <span>{visibleAssets.length}</span></button>
-            <button aria-label="待核对" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待确认{pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            <button aria-label="本次重点" aria-current={activeTab === "transcript" ? "page" : undefined} className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b></button>
+            <button aria-label="来源" aria-current={activeTab === "materials" ? "page" : undefined} className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>来源 <span>{visibleAssets.length}</span></button>
+            <button aria-label="待确认" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待确认{pendingCount > 0 && <span>{pendingCount}</span>}</button>
             <span className="meeting-tabs-scope" aria-hidden="true" />
-            <button aria-label="结果" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<i aria-hidden="true">→</i></button>
+            <button aria-label="整个项目" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<ArrowRight aria-hidden="true" /></button>
           </nav>
+
+          {currentAssetUpload && <AssetUploadProgressCard progress={currentAssetUpload} onCancel={onCancelUpload} />}
 
           {(currentAudioPreparations.length > 0 || currentTranscriptionRuns.some((item) => item.status !== "succeeded")) && <div className="transcription-journey-slot">
             {currentAudioPreparations.map((preparation) => <AudioTranscriptionProgressPanel
@@ -6334,22 +6964,22 @@ function SimpleTestScreen({
           </div>}
 
           {factsRunningInBackground && readingAid && activeTab !== "transcript" && <aside className="workflow-reading-banner" aria-live="polite">
-            <span className="workflow-reading-icon">✓</span>
+            <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
             <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 原文定位不代表语义已经核对。" : " 原始逐字稿仍是最终核对依据。"}</p></div>
             <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : readingAid === "readable" ? "先看易读稿" : "查看原始逐字稿"}</button>
           </aside>}
 
           {!factsRunningInBackground && factsCanBeReviewed && activeTab === "materials" && <aside className="workflow-reading-banner ready" aria-live="polite">
-            <span className="workflow-reading-icon">✓</span>
+            <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
             <div><strong>事实识别已经完成</strong><p>你可以继续阅读当前摘要，重要内容已经可以核对；系统不会把你从这里跳走。</p></div>
             <span className="workflow-reading-actions">
               {readingAid === "raw" && <button className="text-button" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>}
-              <button className="button secondary" onClick={() => { markUserNavigation(); onReview(); }}>核对重要内容</button>
+              <button className="button secondary" onClick={() => selectWorkspaceTab("review")}>查看待确认内容</button>
             </span>
           </aside>}
 
           {!factsRunningInBackground && !factsCanBeReviewed && readingAid === "raw" && activeTab !== "transcript" && <aside className="workflow-reading-banner legacy" aria-live="polite">
-            <span className="workflow-reading-icon">T</span>
+            <span className="workflow-reading-icon" aria-hidden="true"><FileText /></span>
             <div><strong>这个旧记录没有 AI 阅读版本</strong><p>原始逐字稿仍然完整保留，可以直接阅读和核对。</p></div>
             <button className="button secondary" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>
           </aside>}
@@ -6358,31 +6988,21 @@ function SimpleTestScreen({
             {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
               <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
               {analysisProgress ? <div className="project-workflow-progress analysis"><div><span>本次分析</span><strong>{analysisProgress.percent}%</strong></div><progress aria-label="本次事实分析进度" max={100} value={analysisProgress.percent} /><small>已完成 {analysisProgress.completed}/{analysisProgress.total} 步</small></div> : projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
-              {(analysisProgress || runTimingItems.length > 0) && <details className="workflow-diagnostics">
-                <summary>处理详情</summary>
-                <div>
-                  {analysisProgress && <AnalysisProgressJourney progress={analysisProgress} timingItems={runTimingItems} />}
-                  {runTimingItems.length > 0 && <div className="workflow-timing" aria-label="本次处理分段计时">
-                    <header><div><span className="section-kicker">本次处理计时</span><strong>{totalRunDurationMs == null ? "正在等待时间记录" : formatReviewDuration(totalRunDurationMs)}</strong></div><small>测试版本 · 每秒更新</small></header>
-                    <p className="workflow-timing-explanation">后端会保存进度，并定期检查同一个模型任务是否完成。这里显示的是系统继续原任务的等待时间，不是重新调用模型，也不会重复收费。</p>
-                    <div className="workflow-timing-grid">{runTimingItems.map((item) => <div className={item.status} key={item.key}><span>{item.label}{item.reasoningEffort ? ` · ${item.reasoningEffort}` : ""}</span><strong>{item.durationMs == null ? "等待" : formatReviewDuration(item.durationMs)}</strong>{typeof item.cachedTokens === "number" && item.cachedTokens > 0 && <small>复用 {item.cachedTokens.toLocaleString()} tokens</small>}</div>)}</div>
-                  </div>}
-                </div>
-              </details>}
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
-              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份来源时，系统会自动建立沟通。"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "＋ 添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? "收起" : "＋ 添加来源"}</button>}</header>
-              {(busy === "asset" || busy === "simple-start") && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以看到上传的材料。" : "文件已上传，正在刷新材料列表。"} />}
+              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份来源时，系统会自动建立沟通。"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? <><X aria-hidden="true" />收起</> : <><Plus aria-hidden="true" />添加来源</>}</button>}</header>
+              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以添加材料。" : "正在转换或保存材料；完成后会自动继续。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record">●</span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => audioFileRef.current?.click())}><span className="material-action-icon">↑</span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span></button>
-                  <input ref={audioFileRef} className="visually-hidden" type="file" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={onAddTranscript}><span className="material-action-icon">T</span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon">▧</span><span><strong>手写笔记照片</strong><small>JPG、PNG、WebP</small></span></button>
-                  <input ref={photoFileRef} className="visually-hidden" type="file" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record" aria-hidden="true"><Mic /></span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => audioFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><Upload /></span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span></button>
+                  <input ref={audioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => transcriptFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileText /></span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
+                  <input ref={transcriptFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择 Transcript 文件" accept={acceptedTranscriptTypes.join(",")} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileImage /></span><span><strong>选择手写笔记照片</strong><small>含 iPhone HEIC 自动转换</small></span></button>
+                  <input ref={photoFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择手写笔记照片" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
                 </div>
                 {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
               </div>}
@@ -6392,17 +7012,18 @@ function SimpleTestScreen({
                   const assetRun = asset.kind === "audio" ? transcriptionRunsByAssetId[asset.id] ?? null : null;
                   const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
-                  return <article key={asset.id}><span className="file-kind">{asset.kind === "audio" ? "AUD" : asset.kind === "photo" ? "IMG" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
+                  return <article key={asset.id}><span className="file-kind" aria-hidden="true">{asset.kind === "audio" ? <FileAudio /> : asset.kind === "photo" ? <ImageIcon /> : <FileText />}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
                 })}
               </div> : <section className="capture-launchpad" aria-label="开始一次沟通">
-                <header><span className="capture-launchpad-mark" aria-hidden="true">⌁</span><div><span className="section-kicker">从真实沟通开始</span><h3>录下来，其余交给 Notique</h3><p>录音先形成重点；手写照片可以同时上传或稍后补充，不阻塞阅读。</p></div></header>
-                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>笔或手机录音</strong><small>独立记录，不需要一直开着 App</small></span><span><b>2</b><strong>USB-C 接入手机</strong><small>选择录音，也可补拍手写内容</small></span><span><b>3</b><strong>直接进入工作台</strong><small>重点、原话、待确认和行动同屏</small></span></div>
-                <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}>导入笔 / 录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}>直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}>先拍手写笔记</button></div>
+                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">从真实沟通开始</span><h3>录下来，其余交给 Notique</h3><p>录音先形成重点；手写照片可以同时上传或稍后补充，不阻塞阅读。</p></div></header>
+                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>录音或导入原文</strong><small>手机、录音笔或 Transcript 都可以</small></span><span><b>2</b><strong>需要时补充照片</strong><small>手写内容会和这次沟通放在一起</small></span><span><b>3</b><strong>边读边处理</strong><small>重点、原话、待确认和行动同屏</small></span></div>
+                <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}><Upload aria-hidden="true" />上传录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceTranscriptFileRef.current?.click())}><FileText aria-hidden="true" />上传 Transcript</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}><Mic aria-hidden="true" />直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}><Camera aria-hidden="true" />拍手写笔记</button></div>
+                <p className="capture-device-note">使用录音笔时，可通过 USB-C 将音频快速导入手机后上传。</p>
               </section>}
             </section>
           </div>}
 
-          {(activeTab === "transcript" || readerWasOpened) && <div className="meeting-tab-panel" hidden={activeTab !== "transcript"}>
+          {(activeTab === "transcript" || activeTab === "review" || readerWasOpened) && <div className="meeting-tab-panel" hidden={activeTab !== "transcript" && activeTab !== "review"}>
             {event ? <>
               <TranscriptArtifactsPanel
                 key={event.id}
@@ -6413,11 +7034,13 @@ function SimpleTestScreen({
                 pendingReviewCount={pendingCount}
                 reviewReady={factsCanBeReviewed}
                 reviewBlocked={false}
+                reviewMode={activeTab === "review"}
                 busy={busy}
                 onOpenClaim={onOpenClaim}
+                onQuickVerdict={onQuickVerdict}
+                onCreateActionInline={onCreateActionInline}
                 onCompleteAction={onCompleteAction}
                 onAddPhoto={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}
-                onReview={() => { markUserNavigation(); onReview(); }}
                 onRetryArtifact={onRetryArtifact}
                 onStartAnalysis={onStartAnalysis}
                 onSelectTab={(tab) => {
@@ -6427,12 +7050,10 @@ function SimpleTestScreen({
                 focusRequest={transcriptFocusRequest}
                 onFocusHandled={onTranscriptFocusHandled}
               />
-            </> : <div className="tab-empty"><span>T</span><h3>先选择一次沟通</h3><p>选择后可在 AI 摘要、易读逐字稿和原始逐字稿之间切换。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
+            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选择一次沟通</h3><p>选择后可在 AI 摘要、易读逐字稿和原始逐字稿之间切换。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
           </div>}
 
-          {activeTab === "review" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">✓</span><div><span className="section-kicker">人工核对</span><h3>{workflowReviewReady ? `${pendingCount} 条事实或关系等你决定` : projectWorkflow.phase === "waiting_scenario" ? "请先确认使用场景" : pendingCount > 0 ? `${pendingCount} 条内容尚待核对` : "当前没有待核对内容"}</h3><p>{workflowReviewReady ? "优先检查金额、日期、责任人、矛盾和低置信内容。" : workflowReviewBody} 未经确认的内容不会进入项目报告。</p></div>{workflowReviewReady && <button className="button primary" disabled={Boolean(busy)} onClick={onReview}>核对重要内容</button>}</div></div>}
-
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon">▤</span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认工作场景后，这里会直接打开项目概览。" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p></div></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认工作场景后，这里会直接打开项目概览。" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p></div></div></div>}
         </article>
       </section>
 
@@ -6448,7 +7069,7 @@ function PageHeader({ eyebrow, title, body, back, backLabel = "返回", actions 
   return (
     <header className="page-header">
       <div className="page-title-row">
-        {back && <button className="back-button" onClick={back} aria-label={backLabel}><span aria-hidden="true">‹</span><span>{backLabel}</span></button>}
+        {back && <button className="back-button" onClick={back} aria-label={backLabel}><ChevronLeft aria-hidden="true" /><span>{backLabel}</span></button>}
         <div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{body && <p>{body}</p>}</div>
       </div>
       {actions && <div className="header-actions">{actions}</div>}
@@ -6459,14 +7080,14 @@ function PageHeader({ eyebrow, title, body, back, backLabel = "返回", actions 
 function ProjectsScreen({ state, issue, projects, onRetry, onOpen, onCreate }: { state: AsyncState; issue: ApiIssue | null; projects: Project[]; onRetry: () => void; onOpen: (id: string) => void; onCreate: () => void }) {
   return (
     <div className="page list-page">
-      <PageHeader title="Projects" body="把同一件事的多次沟通和材料放在一起。" actions={<button className="button primary" onClick={onCreate}>新建 Project</button>} />
-      {state === "loading" && <LoadingBlock label="正在读取 Projects…" />}
+      <PageHeader title="项目" body="把同一件事的多次沟通和材料放在一起。" actions={<button className="button primary" onClick={onCreate}>新建项目</button>} />
+      {state === "loading" && <LoadingBlock label="正在读取项目…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
-      {state === "empty" && <EmptyState title="还没有 Project" body="先建立一件要持续跟进的事。它可以是客户项目、研究、课程或任何跨多次沟通的工作。" action={<button className="button primary" onClick={onCreate}>建立第一个 Project</button>} />}
+      {state === "empty" && <EmptyState title="还没有项目" body="先建立一件要持续跟进的事。它可以是客户项目、研究、课程或任何跨多次沟通的工作。" action={<button className="button primary" onClick={onCreate}>建立第一个项目</button>} />}
       {state === "ready" && <div className="project-grid">{projects.map((item) => (
         <button className="project-card" key={item.id} onClick={() => onOpen(item.id)}>
           <span className="project-accent" />
-          <div className="project-card-top"><span className="folder-icon">▰</span>{item.pendingCount ? <span className="count-pill">还有 {item.pendingCount} 条待核对</span> : null}</div>
+          <div className="project-card-top"><span className="folder-icon" aria-hidden="true"><FolderOpen /></span>{item.pendingCount ? <span className="count-pill">还有 {item.pendingCount} 条待核对</span> : null}</div>
           <h2>{item.name}</h2>
           <p>{item.scenario?.label ? `使用场景：${item.scenario.label}` : "使用场景会在第一份材料处理后由你确认"}</p>
           <div className="project-card-meta"><span>{item.eventCount == null ? "沟通数量待读取" : `${item.eventCount} 次沟通`}</span><span>{formatDate(item.updatedAt)}</span></div>
@@ -6497,15 +7118,15 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
       <div className="project-screen-grid">
         <section className="panel event-panel">
           <div className="section-heading"><div><h2>沟通记录</h2><p>每份 Transcript 对应一次真实发生的沟通。</p></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
-          {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><b>›</b></button>)}</div>}
+          {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><ChevronRight aria-hidden="true" /></button>)}</div>}
         </section>
         <aside className="project-rail">
-          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待核对` : "待核对记录"}</h2><p>AI 提取的内容先留在审核区。只有你确认的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开审核区</button></section>
+          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待确认` : "待确认内容"}</h2><p>AI 提取的内容先留在确认区。只有你确认的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开确认区</button></section>
           <section className="panel action-panel"><h2>已确认结果</h2><p>事项概况、变化、决定、偏好、问题和风险都只读取已确认记录。</p><button className="button secondary full" onClick={() => onResults("folder-summary")}>查看全部结果</button></section>
         </aside>
       </div>
       <GlossaryPanel projectId={project.id} />
-      <section className="result-shortcuts"><div className="section-heading"><div><h2>会前查看</h2><p>从当前记录快速准备下一次沟通。</p></div></div><div>{resultTabs.slice(1).map((tab) => <button key={tab.key} onClick={() => onResults(tab.key)}><span>{tab.short.slice(0, 1)}</span><strong>{tab.label}</strong><b>›</b></button>)}</div></section>
+      <section className="result-shortcuts"><div className="section-heading"><div><h2>下次沟通准备</h2><p>从当前记录快速准备下一次沟通。</p></div></div><div>{resultTabs.slice(1).map((tab) => <button key={tab.key} onClick={() => onResults(tab.key)}><span aria-hidden="true">{resultTabIcon(tab.key)}</span><strong>{tab.label}</strong><ChevronRight aria-hidden="true" /></button>)}</div></section>
     </div>
   );
 }
@@ -6675,7 +7296,7 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
   );
 }
 
-function EventScreen({ state, issue, event, run, transcriptionRun, claims, claimsState, claimsIssue, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, onRequirePublicWorkspaceAcknowledgement, onRetryTranscription, onRetryRunStatus, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; transcriptionRun: TranscriptionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; onRequirePublicWorkspaceAcknowledgement: (action: () => void) => void; onRetryTranscription: (audioAssetId: string) => void; onRetryRunStatus: () => void; busy: string | null }) {
+function EventScreen({ state, issue, event, run, transcriptionRun, claims, claimsState, claimsIssue, assetUploadProgress, onCancelUpload, onBack, onRetry, onStart, onReview, onDebug, onOpenClaim, onAttach, onRequirePublicWorkspaceAcknowledgement, onRetryTranscription, onRetryRunStatus, busy }: { state: AsyncState; issue: ApiIssue | null; event: Event | null; run: ExtractionRun | null; transcriptionRun: TranscriptionRun | null; claims: Claim[]; claimsState: AsyncState; claimsIssue: ApiIssue | null; assetUploadProgress: AssetUploadProgress | null; onCancelUpload: () => void; onBack: () => void; onRetry: () => void; onStart: () => void; onReview: () => void; onDebug: () => void; onOpenClaim: (id: string) => void; onAttach: (input: { kind: string; filename: string; contentType: string; blob: Blob }) => Promise<void>; onRequirePublicWorkspaceAcknowledgement: (action: () => void) => void; onRetryTranscription: (audioAssetId: string) => void; onRetryRunStatus: () => void; busy: string | null }) {
   const [paste, setPaste] = useState("");
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -6693,13 +7314,13 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
       : onRetry;
   return (
     <div className="page">
-      <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} backLabel="返回项目" actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>审核结果</button>}</>} />
+      <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} backLabel="返回项目" actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>确认结果</button>}</>} />
       {issue && <ErrorNotice issue={issue} onRetry={retryIssue} />}
-      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? "✓" : "!"}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "质量门仍有提醒，请在审核区重点核对事实与关系。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
+      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "质量门仍有提醒，请在审核区重点核对事实与关系。" : run.status === "failed" ? "材料仍然保留，可以直接重新分析。" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
           <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" disabled={busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => fileRef.current?.click())}>{busy === "asset" ? "正在同步…" : "上传材料"}</button></div>
-          {busy === "asset" && <MaterialSyncingCard detail="文件已上传，正在刷新材料列表。" />}
+          {assetUploadProgress ? <AssetUploadProgressCard progress={assetUploadProgress} onCancel={onCancelUpload} /> : busy === "asset" && <MaterialSyncingCard detail="正在转换或保存材料；完成后会自动继续。" />}
           <input ref={fileRef} className="visually-hidden" type="file" accept={`.txt,.vtt,.srt,.json,${MODEL_IMAGE_FILE_ACCEPT},${AUDIO_FILE_ACCEPT}`} onChange={(change) => {
             const file = change.target.files?.[0];
             if (!file) return;
@@ -6713,9 +7334,9 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
             const assetRun = asset.kind === "audio" && transcriptionRun?.audioAssetId === asset.id ? transcriptionRun : null;
             const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
             const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
-            return <article key={asset.id}><span className="file-kind">{asset.kind === "photo" ? "IMG" : asset.kind === "audio" ? "AUD" : asset.kind === "pdf" ? "PDF" : "TXT"}</span><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
+            return <article key={asset.id}><FileKindIcon kind={asset.kind} /><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
           })}</div>}
-          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><span className="file-kind">TXT</span><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
+          {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><FileKindIcon kind="transcript" /><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
           <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { const blob = new Blob([paste], { type: "text/plain" }); void onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }).then(() => setPaste("")); })}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
         </section>
         <aside className="event-rail">
@@ -6724,7 +7345,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
       </div>
       {claimsIssue && <ErrorNotice issue={claimsIssue} compact />}
       {claimsState === "loading" && <LoadingBlock label="正在读取候选记录…" />}
-      {claims.length > 0 && <section className="inline-claims"><div className="section-heading"><div><h2>本次候选记录</h2><p>{claims.filter((item) => item.reviewStatus === "pending").length} 条仍待审核</p></div><button className="button secondary" onClick={onReview}>进入完整审核</button></div><div>{claims.slice(0, 5).map((claim) => <button key={claim.id} onClick={() => onOpenClaim(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /><b>›</b></button>)}</div></section>}
+      {claims.length > 0 && <section className="inline-claims"><div className="section-heading"><div><h2>本次候选记录</h2><p>{claims.filter((item) => item.reviewStatus === "pending").length} 条仍待确认</p></div><button className="button secondary" onClick={onReview}>进入完整确认</button></div><div>{claims.slice(0, 5).map((claim) => <button key={claim.id} onClick={() => onOpenClaim(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /><ChevronRight aria-hidden="true" /></button>)}</div></section>}
       {showFullTranscript && transcriptionRun && <TranscriptViewer run={transcriptionRun} onClose={() => setShowFullTranscript(false)} />}
     </div>
   );
@@ -6789,7 +7410,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
 function OccurrenceEvidenceCard({ evidence }: { evidence: OccurrenceCandidate["evidence"][number] }) {
   return (
     <article className="occurrence-evidence-card">
-      <div className="evidence-card-head"><span className="file-kind">{evidence.kind === "photo" ? "IMG" : evidence.kind === "document" ? "PDF" : "TXT"}</span><span><strong>{typeLabel(evidence.kind)} · {typeLabel(evidence.evidence_role)}</strong><small>Asset Version {evidence.asset_version_id}</small></span></div>
+      <div className="evidence-card-head"><FileKindIcon kind={evidence.kind} /><span><strong>{typeLabel(evidence.kind)} · {typeLabel(evidence.evidence_role)}</strong><small>Asset Version {evidence.asset_version_id}</small></span></div>
       {evidence.quote_raw && <blockquote>“{evidence.quote_raw}”</blockquote>}
       {evidence.observation && <p>{evidence.observation}</p>}
       <div className="evidence-coordinates">
@@ -6848,7 +7469,7 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
   const pending = candidate.status === "pending";
   return (
     <article className="occurrence-card">
-      <header><div><span className="eyebrow">{typeLabel(candidate.target_type)}</span><h3>{candidate.target_statement}</h3></div><span className={`status-badge ${candidate.status === "rejected" ? "danger" : pending ? "warning" : "success"}`}>{candidate.status === "confirmed" ? "已确认再次出现" : candidate.status === "rejected" ? "未采纳" : candidate.status === "converted" ? "已转为新记录" : "待审核"}</span></header>
+      <header><div><span className="eyebrow">{typeLabel(candidate.target_type)}</span><h3>{candidate.target_statement}</h3></div><span className={`status-badge ${candidate.status === "rejected" ? "danger" : pending ? "warning" : "success"}`}>{candidate.status === "confirmed" ? "已确认再次出现" : candidate.status === "rejected" ? "未采纳" : candidate.status === "converted" ? "已转为新记录" : "待确认"}</span></header>
       {candidate.proposed_statement && candidate.proposed_statement !== candidate.target_statement && <p className="proposed-occurrence"><b>这次的说法：</b>{candidate.proposed_statement}</p>}
       <div className="occurrence-evidence-list">{candidate.evidence.length ? candidate.evidence.map((item, index) => <OccurrenceEvidenceCard key={`${item.asset_version_id}:${index}`} evidence={item} />) : <p className="uncertainty">服务器没有返回可核对的新证据，不能确认。</p>}</div>
       {showConversion && pending && <form className="occurrence-conversion" onSubmit={(event) => {
@@ -6863,7 +7484,7 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
         <label><span>要新增的记录</span><textarea value={conversionText} onChange={(event) => setConversionText(event.target.value)} rows={Math.max(3, Math.min(7, statements.length + 1))} maxLength={10000} autoFocus /></label>
         {statements.length > 0 && <div className="occurrence-conversion-rows"><span>必要时修改每条记录的类别</span>{statements.slice(0, 10).map((statement, index) => <label key={statement}><strong>{index + 1}. {statement}</strong><select aria-label={`第 ${index + 1} 条记录的类别`} value={conversionTypes[statement] || defaultConversionType} onChange={(event) => setConversionTypes((current) => ({ ...current, [statement]: event.target.value as OccurrenceNewClaim["type"] }))}>{occurrenceClaimTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>)}</div>}
         {tooMany && <p className="uncertainty">一次最多生成 10 条，请删掉或合并几行。</p>}
-        <div className="occurrence-conversion-actions"><button className="button primary" type="submit" disabled={Boolean(busy) || !candidate.evidence.length || !statements.length || tooMany}>{candidateBusy ? "正在生成…" : `生成 ${statements.length || 0} 条待审核记录`}</button><button className="button quiet" type="button" disabled={Boolean(busy)} onClick={() => setShowConversion(false)}>取消</button></div>
+        <div className="occurrence-conversion-actions"><button className="button primary" type="submit" disabled={Boolean(busy) || !candidate.evidence.length || !statements.length || tooMany}>{candidateBusy ? "正在生成…" : `生成 ${statements.length || 0} 条待确认记录`}</button><button className="button quiet" type="button" disabled={Boolean(busy)} onClick={() => setShowConversion(false)}>取消</button></div>
       </form>}
       <div className="occurrence-actions"><button className="button primary" disabled={Boolean(busy) || !candidate.evidence.length || !pending} onClick={() => onVerdict(candidate, "confirm")}>{candidateBusy && !showConversion ? "正在保存…" : "确认只是再次提到"}</button>{pending && <button className="button quiet" disabled={Boolean(busy) || !candidate.evidence.length} onClick={() => setShowConversion((value) => !value)}>{showConversion ? "收起新增记录" : "这次有新变化"}</button>}<button className="button quiet danger-text" disabled={Boolean(busy) || !pending} onClick={() => onVerdict(candidate, "reject")}>不采纳这次记录</button><button className="text-button" onClick={() => onOpen(candidate.target_claim_id)}>查看原记录与旧证据</button></div>
     </article>
@@ -6894,13 +7515,13 @@ function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment,
   const proposedRelationCount = runClaims.reduce((total, claim) => total + claim.relationsForReview.filter((relation) => relation.status === "proposed").length, 0);
   return (
     <div className="page ai-draft-page">
-      <PageHeader eyebrow={event?.title || "本次沟通"} title="AI 会议信息初稿" body="按对话发生顺序先看 AI 抓到的重点。点击任意一条即可回到原句核对；初稿不会自动进入正式报告。" back={onBack} backLabel="返回核心工作台" actions={<span className="status-badge pending">待人工核对</span>} />
+      <PageHeader eyebrow={event?.title || "本次沟通"} title="AI 沟通信息初稿" body="按对话发生顺序先看 AI 抓到的重点。点击任意一条即可回到原句确认；初稿不会自动进入正式报告。" back={onBack} backLabel="返回核心工作台" actions={<span className="status-badge pending">待确认</span>} />
       {issue && <ErrorNotice issue={issue} compact />}
       {state === "loading" ? <LoadingBlock label="正在整理已经生成的 AI 初稿…" /> : <>
-        <section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>你可以立即阅读、复制或稍后核对。草稿最多帮助后续 AI 发现可能的连续信息；只有人工确认内容才能进入 Timeline、Brief 和可信报告。</p></div></section>
-        {summaryItems.length > 0 && <section className="panel draft-summary"><header><div><span className="section-kicker">会议重点</span><h2>沿着原对话快速核对</h2></div><span>{summaryItems.length} 条</span></header><ol>{summaryItems.map((item, index) => {
+        <section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>你可以立即阅读、复制或稍后确认。草稿最多帮助后续 AI 发现可能的连续信息；只有人工确认内容才能进入时间线、下次沟通准备和可信报告。</p></div></section>
+        {summaryItems.length > 0 && <section className="panel draft-summary"><header><div><span className="section-kicker">本次沟通重点</span><h2>沿着原对话快速核对</h2></div><span>{summaryItems.length} 条</span></header><ol>{summaryItems.map((item, index) => {
           const claim = claimById.get(item.claimId);
-          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{displaySpeakerLabel(item.speaker)}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并核对含义 ›</u></span></span></button></li>;
+          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{displaySpeakerLabel(item.speaker)}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并确认含义 <ChevronRight aria-hidden="true" /></u></span></span></button></li>;
         })}</ol></section>}
         {runOccurrences.length > 0 && <section className="panel draft-section draft-occurrences"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}
         {runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}
@@ -6910,24 +7531,42 @@ function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment,
   );
 }
 
-function MissingClaimModal({ eventId, initialType = "other", busy, onClose, onCreate }: { eventId: string; initialType?: OccurrenceNewClaim["type"]; busy: boolean; onClose: () => void; onCreate: (input: { statement: string; type: string; segmentIds: string[] }) => Promise<void> }) {
+function MissingClaimModal({ eventId, initialType = "other", initialSourceText = "", initialStatement = "", initialSegmentIds = [], busy, onClose, onCreate }: { eventId: string; initialType?: OccurrenceNewClaim["type"]; initialSourceText?: string; initialStatement?: string; initialSegmentIds?: string[]; busy: boolean; onClose: () => void; onCreate: (input: { eventId: string; statement: string; type: string; segmentIds: string[] }) => Promise<void> }) {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [state, setState] = useState<AsyncState>("loading");
   const [issue, setIssue] = useState<ApiIssue | null>(null);
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [statement, setStatement] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(initialSegmentIds.slice(0, 8)));
+  const [statement, setStatement] = useState(initialStatement);
   const [type, setType] = useState<OccurrenceNewClaim["type"]>(initialType);
   useEffect(() => { let active = true; void api.listEventTranscriptSegments(eventId).then((items) => { if (!active) return; setSegments(items); setState(items.length ? "ready" : "empty"); }).catch((error) => { if (!active) return; setIssue(toIssue(error)); setState("error"); }); return () => { active = false; }; }, [eventId]);
   const shown = segments.filter((segment) => !query.trim() || `${displaySpeakerLabel(segment.speaker)} ${segment.speaker || ""} ${segment.text}`.toLowerCase().includes(query.trim().toLowerCase()));
-  async function submit() { if (!statement.trim() || selected.size === 0) return; setIssue(null); try { await onCreate({ statement: statement.trim(), type, segmentIds: [...selected] }); } catch (error) { setIssue(toIssue(error)); } }
-  return <Modal title={initialType === "next_action" ? "从原文补充下一步行动" : "补上 AI 漏掉的重要信息"} description="先选一段或多段原文，再用一句话写清事实。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">{issue && <ErrorNotice issue={issue} compact />}<label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>{state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}{state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}{state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}<div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>用一句话写清楚</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：负责人周五前发送三份候选方案。" : "例如：项目预算上限为 21,500 美元。"} /></label></div><p className="muted">已选 {selected.size} 段。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p><div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待核对队列"}</button></div></div></Modal>;
+  async function submit() {
+    if (!statement.trim() || selected.size === 0) return;
+    setIssue(null);
+    try {
+      await onCreate({ eventId, statement: statement.trim(), type, segmentIds: [...selected] });
+    } catch (error) {
+      setIssue(toIssue(error));
+    }
+  }
+  return <Modal title={initialType === "next_action" ? "从原文建立下一步行动" : "补上 AI 漏掉的重要信息"} description="关联原文段落，再写清要保存的信息。保存后仍需人工确认，才会进入正式结果。" onClose={busy ? () => undefined : onClose} wide><div className="missing-claim-layout">
+    {issue && <ErrorNotice issue={issue} compact />}
+    {initialSourceText && <aside className="manual-claim-source"><span>作为行动依据的重点</span><p>{initialSourceText}</p>{initialType === "next_action" && !initialStatement && <small>这是一条事实或背景，不会直接伪装成行动。请补充具体动作；最好写清负责人和时间。</small>}</aside>}
+    <label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>
+    {state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}
+    {state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}
+    {state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}
+    <div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>{initialType === "next_action" ? "要完成什么" : "用一句话写清楚"}</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：负责人周五前发送三份候选方案。" : "例如：项目预算上限为 21,500 美元。"} /></label></div>
+    <p className="muted">已选 {selected.size} 段{initialSegmentIds.length > 8 ? `；本条重点关联 ${initialSegmentIds.length} 段，已先带入前 8 段，可手动调整` : ""}。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p>
+    <div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button><button type="button" className="button primary" disabled={busy || !statement.trim() || selected.size === 0} onClick={() => void submit()}>{busy ? "正在保存…" : "加入待确认"}</button></div>
+  </div></Modal>;
 }
 
 function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
   const outcome = session?.outcome;
   const aiInitial = (session?.initialPendingClaimCount ?? 0) + (session?.initialPendingOccurrenceCount ?? 0);
-  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮核对完成" body="下面展示 AI 初稿经过人工核对后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark">✓</span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮核对。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>直接确认、修改后确认和经过确认的人工补充会进入 Verified Ledger；拒绝内容和未处理草稿不会进入报告，也不会影响下一次沟通。</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看会前速览" : "准备下一次沟通"}</button></section></div>;
+  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮确认完成" body="下面展示 AI 草稿经过人工确认后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark" aria-hidden="true"><Check /></span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮确认。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>直接确认、修改后确认和经过确认的人工补充会进入可信存档；未采纳内容和未处理草稿不会进入报告，也不会影响下一次沟通。</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看下次沟通准备" : "准备下一次沟通"}</button></section></div>;
 }
 
 function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSession, reviewClockNow, onBack, onRetry, onOpen, onOccurrenceVerdict, onOccurrenceConvert, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; reviewSession: ReviewSession | null; reviewClockNow: number; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; busy: string | null }) {
@@ -6945,17 +7584,17 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
     : 0;
   return (
     <div className="page narrow-page">
-      <PageHeader eyebrow="Review Queue" title="审核候选记录" body="逐条查看原始证据，再选择确认、修改或不采纳。" back={onBack} backLabel="返回 AI 初稿" />
+      <PageHeader eyebrow="待确认" title="确认重要内容" body="逐条查看原始依据，再选择确认、修改或不采纳。" back={onBack} backLabel="返回 AI 草稿" />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
-      {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">真实审核计时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本次审核已完成" : "本次计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
-      <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待审核</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
-      {state === "loading" && <LoadingBlock label="正在整理审核队列…" />}
-      {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待审核记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
+      {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">确认用时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本轮确认已完成" : "本轮计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
+      <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待确认</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
+      {state === "loading" && <LoadingBlock label="正在整理待确认内容…" />}
+      {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待确认记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
       {visible.length > 0 && <div className="review-list">{visible.map((claim) => {
         const hasProposedRelations = claim.relationsForReview.some((relation) => relation.status === "proposed");
-        return <article key={claim.id} className={`review-card${claim.source === "human" ? " human-added" : ""}`}><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条证据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待核对</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看证据和处理记录 ›" : hasProposedRelations ? "打开并逐条核对事实与关系 ›" : "打开证据并决定 ›"}</span></button></article>;
+        return <article key={claim.id} className={`review-card${claim.source === "human" ? " human-added" : ""}`}><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条依据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待确认</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看依据和处理记录" : hasProposedRelations ? "打开并逐条确认内容与关系" : "打开依据并决定"}<ChevronRight aria-hidden="true" /></span></button></article>;
       })}</div>}
-      {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新证据附到原记录。如果里面有新变化，可以拆成新的待审核记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
+      {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新依据附到原记录。如果里面有新变化，可以拆成新的待确认记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
     </div>
   );
 }
@@ -6982,7 +7621,7 @@ function EvidenceCard({ evidence }: { evidence: EvidenceRef }) {
   const renderContextSegment = (segment: EvidenceContext["context"]["target"][number], target = false) => <p key={segment.id} className={target ? "selected target" : "surrounding"}><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{renderSegmentText(segment.text)}</span></p>;
   return (
     <article className="evidence-card">
-      <div className="evidence-card-head"><span className="file-kind">{audioSource ? "AUD" : evidence.kind.toLowerCase().includes("photo") || evidence.imageUrl ? "IMG" : evidence.kind.toLowerCase().includes("pdf") ? "PDF" : "TXT"}</span><span><strong>{context?.filename || evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${typeLabel(evidence.role)} · ` : ""}{formatTimestamp(context?.target.start_ms == null ? evidence.timestampStart : context.target.start_ms / 1000)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
+      <div className="evidence-card-head"><FileKindIcon kind={audioSource ? "audio" : evidence.kind} /><span><strong>{context?.filename || evidence.filename || typeLabel(evidence.kind)}</strong><small>{evidence.role ? `${typeLabel(evidence.role)} · ` : ""}{formatTimestamp(context?.target.start_ms == null ? evidence.timestampStart : context.target.start_ms / 1000)}{evidence.page ? ` · 第 ${evidence.page} 页` : ""}</small></span></div>
       {/* Evidence URLs can be short-lived signed URLs and cannot use the build-time image loader. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {evidence.imageUrl && <img src={evidence.imageUrl} alt={evidence.caption || "原始图片证据"} />}
@@ -7021,7 +7660,7 @@ function relationReviewEffect(type: string): string {
   return "接受后，两条记录会保留参考关系，不改变旧记录状态。";
 }
 
-function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingOccurrenceCount, evidence, evidenceState, issue, busy, onBack, onOpenReviewClaim, onVerdict, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; mode: "review" | "readonly"; backLabel: string; reviewClaims: Claim[]; pendingOccurrenceCount: number; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenReviewClaim: (id: string) => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
+function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingOccurrenceCount, evidence, evidenceState, issue, busy, verdictLocked, onBack, onOpenReviewClaim, onVerdict, onWithdraw, onCreateRelation }: { projectId: string | null; claim: Claim | null; mode: "review" | "readonly"; backLabel: string; reviewClaims: Claim[]; pendingOccurrenceCount: number; evidence: EvidenceRef[]; evidenceState: AsyncState; issue: ApiIssue | null; busy: string | null; verdictLocked: boolean; onBack: () => void; onOpenReviewClaim: (id: string) => void; onVerdict: (action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) => void; onWithdraw: (reason: string) => void; onCreateRelation: (input: ManualRelationSubmission) => Promise<void> }) {
   const [edit, setEdit] = useState(false);
   const [statement, setStatement] = useState(claim?.statement ?? "");
   const [claimType, setClaimType] = useState(claim?.type ?? "other");
@@ -7064,6 +7703,7 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
     (item) => editEvidenceIds.has(item.id) && (item.role === "direct" || item.role === "corroborating"),
   );
   const canSaveEdit = Boolean(
+    !verdictLocked &&
     evidenceReady &&
     statement.trim() &&
     claimType.trim() &&
@@ -7128,9 +7768,9 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
       <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending && !readonly ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} backLabel={backLabel} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
-        {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续审核队列"><header><span className="section-kicker">连续审核</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>Claim 处理完后，还有 {pendingOccurrenceCount} 条“再次出现”记录需要决定。</p>}</aside>}
+        {reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续确认列表"><header><span className="section-kicker">连续确认</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>这些记录处理完后，还有 {pendingOccurrenceCount} 条“再次出现”内容需要决定。</p>}</aside>}
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>{readonly ? "下面保留这条已确认记录的原句、前后文和来源。" : "确认前，请检查原文是否真的支持这条陈述。"}</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
-        <aside className={`verdict-panel${pending && !edit && !readonly ? " compact" : " panel detailed"}`}>{!(pending && !edit && !readonly) && <h2>{readonly ? (verified ? "已确认记录" : "未采纳记录") : edit && verified ? "修改已确认记录" : verified ? "已确认记录" : "处理记录"}</h2>}<UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读证据模式</strong><p>这条记录已经完成核对。这里仅用于查看原文，不会显示待审核队列或修改操作。</p></div>}{!readonly && (pending || (verified && edit)) && <>
+        <aside className={`verdict-panel${pending && !edit && !readonly ? " compact" : " panel detailed"}`}>{!(pending && !edit && !readonly) && <h2>{readonly ? (verified ? "已确认记录" : "未采纳记录") : edit && verified ? "修改已确认记录" : verified ? "已确认记录" : "处理记录"}</h2>}<UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读依据模式</strong><p>这条记录已经完成确认。这里仅用于查看原文，不会显示待确认列表或修改操作。</p></div>}{!readonly && pending && verdictLocked && <div className="verdict-lock-note" role="status"><AlertTriangle aria-hidden="true" /><span><strong>分析仍在整理这次沟通</strong><small>记录已经保存；分析完成后才能确认、修改或不采纳，避免当前结果因版本变化而失败。</small></span></div>}{!readonly && (pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
             <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
             <label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
@@ -7152,21 +7792,21 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
                 {relation.reason && <small><strong>模型依据：</strong>{relation.reason}</small>}
                 <small className="relation-effect">{relationReviewEffect(relation.type)}</small>
                 <div role="group" aria-label={`${relationReviewLabel(relation.type)}：${relation.targetStatement}`}>
-                  <label><input type="radio" name={`relation-${relation.id}`} checked={relationDecisions[relation.id] === "accept"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "accept" }))} />接受关系</label>
-                  <label><input type="radio" name={`relation-${relation.id}`} checked={relationDecisions[relation.id] === "reject"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "reject" }))} />拒绝关系</label>
+                  <label><input type="radio" name={`relation-${relation.id}`} disabled={verdictLocked} checked={relationDecisions[relation.id] === "accept"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "accept" }))} />接受关系</label>
+                  <label><input type="radio" name={`relation-${relation.id}`} disabled={verdictLocked} checked={relationDecisions[relation.id] === "reject"} onChange={() => setRelationDecisions((current) => ({ ...current, [relation.id]: "reject" }))} />拒绝关系</label>
                 </div>
               </article>)}
               {!relationsReviewed && <p className="uncertainty">每条关系都必须选择接受或拒绝，才能确认记录。</p>}
             </fieldset>}
             <div className="review-quick-actions" aria-label="核对操作">
-              <button className="button primary" disabled={Boolean(busy) || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", "", undefined, acceptedRelationIds)} aria-label="确认并加入正式结果">确认</button>
-              <button className="button secondary" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)} aria-label="修改后确认">修改</button>
-              <button className="button quiet danger-text" disabled={Boolean(busy)} onClick={() => onVerdict("reject", "")} aria-label="不采纳这条记录">不采纳</button>
+              <button className="button primary" disabled={Boolean(busy) || verdictLocked || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", "", undefined, acceptedRelationIds)} aria-label="确认并加入正式结果">确认</button>
+              <button className="button secondary" disabled={Boolean(busy) || verdictLocked || !evidenceReady} onClick={() => setEdit(true)} aria-label="修改后确认">修改</button>
+              <button className="button quiet danger-text" disabled={Boolean(busy) || verdictLocked} onClick={() => onVerdict("reject", "")} aria-label="不采纳这条记录">不采纳</button>
               <ReviewShortcuts
-                enabled={reviewQueue.length > 0}
-                canConfirm={!busy && evidenceReady && relationsReviewed}
-                canEdit={!busy && evidenceReady}
-                canReject={!busy}
+                enabled={reviewQueue.length > 0 && !verdictLocked}
+                canConfirm={!busy && !verdictLocked && evidenceReady && relationsReviewed}
+                canEdit={!busy && !verdictLocked && evidenceReady}
+                canReject={!busy && !verdictLocked}
                 onConfirm={() => onVerdict("confirm", "", undefined, acceptedRelationIds)}
                 onEdit={() => setEdit(true)}
                 onReject={() => onVerdict("reject", "")}
@@ -7188,13 +7828,12 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack,
   const current = resultTabs.find((item) => item.key === tab)!;
   const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
   const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
-  const secondaryTabActive = secondaryResultTabs.some((item) => item.key === tab);
   const content = <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} onCompleteAction={onCompleteAction} onDecideDraftLink={onDecideDraftLink} onOpenAiSuggestions={onOpenAiSuggestions} onAddAction={onAddAction} busyAction={busy} />;
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="项目进展" body="项目概览逐条标明 AI 草稿或已确认；时间线、下一步和会前准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} />
-      {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待核对。它们仍在审核区，没有进入下面的已确认结果。</p>}
-      <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}>{item.label}<b>›</b></button>)}</div><details className="result-nav-more" open={secondaryTabActive || undefined}><summary>更多报告 <span>{secondaryResultTabs.length}</span></summary><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}>{item.label}<b>›</b></button>)}</div></details></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在生成${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
+      <PageHeader eyebrow={project?.name} title="整个项目" body="项目概览逐条标明 AI 草稿或已确认；时间线、下一步和下次沟通准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} />
+      {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待确认。它们仍在确认区，没有进入下面的已确认结果。</p>}
+      <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div><div className="result-nav-secondary"><strong>其他视图</strong><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div></div></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在读取${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
   );
 }
@@ -7222,16 +7861,17 @@ function NewEventModal({ onClose, onCreate, busy }: { onClose: () => void; onCre
   const [title, setTitle] = useState("");
   const [type, setType] = useState("meeting");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 16));
-  return <Modal title="新增一次沟通" description="一次会面、Showing、Estimate 或 Walkthrough 对应一个 Event。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">Meeting</option><option value="showing">Showing</option><option value="estimate">Estimate</option><option value="walkthrough">Walkthrough</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建并加入材料"}</button></div></form></Modal>;
+  return <Modal title="新增一次沟通" description="会议、电话、现场走访或其他工作沟通，都可以作为一条独立记录。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他工作沟通</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建沟通"}</button></div></form></Modal>;
 }
 
 function ImportModal({ project, onClose, onImported }: { project: Project; onClose: () => void; onImported: (events: Event[]) => Promise<void> }) {
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [issue, setIssue] = useState<ApiIssue | null>(null);
-  const [progress, setProgress] = useState<string | null>(null);
+  const [progress, setProgress] = useState<TranscriptImportProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const importCreateKeys = useRef(new Map<string, string>());
   const activeSession = useRef<{ fingerprint: string; session: ImportSession } | null>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
   function chooseFiles(change: ChangeEvent<HTMLInputElement>) {
     setIssue(null);
     const files = Array.from(change.target.files ?? []);
@@ -7253,7 +7893,7 @@ function ImportModal({ project, onClose, onImported }: { project: Project; onClo
       const fingerprint = ["transcript-import", project.id, ...rows.map((row) => `${row.file.name}:${row.file.type}:${row.file.size}:${row.file.lastModified}`)].join(":");
       let session = activeSession.current?.fingerprint === fingerprint ? activeSession.current.session : null;
       if (!session) {
-        setProgress("正在建立导入会话…");
+        setProgress({ label: "正在建立导入会话…", cancelable: false });
         const idempotencyKey = importCreateKeys.current.get(fingerprint) || crypto.randomUUID();
         importCreateKeys.current.set(fingerprint, idempotencyKey);
         session = await api.beginTranscriptImport(project.id, rows.map((row) => row.file), idempotencyKey);
@@ -7262,14 +7902,20 @@ function ImportModal({ project, onClose, onImported }: { project: Project; onClo
       }
       if (!session.id || session.items.length !== rows.length) throw new Error("服务器没有为全部文件建立上传位置，未创建任何 Event。");
       for (let index = 0; index < rows.length; index += 1) {
-        setProgress(`正在上传 ${index + 1}/${rows.length}：${rows[index].file.name}`);
-        await api.uploadTranscriptItem(session, session.items[index], rows[index].file);
+        const current = rows[index];
+        const controller = new AbortController();
+        importAbortRef.current = controller;
+        setProgress({ label: `正在上传 ${index + 1}/${rows.length}`, filename: current.file.name, loaded: 0, total: current.file.size, cancelable: true });
+        await api.uploadTranscriptItem(session, session.items[index], current.file, (loaded, total) => {
+          setProgress({ label: `正在上传 ${index + 1}/${rows.length}`, filename: current.file.name, loaded, total, cancelable: true });
+        }, controller.signal);
+        if (importAbortRef.current === controller) importAbortRef.current = null;
       }
-      setProgress("正在按确认顺序建立 Event…");
+      setProgress({ label: "正在按确认顺序建立沟通记录…", cancelable: false });
       const created = await api.finalizeTranscriptImport(session.id, rows.map((row, index) => ({ item_id: session.items[index].id, title: row.title.trim(), occurred_at: new Date(row.occurredAt).toISOString(), event_type: row.eventType })));
       activeSession.current = null;
       await onImported(created);
-    } catch (error) { setIssue(toIssue(error)); setProgress(null); } finally { setBusy(false); }
+    } catch (error) { setIssue(toIssue(error)); setProgress(null); } finally { importAbortRef.current = null; setBusy(false); }
   }
-  return <Modal title="批量导入 Transcript" description={`为 ${project.name} 建立 1 至 10 次按时间排序的沟通。Finalize 失败时不会创建半套 Event。`} onClose={busy ? () => undefined : onClose} wide><form className="modal-form" onSubmit={(event) => void submit(event)}>{issue && <ErrorNotice issue={issue} compact />}{!rows.length ? <label className="file-drop"><input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /><span className="empty-symbol">＋</span><strong>选择 1–10 份 Transcript</strong><small>支持 TXT、VTT、SRT、常见 Zoom 文本和结构化 JSON</small></label> : <><div className="import-summary"><strong>{rows.length} 份文件</strong><span>请确认顺序、标题和发生时间</span><label>重新选择<input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /></label></div><div className="import-rows">{rows.map((row, index) => <article key={row.key}><span className="event-order">{index + 1}</span><div className="import-row-main"><input aria-label="Event 标题" value={row.title} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, title: event.target.value } : item))} /><div><select aria-label="Event 类型" value={row.eventType} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, eventType: event.target.value as ImportRow["eventType"] } : item))}><option value="meeting">Meeting</option><option value="showing">Showing</option><option value="estimate">Estimate</option><option value="walkthrough">Walkthrough</option></select><input aria-label="发生时间" type="datetime-local" value={row.occurredAt} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, occurredAt: event.target.value } : item))} /></div><small>{row.file.name} · {formatBytes(row.file.size)}</small></div><div className="order-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label="上移">↑</button><button type="button" disabled={index === rows.length - 1} onClick={() => move(index, 1)} aria-label="下移">↓</button></div></article>)}</div></>}{progress && <div className="progress-line"><span className="spinner" />{progress}</div>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button primary" disabled={!rows.length || busy || rows.some((row) => !row.title.trim() || !row.occurredAt)}>{busy ? "正在导入…" : `导入并建立 ${rows.length || ""} 次沟通`}</button></div></form></Modal>;
+  return <Modal title="批量导入逐字稿" description={`为 ${project.name} 建立 1 至 10 条按时间排序的沟通记录；全部文件就绪后才会一次性创建。`} onClose={busy ? () => undefined : onClose} wide><form className="modal-form" onSubmit={(event) => void submit(event)}>{issue && <ErrorNotice issue={issue} compact />}{!rows.length ? <label className="file-drop"><input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /><span className="empty-symbol" aria-hidden="true"><Plus /></span><strong>选择 1–10 份逐字稿</strong><small>支持 TXT、VTT、SRT、常见沟通文本和结构化 JSON</small></label> : <><div className="import-summary"><strong>{rows.length} 份文件</strong><span>请确认顺序、标题和发生时间</span><label>重新选择<input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /></label></div><div className="import-rows">{rows.map((row, index) => <article key={row.key}><span className="event-order">{index + 1}</span><div className="import-row-main"><input aria-label="沟通标题" value={row.title} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, title: event.target.value } : item))} /><div><select aria-label="沟通类型" value={row.eventType} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, eventType: event.target.value as ImportRow["eventType"] } : item))}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他工作沟通</option></select><input aria-label="发生时间" type="datetime-local" value={row.occurredAt} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, occurredAt: event.target.value } : item))} /></div><small>{row.file.name} · {formatBytes(row.file.size)}</small></div><div className="order-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label="上移"><ArrowUp aria-hidden="true" /></button><button type="button" disabled={index === rows.length - 1} onClick={() => move(index, 1)} aria-label="下移"><ArrowDown aria-hidden="true" /></button></div></article>)}</div></>}{progress && <section className="import-upload-progress" role="status" aria-live="polite"><div><span className="spinner" /><span><strong>{progress.label}{progress.filename ? `：${progress.filename}` : ""}</strong>{progress.loaded != null && progress.total != null && <small>{formatBytes(progress.loaded)} / {formatBytes(progress.total)}</small>}</span></div>{progress.loaded != null && progress.total != null && <progress max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />}</section>}<div className="modal-actions">{busy && progress?.cancelable ? <button type="button" className="button secondary" onClick={() => importAbortRef.current?.abort()}><X aria-hidden="true" />取消当前上传</button> : <button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button>}<button className="button primary" disabled={!rows.length || busy || rows.some((row) => !row.title.trim() || !row.occurredAt)}>{busy ? "正在导入…" : `导入并建立 ${rows.length || ""} 次沟通`}</button></div></form></Modal>;
 }

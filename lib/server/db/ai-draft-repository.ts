@@ -4,7 +4,7 @@ import {
   findMutationReplay,
   mutationReplayStatement,
 } from "@/lib/server/db/mutation-replay";
-import { ApiFault } from "@/lib/server/http/api";
+import { ApiFault, parseJson } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import type {
   AiDraftAssessmentRecord,
@@ -24,6 +24,69 @@ const RAW_TRANSCRIPT_ASSET_PREDICATE = `
   AND COALESCE(json_extract(a.metadata_json, '$.analysis_source'), 1) <> 0
   AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
 `;
+
+const COMPLETED_AI_DRAFT_STATUSES = new Set([
+  "succeeded",
+  "completed",
+  "completed_with_warnings",
+]);
+
+type PersistedSummary = {
+  sections?: Array<{
+    items?: Array<{
+      source_segment_ids?: unknown;
+    }>;
+  }>;
+};
+
+function summarySourceSegmentIds(contentJson: string): Set<string> {
+  const summary = parseJson<PersistedSummary>(contentJson, {});
+  const result = new Set<string>();
+  if (!Array.isArray(summary.sections)) return result;
+  for (const section of summary.sections) {
+    if (!section || !Array.isArray(section.items)) continue;
+    for (const item of section.items) {
+      if (!item || !Array.isArray(item.source_segment_ids)) continue;
+      for (const segmentId of item.source_segment_ids) {
+        if (typeof segmentId === "string" && segmentId) result.add(segmentId);
+      }
+    }
+  }
+  return result;
+}
+
+async function activeSummarySourceSegmentIds(
+  scope: RequestScope,
+  projectId: string,
+  eventId: string,
+  runId: string,
+): Promise<Set<string> | null> {
+  const row = await getD1()
+    .prepare(
+      `SELECT artifact.content_json
+         FROM event_ai_artifacts artifact
+         JOIN event_ai_artifact_runs artifact_run
+           ON artifact_run.id = artifact.run_id
+          AND artifact_run.workspace_id = artifact.workspace_id
+          AND artifact_run.project_id = artifact.project_id
+          AND artifact_run.event_id = artifact.event_id
+         JOIN extraction_runs extraction_run
+           ON extraction_run.id = artifact_run.extraction_run_id
+          AND extraction_run.workspace_id = artifact_run.workspace_id
+          AND extraction_run.project_id = artifact_run.project_id
+          AND extraction_run.event_id = artifact_run.event_id
+        WHERE artifact.workspace_id = ? AND artifact.project_id = ?
+          AND artifact.event_id = ? AND artifact.kind = 'summary'
+          AND artifact_run.kind = 'summary' AND artifact_run.status = 'succeeded'
+          AND artifact_run.extraction_run_id = ?
+        ORDER BY artifact.artifact_version DESC, artifact.created_at DESC
+        LIMIT 1`,
+    )
+    .bind(scope.workspaceId, projectId, eventId, runId)
+    .first<Row>();
+  if (!row || typeof row.content_json !== "string") return null;
+  return summarySourceSegmentIds(row.content_json);
+}
 
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -211,7 +274,14 @@ export async function createManualClaim(
     .prepare(
       `SELECT e.project_id, e.active_run_id, r.status AS run_status
          FROM events e
-         LEFT JOIN extraction_runs r ON r.id = e.active_run_id
+         JOIN projects p
+           ON p.id = e.project_id AND p.workspace_id = e.workspace_id
+          AND p.deleted_at IS NULL
+         LEFT JOIN extraction_runs r
+           ON r.id = e.active_run_id
+          AND r.workspace_id = e.workspace_id
+          AND r.project_id = e.project_id
+          AND r.event_id = e.id
         WHERE e.id = ? AND e.workspace_id = ?`,
     )
     .bind(eventId, scope.workspaceId)
@@ -220,14 +290,33 @@ export async function createManualClaim(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Event was not found.");
   }
   const runId = event.active_run_id == null ? "" : String(event.active_run_id);
-  if (!runId || !["succeeded", "completed", "completed_with_warnings"].includes(String(event.run_status))) {
-    throw new ApiFault(409, "RUN_STATE_CONFLICT", "A missed fact can only be added after this Event has an AI draft.");
+  const hasCompletedDraft = runId !== "" && COMPLETED_AI_DRAFT_STATUSES.has(String(event.run_status));
+  const isEarlySourceBackedAction = runId !== "" && !hasCompletedDraft && input.type === "next_action";
+  if (!hasCompletedDraft && !isEarlySourceBackedAction) {
+    throw new ApiFault(
+      409,
+      "RUN_STATE_CONFLICT",
+      "A source-backed next action can be added once this Event's Summary is ready; other missed facts require a completed AI draft.",
+    );
   }
   const uniqueSegmentIds = [...new Set(input.segment_ids)];
+  if (!uniqueSegmentIds.length) {
+    throw new ApiFault(
+      400,
+      "EVIDENCE_SCOPE_INVALID",
+      "At least one raw Transcript passage from this Event is required.",
+    );
+  }
   const segmentRows = await all(
     `SELECT ts.id, ts.asset_version_id, ts.speaker, ts.start_ms, ts.end_ms, ts.text_raw
        FROM text_segments ts
-       JOIN assets a ON a.id = ts.asset_id
+       JOIN assets a
+         ON a.id = ts.asset_id
+        AND a.workspace_id = ts.workspace_id
+        AND a.project_id = ts.project_id
+        AND a.event_id = ts.event_id
+       JOIN asset_versions av
+         ON av.id = ts.asset_version_id AND av.asset_id = a.id
       WHERE ts.workspace_id = ? AND ts.project_id = ? AND ts.event_id = ?
         AND ts.id IN (${uniqueSegmentIds.map(() => "?").join(",")})
         AND ${RAW_TRANSCRIPT_ASSET_PREDICATE}
@@ -240,6 +329,28 @@ export async function createManualClaim(
       "EVIDENCE_SCOPE_INVALID",
       "One or more selected passages are not raw Transcript evidence for this Event.",
     );
+  }
+  if (isEarlySourceBackedAction) {
+    const summarySegmentIds = await activeSummarySourceSegmentIds(
+      scope,
+      String(event.project_id),
+      eventId,
+      runId,
+    );
+    if (summarySegmentIds === null) {
+      throw new ApiFault(
+        409,
+        "RUN_STATE_CONFLICT",
+        "Wait for this Event's Summary before adding an action while fact extraction is still running.",
+      );
+    }
+    if (!uniqueSegmentIds.every((segmentId) => summarySegmentIds.has(segmentId))) {
+      throw new ApiFault(
+        400,
+        "EVIDENCE_SCOPE_INVALID",
+        "An action added before fact extraction finishes must use source passages cited by this Event's active Summary.",
+      );
+    }
   }
 
   const claimId = id("clm");

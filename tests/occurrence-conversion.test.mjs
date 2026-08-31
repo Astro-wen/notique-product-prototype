@@ -246,6 +246,6 @@ test("review UI can split a mistaken reaffirmation into pending records", async 
   assert.match(client, /result\.converted_claims\.length !== newClaims\.length/);
   assert.match(page, /每行写一条记录/);
   assert.match(page, /原记录不会被修改/);
-  assert.match(page, /生成 \$\{statements\.length \|\| 0\} 条待审核记录/);
+  assert.match(page, /生成 \$\{statements\.length \|\| 0\} 条待确认记录/);
   assert.match(page, /runOccurrenceConversion[\s\S]{0,900}loadReviewQueue/);
 });

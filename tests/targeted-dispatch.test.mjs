@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { declarationSource, statementContaining } from "./helpers/ui-source.mjs";
+import { statementContaining } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -202,7 +202,7 @@ test("queued browser wake survives polling object replacement and only targets t
   );
 });
 
-test("primary queued status and timer expose server queue cycles and attempts", async () => {
+test("primary queued status stays simple while server queue cycles remain durable", async () => {
   const [page, repository, types] = await Promise.all([
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "lib/server/db/workflow-repository.ts"), "utf8"),
@@ -211,17 +211,8 @@ test("primary queued status and timer expose server queue cycles and attempts", 
   assert.match(page, /if \(run\.status === "queued"\) return "正在启动分析"/);
   assert.match(page, /queued: "正在启动分析"/);
 
-  const timing = declarationSource("runTimingItems");
-  for (const field of [
-    "firstQueuedAt",
-    "currentQueuedAt",
-    "firstStartedAt",
-    "currentStartedAt",
-    "processingAttemptNo",
-    "dispatchAttemptNo",
-  ]) {
-    assert.match(timing, new RegExp(`${field}: run\\.${field}`));
-  }
+  assert.doesNotMatch(page, /function runTimingItems/);
+  assert.doesNotMatch(page, /处理详情/);
   assert.doesNotMatch(page, /item\.attempt[\s\S]*第 \$\{item\.attempt\} 次/);
   assert.match(repository, /er\.first_queued_at AS extraction_first_queued_at/);
   assert.match(repository, /er\.current_queued_at AS extraction_current_queued_at/);

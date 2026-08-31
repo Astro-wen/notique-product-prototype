@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile, readdir, stat } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
@@ -432,6 +433,673 @@ test("transcript finalization and extraction retries are race-safe", async () =>
   );
 });
 
+test("Asset abort is scoped, idempotent, cleans staged storage, and fences upload/finalize races", async () => {
+  const [core, route, schema, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("app/api/v1/[...segments]/route.ts"),
+    read("db/schema.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const abort = core.slice(
+    core.indexOf("export async function abandonAssetUpload"),
+    core.indexOf("export async function finalizeAsset"),
+  );
+  const finalize = core.slice(
+    core.indexOf("export async function finalizeAsset"),
+    core.indexOf("export async function getAsset"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+
+  assert.match(route, /abandonAssetUpload/);
+  assert.match(
+    route,
+    /segments\[0\] === ["']assets["'][\s\S]{0,100}segments\[2\] === ["']abort["'][\s\S]{0,140}abandonAssetUpload\(scope, segments\[1\]\)/,
+    "POST /assets/:id/abort must call the scoped repository operation",
+  );
+  assert.doesNotMatch(
+    schema.slice(schema.indexOf("export const mutationReplays"), schema.indexOf("export const projects")),
+    /assetId|asset_id|assets\.id/,
+    "retaining a terminal Asset must keep init mutation replay references resolvable",
+  );
+  assert.match(
+    upload,
+    /processing_status = 'uploading' AND staged_r2_key IS NULL/,
+    "content upload must CAS only from uploading",
+  );
+  assert.match(upload, /getEvidenceBucket\(\)\.delete\(key\)/);
+  assert.doesNotMatch(upload, /current\?\.staged_r2_key === key \|\| current\?\.current_version_id/);
+  assert.match(
+    upload,
+    /processing_status\) === "parsing"[\s\S]{0,180}staged_r2_key === key[\s\S]{0,100}staged_sha256 === sha[\s\S]{0,120}return getAsset/,
+    "only an identical parsing winner may replay a concurrent content PUT",
+  );
+  assert.match(
+    upload,
+    /current\?\.current_version_id[\s\S]{0,220}SELECT r2_original_key FROM asset_versions[\s\S]{0,200}owner\?\.r2_original_key === key[\s\S]{0,220}getEvidenceBucket\(\)\.delete\(key\)/,
+    "a late PUT after finalize may keep only the exact object owned by the immutable version",
+  );
+  assert.match(
+    upload,
+    /processing_status\) === "failed"[\s\S]{0,500}SET staged_r2_key = \?, staged_sha256 = \?[\s\S]{0,600}SET staged_r2_key = NULL/,
+    "a late PUT after abort must delete its object or leave durable cleanup work",
+  );
+  assert.match(
+    abort,
+    /workspace_id = \?[\s\S]{0,120}current_version_id IS NULL[\s\S]{0,120}processing_status IN \('uploading', 'parsing'\)/,
+  );
+  assert.match(abort, /processing_status = 'failed', failure_code = 'UPLOAD_ABORTED'/);
+  assert.match(
+    abort,
+    /if \(current\.current_version_id\) return getAsset\(scope, assetId\);[\s\S]{0,500}recomputeEventMaterialReadiness\(scope, String\(current\.event_id\)\)[\s\S]{0,260}getEvidenceBucket\(\)\.delete\(stagedKey\)/,
+    "abort must reread the winner before deleting staged storage",
+  );
+  assert.match(
+    abort,
+    /processing_status = 'failed' AND staged_r2_key = \?/,
+    "only the same terminal staged key may be cleared after R2 deletion",
+  );
+  assert.match(
+    finalize,
+    /INSERT INTO mutation_guards[\s\S]{0,500}processing_status = 'parsing'[\s\S]{0,180}staged_r2_key = \? AND staged_sha256 = \?/,
+    "finalize must atomically guard the exact parsing payload",
+  );
+  assert.match(
+    finalize,
+    /UPDATE assets[\s\S]{0,280}processing_status = 'parsing'[\s\S]{0,160}staged_r2_key = \? AND staged_sha256 = \?/,
+    "finalize may publish only the exact still-active staged payload",
+  );
+  assert.match(
+    readiness,
+    /material_status = CASE[\s\S]{0,180}material_status = 'archived'[\s\S]{0,1200}processing_status <> 'ready'/,
+    "a cancelled tombstone must not block a later successful Asset from making its Event ready",
+  );
+  assert.match(readiness, /analysis_source'[\s\S]*artifact_kind'[\s\S]*transcription_chunk'/);
+  assert.match(finalize, /eventMaterialReadinessStatement\(scope, String\(row\.event_id\), timestamp\)/);
+  assert.match(
+    workflow,
+    /WITH material_counts AS \([\s\S]{0,500}COALESCE\(failure_code, ''\) NOT IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)/,
+    "cancelled tombstones must not appear as failed or processing workflow material",
+  );
+  assert.match(
+    core.slice(core.indexOf("export async function getEvent"), core.indexOf("export async function createTranscriptImport")),
+    /COALESCE\(a\.failure_code, ''\) NOT IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)/,
+    "cancelled tombstones must not reappear as user-visible Event material",
+  );
+});
+
+test("Asset abort SQL prevents zombie processing rows under D1/SQLite race ordering", async () => {
+  const [core, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const abort = core.slice(
+    core.indexOf("export async function abandonAssetUpload"),
+    core.indexOf("export async function finalizeAsset"),
+  );
+  const finalize = core.slice(
+    core.indexOf("export async function finalizeAsset"),
+    core.indexOf("export async function getAsset"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const sql = (section, expression, label) => {
+    const match = section.match(expression);
+    assert.ok(match, `${label} SQL was not found in the repository`);
+    return match[1];
+  };
+  const uploadCasSql = sql(
+    upload,
+    /`(UPDATE assets[^`]*?processing_status = 'uploading' AND staged_r2_key IS NULL)`/,
+    "upload CAS",
+  );
+  const abortCasSql = sql(
+    abort,
+    /`(UPDATE assets\s+SET processing_status = 'failed'[^`]*?processing_status IN \('uploading', 'parsing'\))`/,
+    "abort CAS",
+  );
+  const cleanupSql = sql(
+    abort,
+    /`(UPDATE assets\s+SET staged_r2_key = NULL[^`]*?processing_status = 'failed' AND staged_r2_key = \?)`/,
+    "abort cleanup",
+  );
+  const finalizeGuardSql = sql(
+    finalize,
+    /`(INSERT INTO mutation_guards[^`]*?staged_r2_key = \? AND staged_sha256 = \?[^`]*?END, \?)`/,
+    "finalize guard",
+  );
+  const finalizeCasSql = sql(
+    finalize,
+    /`(UPDATE assets\s+SET current_version_id = \?[^`]*?staged_r2_key = \? AND staged_sha256 = \?)`/,
+    "finalize CAS",
+  );
+  const eventReadySql = sql(
+    readiness,
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+    "Event material readiness update",
+  );
+  const materialCountsSql = sql(
+    workflow,
+    /WITH material_counts AS \(\s*([\s\S]*?GROUP BY event_id)\s*\)\s*SELECT/,
+    "workflow material counts",
+  );
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE mutation_guards (
+        id TEXT PRIMARY KEY,
+        guard_value INTEGER NOT NULL CHECK (guard_value = 1),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        current_version_id TEXT,
+        staged_r2_key TEXT,
+        staged_sha256 TEXT,
+        staged_mime_type TEXT,
+        staged_size_bytes INTEGER,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE asset_versions (
+        id TEXT PRIMARY KEY,
+        asset_id TEXT NOT NULL,
+        r2_original_key TEXT NOT NULL
+      );
+      INSERT INTO events VALUES ('event-a', 'ws-a', 'draft', 't0');
+      INSERT INTO assets VALUES
+        ('uploading', 'ws-a', 'event-a', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', 't0'),
+        ('staged', 'ws-a', 'event-a', 'parsing', NULL, 'r2/staged', 'sha-staged', 'text/plain', 3, NULL, '{}', 't0'),
+        ('wrong-scope', 'ws-b', 'event-b', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', 't0'),
+        ('ready', 'ws-a', 'event-a', 'ready', 'av-ready', 'r2/ready', 'sha-ready', 'text/plain', 3, NULL, '{}', 't0'),
+        ('finalize-live', 'ws-a', 'event-a', 'parsing', NULL, 'r2/live', 'sha-live', 'text/plain', 3, NULL, '{}', 't0');
+      INSERT INTO asset_versions VALUES ('av-ready', 'ready', 'r2/ready');
+    `);
+
+    const abortCas = database.prepare(abortCasSql);
+    const uploadCas = database.prepare(uploadCasSql);
+    const cleanup = database.prepare(cleanupSql);
+
+    assert.equal(abortCas.run("t1", "uploading", "ws-a").changes, 1);
+    assert.equal(
+      uploadCas.run("r2/late", "sha-late", "text/plain", 3, "t2", "uploading", "ws-a").changes,
+      0,
+      "a content request that reaches D1 after abort must not advance to parsing",
+    );
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, failure_code FROM assets WHERE id = 'uploading'").get() },
+      { processing_status: "failed", failure_code: "UPLOAD_ABORTED" },
+    );
+    assert.equal(abortCas.run("t3", "uploading", "ws-a").changes, 0, "abort must be idempotent");
+
+    assert.equal(abortCas.run("t1", "staged", "ws-a").changes, 1);
+    const stagedKey = database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'staged'").get().staged_r2_key;
+    assert.equal(stagedKey, "r2/staged", "the key stays durable until object deletion succeeds");
+    const storedObjects = new Set([stagedKey]);
+    storedObjects.delete(stagedKey);
+    assert.equal(cleanup.run("t2", "staged", "ws-a", stagedKey).changes, 1);
+    assert.equal(storedObjects.size, 0);
+    assert.equal(database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'staged'").get().staged_r2_key, null);
+
+    assert.equal(abortCas.run("t1", "wrong-scope", "ws-a").changes, 0);
+    assert.equal(
+      database.prepare("SELECT processing_status FROM assets WHERE id = 'wrong-scope'").get().processing_status,
+      "uploading",
+    );
+    assert.equal(abortCas.run("t1", "ready", "ws-a").changes, 0);
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, current_version_id, staged_r2_key FROM assets WHERE id = 'ready'").get() },
+      { processing_status: "ready", current_version_id: "av-ready", staged_r2_key: "r2/ready" },
+      "abort must not mutate or delete finalized content",
+    );
+
+    assert.throws(() => {
+      database.exec("BEGIN");
+      try {
+        database.prepare(finalizeGuardSql).run(
+          "guard-aborted", "staged", "ws-a", "r2/staged", "sha-staged", "t4",
+        );
+        database.prepare("INSERT INTO asset_versions VALUES (?, ?, ?)").run(
+          "av-should-not-exist", "staged", "r2/staged",
+        );
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }, /CHECK constraint failed/);
+    assert.equal(
+      database.prepare("SELECT COUNT(*) AS count FROM asset_versions WHERE id = 'av-should-not-exist'").get().count,
+      0,
+      "an abort winner must make the whole finalize batch roll back",
+    );
+
+    database.exec("BEGIN");
+    database.prepare(finalizeGuardSql).run(
+      "guard-live", "finalize-live", "ws-a", "r2/live", "sha-live", "t5",
+    );
+    database.prepare("INSERT INTO asset_versions VALUES (?, ?, ?)").run(
+      "av-live", "finalize-live", "r2/live",
+    );
+    assert.equal(
+      database.prepare(finalizeCasSql).run(
+        "av-live", "t5", "finalize-live", "ws-a", "r2/live", "sha-live",
+      ).changes,
+      1,
+    );
+    database.prepare(eventReadySql).run(
+      "event-a", "ws-a", "event-a", "ws-a", "t5", "event-a", "ws-a",
+    );
+    database.prepare("DELETE FROM mutation_guards WHERE id = ?").run("guard-live");
+    database.exec("COMMIT");
+    assert.equal(abortCas.run("t6", "finalize-live", "ws-a").changes, 0);
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, current_version_id FROM assets WHERE id = 'finalize-live'").get() },
+      { processing_status: "ready", current_version_id: "av-live" },
+      "a finalize winner must remain immutable under a later abort",
+    );
+    assert.equal(
+      database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status,
+      "ready",
+      "old UPLOAD_ABORTED rows must not block a successful re-upload from making the Event ready",
+    );
+    const counts = database.prepare(materialCountsSql).get("ws-a");
+    assert.deepEqual(
+      { ...counts },
+      {
+        event_id: "event-a",
+        material_total: 2,
+        material_ready: 2,
+        material_processing: 0,
+        material_failed: 0,
+      },
+      "workflow material counts must contain only the two successful Assets",
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("Event material readiness is recomputed from live user sources", async () => {
+  const core = await read("lib/server/db/core-repository.ts");
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const match = readiness.match(
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+  );
+  assert.ok(match, "Event material readiness SQL was not found");
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL
+      );
+      INSERT INTO events VALUES
+        ('event-a', 'ws-a', 'draft', 't0'),
+        ('event-b', 'ws-a', 'ready', 't0'),
+        ('event-archived', 'ws-a', 'archived', 't0'),
+        ('event-other', 'ws-b', 'ready', 't0');
+      INSERT INTO assets VALUES
+        ('ready-a', 'ws-a', 'event-a', 'ready', NULL, '{}'),
+        ('parsing-b', 'ws-a', 'event-a', 'parsing', NULL, '{}'),
+        ('internal', 'ws-a', 'event-a', 'parsing', NULL, '{"analysis_source":false}'),
+        ('readable', 'ws-a', 'event-a', 'parsing', NULL, '{"artifact_kind":"readable_transcript"}'),
+        ('chunk', 'ws-a', 'event-a', 'parsing', NULL, '{"transcription_chunk":true}'),
+        ('internal-only', 'ws-a', 'event-b', 'ready', NULL, '{"analysis_source":false}'),
+        ('archived-ready', 'ws-a', 'event-archived', 'ready', NULL, '{}'),
+        ('other-ready', 'ws-b', 'event-other', 'ready', NULL, '{}');
+    `);
+    const recompute = database.prepare(match[1]);
+    const run = (eventId, workspaceId = "ws-a") => recompute.run(
+      eventId,
+      workspaceId,
+      eventId,
+      workspaceId,
+      "t1",
+      eventId,
+      workspaceId,
+    );
+
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "draft");
+    database.prepare("UPDATE assets SET processing_status='failed', failure_code='UPLOAD_ABORTED' WHERE id='parsing-b'").run();
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "ready");
+    database.prepare("INSERT INTO assets VALUES ('new-user-upload', 'ws-a', 'event-a', 'uploading', NULL, '{}')").run();
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "draft");
+
+    run("event-b");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-b'").get().material_status, "draft");
+    run("event-archived");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-archived'").get().material_status, "archived");
+    run("event-other", "ws-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-other'").get().material_status, "ready");
+  } finally {
+    database.close();
+  }
+});
+
+test("completed audio transcription durably ensures automatic extraction", async () => {
+  const [automatic, outbox, worker] = await Promise.all([
+    read("lib/server/jobs/automatic-extraction.ts"),
+    read("lib/server/jobs/outbox.ts"),
+    read("worker/index.ts"),
+  ]);
+  const candidateMatch = automatic.match(
+    /const candidates = await all\(\s*`([^`]+)`/,
+  );
+  assert.ok(candidateMatch, "automatic extraction candidate SQL was not found");
+  assert.match(automatic, /tr\.parent_run_id IS NULL/);
+  assert.match(automatic, /tr\.status = 'succeeded'/);
+  assert.match(automatic, /source_audio\.current_version_id = tr\.audio_asset_version_id/);
+  assert.match(automatic, /json_each\(CASE WHEN json_valid\(er\.input_manifest_json\)/);
+  assert.match(automatic, /TRANSCRIPTION_NOT_READY/);
+  assert.match(automatic, /MAX_EXTRACTION_ASSET_VERSIONS\s*=\s*25/);
+  assert.match(automatic, /auto-transcription\.v1:\$\{digest\}/);
+  assert.match(automatic, /previousRuns\.find[\s\S]{0,300}sameIds/);
+  assert.match(automatic, /createExtractionRun\([\s\S]{0,300}assetVersionIds/);
+  assert.match(outbox, /ensureAutomaticExtractionRuns/);
+  assert.ok(
+    outbox.indexOf("await ensureAutomaticExtractionRuns()") <
+      outbox.indexOf("dispatchDueTranscriptionOutbox()"),
+    "the durable ensure must run before the Cron dispatch pass",
+  );
+  assert.match(worker, /sweepAndDispatch\(\)/);
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        current_version_id TEXT,
+        processing_status TEXT NOT NULL
+      );
+      CREATE TABLE transcription_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        audio_asset_id TEXT NOT NULL,
+        audio_asset_version_id TEXT NOT NULL,
+        parent_run_id TEXT,
+        status TEXT NOT NULL,
+        derived_transcript_asset_id TEXT,
+        derived_transcript_asset_version_id TEXT,
+        finished_at TEXT
+      );
+      CREATE TABLE extraction_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        input_manifest_json TEXT NOT NULL
+      );
+      INSERT INTO projects VALUES ('project-a', 'ws-a', NULL);
+      INSERT INTO events VALUES
+        ('event-new', 'ws-a', 'ready'),
+        ('event-covered', 'ws-a', 'ready'),
+        ('event-draft', 'ws-a', 'draft'),
+        ('event-stale', 'ws-a', 'ready'),
+        ('event-child-only', 'ws-a', 'ready');
+      INSERT INTO assets VALUES
+        ('audio-new', 'ws-a', 'event-new', 'audio-version-new', 'ready'),
+        ('derived-new', 'ws-a', 'event-new', 'transcript-version-new', 'ready'),
+        ('audio-covered', 'ws-a', 'event-covered', 'audio-version-covered', 'ready'),
+        ('derived-covered', 'ws-a', 'event-covered', 'transcript-version-covered', 'ready'),
+        ('audio-draft', 'ws-a', 'event-draft', 'audio-version-draft', 'ready'),
+        ('derived-draft', 'ws-a', 'event-draft', 'transcript-version-draft', 'ready'),
+        ('audio-stale', 'ws-a', 'event-stale', 'audio-version-current', 'ready'),
+        ('derived-stale', 'ws-a', 'event-stale', 'transcript-version-old', 'ready'),
+        ('audio-child', 'ws-a', 'event-child-only', 'audio-version-child', 'ready'),
+        ('derived-child', 'ws-a', 'event-child-only', 'transcript-version-child', 'ready');
+      INSERT INTO transcription_runs VALUES
+        ('tr-new', 'ws-a', 'project-a', 'event-new', 'audio-new', 'audio-version-new', NULL, 'succeeded', 'derived-new', 'transcript-version-new', '2026-01-01T00:00:00Z'),
+        ('tr-covered', 'ws-a', 'project-a', 'event-covered', 'audio-covered', 'audio-version-covered', NULL, 'succeeded', 'derived-covered', 'transcript-version-covered', '2026-01-02T00:00:00Z'),
+        ('tr-draft', 'ws-a', 'project-a', 'event-draft', 'audio-draft', 'audio-version-draft', NULL, 'succeeded', 'derived-draft', 'transcript-version-draft', '2026-01-03T00:00:00Z'),
+        ('tr-stale', 'ws-a', 'project-a', 'event-stale', 'audio-stale', 'audio-version-old', NULL, 'succeeded', 'derived-stale', 'transcript-version-old', '2026-01-04T00:00:00Z'),
+        ('tr-child', 'ws-a', 'project-a', 'event-child-only', 'audio-child', 'audio-version-child', 'parent-run', 'succeeded', 'derived-child', 'transcript-version-child', '2026-01-05T00:00:00Z');
+      INSERT INTO extraction_runs VALUES (
+        'run-covered', 'ws-a', 'event-covered',
+        '[{"asset_version_id":"transcript-version-covered"}]'
+      );
+    `);
+    const rows = database.prepare(candidateMatch[1]).all(50);
+    assert.deepEqual(
+      rows.map((row) => row.event_id),
+      ["event-new"],
+      "only a current, ready, top-level, unconsumed transcription may trigger the repair path",
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("stale Asset upload leases self-heal after a lost abort without blocking ready material", async () => {
+  const [core, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const sweep = core.slice(
+    core.indexOf("export async function expireStaleAssetUploads"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const heartbeat = core.slice(
+    core.indexOf("export async function heartbeatAssetUpload"),
+    core.indexOf("export async function expireStaleAssetUploads"),
+  );
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function expireStaleAssetUploads"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const sql = (section, expression, label) => {
+    const match = section.match(expression);
+    assert.ok(match, `${label} SQL was not found in the repository`);
+    return match[1];
+  };
+
+  assert.match(core, /STALE_ASSET_UPLOAD_TTL_MS\s*=\s*15 \* 60_000/);
+  assert.match(heartbeat, /workspace_id = \?/);
+  assert.match(heartbeat, /current_version_id IS NULL/);
+  assert.match(heartbeat, /processing_status = 'uploading'/);
+  assert.match(sweep, /workspace_id = \?/);
+  assert.match(sweep, /current_version_id IS NULL/);
+  assert.match(sweep, /updated_at < \?/);
+  assert.match(sweep, /STALE_ASSET_SWEEP_LIMIT/);
+  assert.match(sweep, /failure_code = 'UPLOAD_EXPIRED'/);
+  assert.match(sweep, /getEvidenceBucket\(\)\.delete\(stagedKey\)/);
+  assert.match(sweep, /const activeCandidates = await all[\s\S]*const cleanupCandidates = await all/);
+  assert.match(sweep, /catch \{[\s\S]{0,700}UPDATE assets SET updated_at = \?[\s\S]{0,500}continue;/);
+  assert.match(
+    core.slice(core.indexOf("export async function initializeAsset"), core.indexOf("function maxAssetBytes")),
+    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,300}findMutationReplay/,
+    "asset init must sweep before replaying an abandoned init response",
+  );
+  assert.match(
+    core.slice(core.indexOf("export async function getEvent"), core.indexOf("export async function createTranscriptImport")),
+    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,1600}eventRecord\(event\)/,
+  );
+  assert.match(
+    workflow,
+    /getProject\(scope, projectId\)[\s\S]{0,100}expireStaleAssetUploads\(scope, \{ projectId \}\)/,
+  );
+
+  const expireCasSql = sql(
+    sweep,
+    /`(UPDATE assets\s+SET processing_status = 'failed', failure_code = 'UPLOAD_EXPIRED'[^`]*?updated_at < \?)`/,
+    "stale upload CAS",
+  );
+  const heartbeatSql = sql(
+    heartbeat,
+    /`(UPDATE assets SET updated_at = \?[^`]*?processing_status = 'uploading')`/,
+    "upload heartbeat CAS",
+  );
+  const cleanupSql = sql(
+    sweep,
+    /`(UPDATE assets\s+SET staged_r2_key = NULL[^`]*?failure_code IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)[^`]*?staged_r2_key = \?)`/,
+    "stale object cleanup",
+  );
+  const eventRecoverySql = sql(
+    readiness,
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+    "stale Event recovery",
+  );
+  const uploadCasSql = sql(
+    upload,
+    /`(UPDATE assets[^`]*?processing_status = 'uploading' AND staged_r2_key IS NULL)`/,
+    "content upload CAS",
+  );
+  const materialCountsMatch = workflow.match(
+    /WITH material_counts AS \(\s*([\s\S]*?GROUP BY event_id)\s*\)\s*SELECT/,
+  );
+  assert.ok(materialCountsMatch);
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        current_version_id TEXT,
+        staged_r2_key TEXT,
+        staged_sha256 TEXT,
+        staged_mime_type TEXT,
+        staged_size_bytes INTEGER,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO events VALUES
+        ('event-stale', 'ws-a', 'draft', 'old'),
+        ('event-staged', 'ws-a', 'draft', 'old'),
+        ('event-fresh', 'ws-a', 'draft', 'new');
+      INSERT INTO assets VALUES
+        ('ready-stale', 'ws-a', 'project-a', 'event-stale', 'ready', 'av-ready-stale', 'r2/ready-stale', 'sha-ready-stale', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('lost-upload', 'ws-a', 'project-a', 'event-stale', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('ready-staged', 'ws-a', 'project-a', 'event-staged', 'ready', 'av-ready-staged', 'r2/ready-staged', 'sha-ready-staged', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('lost-staged', 'ws-a', 'project-a', 'event-staged', 'parsing', NULL, 'r2/lost-staged', 'sha-lost-staged', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('fresh-upload', 'ws-a', 'project-a', 'event-fresh', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('other-scope', 'ws-b', 'project-b', 'event-other', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('already-final', 'ws-a', 'project-a', 'event-stale', 'ready', 'av-final', 'r2/final', 'sha-final', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z');
+    `);
+    const heartbeatCas = database.prepare(heartbeatSql);
+    assert.equal(
+      heartbeatCas.run("2026-08-30T00:20:00.000Z", "fresh-upload", "ws-a").changes,
+      1,
+      "a healthy slow upload must renew its lease before the stale sweep",
+    );
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "other-scope", "ws-a").changes, 0);
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "already-final", "ws-a").changes, 0);
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "lost-staged", "ws-a").changes, 0);
+    const expireCas = database.prepare(expireCasSql);
+    const cutoff = "2026-08-30T00:05:00.000Z";
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "lost-upload", "ws-a", cutoff).changes, 1);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "lost-staged", "ws-a", cutoff).changes, 1);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "fresh-upload", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "other-scope", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "already-final", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:21:00.000Z", "lost-upload", "ws-a", cutoff).changes, 0);
+    assert.equal(
+      database.prepare(uploadCasSql).run(
+        "r2/late", "sha-late", "text/plain", 3, "2026-08-30T00:21:00.000Z", "lost-upload", "ws-a",
+      ).changes,
+      0,
+      "an upload response arriving after lease expiry cannot revive the tombstone",
+    );
+
+    const stagedKey = database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'lost-staged'").get().staged_r2_key;
+    const storedObjects = new Set([stagedKey]);
+    storedObjects.delete(stagedKey);
+    assert.equal(
+      database.prepare(cleanupSql).run(
+        "2026-08-30T00:21:00.000Z", "lost-staged", "ws-a", stagedKey,
+      ).changes,
+      1,
+    );
+    assert.equal(storedObjects.size, 0);
+
+    const recoverEvent = database.prepare(eventRecoverySql);
+    recoverEvent.run("event-stale", "ws-a", "event-stale", "ws-a", "2026-08-30T00:21:00.000Z", "event-stale", "ws-a");
+    recoverEvent.run("event-staged", "ws-a", "event-staged", "ws-a", "2026-08-30T00:21:00.000Z", "event-staged", "ws-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-stale'").get().material_status, "ready");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-staged'").get().material_status, "ready");
+
+    const counts = database.prepare(materialCountsMatch[1]).all("ws-a");
+    const byEvent = new Map(counts.map((row) => [row.event_id, row]));
+    assert.deepEqual(
+      { ...byEvent.get("event-stale") },
+      { event_id: "event-stale", material_total: 2, material_ready: 2, material_processing: 0, material_failed: 0 },
+    );
+    assert.deepEqual(
+      { ...byEvent.get("event-staged") },
+      { event_id: "event-staged", material_total: 1, material_ready: 1, material_processing: 0, material_failed: 0 },
+    );
+    assert.equal(byEvent.get("event-fresh").material_processing, 1, "a fresh upload must keep its active lease");
+  } finally {
+    database.close();
+  }
+});
+
 test("database verdict paths preserve the domain state and evidence rules", async () => {
   const verdicts = await read("lib/server/db/verdict-repository.ts");
   const confirmSection = verdicts.slice(
@@ -678,6 +1346,92 @@ test("workspace run concurrency is enforced before queueing without a daily mode
     /activeCount\s*>=\s*maxConcurrentRuns[\s\S]*?429[\s\S]*?WORKSPACE_RUN_LIMIT/i,
     "a failed concurrency guard must be translated to the stable 429 WORKSPACE_RUN_LIMIT contract",
   );
+});
+
+test("one Event can own only one active paid Run across tabs and devices", async () => {
+  const core = await read("lib/server/db/core-repository.ts");
+  const extraction = core.slice(
+    core.indexOf("export async function createExtractionRun"),
+    core.indexOf("export async function getExtractionRun"),
+  );
+
+  assert.match(
+    extraction,
+    /const activeEventRun = await first[\s\S]{0,700}activeEventRun\.input_hash\) !== inputHash[\s\S]{0,180}RUN_STATE_CONFLICT[\s\S]{0,900}created: false/,
+    "the normal path must reuse an identical active Event Run and reject a different manifest",
+  );
+  assert.match(
+    extraction,
+    /NOT EXISTS \([\s\S]{0,220}FROM extraction_runs[\s\S]{0,180}event_id = \? AND workspace_id = \?[\s\S]{0,120}status IN \('queued', 'processing'\)/,
+    "the same-Event active check must be inside the Run/outbox transaction",
+  );
+  const raceAt = extraction.indexOf("const activeEventRace");
+  const quotaAt = extraction.indexOf("const quotaState", raceAt);
+  assert.ok(raceAt >= 0 && quotaAt > raceAt, "same-Event race recovery must run before workspace quota classification");
+  const raceSection = extraction.slice(raceAt, quotaAt);
+  assert.match(raceSection, /input_hash\) !== inputHash[\s\S]{0,180}RUN_STATE_CONFLICT/);
+  assert.match(raceSection, /created: false/);
+
+  const guardMatch = extraction.match(
+    /`(INSERT INTO mutation_guards \(id, guard_value, created_at\)\s+SELECT \?, CASE WHEN NOT EXISTS \([^`]*?status IN \('queued', 'processing'\)[^`]*?END, \?)`/,
+  );
+  assert.ok(guardMatch, "same-Event mutation guard SQL was not found");
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE mutation_guards (
+        id TEXT PRIMARY KEY,
+        guard_value INTEGER NOT NULL CHECK (guard_value = 1),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE extraction_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        input_hash TEXT NOT NULL
+      );
+      CREATE TABLE queue_outbox (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        active_run_id TEXT
+      );
+      INSERT INTO events VALUES ('event-a', 'ws-a', NULL);
+    `);
+    const guard = database.prepare(guardMatch[1]);
+    const attempt = (runId, inputHash) => {
+      database.exec("BEGIN");
+      try {
+        guard.run(`guard-${runId}`, "event-a", "ws-a", `t-${runId}`);
+        database.prepare("INSERT INTO extraction_runs VALUES (?, 'ws-a', 'event-a', 'queued', ?)").run(runId, inputHash);
+        database.prepare("INSERT INTO queue_outbox VALUES (?, ?)").run(`out-${runId}`, runId);
+        database.prepare("UPDATE events SET active_run_id = ? WHERE id = 'event-a' AND workspace_id = 'ws-a'").run(runId);
+        database.prepare("DELETE FROM mutation_guards WHERE id = ?").run(`guard-${runId}`);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    };
+
+    attempt("run-a", "hash-a");
+    assert.throws(() => attempt("run-b", "hash-a"), /CHECK constraint failed/);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM extraction_runs").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM queue_outbox").get().count, 1);
+    assert.equal(database.prepare("SELECT active_run_id FROM events WHERE id = 'event-a'").get().active_run_id, "run-a");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM mutation_guards").get().count, 0);
+
+    database.prepare("UPDATE extraction_runs SET status = 'succeeded' WHERE id = 'run-a'").run();
+    attempt("run-b", "hash-b");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM extraction_runs").get().count, 2);
+    assert.equal(database.prepare("SELECT active_run_id FROM events WHERE id = 'event-a'").get().active_run_id, "run-b");
+  } finally {
+    database.close();
+  }
 });
 
 test("processor persists sanitized snapshots and binds transcript evidence to one asset version", async () => {
@@ -1108,7 +1862,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
     "the simplified review detail must not expose a second batch-attestation workflow");
   assert.match(claimScreen, /证据未完整加载[\s\S]*确认、核对声明和修改功能已停用/);
   assert.match(claimScreen, /const evidenceReady\s*=\s*evidenceState\s*===\s*["']ready["']/);
-  assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
+  assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*verdictLocked\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
   assert.match(claimScreen, /type=["']checkbox["']\s+disabled=\{!evidenceReady\}/,
     "Evidence selection for an edit must remain disabled on a partial load");
 });
@@ -1132,7 +1886,7 @@ test("frontend preserves creation keys until the server returns and resumes mult
     assert.match(section, /headers\s*:\s*\{\s*["']idempotency-key["']\s*:\s*idempotencyKey\s*\}/i,
       `${method} must send its key to the API`);
   }
-  for (const call of ["createProject", "createEvent", "initAsset"]) {
+  for (const call of ["createProject", "createEvent"]) {
     assert.match(
       page,
       new RegExp(`mutationKeys\\.current\\.set\\(fingerprint, idempotencyKey\\)[\\s\\S]{0,500}api\\.${call}\\([\\s\\S]{0,500}mutationKeys\\.current\\.delete\\(fingerprint\\)`, "i"),
@@ -1141,12 +1895,28 @@ test("frontend preserves creation keys until the server returns and resumes mult
   }
   assert.match(
     page,
-    /importCreateKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,500}api\.beginTranscriptImport\([\s\S]{0,300}importCreateKeys\.current\.delete\(fingerprint\)[\s\S]{0,200}activeSession\.current\s*=\s*\{\s*fingerprint,\s*session\s*\}/i,
-    "Transcript Import must retain the create key until a session exists and cache that session for upload/finalize retries",
+    /mutationKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,3500}initializeAssetUploadWithReplayRecovery\([\s\S]{0,5500}mutationKeys\.current\.delete\(fingerprint\)/i,
+    "Asset init must keep its key through replay recovery, byte upload, and finalize",
   );
   assert.match(
     page,
-    /activeSession\.current\?\.fingerprint\s*===\s*fingerprint[\s\S]{0,900}uploadTranscriptItem[\s\S]{0,500}finalizeTranscriptImport/i,
+    /!finalizeStarted && pendingAssetInit && \(initializedAssetId \|\| initCouldHaveCommitted\)[\s\S]{0,240}recoverAndAbortAssetUpload\(pendingAssetInit, initializedAssetId\)[\s\S]{0,240}uploadFingerprint && !finalizeStarted && cleanupResolved/i,
+    "an ambiguous Asset init must recover the idempotent server row before clearing its key",
+  );
+  assert.match(
+    page,
+    /importCreateKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,500}api\.beginTranscriptImport\([\s\S]{0,300}importCreateKeys\.current\.delete\(fingerprint\)[\s\S]{0,200}activeSession\.current\s*=\s*\{\s*fingerprint,\s*session\s*\}/i,
+    "Transcript Import must retain the create key until a session exists and cache that session for upload/finalize retries",
+  );
+  const importModalStart = page.indexOf("function ImportModal");
+  const resumeSessionAt = page.indexOf("activeSession.current?.fingerprint === fingerprint", importModalStart);
+  const uploadItemAt = page.indexOf("api.uploadTranscriptItem", resumeSessionAt);
+  const finalizeImportAt = page.indexOf("api.finalizeTranscriptImport", uploadItemAt);
+  assert.ok(
+    importModalStart >= 0
+      && resumeSessionAt > importModalStart
+      && uploadItemAt > resumeSessionAt
+      && finalizeImportAt > uploadItemAt,
     "a retry after partial transcript upload must reuse the existing server-side import session",
   );
 });
@@ -1554,11 +2324,11 @@ test("AI draft stays outside the ledger and human missed facts require canonical
   assert.match(repository, /source[\s\S]{0,300}'human'/);
   assert.match(repository, /structural_validation_status[\s\S]{0,180}'valid'/);
   for (const label of [
-    "AI 会议信息初稿",
+    "AI 沟通信息初稿",
     "这份初稿基本可用",
     "AI 漏掉了重要信息",
     "核对重要内容",
-    "本轮核对完成",
+    "本轮确认完成",
   ]) {
     assert.match(page, new RegExp(label), `guided draft UI is missing ${label}`);
   }

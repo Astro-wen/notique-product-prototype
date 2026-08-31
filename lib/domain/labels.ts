@@ -14,6 +14,7 @@ export function typeLabel(value?: string): string {
     requirement: "要求",
     next_action: "下一步行动",
     budget: "预算",
+    measurement: "尺寸与数量",
     person_role: "人员与职责",
     property_fact: "对象事实",
     concern: "顾虑",
@@ -22,8 +23,17 @@ export function typeLabel(value?: string): string {
     direct: "直接证据",
     corroborating: "佐证材料",
     contextual: "背景参考",
+    meeting: "会议",
+    showing: "现场沟通",
+    estimate: "估价",
+    walkthrough: "现场巡查",
+    transcript: "逐字稿",
+    photo: "照片",
+    pdf: "PDF",
+    text: "文本",
+    audio: "录音",
   };
-  return labels[(value ?? "").toLowerCase()] ?? (value || "记录").replaceAll("_", " ");
+  return labels[(value ?? "").toLowerCase()] ?? "其他信息";
 }
 
 /**

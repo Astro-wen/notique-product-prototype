@@ -65,15 +65,14 @@ test("a terminal successful run fills every checkpoint", async () => {
   assert.ok(progress.nodes.every((node) => node.status === "completed"));
 });
 
-test("the workspace renders the analysis journey from real run checkpoints", async () => {
+test("the workspace keeps analysis progress user-facing and hides internal diagnostics", async () => {
   const [page, styles] = await Promise.all([
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
-  assert.match(page, /data-testid="analysis-progress-journey"/);
-  assert.match(page, /还差 \{progress\.remaining\} 步即可开始核对/);
-  assert.match(page, /系统会自动继续，不需要手动启动后台任务/);
-  assert.match(styles, /\.analysis-progress-track/);
-  assert.match(styles, /\.analysis-progress-node\.completed/);
-  assert.match(styles, /\.analysis-progress-node\.processing/);
+  assert.match(page, /analysisRunning \? "整理中 · 已可阅读"/);
+  assert.match(page, /原始逐字稿已经可以先读/);
+  assert.doesNotMatch(page, /data-testid="analysis-progress-journey"/);
+  assert.doesNotMatch(page, /处理详情|测试版本·每秒更新|后端定期检查模型任务/);
+  assert.match(styles, /\.reading-workspace-state\.running/);
 });

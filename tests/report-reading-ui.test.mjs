@@ -45,15 +45,16 @@ test("verified results render typed timeline moments and preference history", ()
   assert.match(page, /recordArray\(item\.history\)/);
 });
 
-test("results use four general project entrances and move specialist reports behind more", () => {
+test("results use four general project entrances and keep other views visible", () => {
   const primary = declarationSource("primaryResultTabs");
   assert.match(primary, /项目概览/);
   assert.match(primary, /时间线/);
   assert.match(primary, /下一步/);
-  assert.match(primary, /会前准备/);
+  assert.match(primary, /下次沟通准备/);
   assert.equal((primary.match(/\{ key: "/g) ?? []).length, 4);
-  assert.match(page, /className="result-nav-more"/);
-  assert.match(page, /更多报告/);
+  assert.match(page, /className="result-nav-secondary"/);
+  assert.match(page, /其他视图/);
+  assert.doesNotMatch(page, /result-nav-more|更多报告/);
   // The first character of a label is not an icon; the label carries itself.
   assert.doesNotMatch(page, /item\.short\.slice\(0, 1\)/, "report entries must not fake an icon from a truncated label");
   // Internal measurements are not product copy.
@@ -95,7 +96,8 @@ test("meeting rail and selected header share the workflow snapshot status", () =
 });
 
 test("public uploads require a per-session safety acknowledgement", () => {
-  assert.match(page, /公开共享演示空间/);
+  assert.match(page, /公开演示空间/);
+  assert.match(page, /请勿上传真实客户资料或其他敏感信息/);
   assert.match(page, /只能使用公开、合成或已脱敏材料/);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);
   assert.match(page, /requirePublicWorkspaceAcknowledgement/);
@@ -113,18 +115,19 @@ test("completed analysis opens the summary and restores it after reading evidenc
 });
 
 test("summary sources stay available in the action rail and artifact polling does not refetch raw transcript", () => {
-  assert.match(page, /setSourceDrawer\(\{ sourceIds, summaryText, supportQuote, returnFocusId \}\)/);
   assert.match(page, /className="reader-action-rail"/);
   assert.match(page, /selectedSourceGroups/);
-  assert.match(page, /className="source-drawer"/);
-  assert.match(page, /在完整原稿中打开/);
-  assert.match(page, /highlightExactPhrase\(group\.text, sourceDrawer\.supportQuote\)/);
+  assert.match(page, /function selectTranscriptGroup/);
+  assert.match(page, /className="transcript-copy-button"/);
+  assert.match(page, /setWorkspaceView\("transcript"\)/);
+  assert.match(page, /在逐字稿中定位/);
+  assert.doesNotMatch(page, /setSourceDrawer|className="source-drawer"/);
   assert.match(page, /if \(quiet\)[\s\S]{0,500}eventArtifactsQuery/);
   assert.doesNotMatch(
     page.slice(page.indexOf("if (quiet)"), page.indexOf("let nextArtifactCount")),
     /eventTranscriptSegmentsQuery/,
   );
-  assert.match(styles, /\.source-drawer \{/);
+  assert.match(styles, /\.transcript-copy-button \{/);
 });
 
 test("the continuous workspace preserves its local view and fails visibly at partial boundaries", () => {
@@ -139,9 +142,9 @@ test("the continuous workspace preserves its local view and fails visibly at par
 });
 
 test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {
-  assert.match(page, /aria-label="Transcript · 本次重点"/);
-  assert.match(page, /aria-label="待核对"/);
-  assert.match(page, /aria-label="结果"/);
+  assert.match(page, /aria-label="本次重点"/);
+  assert.match(page, /aria-label="待确认"/);
+  assert.match(page, /aria-label="整个项目"/);
   assert.doesNotMatch(page, /meeting-more-menu|meeting-more-trigger/, "the workspace nav must not hide entries behind a dropdown");
   assert.doesNotMatch(styles, /\.meeting-more-menu|\.meeting-more-trigger/);
   assert.match(page, /className="meeting-tabs-scope"/, "event scope and project scope stay visually separated");
@@ -149,14 +152,16 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   // The project entry navigates straight to the record; it must not render an
   // interstitial whose only content is another button.
   assert.match(page, /if \(next === "results" && !needsScenario && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
-  assert.match(page, /if \(next === "review" && workflowReviewReady\) \{ onReview\(\); return; \}/);
+  assert.match(page, /if \(\(next === "transcript" \|\| next === "review"\) && event\)/);
   assert.doesNotMatch(page, />打开项目概览</, "the dead interstitial button is replaced by direct navigation");
   assert.match(page, /className="reader-action-rail"/);
-  assert.match(page, /连续核对 \{pendingReviewCount\} 条/);
+  assert.match(page, /reviewMode=\{activeTab === "review"\}/);
+  assert.match(page, /setActionView\("pending"\)/);
+  assert.match(page, /从第一条开始确认/);
   assert.match(styles, /\.reader-action-rail/);
   assert.match(page, /workspaceView === "points" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
   assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);
-  assert.match(page, /reviewReady && pendingReviewCount > 0/);
+  assert.match(page, /reviewReady && pendingClaims\.length > 0/);
   assert.match(page, /reviewBlocked=\{false\}/);
 });
 
@@ -181,7 +186,7 @@ test("failed reading artifacts fall back safely without exposing provider error 
 });
 
 test("review empty states and completed workflow cards avoid duplicate primary actions", () => {
-  assert.match(page, /workflowReviewReady && <button className="button primary"/);
+  assert.match(page, /reviewReady && pendingClaims\.length > 0 && <button className="button primary full"/);
   assert.match(page, /compactWorkflowCard/);
   assert.match(styles, /\.project-workflow-card\.compact/);
 });
@@ -207,4 +212,6 @@ test("evidence copy stays clear in both review and read-only modes", () => {
   assert.match(page, /下面保留这条已确认记录的原句、前后文和来源/);
   assert.equal(typeLabel("other"), "其他重要信息");
   assert.equal(typeLabel("direct"), "直接证据");
+  assert.equal(typeLabel("measurement"), "尺寸与数量");
+  assert.equal(typeLabel("unknown_model_enum"), "其他信息");
 });

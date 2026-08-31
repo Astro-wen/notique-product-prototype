@@ -47,7 +47,7 @@ const test = base.extend<Fixtures>({
 
 test("browser back returns from the core workspace to the exact prior route", async ({ page }) => {
   await page.goto("/?view=projects");
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目", exact: true })).toBeVisible();
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
@@ -55,17 +55,17 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目", exact: true })).toBeVisible();
 });
 
 test("refresh preserves a directly opened route", async ({ page }) => {
   await page.goto("/?view=projects");
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目", exact: true })).toBeVisible();
 
   await page.reload();
 
   await expect(page).toHaveURL(/\?view=projects$/);
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目", exact: true })).toBeVisible();
 });
 
 test("desktop sidebar collapses, restores, and keeps navigation accessible", async ({ page }, testInfo) => {

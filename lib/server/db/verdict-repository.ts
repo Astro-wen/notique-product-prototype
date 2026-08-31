@@ -40,6 +40,30 @@ const CLAIM_SELECT = `
     FROM claims c
     JOIN claim_versions cv ON cv.id = c.current_version_id`;
 
+// A Summary-first human action is attached to the same Extraction Run that is
+// still producing facts. Any verdict changes project.context_version, so it
+// must wait until that Run is terminal or the fact persistence lease will be
+// invalidated. Keep the ownership joins here and in every atomic verdict guard.
+const RUNNING_SOURCE_BACKED_ACTION_FROM_SQL = `
+  FROM claims protected_claim
+  JOIN events protected_event
+    ON protected_event.id = protected_claim.event_id
+   AND protected_event.workspace_id = protected_claim.workspace_id
+   AND protected_event.project_id = protected_claim.project_id
+  JOIN extraction_runs protected_run
+    ON protected_run.id = protected_claim.extraction_run_id
+   AND protected_run.workspace_id = protected_claim.workspace_id
+   AND protected_run.project_id = protected_claim.project_id
+   AND protected_run.event_id = protected_claim.event_id`;
+
+const RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL = `
+  protected_claim.source = 'human'
+  AND protected_claim.type = 'next_action'
+  AND protected_event.active_run_id = protected_run.id
+  AND protected_run.status NOT IN (
+    'succeeded', 'completed', 'completed_with_warnings', 'failed', 'cancelled'
+  )`;
+
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
@@ -54,6 +78,46 @@ async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
 
 async function all(sql: string, bindings: unknown[]): Promise<Row[]> {
   return (await getD1().prepare(sql).bind(...bindings).all<Row>()).results ?? [];
+}
+
+async function assertSourceBackedActionVerdictsReady(
+  scope: RequestScope,
+  claimIds: string[],
+): Promise<void> {
+  if (!claimIds.length) return;
+  const blocked = await first(
+    `SELECT protected_claim.id AS claim_id,
+            protected_run.id AS extraction_run_id,
+            protected_run.status AS extraction_run_status
+       ${RUNNING_SOURCE_BACKED_ACTION_FROM_SQL}
+      WHERE protected_claim.workspace_id = ?
+        AND protected_claim.id IN (${claimIds.map(() => "?").join(",")})
+        AND ${RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL}
+      ORDER BY protected_claim.id
+      LIMIT 1`,
+    [scope.workspaceId, ...claimIds],
+  );
+  if (!blocked) return;
+  throw new ApiFault(
+    409,
+    "RUN_STATE_CONFLICT",
+    "Wait for fact extraction to finish before reviewing this source-backed action.",
+    {
+      claim_id: String(blocked.claim_id),
+      extraction_run_id: String(blocked.extraction_run_id),
+      extraction_run_status: String(blocked.extraction_run_status),
+    },
+  );
+}
+
+function sourceBackedActionVerdictGuardSql(): string {
+  return `NOT EXISTS (
+    SELECT 1
+      ${RUNNING_SOURCE_BACKED_ACTION_FROM_SQL}
+     WHERE protected_claim.workspace_id = ?
+       AND protected_claim.id = ?
+       AND ${RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL}
+  )`;
 }
 
 async function claimRow(scope: RequestScope, claimId: string): Promise<Row> {
@@ -314,6 +378,7 @@ export async function applyClaimVerdict(
   }
   const existing = await claimRow(scope, claimId);
   if (String(existing.current_version_id) !== input.base_version_id) throw conflict();
+  await assertSourceBackedActionVerdictsReady(scope, [claimId]);
   const verdictId = id("vdt");
   const guardId = id("guard");
   const timestamp = now();
@@ -408,6 +473,7 @@ export async function applyClaimVerdict(
               WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
                 AND r.status = 'proposed'
            ) = ?
+           AND ${sourceBackedActionVerdictGuardSql()}
            `,
           [
             claimId,
@@ -418,6 +484,8 @@ export async function applyClaimVerdict(
             scope.workspaceId,
             input.base_version_id,
             proposedRelations.length,
+            scope.workspaceId,
+            claimId,
           ],
           timestamp,
         ),
@@ -504,6 +572,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   } else if (input.action === "reject") {
@@ -515,11 +584,17 @@ export async function applyClaimVerdict(
         guardStatement(
           guardId,
           `EXISTS (
-             SELECT 1 FROM claims
+           SELECT 1 FROM claims
               WHERE id = ? AND workspace_id = ? AND current_version_id = ?
                 AND review_status = 'pending'
-           )`,
-          [claimId, scope.workspaceId, input.base_version_id],
+           ) AND ${sourceBackedActionVerdictGuardSql()}`,
+          [
+            claimId,
+            scope.workspaceId,
+            input.base_version_id,
+            scope.workspaceId,
+            claimId,
+          ],
           timestamp,
         ),
         db
@@ -589,6 +664,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   } else {
@@ -816,7 +892,7 @@ export async function applyClaimVerdict(
                 AND target.current_version_id = r.target_claim_version_id
                 AND target.review_status = 'verified'
                 AND target.lifecycle_status <> 'withdrawn'
-           )`).join("")}`,
+           )`).join("")} AND ${sourceBackedActionVerdictGuardSql()}`,
           [
             claimId,
             scope.workspaceId,
@@ -837,6 +913,8 @@ export async function applyClaimVerdict(
               relation.id,
               input.base_version_id,
             ]),
+            scope.workspaceId,
+            claimId,
           ],
           timestamp,
         ),
@@ -1000,6 +1078,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   }
@@ -1151,6 +1230,10 @@ export async function applyBatchVerdicts(
   const rows = await Promise.all(
     input.verdicts.map((item) => claimRow(scope, item.claim_id)),
   );
+  await assertSourceBackedActionVerdictsReady(
+    scope,
+    input.verdicts.map((item) => item.claim_id),
+  );
   for (const item of input.verdicts) {
     if (item.action !== "confirm") continue;
     const reviewAttestation = await first(
@@ -1206,8 +1289,15 @@ export async function applyBatchVerdicts(
   const guardBindings: unknown[] = [];
   input.verdicts.forEach((item) => {
     let clause = `EXISTS (SELECT 1 FROM claims WHERE id = ? AND workspace_id = ?
-                            AND current_version_id = ? AND review_status = 'pending')`;
-    guardBindings.push(item.claim_id, scope.workspaceId, item.base_version_id);
+                            AND current_version_id = ? AND review_status = 'pending')
+                  AND ${sourceBackedActionVerdictGuardSql()}`;
+    guardBindings.push(
+      item.claim_id,
+      scope.workspaceId,
+      item.base_version_id,
+      scope.workspaceId,
+      item.claim_id,
+    );
     if (item.action === "confirm") {
       clause += ` AND EXISTS (
         SELECT 1 FROM evidence_refs WHERE claim_version_id = ?
@@ -1329,6 +1419,10 @@ export async function applyBatchVerdicts(
         })),
       );
     }
+    await assertSourceBackedActionVerdictsReady(
+      scope,
+      input.verdicts.map((item) => item.claim_id),
+    );
     throw conflict();
   }
   return Promise.all(

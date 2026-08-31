@@ -1356,7 +1356,10 @@ async function persistModelOutput(
                WHERE processing_stage.run_id = r.id
                  AND processing_stage.status = 'processing'
             )
-            AND NOT EXISTS (SELECT 1 FROM claims WHERE extraction_run_id = r.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM claims
+               WHERE extraction_run_id = r.id AND source = 'ai'
+            )
             AND NOT EXISTS (
               SELECT 1 FROM claim_occurrence_candidates WHERE extraction_run_id = r.id
             )

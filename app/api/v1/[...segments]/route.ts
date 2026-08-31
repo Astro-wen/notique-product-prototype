@@ -1,4 +1,5 @@
 import {
+  abandonAssetUpload,
   confirmScenario,
   createEvent,
   createExtractionRun,
@@ -16,6 +17,7 @@ import {
   getProject,
   getProjectDeletePreview,
   getRunClaims,
+  heartbeatAssetUpload,
   initializeAsset,
   listEvents,
   listProjects,
@@ -804,6 +806,12 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
   }
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "finalize") {
     return ok({ asset: await finalizeAsset(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "assets" && segments[2] === "heartbeat") {
+    return ok({ asset: await heartbeatAssetUpload(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "assets" && segments[2] === "abort") {
+    return ok({ asset: await abandonAssetUpload(scope, segments[1]) }, id);
   }
   if (
     segments.length === 3 &&

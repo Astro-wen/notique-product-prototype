@@ -34,7 +34,7 @@ test("a delayed Project A snapshot and Claims response cannot overwrite Project 
   apiFixture.releaseProjectASnapshot();
 
   await expect(page.locator(".current-event-status")).toHaveText("已完成");
-  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "B 项目会议重点" })).toBeVisible();
   await expect(page.getByText("B 项目只确认学区范围", { exact: true })).toBeVisible();
@@ -81,105 +81,95 @@ test("Run completion commits Project, Event, and terminal Run only after stagger
 
   apiFixture.releaseProjectACompletionEventRefresh();
   await expect(page.getByRole("heading", { name: "A 完成刷新后的沟通", exact: true })).toBeVisible();
-  await expect(page.locator(".current-event-status")).toHaveText("等待人工核对");
+  await expect(page.locator(".current-event-status")).toHaveText("有内容待确认");
 });
 
-test("Summary opens its Claim and returns to the same Summary URL and scroll source", async ({ page }) => {
+test("a Summary point opens source, verification, and action controls in the same workspace", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.scrollIntoViewIfNeeded();
-  const sourceScrollY = await page.evaluate(() => window.scrollY);
-  expect(sourceScrollY).toBeGreaterThan(0);
+  await target.locator(".summary-point-copy").click();
 
-  await target.getByRole("button", { name: "核对这条意思" }).click();
-  await expect(page).toHaveURL(/view=claim.*claim=claim-summary-pending.*origin=simple.*originReadingTab=summary/);
-  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
-  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "原始证据" })).toBeVisible();
-  await expect(page.getByLabel("连续审核队列")).toBeVisible();
-  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
-
-  await page.getByLabel("返回 AI 摘要").click();
-  await expect(page).toHaveURL(/project=project-a.*event=event-a.*view=simple/);
-  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 2);
-  await page.waitForTimeout(750);
-  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 2);
+  const rail = page.locator(".reader-action-rail");
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
+  await expect(rail).toBeVisible();
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(rail).toContainText("录音与原话");
+  await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: "来源", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "从这条重点建立行动" })).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
-test("a reviewed Summary item opens read-only while another pending item remains", async ({ page }) => {
+test("a reviewed Summary item exposes its source in place while pending work remains in the rail", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
 
   const reviewed = page.locator(".summary-sentences article").filter({
     hasText: "经纪人周五前发送三套房源",
   });
-  await reviewed.getByRole("button", { name: "查看核对结果" }).click();
+  await reviewed.locator(".summary-point-copy").click();
 
-  await expect(page).toHaveURL(/view=claim.*claim=claim-timeline-verified.*origin=simple.*originReadingTab=summary/);
-  await expect(page.getByText("只读证据模式", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("连续审核队列")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "修改已确认记录" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "撤回已确认记录" })).toHaveCount(0);
-  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
-
-  await page.getByLabel("返回 AI 摘要").click();
+  const rail = page.locator(".reader-action-rail");
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
-  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
+  await expect(rail.getByRole("heading", { name: "经纪人周五前发送三套房源", exact: true })).toBeVisible();
+  await expect(rail.locator(".point-trust-state.verified")).toHaveText("已确认");
+  await expect(rail).toContainText("录音与原话");
+  await expect(rail.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
 
-  const pending = page.locator(".summary-sentences article").filter({
-    hasText: "预算上限是 120 万美元",
-  });
-  await pending.getByRole("button", { name: "核对这条意思" }).click();
-  await expect(page.getByText("只读证据模式", { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel("连续审核队列")).toBeVisible();
-  await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
-  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+  await rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
+  await expect(rail).toContainText("核对是可选的可信度层");
+  await rail.locator(".rail-pending-list").getByText("预算上限是 120 万美元", { exact: true }).click();
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(rail.locator(".point-trust-state.pending")).toHaveText("需确认");
+  await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
 });
 
-test("Summary source survives a Claim reload and the page arrow returns to Summary", async ({ page }) => {
-  await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /^Transcript/ }).click();
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
-
-  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
-  await target.getByRole("button", { name: "核对这条意思" }).click();
-  await expect(page).toHaveURL(/view=claim.*origin=simple.*originReadingTab=summary/);
-
+test("the Summary reading route survives reload and its source reopens in the same rail", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
+  await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
-  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
-  await page.getByLabel("返回 AI 摘要").click();
-
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^AI 摘要/ })).toHaveClass(/active/);
-});
-
-test("browser Back and Forward preserve the Summary-to-Claim route", async ({ page }) => {
-  await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /^Transcript/ }).click();
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
-  await target.getByRole("button", { name: "核对这条意思" }).click();
-  await expect(page).toHaveURL(/view=claim.*originReadingTab=summary/);
+  await target.locator(".summary-point-copy").click();
+  const rail = page.locator(".reader-action-rail");
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(rail).toContainText("录音与原话");
+  await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
+});
 
-  await page.goBack();
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+test("source, pending, and action views remain one continuous Summary workflow", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.locator(".summary-point-copy").click();
 
-  await page.goForward();
-  await expect(page).toHaveURL(/view=claim.*originReadingTab=summary/);
-  await expect(page.getByLabel("返回 AI 摘要")).toBeVisible();
+  const rail = page.locator(".reader-action-rail");
+  const actionTabs = rail.locator(".reader-action-tabs");
+  await expect(actionTabs.getByRole("button", { name: "来源", exact: true })).toHaveAttribute("aria-pressed", "true");
+
+  await actionTabs.getByRole("button", { name: /^待确认/ }).click();
+  await expect(actionTabs.getByRole("button", { name: /^待确认/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(rail.getByRole("button", { name: "从第一条开始确认" })).toBeVisible();
+
+  await actionTabs.getByRole("button", { name: /^行动/ }).click();
+  await expect(actionTabs.getByRole("button", { name: /^行动/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(rail).toContainText("只把确认过的事当作行动");
+
+  await actionTabs.getByRole("button", { name: "来源", exact: true }).click();
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
 });
 
 test("a direct Claim deep link falls back to its communication without a false Summary label", async ({ page }) => {
@@ -199,7 +189,7 @@ test("Timeline opens a verified Claim in read-only mode and returns to Timeline"
 
   await page.getByRole("button", { name: "查看记录与原始证据" }).click();
   await expect(page).toHaveURL(/view=claim.*claim=claim-timeline-verified.*origin=results.*originTab=timeline/);
-  await expect(page.getByText("只读证据模式", { exact: true })).toBeVisible();
+  await expect(page.getByText("只读依据模式", { exact: true })).toBeVisible();
   await expect(page.getByLabel("返回时间线")).toBeVisible();
 
   await page.getByLabel("返回时间线").click();
@@ -235,7 +225,7 @@ test("local-only allowlist covers Action completion and trash restore without to
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/view=simple/);
-  await page.getByRole("button", { name: "项目菜单 ···" }).click();
+  await page.getByRole("button", { name: "项目菜单" }).click();
   await page.getByRole("menuitem", { name: "回收站", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "回收站" })).toBeVisible();
   await expect(page.getByText("Recovered Buyer", { exact: true })).toBeVisible();
@@ -281,6 +271,7 @@ test("the review queue can be worked from the keyboard", async ({ page, apiFixtu
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
+  await expect(page.locator(".review-shortcut-hints")).toBeVisible();
   await page.locator("body").press("Enter");
   await expect
     .poll(() => apiFixture.writes.filter(({ path }) => path.includes("verdicts")).length)

@@ -17,7 +17,7 @@ const test = base.extend<Fixtures>({
 
 test("project menu supports keyboard movement, Escape, and outside dismissal", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  const trigger = page.getByRole("button", { name: "项目菜单 ···" });
+  const trigger = page.getByRole("button", { name: "项目菜单" });
 
   await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
   await trigger.press("ArrowDown");
@@ -42,7 +42,7 @@ test("project menu supports keyboard movement, Escape, and outside dismissal", a
 
 test("trash dialog traps Tab and restores project-menu focus after Escape and close", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  const trigger = page.getByRole("button", { name: "项目菜单 ···" });
+  const trigger = page.getByRole("button", { name: "项目菜单" });
 
   const openTrash = async () => {
     await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
@@ -53,8 +53,14 @@ test("trash dialog traps Tab and restores project-menu focus after Escape and cl
 
   let dialog = await openTrash();
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAttribute("aria-describedby", /radix/);
-  await expect(dialog.getByText("恢复会带回项目的全部材料、核对记录、Evidence 和报告。这里不会自动按天清理。", { exact: true })).toBeVisible();
+  await expect(dialog).toHaveAttribute("aria-describedby", /\S+/);
+  const description = await dialog.evaluate((element) => {
+    const ids = element.getAttribute("aria-describedby")?.trim().split(/\s+/) ?? [];
+    return ids.map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean);
+  });
+  expect(description).toEqual([
+    "恢复会带回项目的全部材料、确认记录、原始依据和报告。这里不会自动按天清理。",
+  ]);
 
   for (let index = 0; index < 8; index += 1) {
     await page.keyboard.press("Tab");

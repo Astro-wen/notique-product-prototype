@@ -821,7 +821,6 @@ test("simple flow supports audio-first setup and preserves a transcription start
     /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/,
     "a buyer project created from the core workspace must remain in the guided workspace",
   );
-  assert.match(uiSource, /else void beginSimpleTest\(true\)/);
   assert.match(uiSource, /Transcript 会成为第一条沟通/);
 
   const attachSimple = declarationSource("attachSimpleFile");
@@ -832,7 +831,7 @@ test("simple flow supports audio-first setup and preserves a transcription start
   assert.match(attachSimple, /\.catch\(\(error\) => setEventIssue\(toIssue\(error\)\)\)/);
   assert.match(
     attachSimple,
-    /const issue = toIssue\(error\);[\s\S]*await loadSimpleProject[\s\S]*setEventIssue\(issue\)/,
+    /const issue = toIssue\(error\);[\s\S]*await loadSimpleProject[\s\S]*setEventIssue\(finalizeStarted[\s\S]*: issue\)/,
     "refresh must finish before restoring the actionable transcription error",
   );
 });

@@ -525,6 +525,7 @@ export class NotiqueApiFixture {
   simulateProjectARunCompletionRefresh = false;
   summaryFirstMode = false;
   summarySharedClaims = false;
+  summaryIncompleteEvidence = false;
   transcriptionProgressMode = false;
   analysisProgressMode = false;
 
@@ -539,6 +540,7 @@ export class NotiqueApiFixture {
   private summaryFirstReadableStatus: "processing" | "succeeded" | "failed" | null = "processing";
   private staleSummaryArtifactDuringNewRun = false;
   private readonly allowedMutations = new Set<string>();
+  private readonly manualClaims = new Map<string, ReturnType<typeof claimRecord>>();
   private activeProjectIds = new Set(["project-a", "project-b"]);
   private trashProjectIds = new Set(["project-trash"]);
   private actions: FixtureAction[] = [
@@ -623,6 +625,10 @@ export class NotiqueApiFixture {
 
   enableSharedSummaryClaims() {
     this.summarySharedClaims = true;
+  }
+
+  enableIncompleteSummaryEvidence() {
+    this.summaryIncompleteEvidence = true;
   }
 
   enableTranscriptionProgress() {
@@ -852,6 +858,47 @@ export class NotiqueApiFixture {
       this.trashProjectIds.delete("project-trash");
       this.activeProjectIds.add("project-trash");
       await this.fulfill(route, envelope({ project: this.project("project-trash") }));
+      return;
+    }
+
+    const claimVerdictMatch = path.match(/^\/api\/v1\/claims\/([^/]+)\/verdicts$/);
+    if (method === "POST" && claimVerdictMatch) {
+      const claimId = decodeURIComponent(claimVerdictMatch[1]);
+      const action = typeof body === "object" && body !== null && "action" in body
+        ? (body as { action?: unknown }).action
+        : null;
+      const reviewStatus = action === "reject" ? "rejected" : "verified";
+      const statement = claimId === "claim-summary-shared"
+        ? "客户仍需确认 120 万美元是否包含装修预算"
+        : "预算上限是 120 万美元";
+      const type = claimId === "claim-summary-shared" ? "open_question" : "budget";
+      await this.fulfill(route, envelope({
+        claim: claimRecord(claimId, statement, type, reviewStatus, "seg-summary-target"),
+        verdict_id: `verdict-${claimId}-${reviewStatus}`,
+      }));
+      return;
+    }
+
+    const manualClaimMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/manual-claims$/);
+    if (method === "POST" && manualClaimMatch) {
+      const payload = typeof body === "object" && body !== null
+        ? body as { statement?: unknown; type?: unknown; segment_ids?: unknown }
+        : {};
+      const statement = typeof payload.statement === "string" ? payload.statement : "人工补充行动";
+      const type = typeof payload.type === "string" ? payload.type : "next_action";
+      const segmentId = Array.isArray(payload.segment_ids) && typeof payload.segment_ids[0] === "string"
+        ? payload.segment_ids[0]
+        : "seg-summary-target";
+      const claim = claimRecord("claim-manual-action", statement, type, "pending", segmentId);
+      const humanClaim = {
+        ...claim,
+        source: "human",
+        current_version: { ...claim.current_version, source: "human" },
+      };
+      this.manualClaims.set(claim.id, humanClaim);
+      await this.fulfill(route, envelope({
+        claim: humanClaim,
+      }));
       return;
     }
 
@@ -1117,14 +1164,23 @@ export class NotiqueApiFixture {
           this.claimsGate.markRequested();
           await this.claimsGate.waitUntilReleased;
         }
-        const claims = runId === "run-a" ? [
-          claimRecord(
+        const summaryClaim = claimRecord(
             "claim-summary-pending",
             "预算上限是 120 万美元",
             "budget",
             "pending",
             "seg-summary-target",
-          ),
+          );
+        if (this.summaryIncompleteEvidence) {
+          const extra = evidenceRef(
+            "evidence-claim-summary-pending-extra",
+            "seg-timeline",
+          );
+          summaryClaim.evidence_ref_ids.push(extra.id);
+          summaryClaim.evidence_refs.push(extra);
+        }
+        const claims = runId === "run-a" ? [
+          summaryClaim,
           claimRecord(
             "claim-timeline-verified",
             "经纪人周五前发送三套房源",
@@ -1177,11 +1233,23 @@ export class NotiqueApiFixture {
       const claimHistoryMatch = path.match(/^\/api\/v1\/claims\/([^/]+)\/history$/);
       if (claimHistoryMatch) {
         const claimId = decodeURIComponent(claimHistoryMatch[1]);
-        const claim = claimId === "claim-summary-pending"
-          ? claimRecord(claimId, "预算上限是 120 万美元", "budget", "pending", "seg-summary-target")
+        const summaryClaim = claimRecord(
+          "claim-summary-pending",
+          "预算上限是 120 万美元",
+          "budget",
+          "pending",
+          "seg-summary-target",
+        );
+        if (this.summaryIncompleteEvidence) {
+          const extra = evidenceRef("evidence-claim-summary-pending-extra", "seg-timeline");
+          summaryClaim.evidence_ref_ids.push(extra.id);
+          summaryClaim.evidence_refs.push(extra);
+        }
+        const claim = this.manualClaims.get(claimId) ?? (claimId === "claim-summary-pending"
+          ? summaryClaim
           : claimId === "claim-summary-shared"
             ? claimRecord(claimId, "客户仍需确认 120 万美元是否包含装修预算", "open_question", "pending", "seg-summary-target")
-            : claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline");
+            : claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline"));
         await this.fulfill(route, envelope({ current_claim: claim }));
         return;
       }

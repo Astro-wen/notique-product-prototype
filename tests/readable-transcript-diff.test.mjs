@@ -79,7 +79,7 @@ test("UI lazy-loads jsdiff only after expansion and falls back to model edit rec
   assert.match(helperSource, /timeout:\s*READABLE_PARAGRAPH_DIFF_LIMITS\.timeoutMs/);
   assert.match(uiSource, /mappedRawParagraph\(sourceIds, rawSegments\)/);
   assert.match(uiSource, /toggleReadableDiff\(diffKey, group\.sourceIds, group\.text\)/);
-  assert.match(uiSource, /<summary aria-label=["']查看整理详情["']>•••<\/summary>/);
+  assert.match(uiSource, /<summary aria-label=["']查看整理详情["']><MoreHorizontal aria-hidden=["']true["'] \/><\/summary>/);
   assert.match(uiSource, /state\.status === ["']fallback["'][\s\S]*?readable-edit-list/);
   assert.doesNotMatch(uiSource, /edits\.length\s*>\s*0\s*&&\s*<button[^>]*>[^<]*(?:查看差异|对比原稿)/);
 });

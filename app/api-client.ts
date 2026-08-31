@@ -243,6 +243,8 @@ export type TranscriptionRun = {
 export type ExtractionRun = {
   id: Id;
   eventId?: Id;
+  idempotencyKey?: string;
+  inputAssetVersionIds?: string[];
   status: string;
   warningCount?: number;
   claimCount?: number;
@@ -649,6 +651,9 @@ export function normalizeRun(value: unknown): ExtractionRun {
   return {
     id: asString(pick(source, ["id", "run_id", "runId"])),
     eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
+    idempotencyKey: asString(pick(source, ["idempotency_key", "idempotencyKey"]), undefined as unknown as string) || undefined,
+    inputAssetVersionIds: (pick<unknown[]>(source, ["input_asset_version_ids", "inputAssetVersionIds"], []) ?? [])
+      .filter((item): item is string => typeof item === "string" && Boolean(item)),
     status: asString(pick(source, ["status"]), "unknown").toLowerCase(),
     warningCount: asNumber(pick(source, ["warning_count", "warningCount"])),
     claimCount: asNumber(pick(source, ["claim_count", "claimCount"])),
@@ -928,8 +933,122 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+const UPLOAD_STALL_TIMEOUT_MS = 120_000;
+const UPLOAD_HEARTBEAT_INTERVAL_MS = 60_000;
+
+async function uploadBlob(
+  path: string,
+  body: Blob,
+  contentType: string,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    throw new ApiClientError({
+      status: 0,
+      code: "UPLOAD_ABORTED",
+      message: "上传已取消。文件没有被当作已完成材料。",
+    });
+  }
+  if (typeof XMLHttpRequest === "undefined") {
+    await request<unknown>(path, {
+      method: "PUT",
+      headers: { "content-type": contentType },
+      body,
+      signal,
+    });
+    onProgress?.(body.size, body.size);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    let stalled = false;
+    let stallTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const abort = () => xhr.abort();
+    const cleanup = () => {
+      if (stallTimer != null) globalThis.clearTimeout(stallTimer);
+      stallTimer = null;
+      signal?.removeEventListener("abort", abort);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const resetStallTimer = () => {
+      if (stallTimer != null) globalThis.clearTimeout(stallTimer);
+      stallTimer = globalThis.setTimeout(() => {
+        stalled = true;
+        xhr.abort();
+      }, UPLOAD_STALL_TIMEOUT_MS);
+    };
+    xhr.open("PUT", path, true);
+    // A fixed total timeout would kill a healthy 100 MiB upload on a slow
+    // connection. Stop only when no byte-level progress or response arrives.
+    xhr.timeout = 0;
+    xhr.setRequestHeader("content-type", contentType);
+    xhr.setRequestHeader("accept", "application/json");
+    xhr.upload.onprogress = (progress) => {
+      resetStallTimer();
+      const total = progress.lengthComputable ? progress.total : body.size;
+      onProgress?.(Math.min(progress.loaded, total), total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finish(() => {
+          onProgress?.(body.size, body.size);
+          resolve();
+        });
+        return;
+      }
+      const headers = new Headers();
+      const requestId = xhr.getResponseHeader("x-request-id");
+      if (requestId) headers.set("x-request-id", requestId);
+      let responseBody: unknown = xhr.responseText;
+      try { responseBody = JSON.parse(xhr.responseText); } catch { /* keep text */ }
+      finish(() => reject(new ApiClientError(issueFrom(xhr.status, headers, responseBody))));
+    };
+    xhr.onerror = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: "UPLOAD_NETWORK_ERROR",
+        message: "上传连接中断。文件没有被当作已完成材料，可以重新选择后继续。",
+      })));
+    };
+    xhr.ontimeout = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: "UPLOAD_TIMEOUT",
+        message: "文件上传等待过久，已停止这次等待。文件没有被当作已完成材料，可以重试。",
+      })));
+    };
+    xhr.onabort = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: stalled ? "UPLOAD_TIMEOUT" : "UPLOAD_ABORTED",
+        message: stalled
+          ? "上传超过 2 分钟没有任何进度，已停止等待。文件没有被当作已完成材料，可以重试。"
+          : "上传已取消。文件没有被当作已完成材料。",
+      })));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    onProgress?.(0, body.size);
+    resetStallTimer();
+    xhr.send(body);
+  });
+}
+
 function jsonBody(value: unknown): string {
   return JSON.stringify(value);
+}
+
+async function renewAssetUploadLease(assetId: Id): Promise<void> {
+  await request<unknown>(
+    `/api/v1/assets/${encodeURIComponent(assetId)}/heartbeat`,
+    { method: "POST", body: jsonBody({}) },
+  );
 }
 
 export const api = {
@@ -1265,9 +1384,15 @@ export const api = {
     };
   },
 
-  async uploadTranscriptItem(session: ImportSession, item: ImportItem, file: File): Promise<void> {
+  async uploadTranscriptItem(
+    session: ImportSession,
+    item: ImportItem,
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const url = item.uploadUrl || `/api/v1/transcript-imports/${encodeURIComponent(session.id)}/items/${encodeURIComponent(item.id)}/content`;
-    await request<unknown>(url, { method: "PUT", headers: { "content-type": file.type || "text/plain" }, body: file });
+    await uploadBlob(url, file, file.type || "text/plain", onProgress, signal);
   },
 
   async finalizeTranscriptImport(sessionId: Id, orderedItems: Array<{ item_id: Id; title: string; occurred_at?: string; event_type: string }>): Promise<Event[]> {
@@ -1286,7 +1411,12 @@ export const api = {
     return body.data.events.map((item) => requireId(normalizeEvent(item), "event"));
   },
 
-  async initAsset(eventId: Id, input: { kind: string; filename: string; content_type: string; size_bytes: number; metadata?: Record<string, unknown> }, idempotencyKey: string): Promise<{ assetId: Id; uploadUrl?: string }> {
+  async initAsset(
+    eventId: Id,
+    input: { kind: string; filename: string; content_type: string; size_bytes: number; metadata?: Record<string, unknown> },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ assetId: Id; uploadUrl?: string; status?: string }> {
     const payload: AssetInitRequest = {
       kind: input.kind as AssetInitRequest["kind"],
       filename: input.filename,
@@ -1294,22 +1424,79 @@ export const api = {
       size_bytes: input.size_bytes,
       ...(input.metadata ? { metadata: input.metadata } : {}),
     };
-    const body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
-      method: "POST",
-      headers: { "idempotency-key": idempotencyKey },
-      body: jsonBody(payload),
-    });
+    let body: AssetResponse;
+    try {
+      body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody(payload),
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new ApiClientError({
+          status: 0,
+          code: "UPLOAD_ABORTED",
+          message: "上传已取消。文件没有被当作已完成材料。",
+        });
+      }
+      throw error;
+    }
     const source = body.data.asset;
+    const asset = normalizeAsset(source);
     const result = {
-      assetId: source.id,
+      assetId: asset?.id || source.id,
       uploadUrl: body.data.content_url,
+      status: asset?.status,
     };
     if (!result.assetId) invalidContract("The server response is missing asset_id.");
     return result;
   },
 
-  async uploadAsset(assetId: Id, uploadUrl: string | undefined, body: Blob, contentType: string): Promise<void> {
-    await request<unknown>(uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`, { method: "PUT", headers: { "content-type": contentType }, body });
+  async uploadAsset(
+    assetId: Id,
+    uploadUrl: string | undefined,
+    body: Blob,
+    contentType: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let heartbeatInFlight = false;
+    const heartbeat = globalThis.setInterval(() => {
+      if (heartbeatInFlight || signal?.aborted) return;
+      heartbeatInFlight = true;
+      // The byte upload remains authoritative. A transient control-plane
+      // heartbeat failure must not interrupt a healthy transfer; another pulse
+      // arrives well before the server's abandoned-upload lease expires.
+      void renewAssetUploadLease(assetId)
+        .catch(() => undefined)
+        .finally(() => { heartbeatInFlight = false; });
+    }, UPLOAD_HEARTBEAT_INTERVAL_MS);
+    try {
+      await uploadBlob(
+        uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`,
+        body,
+        contentType,
+        onProgress,
+        signal,
+      );
+    } finally {
+      globalThis.clearInterval(heartbeat);
+    }
+  },
+
+  async heartbeatAssetUpload(assetId: Id): Promise<void> {
+    await renewAssetUploadLease(assetId);
+  },
+
+  async abortAsset(assetId: Id): Promise<Asset> {
+    const body = await request<unknown>(
+      `/api/v1/assets/${encodeURIComponent(assetId)}/abort`,
+      { method: "POST", body: jsonBody({}) },
+    );
+    const result = normalizeAsset(dataValue(body, ["asset"]));
+    if (!result?.id) invalidContract("The server returned an invalid aborted asset.");
+    return result;
   },
 
   async downloadAsset(assetId: Id): Promise<Blob> {

@@ -5,6 +5,7 @@ import { autoAnalysisDecision } from "../lib/domain/auto-analysis.ts";
 
 const ready = {
   currentFingerprint: "event-1:photo-v1,transcript-v1",
+  currentAssetVersionIds: ["photo-v1", "transcript-v1"],
   latestRunLoaded: false,
   latestRunInProgress: false,
   waitingForAudio: false,
@@ -28,11 +29,27 @@ test("a response-lost refresh clears the same-manifest intent for active or term
       ...ready,
       baseRunId: "run-before-upload",
       extractionFingerprint: ready.currentFingerprint,
+      intentIdempotencyKey: "intent-key",
       latestRunId: "run-created-by-auto-analysis",
+      latestRunIdempotencyKey: "intent-key",
       latestRunLoaded: true,
       latestRunInProgress,
     }), "clear");
   }
+});
+
+test("an exact source-version manifest safely clears an intent created on another tab", () => {
+  assert.equal(autoAnalysisDecision({
+    ...ready,
+    baseRunId: "run-before-upload",
+    extractionFingerprint: ready.currentFingerprint,
+    intentIdempotencyKey: "this-tab-key",
+    latestRunId: "run-created-on-another-tab",
+    latestRunIdempotencyKey: "other-tab-key",
+    latestRunAssetVersionIds: ["transcript-v1", "photo-v1"],
+    latestRunLoaded: true,
+    latestRunInProgress: true,
+  }), "clear");
 });
 
 test("a still-loading or active earlier Run blocks a second paid Run", () => {
@@ -56,7 +73,10 @@ test("new manifest may start only after a newer unrelated Run is terminal", () =
     ...ready,
     baseRunId: "run-old",
     extractionFingerprint: "event-1:photo-v1",
+    intentIdempotencyKey: "new-material-key",
     latestRunId: "run-for-photo-only",
+    latestRunIdempotencyKey: "old-material-key",
+    latestRunAssetVersionIds: ["photo-v1"],
     latestRunLoaded: true,
   };
   assert.equal(autoAnalysisDecision({ ...input, latestRunInProgress: true }), "wait");

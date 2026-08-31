@@ -13,6 +13,10 @@ import {
   type TranscriptionDispatchResult,
   type TranscriptionSweepResult,
 } from "@/lib/server/jobs/transcription-outbox";
+import {
+  ensureAutomaticExtractionRuns,
+  type AutomaticExtractionEnsureResult,
+} from "@/lib/server/jobs/automatic-extraction";
 
 type Row = Record<string, unknown>;
 
@@ -593,16 +597,24 @@ export async function sweepAndDispatch(): Promise<{
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
   transcription_dispatch: TranscriptionDispatchResult;
+  automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
   const [transcription_sweep, sweep] = await Promise.all([
     sweepTranscriptionJobs(),
     sweepJobs(),
   ]);
+  const automatic_extraction = await ensureAutomaticExtractionRuns();
   const [transcription_dispatch, dispatch] = await Promise.all([
     dispatchDueTranscriptionOutbox(),
     dispatchDueOutbox(),
   ]);
-  return { sweep, dispatch, transcription_sweep, transcription_dispatch };
+  return {
+    sweep,
+    dispatch,
+    transcription_sweep,
+    transcription_dispatch,
+    automatic_extraction,
+  };
 }
 
 export async function dispatchAllDueOutbox(): Promise<{

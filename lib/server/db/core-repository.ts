@@ -158,6 +158,12 @@ const EVENT_WITH_REVIEW_COUNTS_SELECT = `
          ), 0) AS pending_occurrence_count
     FROM events e`;
 
+// The browser stops a byte upload after two minutes without progress. Keep a
+// wider server lease so a healthy slow upload cannot be reaped, while ensuring
+// a client that disappears before /abort can never block an Event forever.
+const STALE_ASSET_UPLOAD_TTL_MS = 15 * 60_000;
+const STALE_ASSET_SWEEP_LIMIT = 50;
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -759,6 +765,19 @@ export async function getEvent(
   scope: RequestScope,
   eventId: string,
 ): Promise<{ event: EventRecord; assets: AssetRecord[] }> {
+  const existing = await first(
+    `${EVENT_WITH_REVIEW_COUNTS_SELECT}
+      JOIN projects p ON p.id = e.project_id
+     WHERE e.id = ? AND e.workspace_id = ? AND p.deleted_at IS NULL`,
+    [eventId, scope.workspaceId],
+  );
+  if (!existing) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Event was not found.");
+  }
+  await expireStaleAssetUploads(scope, { eventId });
+  // The sweep can make a previously blocked Event ready. Return the row after
+  // that recovery write instead of leaking the stale pre-sweep material state
+  // for one extra poll.
   const event = await first(
     `${EVENT_WITH_REVIEW_COUNTS_SELECT}
       JOIN projects p ON p.id = e.project_id
@@ -771,6 +790,7 @@ export async function getEvent(
   const rows = await all(
     `${ASSET_SELECT}
       WHERE a.event_id = ? AND a.workspace_id = ?
+        AND COALESCE(a.failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
       ORDER BY a.created_at ASC`,
     [eventId, scope.workspaceId],
   );
@@ -1322,6 +1342,56 @@ export async function finalizeTranscriptImport(
   };
 }
 
+function eventMaterialReadinessStatement(
+  scope: RequestScope,
+  eventId: string,
+  timestamp = now(),
+): D1PreparedStatement {
+  return getD1()
+    .prepare(
+      `UPDATE events
+          SET material_status = CASE
+                WHEN material_status = 'archived' THEN 'archived'
+                WHEN EXISTS (
+                  SELECT 1 FROM assets
+                   WHERE event_id = ? AND workspace_id = ?
+                     AND COALESCE(failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+                     AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+                     AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+                     AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1
+                     AND processing_status = 'ready'
+                ) AND NOT EXISTS (
+                  SELECT 1 FROM assets
+                   WHERE event_id = ? AND workspace_id = ?
+                     AND COALESCE(failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+                     AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+                     AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+                     AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1
+                     AND processing_status <> 'ready'
+                ) THEN 'ready'
+                ELSE 'draft'
+              END,
+              updated_at = ?
+        WHERE id = ? AND workspace_id = ?`,
+    )
+    .bind(
+      eventId,
+      scope.workspaceId,
+      eventId,
+      scope.workspaceId,
+      timestamp,
+      eventId,
+      scope.workspaceId,
+    );
+}
+
+async function recomputeEventMaterialReadiness(
+  scope: RequestScope,
+  eventId: string,
+): Promise<void> {
+  await eventMaterialReadinessStatement(scope, eventId).run();
+}
+
 export async function initializeAsset(
   scope: RequestScope,
   eventId: string,
@@ -1359,13 +1429,25 @@ export async function initializeAsset(
   }
   const validatedInput = { ...input, mimeType };
   const endpointScope = `events/${eventId}/assets/init`;
+  await expireStaleAssetUploads(scope, { eventId });
   const replay = await findMutationReplay<{ assetId: string }>(
     scope,
     endpointScope,
     idempotencyKey,
     validatedInput,
   );
-  if (replay.response) return getAsset(scope, replay.response.assetId);
+  if (replay.response) {
+    const replayed = await getAsset(scope, replay.response.assetId);
+    if (replayed.processing_status === "failed") {
+      throw new ApiFault(
+        409,
+        "EVENT_NOT_READY",
+        "The previous upload is no longer active. Start a new upload to attach the file.",
+      );
+    }
+    await recomputeEventMaterialReadiness(scope, eventId);
+    return replayed;
+  }
   const event = await assertEvent(scope, eventId);
   const assetId = id("ast");
   const timestamp = now();
@@ -1400,6 +1482,7 @@ export async function initializeAsset(
         { assetId },
         timestamp,
       ),
+      eventMaterialReadinessStatement(scope, eventId, timestamp),
     ]);
   } catch (error) {
     const recovered = await findMutationReplay<{ assetId: string }>(
@@ -1408,7 +1491,10 @@ export async function initializeAsset(
       idempotencyKey,
       validatedInput,
     );
-    if (recovered.response) return getAsset(scope, recovered.response.assetId);
+    if (recovered.response) {
+      await recomputeEventMaterialReadiness(scope, eventId);
+      return getAsset(scope, recovered.response.assetId);
+    }
     throw error;
   }
   return getAsset(scope, assetId);
@@ -1510,6 +1596,13 @@ export async function uploadAssetContent(
   if (row.current_version_id) {
     throw new ApiFault(409, "BAD_REQUEST", "Finalized asset content is immutable.");
   }
+  if (String(row.processing_status) === "failed") {
+    throw new ApiFault(
+      409,
+      "EVENT_NOT_READY",
+      "This asset upload was cancelled. Start a new upload to attach the file.",
+    );
+  }
   const kind = String(row.kind) as AssetKind;
   const mime = normalizeMimeType(
     request.headers.get("content-type") || String(row.staged_mime_type),
@@ -1557,7 +1650,7 @@ export async function uploadAssetContent(
           SET staged_r2_key = ?, staged_sha256 = ?, staged_mime_type = ?,
               staged_size_bytes = ?, processing_status = 'parsing', updated_at = ?
         WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
-          AND staged_r2_key IS NULL`,
+          AND processing_status = 'uploading' AND staged_r2_key IS NULL`,
     )
     .bind(key, sha, mime, bytes.byteLength, now(), assetId, scope.workspaceId)
     .run();
@@ -1566,13 +1659,302 @@ export async function uploadAssetContent(
       `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
       [assetId, scope.workspaceId],
     );
-    if (current?.staged_r2_key === key || current?.current_version_id) {
+    if (
+      String(current?.processing_status) === "parsing"
+      && current?.staged_r2_key === key
+      && current?.staged_sha256 === sha
+    ) {
       return getAsset(scope, assetId);
     }
-    if (current?.staged_r2_key !== key) {
-      await getEvidenceBucket().delete(key).catch(() => undefined);
+
+    if (current?.current_version_id) {
+      const owner = await first(
+        `SELECT r2_original_key FROM asset_versions WHERE id = ? AND asset_id = ?`,
+        [current.current_version_id, assetId],
+      );
+      if (owner?.r2_original_key === key) return getAsset(scope, assetId);
+    }
+
+    try {
+      await getEvidenceBucket().delete(key);
+    } catch (error) {
+      // A terminal row can carry the losing key as durable cleanup work. This
+      // covers the abort-vs-late-PUT race even if object storage is briefly
+      // unavailable; the scoped stale sweep will retry deletion later.
+      if (
+        String(current?.processing_status) === "failed"
+        && !current?.current_version_id
+        && (!current?.staged_r2_key || current.staged_r2_key === key)
+      ) {
+        await getD1()
+          .prepare(
+            `UPDATE assets
+                SET staged_r2_key = ?, staged_sha256 = ?, updated_at = ?
+              WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+                AND processing_status = 'failed'
+                AND (staged_r2_key IS NULL OR staged_r2_key = ?)`,
+          )
+          .bind(key, sha, now(), assetId, scope.workspaceId, key)
+          .run();
+      }
+      throw error;
+    }
+    if (
+      String(current?.processing_status) === "failed"
+      && current?.staged_r2_key === key
+    ) {
+      await getD1()
+        .prepare(
+          `UPDATE assets
+              SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'failed' AND staged_r2_key = ?`,
+        )
+        .bind(now(), assetId, scope.workspaceId, key)
+        .run();
     }
     throw new ApiFault(409, "BAD_REQUEST", "Asset upload was already completed by another request.");
+  }
+  return getAsset(scope, assetId);
+}
+
+/**
+ * Renews the lease for an Asset whose bytes are still moving through the
+ * browser. A heartbeat never advances upload state; it only prevents a
+ * healthy, slow request from being mistaken for an abandoned upload.
+ */
+export async function heartbeatAssetUpload(
+  scope: RequestScope,
+  assetId: string,
+): Promise<AssetRecord> {
+  const updated = await getD1()
+    .prepare(
+      `UPDATE assets SET updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+          AND processing_status = 'uploading'`,
+    )
+    .bind(now(), assetId, scope.workspaceId)
+    .run();
+  if (Number(updated.meta.changes ?? 0) > 0) {
+    return getAsset(scope, assetId);
+  }
+
+  const current = await first(
+    `SELECT current_version_id, processing_status, failure_code
+       FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!current) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (
+    current.current_version_id ||
+    ["uploading", "parsing", "ready"].includes(String(current.processing_status))
+  ) {
+    // Content upload/finalize may win immediately before this heartbeat. That
+    // is a successful, idempotent heartbeat rather than an error.
+    return getAsset(scope, assetId);
+  }
+  throw new ApiFault(
+    409,
+    "EVENT_NOT_READY",
+    String(current.failure_code) === "UPLOAD_EXPIRED"
+      ? "This asset upload expired after the browser stopped responding."
+      : "This asset upload is no longer active.",
+  );
+}
+
+/**
+ * Lazily expires unfinished uploads whose browser stopped responding.
+ *
+ * The status CAS races safely with content upload and finalization: whichever
+ * write reaches D1 first wins, and the losing content path removes its own R2
+ * object. Failed cleanup keeps the staged key so the next scoped read retries
+ * deletion without making that read fail.
+ */
+export async function expireStaleAssetUploads(
+  scope: RequestScope,
+  filter: { projectId?: string; eventId?: string } = {},
+): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_ASSET_UPLOAD_TTL_MS).toISOString();
+  const scopeClauses = ["workspace_id = ?", "current_version_id IS NULL"];
+  const scopeBindings: unknown[] = [scope.workspaceId];
+  if (filter.projectId) {
+    scopeClauses.push("project_id = ?");
+    scopeBindings.push(filter.projectId);
+  }
+  if (filter.eventId) {
+    scopeClauses.push("event_id = ?");
+    scopeBindings.push(filter.eventId);
+  }
+
+  // Active expiration and terminal object cleanup have independent budgets.
+  // A storage outage can therefore never let old cleanup tombstones starve a
+  // newly abandoned upload from being expired.
+  const activeCandidates = await all(
+    `SELECT id, event_id FROM assets
+      WHERE ${scopeClauses.join(" AND ")}
+        AND processing_status IN ('uploading', 'parsing')
+        AND updated_at < ?
+      ORDER BY updated_at ASC
+      LIMIT ?`,
+    [...scopeBindings, cutoff, STALE_ASSET_SWEEP_LIMIT],
+  );
+
+  let expiredCount = 0;
+  const affectedEventIds = new Set<string>();
+  for (const candidate of activeCandidates) {
+    const assetId = String(candidate.id);
+    const expired = await getD1()
+      .prepare(
+        `UPDATE assets
+            SET processing_status = 'failed', failure_code = 'UPLOAD_EXPIRED', updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status IN ('uploading', 'parsing') AND updated_at < ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, cutoff)
+      .run();
+    const changed = Number(expired.meta.changes ?? 0);
+    expiredCount += changed;
+    if (changed > 0) affectedEventIds.add(String(candidate.event_id));
+  }
+
+  // Readiness recovery is independent from object deletion. Even when R2 is
+  // temporarily unavailable, an expired companion upload must stop blocking
+  // already-finalized material in the same Event.
+  for (const eventId of affectedEventIds) {
+    await recomputeEventMaterialReadiness(scope, eventId);
+  }
+
+  const cleanupCandidates = await all(
+    `SELECT id, event_id, staged_r2_key FROM assets
+      WHERE ${scopeClauses.join(" AND ")}
+        AND processing_status = 'failed'
+        AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+        AND staged_r2_key IS NOT NULL
+      ORDER BY updated_at ASC
+      LIMIT ?`,
+    [...scopeBindings, STALE_ASSET_SWEEP_LIMIT],
+  );
+
+  const cleanupEventIds = new Set<string>();
+  for (const candidate of cleanupCandidates) {
+    const assetId = String(candidate.id);
+    const stagedKey = String(candidate.staged_r2_key);
+    cleanupEventIds.add(String(candidate.event_id));
+
+    const current = await first(
+      `SELECT current_version_id, processing_status, failure_code, staged_r2_key
+         FROM assets WHERE id = ? AND workspace_id = ?`,
+      [assetId, scope.workspaceId],
+    );
+    if (
+      current?.current_version_id ||
+      String(current?.processing_status) !== "failed" ||
+      !["UPLOAD_ABORTED", "UPLOAD_EXPIRED"].includes(String(current?.failure_code)) ||
+      !current?.staged_r2_key
+    ) continue;
+
+    try {
+      await getEvidenceBucket().delete(stagedKey);
+    } catch {
+      // Keep the durable key and move this item behind older work. A permanent
+      // failure for one object cannot starve the next cleanup candidate.
+      await getD1()
+        .prepare(
+          `UPDATE assets SET updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'failed'
+              AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+              AND staged_r2_key = ?`,
+        )
+        .bind(now(), assetId, scope.workspaceId, stagedKey)
+        .run();
+      continue;
+    }
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'failed'
+            AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+            AND staged_r2_key = ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, stagedKey)
+      .run();
+  }
+
+  for (const eventId of cleanupEventIds) {
+    if (!affectedEventIds.has(eventId)) {
+      await recomputeEventMaterialReadiness(scope, eventId);
+    }
+  }
+  return expiredCount;
+}
+
+/**
+ * Stops an unfinished Asset upload without invalidating its init replay.
+ *
+ * The failed row is intentionally retained: mutation_replays has no Asset FK,
+ * so deleting the row would make a valid retry of /assets/init point at a 404.
+ * Keeping a terminal row also lets a repeated abort finish an R2 cleanup that
+ * previously failed. The active-state CAS is the serialization point shared
+ * with content upload and finalization.
+ */
+export async function abandonAssetUpload(
+  scope: RequestScope,
+  assetId: string,
+): Promise<AssetRecord> {
+  const existing = await first(
+    `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!existing) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (existing.current_version_id) return getAsset(scope, assetId);
+
+  const timestamp = now();
+  await getD1()
+    .prepare(
+      `UPDATE assets
+          SET processing_status = 'failed', failure_code = 'UPLOAD_ABORTED', updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+          AND processing_status IN ('uploading', 'parsing')`,
+    )
+    .bind(timestamp, assetId, scope.workspaceId)
+    .run();
+
+  // Reread after the CAS. If finalize won, its immutable version owns the
+  // object and must not be deleted. If abort won, no content/finalize CAS can
+  // advance the row again, so its staged key is safe to remove.
+  const current = await first(
+    `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!current) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (current.current_version_id) return getAsset(scope, assetId);
+
+  // Restore the Event from the complete set of live user material before any
+  // best-effort object cleanup. An R2 outage must not leave the visible
+  // workflow stuck in draft after this upload has been cancelled.
+  await recomputeEventMaterialReadiness(scope, String(current.event_id));
+
+  const stagedKey = current.staged_r2_key ? String(current.staged_r2_key) : null;
+  if (String(current.processing_status) === "failed" && stagedKey) {
+    await getEvidenceBucket().delete(stagedKey);
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'failed' AND staged_r2_key = ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, stagedKey)
+      .run();
   }
   return getAsset(scope, assetId);
 }
@@ -1589,6 +1971,15 @@ export async function finalizeAsset(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
   }
   if (row.current_version_id) return getAsset(scope, assetId);
+  if (String(row.processing_status) !== "parsing") {
+    throw new ApiFault(
+      409,
+      "EVENT_NOT_READY",
+      String(row.failure_code) === "UPLOAD_ABORTED"
+        ? "This asset upload was cancelled. Start a new upload to attach the file."
+        : "Asset content is not ready to finalize.",
+    );
+  }
   if (!row.staged_r2_key || !row.staged_sha256 || !row.staged_mime_type) {
     throw new ApiFault(409, "EVENT_NOT_READY", "Asset content has not been uploaded.");
   }
@@ -1600,7 +1991,26 @@ export async function finalizeAsset(
   const timestamp = now();
   const kind = String(row.kind) as AssetKind;
   const db = getD1();
+  const guardId = id("guard");
   const statements = [
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM assets
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'parsing'
+              AND staged_r2_key = ? AND staged_sha256 = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        assetId,
+        scope.workspaceId,
+        row.staged_r2_key,
+        row.staged_sha256,
+        timestamp,
+      ),
     db
       .prepare(
         `INSERT INTO asset_versions (
@@ -1632,13 +2042,32 @@ export async function finalizeAsset(
         format: transcriptFormat(String(row.filename), String(row.staged_mime_type)),
       });
     } catch (error) {
-      await getD1()
+      const failed = await getD1()
         .prepare(
           `UPDATE assets SET processing_status = 'failed', failure_code = 'TRANSCRIPT_PARSE_FAILED',
-                             updated_at = ? WHERE id = ? AND workspace_id = ?`,
+                             updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'parsing'`,
         )
         .bind(timestamp, assetId, scope.workspaceId)
         .run();
+      if (Number(failed.meta.changes ?? 0) > 0) {
+        await recomputeEventMaterialReadiness(scope, String(row.event_id));
+      }
+      if (Number(failed.meta.changes ?? 0) === 0) {
+        const current = await first(
+          `SELECT current_version_id, failure_code FROM assets WHERE id = ? AND workspace_id = ?`,
+          [assetId, scope.workspaceId],
+        );
+        if (current?.current_version_id) return getAsset(scope, assetId);
+        if (String(current?.failure_code) === "UPLOAD_ABORTED") {
+          throw new ApiFault(
+            409,
+            "EVENT_NOT_READY",
+            "This asset upload was cancelled. Start a new upload to attach the file.",
+          );
+        }
+      }
       throw new ApiFault(
         422,
         "TRANSCRIPT_PARSE_FAILED",
@@ -1678,28 +2107,36 @@ export async function finalizeAsset(
         `UPDATE assets
             SET current_version_id = ?, processing_status = 'ready', failure_code = NULL,
                 updated_at = ?
-          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL`,
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'parsing'
+            AND staged_r2_key = ? AND staged_sha256 = ?`,
       )
-      .bind(versionId, timestamp, assetId, scope.workspaceId),
-    db
-      .prepare(
-        `UPDATE events SET material_status = 'ready', updated_at = ?
-          WHERE id = ? AND workspace_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM assets
-               WHERE event_id = ? AND id <> ? AND processing_status <> 'ready'
-            )`,
-      )
-      .bind(timestamp, row.event_id, scope.workspaceId, row.event_id, assetId),
+      .bind(
+        versionId,
+        timestamp,
+        assetId,
+        scope.workspaceId,
+        row.staged_r2_key,
+        row.staged_sha256,
+      ),
+    eventMaterialReadinessStatement(scope, String(row.event_id), timestamp),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   );
   try {
     await db.batch(statements);
   } catch (error) {
     const current = await first(
-      `SELECT current_version_id FROM assets WHERE id = ? AND workspace_id = ?`,
+      `SELECT current_version_id, failure_code FROM assets WHERE id = ? AND workspace_id = ?`,
       [assetId, scope.workspaceId],
     );
     if (current?.current_version_id) return getAsset(scope, assetId);
+    if (String(current?.failure_code) === "UPLOAD_ABORTED") {
+      throw new ApiFault(
+        409,
+        "EVENT_NOT_READY",
+        "This asset upload was cancelled. Start a new upload to attach the file.",
+      );
+    }
     throw error;
   }
   return getAsset(scope, assetId);
@@ -2012,6 +2449,34 @@ export async function createExtractionRun(
     return { run: extractionRunRecord(existing), created: false };
   }
 
+  const activeEventRun = await first(
+    `SELECT * FROM extraction_runs
+      WHERE event_id = ? AND workspace_id = ?
+        AND status IN ('queued', 'processing')
+      ORDER BY created_at DESC LIMIT 1`,
+    [eventId, scope.workspaceId],
+  );
+  if (activeEventRun) {
+    if (String(activeEventRun.input_hash) !== inputHash) {
+      throw new ApiFault(
+        409,
+        "RUN_STATE_CONFLICT",
+        "This communication already has an active analysis for different source versions.",
+        { existing_run_id: activeEventRun.id },
+      );
+    }
+    await ensureEventAiArtifactRuns({
+      workspaceId: scope.workspaceId,
+      projectId: String(activeEventRun.project_id),
+      eventId,
+      extractionRunId: String(activeEventRun.id),
+      inputManifestJson: String(activeEventRun.input_manifest_json),
+      provider: String(activeEventRun.provider),
+      model: String(activeEventRun.model),
+    });
+    return { run: extractionRunRecord(activeEventRun), created: false };
+  }
+
   const needsScenarioAssessment = scenarioStatus === "unassessed";
   if (
     Number(event.sequence_no) === 1 &&
@@ -2033,6 +2498,7 @@ export async function createExtractionRun(
   const payloadHash = await shaText(payloadJson);
   const db = getD1();
   const quotaGuardId = id("guard");
+  const eventRunGuardId = id("guard");
   const scenarioGuardId = needsScenarioAssessment ? id("guard") : null;
   const scenarioLeaseExpiresAt = new Date(Date.now() + 35 * 60_000).toISOString();
   const modelParamsJson = JSON.stringify({
@@ -2066,6 +2532,16 @@ export async function createExtractionRun(
         maxConcurrentRuns,
         timestamp,
       ),
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN NOT EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE event_id = ? AND workspace_id = ?
+              AND status IN ('queued', 'processing')
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(eventRunGuardId, eventId, scope.workspaceId, timestamp),
   ] as D1PreparedStatement[];
   if (needsScenarioAssessment) {
     statements.push(
@@ -2158,6 +2634,7 @@ export async function createExtractionRun(
   if (scenarioGuardId) {
     statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(scenarioGuardId));
   }
+  statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(eventRunGuardId));
   statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(quotaGuardId));
   try {
     await db.batch(statements);
@@ -2186,6 +2663,33 @@ export async function createExtractionRun(
         "Idempotency key was already used with different extraction input.",
         { existing_run_id: raced.id },
       );
+    }
+    const activeEventRace = await first(
+      `SELECT * FROM extraction_runs
+        WHERE event_id = ? AND workspace_id = ?
+          AND status IN ('queued', 'processing')
+        ORDER BY created_at DESC LIMIT 1`,
+      [eventId, scope.workspaceId],
+    );
+    if (activeEventRace) {
+      if (String(activeEventRace.input_hash) !== inputHash) {
+        throw new ApiFault(
+          409,
+          "RUN_STATE_CONFLICT",
+          "This communication already has an active analysis for different source versions.",
+          { existing_run_id: activeEventRace.id },
+        );
+      }
+      await ensureEventAiArtifactRuns({
+        workspaceId: scope.workspaceId,
+        projectId: String(activeEventRace.project_id),
+        eventId,
+        extractionRunId: String(activeEventRace.id),
+        inputManifestJson: String(activeEventRace.input_manifest_json),
+        provider: String(activeEventRace.provider),
+        model: String(activeEventRace.model),
+      });
+      return { run: extractionRunRecord(activeEventRace), created: false };
     }
     const quotaState = await first(
       `SELECT SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS active_count

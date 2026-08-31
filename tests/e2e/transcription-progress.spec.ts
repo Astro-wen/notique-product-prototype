@@ -29,7 +29,7 @@ test("chunked transcription shows percentage, nodes, remaining work, and numbere
   await expect(journey.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
   await expect(page.getByRole("button", { name: "开始处理全部沟通", exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: /^Transcript/ }).click();
+  await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: "先看原始逐字稿", exact: true }).click();
   await expect(page.locator(".raw-artifact strong").filter({ hasText: /^Speaker 1$/ })).toBeVisible();
   await expect(page.locator(".raw-artifact strong").filter({ hasText: /^Speaker 2$/ })).toBeVisible();

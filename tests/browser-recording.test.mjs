@@ -60,11 +60,11 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   ]);
   assert.match(page, /simple-meeting-rail/);
   assert.match(page, /meeting-tabs/);
-  assert.match(page, /aria-label="材料 · 来源"/);
+  assert.match(page, /aria-label="来源"/);
   assert.match(page, />来源 </);
-  assert.match(page, /aria-label="Transcript · 本次重点"/);
-  assert.match(page, /aria-label="待核对"/);
-  assert.match(page, /aria-label="结果"/);
+  assert.match(page, /aria-label="本次重点"/);
+  assert.match(page, /aria-label="待确认"/);
+  assert.match(page, /aria-label="整个项目"/);
   assert.match(page, /<DirectRecorder/);
   assert.match(page, /直接录音/);
   assert.match(page, /上传已有录音/);

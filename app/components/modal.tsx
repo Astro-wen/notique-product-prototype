@@ -1,4 +1,5 @@
 import { ReactNode } from "react";
+import { X } from "lucide-react";
 import { Dialog } from "radix-ui";
 
 export function Modal({
@@ -41,7 +42,7 @@ export function Modal({
               <Dialog.Description>{description || "完成当前操作，或关闭此对话框返回上一页。"}</Dialog.Description>
             </div>
             <Dialog.Close asChild disabled={!dismissible}>
-              <button className="icon-button" aria-label="关闭" disabled={!dismissible}>×</button>
+              <button className="icon-button" aria-label="关闭" disabled={!dismissible}><X aria-hidden="true" /></button>
             </Dialog.Close>
           </header>
           {children}
