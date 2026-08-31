@@ -1,4 +1,4 @@
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 
 import { NotiqueApiFixture } from "./notique-api-fixture";
 
@@ -14,6 +14,18 @@ const test = base.extend<Fixtures>({
     fixture.assertNoUnexpectedWrites();
   }, { auto: true }],
 });
+
+async function expandSummaryIfCollapsed(page: Page): Promise<void> {
+  const summaryCard = page.getByLabel("AI 摘要卡片");
+  await expect(summaryCard).toHaveClass(/ready/);
+
+  const expandToggle = summaryCard.locator(".summary-expand-button");
+  await expect(expandToggle).toBeVisible();
+  if (await expandToggle.getAttribute("aria-expanded") === "false") {
+    await expandToggle.click();
+  }
+  await expect(expandToggle).toHaveAttribute("aria-expanded", "true");
+}
 
 test("a delayed Project A snapshot and Claims response cannot overwrite Project B", async ({ page, apiFixture }) => {
   apiFixture.holdProjectAClaims = true;
@@ -37,6 +49,7 @@ test("a delayed Project A snapshot and Claims response cannot overwrite Project 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "B 项目会议重点" })).toBeVisible();
+  await expandSummaryIfCollapsed(page);
   await expect(page.getByText("B 项目只确认学区范围", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /核对这条意思|查看核对结果/ })).toHaveCount(0);
   await expect(page.getByText("预算上限是 120 万美元", { exact: true })).toHaveCount(0);
@@ -89,6 +102,7 @@ test("a Summary point opens source, verification, and action controls in the sam
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.scrollIntoViewIfNeeded();
@@ -109,6 +123,7 @@ test("a Summary point opens source, verification, and action controls in the sam
 test("a reviewed Summary item exposes its source in place while pending work remains in the rail", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expandSummaryIfCollapsed(page);
 
   const reviewed = page.locator(".summary-sentences article").filter({
     hasText: "经纪人周五前发送三套房源",
@@ -139,6 +154,7 @@ test("the Summary reading route survives reload and its source reopens in the sa
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^AI 摘要/ })).toHaveClass(/active/);
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
@@ -151,6 +167,7 @@ test("the Summary reading route survives reload and its source reopens in the sa
 test("source, pending, and action views remain one continuous Summary workflow", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expandSummaryIfCollapsed(page);
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
 

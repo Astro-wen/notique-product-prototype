@@ -71,7 +71,7 @@ test("the workspace keeps analysis progress user-facing and hides internal diagn
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
   assert.match(page, /analysisRunning \? "正在整理，原文已可阅读"/);
-  assert.match(page, /summaryArtifact \? "已从原文中整理" : "原文优先"/);
+  assert.match(page, /summaryArtifact \? "AI 草稿 · 已从原文中整理" : "原文优先"/);
   assert.doesNotMatch(page, /data-testid="analysis-progress-journey"/);
   assert.doesNotMatch(page, /处理详情|测试版本·每秒更新|后端定期检查模型任务/);
   assert.match(page, /className="reader-intelligence-heading"/);

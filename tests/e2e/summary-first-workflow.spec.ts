@@ -28,6 +28,14 @@ async function openOperationsOnMobile(page: Page, testInfo: TestInfo): Promise<v
   }
 }
 
+async function expandSummaryIfCollapsed(page: Page): Promise<void> {
+  await page.locator(".summary-overview-card.ready").waitFor({ state: "visible" });
+  const expander = page.locator(".summary-expand-button");
+  if (await expander.count() > 0 && await expander.getAttribute("aria-expanded") === "false") {
+    await expander.click();
+  }
+}
+
 test("a finished Summary opens once while facts continue without creating another Run", async ({ page, apiFixture }, testInfo) => {
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple");
@@ -41,6 +49,7 @@ test("a finished Summary opens once while facts continue without creating anothe
   await expect(page.locator(".reader-action-rail")).toBeVisible();
   if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
   await expect(page.getByRole("button", { name: /连续核对/ })).toHaveCount(0);
+  await expect(page.locator(".summary-trust-note")).toBeVisible();
   await expect(page.locator(".summary-trust-note")).toContainText("原文定位不代表语义已经核对");
 
   const nonWakeWrites = apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
@@ -170,6 +179,7 @@ test("a Summary sentence with two overlapping Claims requires an explicit choice
   apiFixture.enableSharedSummaryClaims();
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await expect(target.getByRole("button", { name: "核对这条意思" })).toHaveCount(0);
@@ -186,6 +196,7 @@ test("the source rail stays open when another reading artifact finishes", async 
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "succeeded", readableStatus: "processing" });
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expandSummaryIfCollapsed(page);
 
   await page.locator(".summary-point-copy").filter({ hasText: "预算上限是 120 万美元" }).click();
   const rail = page.locator(".reader-action-rail");
@@ -208,6 +219,7 @@ test("a Summary point opens a persistent operation rail without covering the rea
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   await page.locator(".summary-point-copy").filter({ hasText: "预算上限是 120 万美元" }).click();
 
@@ -384,6 +396,7 @@ test("a visible source can be confirmed in place without leaving the reading wor
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
@@ -409,6 +422,7 @@ test("an incompletely displayed source cannot be quick-confirmed", async ({ page
   apiFixture.completeFacts();
   apiFixture.enableIncompleteSummaryEvidence();
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   await page.locator(".summary-point-copy").filter({ hasText: "预算上限是 120 万美元" }).click();
   const rail = page.locator(".reader-action-rail");
@@ -426,6 +440,7 @@ test("a Summary fact seeds source context but requires a real action and stays i
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
@@ -510,6 +525,7 @@ test("mobile operations open as a bottom sheet without replacing the reader", as
   apiFixture.completeFacts();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   await expect(page.locator(".reader-reading-pane")).toBeVisible();
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
@@ -530,6 +546,7 @@ test("tablet operations stay reachable as a sheet instead of falling below the t
   apiFixture.completeFacts();
   await page.setViewportSize({ width: 900, height: 800 });
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
 
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
@@ -545,6 +562,7 @@ test("briefly viewing sources keeps the selected point and warm transcript state
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
   const transcriptReads = apiFixture.completedReadCount("/api/v1/events/event-a/transcript-segments");

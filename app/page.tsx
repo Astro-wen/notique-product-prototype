@@ -5540,6 +5540,10 @@ function TranscriptArtifactsPanel({
     const label = summarySectionLabel(firstString(section, ["kind"]));
     return [...titleParts, label].filter(Boolean);
   }))].slice(0, 6);
+  const summaryHasMore = summarySections.length > 2
+    || summarySections.some((section) => recordArray(section.items).length > 1)
+    || summarySections.some((section) => recordArray(section.items).some((item) => Boolean(firstString(item, ["support_quote"]))))
+    || summaryKeywords.length > 0;
   const rawSegmentById = new Map(rawSegments.map((segment) => [segment.id, segment]));
   const readableDisplayGroups = groupReadableTranscriptSegments(
     (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
@@ -5750,6 +5754,14 @@ function TranscriptArtifactsPanel({
           : selectedPoint.sectionKind === "source_excerpt"
             ? "原始来源"
             : "AI 草稿";
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const panel = document.getElementById("reader-action-panel");
+      if (panel) panel.scrollTop = 0;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [actionView, selectedPointRevision]);
 
   const previousSelectionRevision = useRef(sourceSelectionRevision);
   useEffect(() => {
@@ -6101,7 +6113,7 @@ function TranscriptArtifactsPanel({
       <div className="reader-reading-pane" role="region" aria-label="阅读内容">
         <div className="reader-reading-scroll">
     <header className="reader-intelligence-heading">
-      <div><span className="reader-intelligence-mark" aria-hidden="true"><Sparkles /></span><span><strong>智能速览</strong><small>{analysisRunning ? "正在整理，原文已可阅读" : summaryArtifact ? "已从原文中整理" : "原文优先"}</small></span></div>
+      <div><span className="reader-intelligence-mark" aria-hidden="true"><Sparkles /></span><span><strong>智能速览</strong><small>{analysisRunning ? "正在整理，原文已可阅读" : summaryArtifact ? "AI 草稿 · 已从原文中整理" : "原文优先"}</small></span></div>
       <nav className="reader-insight-tabs" aria-label="智能速览方式">
         <button aria-pressed={insightView === "points"} aria-label="AI 摘要 · 全文概要" className={insightView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}>全文概要</button>
         <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
@@ -6121,10 +6133,12 @@ function TranscriptArtifactsPanel({
 
       {summaryArtifact ? <><div className={`summary-card-content${summaryExpanded ? " expanded" : ""}`}>
         {summaryKeywords.length > 0 && <div className="summary-keywords" aria-label="关键词"><strong>关键词</strong><span>{summaryKeywords.map((keyword) => <i key={keyword}>{keyword}</i>)}</span></div>}
-        {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
-          <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "本次沟通重点"}</h3></header>
+        {summarySections.map((section, sectionIndex) => {
+          const sectionKind = firstString(section, ["kind"]) || "";
+          const sectionTitle = summarySectionLabel(sectionKind) || firstString(section, ["title"]) || "本次沟通重点";
+          return <section key={sectionKind || sectionIndex}>
+          <header><h3>{sectionTitle}</h3></header>
           <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
-            const sectionKind = firstString(section, ["kind"]) || "";
             const ids = stringValues(item.source_segment_ids);
             const matchedClaims = matchingSummarySourceIndexes(
               ids,
@@ -6159,9 +6173,9 @@ function TranscriptArtifactsPanel({
               </div>
             </article>;
           })}</div>
-        </section>)}
+        </section>})}
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
-      </div><button className="summary-expand-button" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((expanded) => !expanded)}>{summaryExpanded ? "收起概要" : "展开全部"}</button></> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
+      </div>{summaryHasMore && <button className="summary-expand-button" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((expanded) => !expanded)}>{summaryExpanded ? "收起概要" : "展开全部"}</button>}</> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>}
