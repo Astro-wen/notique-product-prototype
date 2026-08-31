@@ -9,7 +9,12 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const cjsModule = { exports: {} };
 new Function("module", "exports", compiled)(cjsModule, cjsModule.exports);
-const { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments, groupReadableTranscriptSegments } = cjsModule.exports;
+const {
+  activeTranscriptGroupKeyAt,
+  groupConsecutiveSpeakerSegments,
+  groupReadableTranscriptSegments,
+  resolveTranscriptAudioAssetId,
+} = cjsModule.exports;
 
 function segment(overrides = {}) {
   return {
@@ -50,6 +55,62 @@ test("说话人变化或明显停顿时保持分段", () => {
     segment({ key: "segment-3", startMs: 10_000, endMs: 11_000 }),
   ]);
   assert.equal(groups.length, 3);
+});
+
+test("不同素材的同名说话人绝不合并或共用播放音源", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment({ startMs: null, endMs: null }),
+    segment({
+      key: "segment-2",
+      assetVersionId: "asset-version-2",
+      startMs: null,
+      endMs: null,
+      sourceIds: ["seg-2"],
+      text: "This came from another recording.",
+    }),
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].assetVersionId, "asset-version-1");
+  assert.equal(groups[1].assetVersionId, "asset-version-2");
+});
+
+test("缺少素材版本时保持原始分段", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment({ assetVersionId: null }),
+    segment({ key: "segment-2", assetVersionId: null, startMs: 4_000, sourceIds: ["seg-2"] }),
+  ]);
+  assert.equal(groups.length, 2);
+});
+
+test("独立导入逐字稿绝不借用另一份来源的录音", () => {
+  const rawTranscriptVersionIds = new Set(["derived-a", "imported-b"]);
+  assert.equal(resolveTranscriptAudioAssetId({
+    assetVersionId: "derived-a",
+    mappedAudioAssetId: "audio-a",
+    rawTranscriptVersionIds,
+    eventAudioAssetIds: ["audio-a"],
+  }), "audio-a");
+  assert.equal(resolveTranscriptAudioAssetId({
+    assetVersionId: "imported-b",
+    mappedAudioAssetId: null,
+    rawTranscriptVersionIds,
+    eventAudioAssetIds: ["audio-a"],
+  }), null);
+});
+
+test("旧数据仅在单逐字稿和单录音时允许安全回退", () => {
+  assert.equal(resolveTranscriptAudioAssetId({
+    assetVersionId: "legacy-transcript",
+    mappedAudioAssetId: null,
+    rawTranscriptVersionIds: new Set(["legacy-transcript"]),
+    eventAudioAssetIds: ["legacy-audio"],
+  }), "legacy-audio");
+  assert.equal(resolveTranscriptAudioAssetId({
+    assetVersionId: "legacy-transcript",
+    mappedAudioAssetId: null,
+    rawTranscriptVersionIds: new Set(["legacy-transcript"]),
+    eventAudioAssetIds: ["audio-a", "audio-b"],
+  }), null);
 });
 
 test("待确认说话人不会被自动合并", () => {

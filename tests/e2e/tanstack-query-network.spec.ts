@@ -58,7 +58,7 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
 
   await page.getByLabel("选择当前项目").selectOption("project-b");
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
-  await expect(page.getByRole("heading", { name: "B 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-b");
   await expect.poll(() => apiFixture.readCount(projectBSnapshotPath)).toBeGreaterThan(0);
 
   apiFixture.releaseProjectASnapshot();
@@ -68,8 +68,8 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
   )).toBeGreaterThan(0);
 
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
-  await expect(page.getByRole("heading", { name: "B 初次沟通", exact: true })).toBeVisible();
-  await expect(page.locator(".current-event-status")).toHaveText("已完成");
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-b");
+  await expect(page.locator(".current-event-status:visible")).toHaveText("已完成");
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "B 项目会议重点" })).toBeVisible();

@@ -22,21 +22,24 @@ function isMobile(testInfo: TestInfo): boolean {
 
 async function openOperationsOnMobile(page: Page, testInfo: TestInfo): Promise<void> {
   if (!isMobile(testInfo)) return;
-  await page.locator(".reader-mobile-switch").getByRole("button", { name: /^处理/ }).click();
+  const rail = page.locator(".reader-action-rail");
+  if (await rail.getAttribute("data-sheet") === "peek") {
+    await rail.getByRole("button", { name: "展开本次操作" }).click();
+  }
 }
 
 test("a finished Summary opens once while facts continue without creating another Run", async ({ page, apiFixture }, testInfo) => {
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
   await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
 
   apiFixture.completeSummary();
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
-  if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toBeHidden();
-  else await expect(page.locator(".reader-action-rail")).toBeVisible();
+  await expect(page.locator(".reader-action-rail")).toBeVisible();
+  if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
   await expect(page.getByRole("button", { name: /连续核对/ })).toHaveCount(0);
   await expect(page.locator(".summary-trust-note")).toContainText("原文定位不代表语义已经核对");
 
@@ -79,7 +82,7 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 
 test("an explicit workspace tab choice is never replaced when Summary finishes", async ({ page, apiFixture }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
   const projectScope = page.getByRole("button", { name: "整个项目", exact: true });
   await projectScope.click();
   await expect(projectScope).toHaveClass(/active/);
@@ -118,7 +121,9 @@ test("facts finishing preserves the open Summary and its scroll position", async
 
   const lastSummaryItem = page.getByText("A 摘要背景 24", { exact: true });
   await lastSummaryItem.scrollIntoViewIfNeeded();
-  const sourceScrollY = await page.evaluate(() => window.scrollY);
+  const sourceScrollY = await page.evaluate((mobile) => mobile
+    ? window.scrollY
+    : (document.querySelector(".reader-reading-scroll")?.scrollTop ?? 0), isMobile(testInfo));
   expect(sourceScrollY).toBeGreaterThan(0);
 
   apiFixture.completeFacts();
@@ -131,12 +136,12 @@ test("facts finishing preserves the open Summary and its scroll position", async
   await page.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
   await expect(page.getByRole("button", { name: "从第一条开始确认" })).toBeVisible();
   if (isMobile(testInfo)) {
-    await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+    await page.locator(".reader-action-rail").getByRole("button", { name: "收起本次操作" }).click();
   }
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page).toHaveURL(/view=simple/);
   if (!isMobile(testInfo)) {
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThanOrEqual(sourceScrollY - 60);
+    await expect.poll(() => page.evaluate(() => document.querySelector(".reader-reading-scroll")?.scrollTop ?? 0)).toBeGreaterThanOrEqual(sourceScrollY - 60);
   }
 });
 
@@ -206,8 +211,10 @@ test("a Summary point opens a persistent operation rail without covering the rea
   await expect(rail).toContainText("录音与原话");
   await expect(page.locator(".source-drawer-backdrop")).toHaveCount(0);
   if (isMobile(testInfo)) {
-    await expect(page.locator(".reader-reading-pane")).toBeHidden();
-    await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+    await expect(page.locator(".reader-reading-pane")).toBeVisible();
+    await expect(rail).toHaveAttribute("data-sheet", "open");
+    await rail.getByRole("button", { name: "收起本次操作" }).click();
+    await expect(rail).toHaveAttribute("data-sheet", "peek");
   }
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
 });
@@ -318,7 +325,7 @@ test("a topic with more than eight sources stays in the rail with bounded eviden
   apiFixture.completeReadableTranscript();
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  await page.getByRole("button", { name: "主题", exact: true }).click();
+  await page.getByRole("button", { name: "按类型", exact: true }).click();
   await page.locator(".reader-chapters article").first().getByRole("button").click();
   await page.locator(".reader-action-rail").getByRole("button", { name: "从这条重点建立行动" }).click();
 
@@ -335,23 +342,23 @@ test("topic and speaker views stay selected while the Summary URL is synchronize
   apiFixture.completeReadableTranscript();
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  const topics = page.getByRole("button", { name: "主题", exact: true });
+  const topics = page.getByRole("button", { name: "按类型", exact: true });
   await topics.click();
   await expect(topics).toHaveClass(/active/);
-  await expect(page.getByRole("heading", { name: "按沟通主题快速回到上下文" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "按信息类型快速回到上下文" })).toBeVisible();
   await expect(page).toHaveURL(/readingTab=summary/);
 
-  const speakers = page.getByRole("button", { name: "发言人", exact: true });
+  const speakers = page.getByRole("button", { name: "按发言人", exact: true });
   await speakers.click();
   await expect(speakers).toHaveClass(/active/);
-  await expect(page.getByRole("heading", { name: "先找到谁说了什么" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "查看每位发言人的原话摘录" })).toBeVisible();
   const avatars = page.locator(".reader-speakers .speaker-avatar");
   await expect(avatars).toHaveCount(2);
   await expect(page.locator(".reader-speakers .speaker-avatar svg")).toHaveCount(2);
   expect(await avatars.allTextContents()).toEqual(["", ""]);
 });
 
-test("mobile reading and operations use one pane at a time without horizontal overflow", async ({ page, apiFixture }) => {
+test("mobile operations open as a bottom sheet without replacing the reader", async ({ page, apiFixture }) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
@@ -361,11 +368,30 @@ test("mobile reading and operations use one pane at a time without horizontal ov
   await expect(page.locator(".reader-reading-pane")).toBeVisible();
   const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
   await target.locator(".summary-point-copy").click();
-  await expect(page.locator(".reader-action-rail")).toBeVisible();
-  await expect(page.locator(".reader-reading-pane")).toBeHidden();
-  await page.locator(".reader-mobile-switch").getByRole("button", { name: "阅读" }).click();
+  const rail = page.locator(".reader-action-rail");
+  await expect(rail).toBeVisible();
+  await expect(rail).toHaveAttribute("data-sheet", "open");
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  await rail.getByRole("button", { name: "收起本次操作" }).click();
+  await expect(rail).toHaveAttribute("data-sheet", "peek");
   await expect(page.locator(".reader-reading-pane")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("tablet operations stay reachable as a sheet instead of falling below the transcript", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+
+  const target = page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" });
+  await target.locator(".summary-point-copy").click();
+  const rail = page.locator(".reader-action-rail");
+  await expect(rail).toHaveAttribute("data-sheet", "open");
+  await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元" })).toBeVisible();
+  await expect(rail).toHaveCSS("position", "fixed");
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
 });
 
 test("briefly viewing sources keeps the selected point and warm transcript state", async ({ page, apiFixture }) => {
@@ -387,7 +413,7 @@ test("briefly viewing sources keeps the selected point and warm transcript state
 test("an old Run without reading artifacts falls back to the original transcript", async ({ page, apiFixture }) => {
   apiFixture.enableLegacyRawFlow();
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
   await expect(page.getByRole("button", { name: "查看原始逐字稿" }).first()).toBeVisible();
   await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
@@ -452,7 +478,7 @@ test("manual Summary selection replaces the route and survives reload", async ({
 test("workspace Transcript selection is routed and leaving Transcript clears the reading tab", async ({ page, apiFixture }) => {
   apiFixture.enableLegacyRawFlow();
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
@@ -467,7 +493,7 @@ test("a new processing Summary Run never renders an older Run's Artifact", async
   apiFixture.enableNewSummaryRunWithStaleArtifact();
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();

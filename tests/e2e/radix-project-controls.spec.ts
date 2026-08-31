@@ -19,7 +19,7 @@ test("project menu supports keyboard movement, Escape, and outside dismissal", a
   await page.goto("/?project=project-a&event=event-a&view=simple");
   const trigger = page.getByRole("button", { name: "项目菜单" });
 
-  await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
   await trigger.press("ArrowDown");
   const createItem = page.getByRole("menuitem", { name: "新建项目" });
   const trashItem = page.getByRole("menuitem", { name: "回收站", exact: true });
@@ -45,7 +45,7 @@ test("trash dialog traps Tab and restores project-menu focus after Escape and cl
   const trigger = page.getByRole("button", { name: "项目菜单" });
 
   const openTrash = async () => {
-    await expect(page.getByRole("heading", { name: "A 初次沟通", exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
     await trigger.press("ArrowDown");
     await page.getByRole("menuitem", { name: "回收站", exact: true }).click();
     return page.getByRole("dialog", { name: "回收站" });

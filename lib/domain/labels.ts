@@ -43,7 +43,7 @@ export function typeLabel(value?: string): string {
  */
 export function summarySectionLabel(value?: string): string {
   const labels: Record<string, string> = {
-    overview: "整体情况",
+    overview: "全文概要",
     key_fact: "关键事实",
     decision: "决定",
     preference: "偏好",

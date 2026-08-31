@@ -36,7 +36,7 @@ test("client shell starts empty and delegates all durable data to the API", asyn
   assert.match(page, /useState<Project\[\]>\(\[\]\)/);
   assert.match(page, /useState<Claim\[\]>\(\[\]\)/);
   assert.match(page, /api\.listProjects\(\)/);
-  assert.match(page, /api\.getRunClaims\(/);
+  assert.match(page, /api\.getRunReview\(/);
   assert.match(page, /api\.getView\(/);
   assert.doesNotMatch(page, /const\s+claimSets\s*[:=]/i);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);

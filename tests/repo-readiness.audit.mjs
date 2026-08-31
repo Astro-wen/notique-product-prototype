@@ -816,7 +816,7 @@ test("Event material readiness is recomputed from live user sources", async () =
   }
 });
 
-test("completed audio transcription durably ensures automatic extraction", async () => {
+test("the durable repair creates extraction for every uncovered current source manifest", async () => {
   const [automatic, outbox, worker] = await Promise.all([
     read("lib/server/jobs/automatic-extraction.ts"),
     read("lib/server/jobs/outbox.ts"),
@@ -826,14 +826,25 @@ test("completed audio transcription durably ensures automatic extraction", async
     /const candidates = await all\(\s*`([^`]+)`/,
   );
   assert.ok(candidateMatch, "automatic extraction candidate SQL was not found");
-  assert.match(automatic, /tr\.parent_run_id IS NULL/);
-  assert.match(automatic, /tr\.status = 'succeeded'/);
-  assert.match(automatic, /source_audio\.current_version_id = tr\.audio_asset_version_id/);
-  assert.match(automatic, /json_each\(CASE WHEN json_valid\(er\.input_manifest_json\)/);
+  assert.match(automatic, /WITH current_sources AS/);
+  assert.match(automatic, /a\.kind <> 'audio'/);
+  assert.match(automatic, /a\.processing_status = 'ready'/);
+  assert.match(automatic, /HAVING COUNT\(\*\) <= \?/);
+  assert.match(automatic, /sc\.sequence_no = 1 OR sc\.scenario_status = 'confirmed'/);
+  assert.match(automatic, /ORDER BY random\(\)/);
+  assert.match(automatic, /source_audio_asset_version_id/);
+  assert.match(automatic, /json_valid\(er\.input_manifest_json\)/);
+  assert.match(automatic, /SELECT COUNT\(\*\) FROM json_each\(er\.input_manifest_json\)/);
+  assert.match(automatic, /NOT EXISTS \([\s\S]*current_sources source[\s\S]*json_each\(er\.input_manifest_json\) manifest_item/);
   assert.match(automatic, /TRANSCRIPTION_NOT_READY/);
   assert.match(automatic, /MAX_EXTRACTION_ASSET_VERSIONS\s*=\s*25/);
-  assert.match(automatic, /auto-transcription\.v1:\$\{digest\}/);
-  assert.match(automatic, /previousRuns\.find[\s\S]{0,300}sameIds/);
+  assert.match(automatic, /MAX_AUTOMATIC_EXTRACTION_ATTEMPTS\s*=\s*2/);
+  assert.match(automatic, /COVERED_EXTRACTION_RUN_STATES = new Set\(\[[\s\S]*"completed_with_warnings"[\s\S]*"cancelled"/);
+  assert.match(automatic, /er\.status IN \([\s\S]{0,180}'completed_with_warnings', 'cancelled'/);
+  assert.match(automatic, /auto-manifest\.v1:\$\{digest\}/);
+  assert.match(automatic, /retryOrdinal > 0 \? `\$\{base\}:retry-\$\{retryOrdinal\}`/);
+  assert.match(automatic, /const exactRuns = previousRuns\.filter[\s\S]{0,300}sameIds/);
+  assert.match(automatic, /failedAttempts >= MAX_AUTOMATIC_EXTRACTION_ATTEMPTS/);
   assert.match(automatic, /createExtractionRun\([\s\S]{0,300}assetVersionIds/);
   assert.match(outbox, /ensureAutomaticExtractionRuns/);
   assert.ok(
@@ -849,73 +860,90 @@ test("completed audio transcription durably ensures automatic extraction", async
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
-        deleted_at TEXT
+        deleted_at TEXT,
+        scenario_status TEXT NOT NULL
       );
       CREATE TABLE events (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
-        material_status TEXT NOT NULL
+        project_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        sequence_no INTEGER NOT NULL
       );
       CREATE TABLE assets (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         event_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
         current_version_id TEXT,
-        processing_status TEXT NOT NULL
-      );
-      CREATE TABLE transcription_runs (
-        id TEXT PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        audio_asset_id TEXT NOT NULL,
-        audio_asset_version_id TEXT NOT NULL,
-        parent_run_id TEXT,
-        status TEXT NOT NULL,
-        derived_transcript_asset_id TEXT,
-        derived_transcript_asset_version_id TEXT,
-        finished_at TEXT
+        processing_status TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        failure_code TEXT
       );
       CREATE TABLE extraction_runs (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         event_id TEXT NOT NULL,
+        status TEXT NOT NULL,
         input_manifest_json TEXT NOT NULL
       );
-      INSERT INTO projects VALUES ('project-a', 'ws-a', NULL);
+      INSERT INTO projects VALUES
+        ('project-a', 'ws-a', NULL, 'confirmed'),
+        ('project-b', 'ws-a', NULL, 'unassessed'),
+        ('project-c', 'ws-a', NULL, 'unassessed');
       INSERT INTO events VALUES
-        ('event-new', 'ws-a', 'ready'),
-        ('event-covered', 'ws-a', 'ready'),
-        ('event-draft', 'ws-a', 'draft'),
-        ('event-stale', 'ws-a', 'ready'),
-        ('event-child-only', 'ws-a', 'ready');
+        ('event-new', 'ws-a', 'project-a', 'ready', 1),
+        ('event-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-added', 'ws-a', 'project-a', 'ready', 1),
+        ('event-photo', 'ws-a', 'project-a', 'ready', 1),
+        ('event-transcript', 'ws-a', 'project-a', 'ready', 1),
+        ('event-warning-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-cancelled-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-draft', 'ws-a', 'project-a', 'draft', 1),
+        ('event-stale', 'ws-a', 'project-a', 'ready', 1),
+        ('event-unassessed-first', 'ws-a', 'project-b', 'ready', 1),
+        ('event-unassessed-later', 'ws-a', 'project-b', 'ready', 2),
+        ('event-retry-exhausted', 'ws-a', 'project-c', 'ready', 1);
       INSERT INTO assets VALUES
-        ('audio-new', 'ws-a', 'event-new', 'audio-version-new', 'ready'),
-        ('derived-new', 'ws-a', 'event-new', 'transcript-version-new', 'ready'),
-        ('audio-covered', 'ws-a', 'event-covered', 'audio-version-covered', 'ready'),
-        ('derived-covered', 'ws-a', 'event-covered', 'transcript-version-covered', 'ready'),
-        ('audio-draft', 'ws-a', 'event-draft', 'audio-version-draft', 'ready'),
-        ('derived-draft', 'ws-a', 'event-draft', 'transcript-version-draft', 'ready'),
-        ('audio-stale', 'ws-a', 'event-stale', 'audio-version-current', 'ready'),
-        ('derived-stale', 'ws-a', 'event-stale', 'transcript-version-old', 'ready'),
-        ('audio-child', 'ws-a', 'event-child-only', 'audio-version-child', 'ready'),
-        ('derived-child', 'ws-a', 'event-child-only', 'transcript-version-child', 'ready');
-      INSERT INTO transcription_runs VALUES
-        ('tr-new', 'ws-a', 'project-a', 'event-new', 'audio-new', 'audio-version-new', NULL, 'succeeded', 'derived-new', 'transcript-version-new', '2026-01-01T00:00:00Z'),
-        ('tr-covered', 'ws-a', 'project-a', 'event-covered', 'audio-covered', 'audio-version-covered', NULL, 'succeeded', 'derived-covered', 'transcript-version-covered', '2026-01-02T00:00:00Z'),
-        ('tr-draft', 'ws-a', 'project-a', 'event-draft', 'audio-draft', 'audio-version-draft', NULL, 'succeeded', 'derived-draft', 'transcript-version-draft', '2026-01-03T00:00:00Z'),
-        ('tr-stale', 'ws-a', 'project-a', 'event-stale', 'audio-stale', 'audio-version-old', NULL, 'succeeded', 'derived-stale', 'transcript-version-old', '2026-01-04T00:00:00Z'),
-        ('tr-child', 'ws-a', 'project-a', 'event-child-only', 'audio-child', 'audio-version-child', 'parent-run', 'succeeded', 'derived-child', 'transcript-version-child', '2026-01-05T00:00:00Z');
+        ('audio-new', 'ws-a', 'event-new', 'audio', 'audio-version-new', 'ready', '{}', NULL),
+        ('derived-new', 'ws-a', 'event-new', 'transcript', 'transcript-version-new', 'ready', '{"source_audio_asset_version_id":"audio-version-new"}', NULL),
+        ('audio-covered', 'ws-a', 'event-covered', 'audio', 'audio-version-covered', 'ready', '{}', NULL),
+        ('derived-covered', 'ws-a', 'event-covered', 'transcript', 'transcript-version-covered', 'ready', '{"source_audio_asset_version_id":"audio-version-covered"}', NULL),
+        ('transcript-added', 'ws-a', 'event-added', 'transcript', 'transcript-version-added', 'ready', '{}', NULL),
+        ('photo-added', 'ws-a', 'event-added', 'photo', 'photo-version-added', 'ready', '{}', NULL),
+        ('photo-only', 'ws-a', 'event-photo', 'photo', 'photo-version-only', 'ready', '{}', NULL),
+        ('transcript-only', 'ws-a', 'event-transcript', 'transcript', 'transcript-version-only', 'ready', '{}', NULL),
+        ('warning-covered', 'ws-a', 'event-warning-covered', 'transcript', 'transcript-version-warning', 'ready', '{}', NULL),
+        ('cancelled-covered', 'ws-a', 'event-cancelled-covered', 'transcript', 'transcript-version-cancelled', 'ready', '{}', NULL),
+        ('draft-transcript', 'ws-a', 'event-draft', 'transcript', 'transcript-version-draft', 'ready', '{}', NULL),
+        ('audio-stale', 'ws-a', 'event-stale', 'audio', 'audio-version-current', 'ready', '{}', NULL),
+        ('derived-stale', 'ws-a', 'event-stale', 'transcript', 'transcript-version-old', 'ready', '{"source_audio_asset_version_id":"audio-version-old"}', NULL),
+        ('first-unassessed', 'ws-a', 'event-unassessed-first', 'transcript', 'transcript-version-first', 'ready', '{}', NULL),
+        ('later-unassessed', 'ws-a', 'event-unassessed-later', 'transcript', 'transcript-version-later', 'ready', '{}', NULL),
+        ('retry-exhausted', 'ws-a', 'event-retry-exhausted', 'transcript', 'transcript-version-exhausted', 'ready', '{}', NULL);
       INSERT INTO extraction_runs VALUES (
-        'run-covered', 'ws-a', 'event-covered',
+        'run-covered', 'ws-a', 'event-covered', 'succeeded',
         '[{"asset_version_id":"transcript-version-covered"}]'
       );
+      INSERT INTO extraction_runs VALUES (
+        'run-added-old', 'ws-a', 'event-added', 'succeeded',
+        '[{"asset_version_id":"transcript-version-added"}]'
+      );
+      INSERT INTO extraction_runs VALUES (
+        'run-first-failed', 'ws-a', 'event-unassessed-first', 'failed',
+        '[{"asset_version_id":"transcript-version-first"}]'
+      );
+      INSERT INTO extraction_runs VALUES
+        ('run-exhausted-1', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
+        ('run-exhausted-2', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
+        ('run-warning', 'ws-a', 'event-warning-covered', 'completed_with_warnings', '[{"asset_version_id":"transcript-version-warning"}]'),
+        ('run-cancelled', 'ws-a', 'event-cancelled-covered', 'cancelled', '[{"asset_version_id":"transcript-version-cancelled"}]');
     `);
-    const rows = database.prepare(candidateMatch[1]).all(50);
+    const rows = database.prepare(candidateMatch[1]).all(25, 2, 50);
     assert.deepEqual(
-      rows.map((row) => row.event_id),
-      ["event-new"],
-      "only a current, ready, top-level, unconsumed transcription may trigger the repair path",
+      rows.map((row) => row.event_id).sort(),
+      ["event-added", "event-new", "event-photo", "event-transcript", "event-unassessed-first"],
+      "transcript/photo-only, expanded manifests, and a once-failed unassessed first Event are repaired; successful, warning, cancelled, exhausted, draft, stale-lineage, and blocked later Events are skipped",
     );
   } finally {
     database.close();

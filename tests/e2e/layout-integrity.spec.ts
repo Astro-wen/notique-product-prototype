@@ -55,6 +55,37 @@ test("no control is smaller than a readable, tappable target", async ({ page }) 
   expect(offenders, "controls below 11px are not readable").toEqual([]);
 });
 
+test("the desktop workspace preserves a wide reader and a bounded operation rail", async ({ page, apiFixture }, testInfo) => {
+  test.skip(testInfo.project.name === "mobile-chromium", "desktop workspace assertion");
+
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();
+    const reader = document.querySelector(".reader-reading-pane")?.getBoundingClientRect();
+    const rail = document.querySelector(".reader-action-rail")?.getBoundingClientRect();
+    const visibleSidebarLabels = Array.from(document.querySelectorAll(".sidebar .sidebar-label"))
+      .filter((node) => getComputedStyle(node).display !== "none")
+      .map((node) => node.textContent?.trim());
+    return {
+      sidebarWidth: sidebar?.width ?? 0,
+      readerWidth: reader?.width ?? 0,
+      railWidth: rail?.width ?? 0,
+      visibleSidebarLabels,
+    };
+  });
+
+  expect(layout.sidebarWidth).toBeLessThanOrEqual(72);
+  expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
+  expect(layout.railWidth).toBeGreaterThanOrEqual(340);
+  expect(layout.railWidth).toBeLessThanOrEqual(400);
+  expect(layout.visibleSidebarLabels).toEqual([]);
+});
+
 test("the workspace reaches its content without a screenful of chrome", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile shell assertion");
 

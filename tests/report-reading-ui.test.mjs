@@ -141,6 +141,21 @@ test("the continuous workspace preserves its local view and fails visibly at par
   assert.match(page, /if \(stayInWorkspace\) setEventIssue\(issue\)/);
 });
 
+test("a new artifact or transcript revision invalidates stale rail actions and playback", () => {
+  assert.match(page, /const sourceSelectionRevision = \[/);
+  assert.match(page, /const summarySelectionRevision = \[/);
+  assert.match(page, /const readableSelectionRevision = \[/);
+  assert.match(page, /analysisRun\?\.id/);
+  assert.match(page, /summaryArtifact\?\.id/);
+  assert.match(page, /readableArtifact\?\.id/);
+  assert.match(page, /selectedPointSelection && selectedPointSelection\.revision === revisionForPoint/);
+  assert.match(page, /sourceSelection\?\.revision === sourceSelectionRevision/);
+  assert.match(page, /setSelectedPointSelection\(null\)/);
+  assert.match(page, /setSourceSelection\(null\)/);
+  assert.match(page, /pendingPlaybackTarget\.current = null/);
+  assert.match(page, /actionComposerRevision === selectedPointRevision/);
+});
+
 test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {
   assert.match(page, /aria-label="本次重点"/);
   assert.match(page, /aria-label="待确认"/);
@@ -161,7 +176,9 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(styles, /\.reader-action-rail/);
   assert.match(page, /workspaceView === "points" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
   assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);
-  assert.match(page, /reviewReady && pendingClaims\.length > 0/);
+  assert.match(page, /reviewReady && visiblePendingReviewCount > 0/);
+  assert.match(page, /pendingOccurrences\.map/);
+  assert.doesNotMatch(page, /pendingClaims\.slice\(0, 10\)/, "the rail must not silently hide review items");
   assert.match(page, /reviewBlocked=\{false\}/);
 });
 
@@ -186,7 +203,7 @@ test("failed reading artifacts fall back safely without exposing provider error 
 });
 
 test("review empty states and completed workflow cards avoid duplicate primary actions", () => {
-  assert.match(page, /reviewReady && pendingClaims\.length > 0 && <button className="button primary full"/);
+  assert.match(page, /reviewReady && visiblePendingReviewCount > 0 && <button className="button primary full"/);
   assert.match(page, /compactWorkflowCard/);
   assert.match(styles, /\.project-workflow-card\.compact/);
 });
@@ -197,7 +214,7 @@ test("summary sections are named in the reader's language, not by model enum", (
   assert.doesNotMatch(page, /firstString\(section, \["kind"\]\)\?\.replaceAll/);
   assert.match(page, /summarySectionLabel\(firstString\(section, \["kind"\]\)\)/);
   for (const [kind, label] of [
-    ["overview", "整体情况"],
+    ["overview", "全文概要"],
     ["key_fact", "关键事实"],
     ["open_question", "待确认问题"],
     ["next_step", "下一步"],

@@ -7,6 +7,14 @@ type Row = Record<string, unknown>;
 
 const AUTOMATIC_EXTRACTION_CANDIDATE_LIMIT = 50;
 const MAX_EXTRACTION_ASSET_VERSIONS = 25;
+const MAX_AUTOMATIC_EXTRACTION_ATTEMPTS = 2;
+const COVERED_EXTRACTION_RUN_STATES = new Set([
+  "queued",
+  "processing",
+  "succeeded",
+  "completed_with_warnings",
+  "cancelled",
+]);
 
 export type AutomaticExtractionEnsureResult = {
   scanned: number;
@@ -51,13 +59,18 @@ function sameIds(left: string[], right: string[]): boolean {
   return left.every((id, index) => id === right[index]);
 }
 
-async function idempotencyKey(eventId: string, assetVersionIds: string[]): Promise<string> {
+async function idempotencyKey(
+  eventId: string,
+  assetVersionIds: string[],
+  retryOrdinal = 0,
+): Promise<string> {
   const payload = new TextEncoder().encode(JSON.stringify({
     event_id: eventId,
     asset_version_ids: assetVersionIds,
   }));
   const digest = await sha256Hex(payload.buffer);
-  return `auto-transcription.v1:${digest}`;
+  const base = `auto-manifest.v1:${digest}`;
+  return retryOrdinal > 0 ? `${base}:retry-${retryOrdinal}` : base;
 }
 
 function deferredReason(error: unknown): string | null {
@@ -79,46 +92,104 @@ function deferredReason(error: unknown): string | null {
 }
 
 /**
- * Ensures that a successfully transcribed Event receives one extraction Run
- * even when the browser that initiated transcription is no longer open. This
- * is deliberately an idempotent Cron repair path; the browser remains the
- * faster path while it is present.
+ * Ensures that every ready Event receives an extraction Run for its exact
+ * current source manifest. The browser remains the fast path; this Cron repair
+ * path also catches transcript/photo-only Events and material added after an
+ * earlier Run, even when the originating browser is no longer open.
  */
 export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtractionEnsureResult> {
   const candidates = await all(
-    `SELECT tr.workspace_id, tr.event_id, MAX(tr.finished_at) AS finished_at
-       FROM transcription_runs tr
-       JOIN events e ON e.id = tr.event_id AND e.workspace_id = tr.workspace_id
-       JOIN projects p ON p.id = tr.project_id AND p.workspace_id = tr.workspace_id
-       JOIN assets source_audio
-         ON source_audio.id = tr.audio_asset_id
-        AND source_audio.workspace_id = tr.workspace_id
-        AND source_audio.current_version_id = tr.audio_asset_version_id
-       JOIN assets derived_transcript
-         ON derived_transcript.id = tr.derived_transcript_asset_id
-        AND derived_transcript.workspace_id = tr.workspace_id
-        AND derived_transcript.event_id = tr.event_id
-        AND derived_transcript.current_version_id = tr.derived_transcript_asset_version_id
-        AND derived_transcript.processing_status = 'ready'
-      WHERE tr.parent_run_id IS NULL
-        AND tr.status = 'succeeded'
-        AND tr.derived_transcript_asset_version_id IS NOT NULL
-        AND e.material_status = 'ready'
-        AND p.deleted_at IS NULL
+    `WITH current_sources AS (
+       SELECT a.workspace_id, a.event_id, a.current_version_id,
+              e.sequence_no, p.scenario_status
+         FROM assets a
+         JOIN events e ON e.id = a.event_id AND e.workspace_id = a.workspace_id
+         JOIN projects p ON p.id = e.project_id AND p.workspace_id = e.workspace_id
+        WHERE e.material_status = 'ready'
+          AND p.deleted_at IS NULL
+          AND a.kind <> 'audio'
+          AND a.processing_status = 'ready'
+          AND a.current_version_id IS NOT NULL
+          AND COALESCE(a.failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+          AND COALESCE(json_extract(a.metadata_json, '$.analysis_source'), 1) <> 0
+          AND COALESCE(json_extract(a.metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+          AND COALESCE(json_extract(a.metadata_json, '$.transcription_chunk'), 0) <> 1
+          AND (
+            json_extract(a.metadata_json, '$.source_audio_asset_version_id') IS NULL
+            OR EXISTS (
+              SELECT 1 FROM assets current_audio
+               WHERE current_audio.event_id = a.event_id
+                 AND current_audio.workspace_id = a.workspace_id
+                 AND current_audio.kind = 'audio'
+                 AND current_audio.current_version_id =
+                     json_extract(a.metadata_json, '$.source_audio_asset_version_id')
+            )
+          )
+     ), source_counts AS (
+       SELECT workspace_id, event_id, COUNT(*) AS source_count,
+              MAX(sequence_no) AS sequence_no,
+              MAX(scenario_status) AS scenario_status
+         FROM current_sources
+        GROUP BY workspace_id, event_id
+       HAVING COUNT(*) <= ?
+     ), exact_runs AS (
+       SELECT er.workspace_id, er.event_id, er.id, er.status
+         FROM extraction_runs er
+         JOIN source_counts sc
+           ON sc.event_id = er.event_id AND sc.workspace_id = er.workspace_id
+        WHERE json_valid(er.input_manifest_json)
+          AND (SELECT COUNT(*) FROM json_each(er.input_manifest_json)) = sc.source_count
+          AND NOT EXISTS (
+            SELECT 1 FROM current_sources source
+             WHERE source.event_id = sc.event_id
+               AND source.workspace_id = sc.workspace_id
+               AND NOT EXISTS (
+                 SELECT 1 FROM json_each(er.input_manifest_json) manifest_item
+                  WHERE json_extract(manifest_item.value, '$.asset_version_id') =
+                        source.current_version_id
+               )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(er.input_manifest_json) manifest_item
+             WHERE NOT EXISTS (
+               SELECT 1 FROM current_sources source
+                WHERE source.event_id = sc.event_id
+                  AND source.workspace_id = sc.workspace_id
+                  AND source.current_version_id =
+                      json_extract(manifest_item.value, '$.asset_version_id')
+             )
+          )
+     )
+     SELECT sc.workspace_id, sc.event_id
+       FROM source_counts sc
+      WHERE (sc.sequence_no = 1 OR sc.scenario_status = 'confirmed')
         AND NOT EXISTS (
-          SELECT 1
-            FROM extraction_runs er,
-                 json_each(CASE WHEN json_valid(er.input_manifest_json)
-                                THEN er.input_manifest_json ELSE '[]' END) manifest_item
-           WHERE er.event_id = tr.event_id
-             AND er.workspace_id = tr.workspace_id
-             AND json_extract(manifest_item.value, '$.asset_version_id') =
-                 tr.derived_transcript_asset_version_id
+          SELECT 1 FROM exact_runs er
+           WHERE er.event_id = sc.event_id
+             AND er.workspace_id = sc.workspace_id
+             AND (
+               er.status IN (
+                 'queued', 'processing', 'succeeded',
+                 'completed_with_warnings', 'cancelled'
+               )
+               OR (
+                 SELECT COUNT(*) FROM exact_runs failed
+                  WHERE failed.event_id = sc.event_id
+                    AND failed.workspace_id = sc.workspace_id
+                    AND failed.status = 'failed'
+               ) >= ?
+             )
         )
-      GROUP BY tr.workspace_id, tr.event_id
-      ORDER BY finished_at ASC, tr.event_id ASC
+      -- A stable first page lets one long-lived deferred row starve every
+      -- Event after it. Random ordering gives each eligible uncovered Event a
+      -- fair chance on every minute without adding mutable cursor state.
+      ORDER BY random()
       LIMIT ?`,
-    [AUTOMATIC_EXTRACTION_CANDIDATE_LIMIT],
+    [
+      MAX_EXTRACTION_ASSET_VERSIONS,
+      MAX_AUTOMATIC_EXTRACTION_ATTEMPTS,
+      AUTOMATIC_EXTRACTION_CANDIDATE_LIMIT,
+    ],
   );
 
   const result: AutomaticExtractionEnsureResult = {
@@ -218,16 +289,17 @@ export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtracti
     }
 
     const previousRuns = await all(
-      `SELECT id, input_manifest_json
+      `SELECT id, status, input_manifest_json
          FROM extraction_runs
         WHERE event_id = ? AND workspace_id = ?
         ORDER BY created_at DESC`,
       [eventId, workspaceId],
     );
-    const covered = previousRuns.find((row) => {
+    const exactRuns = previousRuns.filter((row) => {
       const manifestIds = parseManifestAssetVersionIds(row.input_manifest_json);
       return manifestIds !== null && sameIds(manifestIds, assetVersionIds);
     });
+    const covered = exactRuns.find((row) => COVERED_EXTRACTION_RUN_STATES.has(String(row.status)));
     if (covered) {
       result.covered += 1;
       result.items.push({
@@ -237,12 +309,22 @@ export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtracti
       });
       continue;
     }
+    const failedAttempts = exactRuns.filter((row) => String(row.status) === "failed").length;
+    if (failedAttempts >= MAX_AUTOMATIC_EXTRACTION_ATTEMPTS) {
+      result.deferred += 1;
+      result.items.push({
+        ...itemBase,
+        outcome: "deferred",
+        reason: "AUTOMATIC_RETRY_EXHAUSTED",
+      });
+      continue;
+    }
 
     try {
       const ensured = await createExtractionRun(
-        { workspaceId, actorId: "system-auto-transcription" },
+        { workspaceId, actorId: "system-auto-manifest" },
         eventId,
-        await idempotencyKey(eventId, assetVersionIds),
+        await idempotencyKey(eventId, assetVersionIds, failedAttempts),
         assetVersionIds,
       );
       const outcome = ensured.created ? "created" : "reused";

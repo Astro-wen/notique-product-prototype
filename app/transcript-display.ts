@@ -83,6 +83,10 @@ function canMerge(
   group: TranscriptDisplayGroup,
   next: TranscriptDisplaySegment,
 ): boolean {
+  // Speaker labels such as "Speaker 1" restart for every source. Never join
+  // passages across Asset Versions: doing so can make a click on the latter
+  // passage seek the former recording.
+  if (!group.assetVersionId || group.assetVersionId !== next.assetVersionId) return false;
   const currentSpeaker = speakerIdentity(group.speaker);
   const nextSpeaker = speakerIdentity(next.speaker);
   if (!currentSpeaker || currentSpeaker !== nextSpeaker) return false;
@@ -206,4 +210,30 @@ export function activeTranscriptGroupKeyAt(
     activeKey = group.key;
   }
   return activeKey;
+}
+
+/**
+ * Resolves playback without ever borrowing audio from another transcript.
+ * Explicit lineage always wins. The legacy fallback is deliberately narrow:
+ * one transcript version and one recording in the entire Event.
+ */
+export function resolveTranscriptAudioAssetId({
+  assetVersionId,
+  mappedAudioAssetId,
+  rawTranscriptVersionIds,
+  eventAudioAssetIds,
+}: {
+  assetVersionId: string | null;
+  mappedAudioAssetId: string | null;
+  rawTranscriptVersionIds: Set<string>;
+  eventAudioAssetIds: string[];
+}): string | null {
+  if (mappedAudioAssetId) return mappedAudioAssetId;
+  if (
+    !assetVersionId
+    || rawTranscriptVersionIds.size !== 1
+    || !rawTranscriptVersionIds.has(assetVersionId)
+    || eventAudioAssetIds.length !== 1
+  ) return null;
+  return eventAudioAssetIds[0] ?? null;
 }

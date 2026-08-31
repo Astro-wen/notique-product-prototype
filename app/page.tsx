@@ -163,7 +163,7 @@ import {
   type ReadableWordDiffResult,
 } from "./readable-transcript-diff";
 import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
-import { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments, groupReadableTranscriptSegments } from "./transcript-display";
+import { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments, groupReadableTranscriptSegments, resolveTranscriptAudioAssetId } from "./transcript-display";
 
 type Screen = AppView;
 type AsyncState = "idle" | "loading" | "ready" | "empty" | "error";
@@ -2092,10 +2092,11 @@ export default function Home() {
     setClaimsState("loading");
     setClaimsIssue(null);
     try {
-      const result = await api.getRunClaims(runId);
+      const result = await api.getRunReview(runId);
       if (!requestIsCurrent()) return;
-      setClaims(result);
-      setClaimsState(result.length ? "ready" : "empty");
+      setClaims(result.claims);
+      setOccurrenceCandidates(result.occurrenceCandidates);
+      setClaimsState(result.claims.length || result.occurrenceCandidates.length ? "ready" : "empty");
     } catch (error) {
       if (!requestIsCurrent()) return;
       setClaimsIssue(toIssue(error));
@@ -2190,6 +2191,7 @@ export default function Home() {
     setTranscriptionRun(null);
     setTranscriptionRunsByAssetId({});
     setClaims([]);
+    setOccurrenceCandidates([]);
     setClaimsState("idle");
     try {
       const [nextProject, nextEvents] = await Promise.all([api.getProject(projectId), api.listEvents(projectId)]);
@@ -2207,6 +2209,7 @@ export default function Home() {
         setEvent(null);
         setRun(null);
         setClaims([]);
+        setOccurrenceCandidates([]);
         setClaimsState("idle");
         return;
       }
@@ -2223,6 +2226,7 @@ export default function Home() {
       if (!runId) {
         setRun(null);
         setClaims([]);
+        setOccurrenceCandidates([]);
         setClaimsState("idle");
         return;
       }
@@ -4808,7 +4812,7 @@ export default function Home() {
     : false;
 
   return (
-    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${screen === "simple" && project ? " immersive-workspace" : ""}`}>
       <aside className="sidebar" aria-label="应用侧栏">
         <button
           className="sidebar-toggle"
@@ -4850,6 +4854,7 @@ export default function Home() {
           eventIssue={eventIssue}
           run={run}
           claims={claims}
+          occurrenceCandidates={occurrenceCandidates}
           busy={busyAction}
           projectWorkflow={projectWorkflow}
           readingTab={route.readingTab}
@@ -4868,6 +4873,7 @@ export default function Home() {
           transcriptionRun={transcriptionRun}
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
+          onOpenFullReview={() => void loadReviewQueue("review")}
           onQuickVerdict={(claimId, action, sourceIds) => void quickVerdictFromWorkspace(claimId, action, sourceIds)}
           onCreateActionInline={(eventId, statement, segmentIds) => createMissingClaim({
             eventId,
@@ -5147,6 +5153,7 @@ type SimpleTestScreenProps = {
   transcriptionRun: TranscriptionRun | null;
   transcriptionRunsByAssetId: Record<string, TranscriptionRun>;
   claims: Claim[];
+  occurrenceCandidates: OccurrenceCandidate[];
   busy: string | null;
   projectWorkflow: ProjectWorkflowState;
   readingTab?: TranscriptArtifactTab;
@@ -5163,6 +5170,7 @@ type SimpleTestScreenProps = {
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
+  onOpenFullReview: () => void;
   onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
@@ -5242,12 +5250,13 @@ function TranscriptArtifactsPanel({
   transcriptionRun,
   analysisRun,
   claims,
-  pendingReviewCount,
+  occurrenceCandidates,
   reviewReady,
   reviewBlocked,
   reviewMode,
   busy,
   onOpenClaim,
+  onOpenFullReview,
   onQuickVerdict,
   onCreateActionInline,
   onCompleteAction,
@@ -5262,12 +5271,13 @@ function TranscriptArtifactsPanel({
   transcriptionRun: TranscriptionRun | null;
   analysisRun: ExtractionRun | null;
   claims: Claim[];
-  pendingReviewCount: number;
+  occurrenceCandidates: OccurrenceCandidate[];
   reviewReady: boolean;
   reviewBlocked: boolean;
   reviewMode: boolean;
   busy: string | null;
   onOpenClaim: (id: string) => void;
+  onOpenFullReview: () => void;
   onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
@@ -5287,8 +5297,12 @@ function TranscriptArtifactsPanel({
   const [workspaceView, setWorkspaceView] = useState<ReadingWorkspaceView>("points");
   const [actionView, setActionView] = useState<ReadingActionView>("source");
   const [mobilePane, setMobilePane] = useState<"reading" | "actions">("reading");
-  const [selectedPoint, setSelectedPoint] = useState<SelectedSummaryPoint | null>(null);
+  const [selectedPointSelection, setSelectedPointSelection] = useState<{
+    revision: string;
+    point: SelectedSummaryPoint;
+  } | null>(null);
   const [actionComposerOpen, setActionComposerOpen] = useState(false);
+  const [actionComposerRevision, setActionComposerRevision] = useState<string | null>(null);
   const [actionStatement, setActionStatement] = useState("");
   const [actionComposerIssue, setActionComposerIssue] = useState<string | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
@@ -5302,7 +5316,10 @@ function TranscriptArtifactsPanel({
   const [artifactState, setArtifactState] = useState<"loading" | "ready" | "error">("loading");
   const [transcriptState, setTranscriptState] = useState<"loading" | "ready" | "error">("loading");
   const [issue, setIssue] = useState<ApiIssue | null>(null);
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [sourceSelection, setSourceSelection] = useState<{
+    revision: string;
+    ids: Set<string>;
+  } | null>(null);
   const [openDiffs, setOpenDiffs] = useState<Set<string>>(new Set());
   const [readableDiffs, setReadableDiffs] = useState<Record<string, ReadableDiffViewState>>({});
   const [activePlaybackKey, setActivePlaybackKey] = useState<string | null>(null);
@@ -5320,8 +5337,6 @@ function TranscriptArtifactsPanel({
   const activeDiffEventId = useRef(event.id);
   const diffLoadsInFlight = useRef(new Set<string>());
   const summaryScrollY = useRef(0);
-  const mobileReadingScrollY = useRef(0);
-  const mobileActionsScrollY = useRef(0);
   const manuallySelectedTab = useRef(false);
   const requestedWorkspaceView = useRef<ReadingWorkspaceView | null>(null);
   const handledFocusRequestId = useRef<number | null>(null);
@@ -5516,6 +5531,14 @@ function TranscriptArtifactsPanel({
   const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
   const summarySections = summaryContent ? recordArray(summaryContent.sections) : [];
+  const summaryKeywords = [...new Set(summarySections.flatMap((section) => {
+    const titleParts = (firstString(section, ["title"]) || "")
+      .split(/[、,，;；/|｜]/)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 2 && part.length <= 18);
+    const label = summarySectionLabel(firstString(section, ["kind"]));
+    return [...titleParts, label].filter(Boolean);
+  }))].slice(0, 6);
   const rawSegmentById = new Map(rawSegments.map((segment) => [segment.id, segment]));
   const readableDisplayGroups = groupReadableTranscriptSegments(
     (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
@@ -5552,29 +5575,45 @@ function TranscriptArtifactsPanel({
     }),
   );
   const mappedAudioAssetIds = new Set(audioAssetIdByTranscriptVersion.values());
-  const hasPlayableAudio = Boolean(transcriptionRun?.audioAssetId || mappedAudioAssetIds.size);
+  const rawTranscriptVersionIds = new Set(
+    rawSegments.map((segment) => segment.asset_version_id).filter(Boolean),
+  );
+  const eventAudioAssetIds = event.assets
+    .filter((asset) => asset.kind === "audio")
+    .map((asset) => asset.id);
+  const legacySingleSourceAudioAssetId = rawTranscriptVersionIds.size === 1 && eventAudioAssetIds.length === 1
+    ? eventAudioAssetIds[0]
+    : null;
+  const hasPlayableAudio = Boolean(mappedAudioAssetIds.size || legacySingleSourceAudioAssetId);
   const playbackAudioAssetId = activeAudioAssetId
-    || transcriptionRun?.audioAssetId
     || [...mappedAudioAssetIds][0]
+    || legacySingleSourceAudioAssetId
     || "";
   const playbackAudioLabel = event.assets.find((asset) => asset.id === playbackAudioAssetId)?.filename
     || "本次录音";
   const audioAssetIdForVersion = (assetVersionId: string | null): string | null => {
-    const mapped = assetVersionId ? audioAssetIdByTranscriptVersion.get(assetVersionId) : null;
-    if (mapped) return mapped;
-    // Legacy imported transcripts do not expose a source transform. Falling
-    // back is safe only when this Event has at most one possible recording.
-    if (mappedAudioAssetIds.size <= 1) return transcriptionRun?.audioAssetId ?? [...mappedAudioAssetIds][0] ?? null;
-    return null;
+    return resolveTranscriptAudioAssetId({
+      assetVersionId,
+      mappedAudioAssetId: assetVersionId ? audioAssetIdByTranscriptVersion.get(assetVersionId) ?? null : null,
+      rawTranscriptVersionIds,
+      eventAudioAssetIds,
+    });
   };
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
   const summarySourceIds = new Set(
     summarySections.flatMap((section) => recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids))),
   );
-  const availableSpeakers = [...new Set(rawDisplayGroups.map((group) => displaySpeakerLabel(group.speaker)))];
+  const speakerBucketKey = (group: { assetVersionId: string | null; speaker: unknown }) =>
+    `${group.assetVersionId || "unknown-source"}:${displaySpeakerLabel(group.speaker)}`;
+  const speakerBuckets = new Map<string, typeof rawDisplayGroups>();
+  rawDisplayGroups.forEach((group) => {
+    const key = speakerBucketKey(group);
+    speakerBuckets.set(key, [...(speakerBuckets.get(key) ?? []), group]);
+  });
+  const hasMultipleTranscriptSources = new Set(rawDisplayGroups.map((group) => group.assetVersionId).filter(Boolean)).size > 1;
   const normalizedSearch = transcriptSearch.trim().toLocaleLowerCase();
-  const groupMatchesFilters = (group: { speaker: unknown; sourceIds: string[]; text: string }) => {
-    if (speakerFilter !== "all" && displaySpeakerLabel(group.speaker) !== speakerFilter) return false;
+  const groupMatchesFilters = (group: { assetVersionId: string | null; speaker: unknown; sourceIds: string[]; text: string }) => {
+    if (speakerFilter !== "all" && speakerBucketKey(group) !== speakerFilter) return false;
     if (onlyKeySources && !group.sourceIds.some((id) => summarySourceIds.has(id))) return false;
     if (normalizedSearch && !group.text.toLocaleLowerCase().includes(normalizedSearch)) return false;
     return true;
@@ -5583,21 +5622,103 @@ function TranscriptArtifactsPanel({
   const filteredRawGroups = rawDisplayGroups.filter(groupMatchesFilters);
   const visibleReadableGroups = filteredReadableGroups.slice(0, visibleTranscriptGroups);
   const visibleRawGroups = filteredRawGroups.slice(0, visibleTranscriptGroups);
-  const speakerSummaries = availableSpeakers.map((speaker) => {
-    const groups = rawDisplayGroups.filter((group) => displaySpeakerLabel(group.speaker) === speaker);
+  const speakerSummaries = [...speakerBuckets.entries()].map(([key, groups]) => {
+    const speaker = displaySpeakerLabel(groups[0]?.speaker);
+    const assetVersionId = groups[0]?.assetVersionId ?? null;
+    const sourceAssetId = assetVersionId ? audioAssetIdByTranscriptVersion.get(assetVersionId) : null;
+    const sourceAsset = event.assets.find((asset) => asset.id === sourceAssetId || asset.versionId === assetVersionId);
     return {
+      key,
       speaker,
+      sourceLabel: sourceAsset?.filename || "来源未标注",
       groups,
       firstStartMs: groups[0]?.startMs ?? null,
       excerpt: groups.slice(0, 2).map((group) => group.text).join(" "),
     };
   });
-  const pendingClaims = claims.filter((claim) => claim.reviewStatus === "pending");
+  const pendingClaims = claims.filter((claim) =>
+    claim.reviewStatus === "pending" && (!claim.eventId || claim.eventId === event.id),
+  );
+  const pendingOccurrences = occurrenceCandidates.filter((candidate) =>
+    candidate.status === "pending" && candidate.event_id === event.id,
+  );
+  const visiblePendingReviewCount = pendingClaims.length + pendingOccurrences.length;
   const actionItems = (projectActions.data ?? []) as ProjectAction[];
   const eventActionItems = actionItems.filter((action) => action.event_id === event.id);
   const trustedEventActionItems = eventActionItems.filter(
     (action) => action.status === "confirmed" || action.status === "completed",
   );
+  const sourceSelectionRevision = [
+    event.id,
+    analysisRun?.id || "",
+    ...rawSegments
+      .map((segment) => `${segment.asset_version_id}:${segment.id}`)
+      .sort(),
+  ].join("|");
+  const summarySelectionRevision = [
+    sourceSelectionRevision,
+    summaryRun?.id || "",
+    summaryArtifact?.id || "",
+  ].join("|");
+  const readableSelectionRevision = [
+    sourceSelectionRevision,
+    readableRun?.id || "",
+    readableArtifact?.id || "",
+  ].join("|");
+  const revisionForPoint = (point: SelectedSummaryPoint): string => {
+    if (point.key.startsWith("readable-")) return readableSelectionRevision;
+    if (point.key.startsWith("raw-") || point.key.startsWith("claim-")) return sourceSelectionRevision;
+    return summarySelectionRevision;
+  };
+  const selectedPointOverride = selectedPointSelection && selectedPointSelection.revision === revisionForPoint(selectedPointSelection.point)
+    ? selectedPointSelection.point
+    : null;
+  const selectedSourceIds = sourceSelection?.revision === sourceSelectionRevision
+    ? sourceSelection.ids
+    : new Set<string>();
+  const firstSummarySectionIndex = summarySections.findIndex((section) => recordArray(section.items).length > 0);
+  const firstSummarySection = firstSummarySectionIndex >= 0 ? summarySections[firstSummarySectionIndex] : null;
+  const firstSummaryItem = firstSummarySection ? recordArray(firstSummarySection.items)[0] : null;
+  const firstPendingClaim = pendingClaims[0];
+  const firstRawGroup = rawDisplayGroups[0];
+  const defaultSelectedPoint: SelectedSummaryPoint | null = firstSummarySection && firstSummaryItem
+    ? (() => {
+        const sectionKind = firstString(firstSummarySection, ["kind"]) || "";
+        return {
+          key: firstString(firstSummaryItem, ["item_key"]) || `auto-${firstSummarySectionIndex}`,
+          sectionKind,
+          sectionLabel: summarySectionLabel(sectionKind) || "重点",
+          sourceIds: stringValues(firstSummaryItem.source_segment_ids),
+          summaryText: firstString(firstSummaryItem, ["text"]) || "本次沟通重点",
+          supportQuote: firstString(firstSummaryItem, ["support_quote"]) || "",
+          returnFocusId: `summary-source-${firstSummarySectionIndex}-0`,
+        };
+      })()
+    : firstPendingClaim
+      ? {
+          key: `claim-${firstPendingClaim.id}`,
+          claimId: firstPendingClaim.id,
+          sectionKind: firstPendingClaim.type,
+          sectionLabel: typeLabel(firstPendingClaim.type),
+          sourceIds: [...new Set(firstPendingClaim.evidenceRefs.flatMap((ref) => ref.segmentIds))],
+          summaryText: firstPendingClaim.statement,
+          supportQuote: firstPendingClaim.evidenceRefs.find((ref) => ref.quote)?.quote || "",
+          returnFocusId: `rail-pending-${firstPendingClaim.id}`,
+        }
+      : firstRawGroup
+        ? {
+            key: `raw-${firstRawGroup.key}`,
+            sectionKind: "source_excerpt",
+            sectionLabel: "原话",
+            sourceIds: firstRawGroup.sourceIds,
+            summaryText: firstRawGroup.text,
+            supportQuote: firstRawGroup.text,
+            returnFocusId: `raw-group-${firstRawGroup.sourceIds[0] || firstRawGroup.key}`,
+          }
+        : null;
+  const selectedPoint = selectedPointOverride ?? defaultSelectedPoint;
+  const selectedPointRevision = selectedPoint ? revisionForPoint(selectedPoint) : sourceSelectionRevision;
+  const actionComposerIsCurrent = actionComposerOpen && actionComposerRevision === selectedPointRevision;
   const selectedClaims = selectedPoint?.claimId
     ? claims.filter((claim) => claim.id === selectedPoint.claimId)
     : selectedPoint
@@ -5620,11 +5741,31 @@ function TranscriptArtifactsPanel({
         ? selectedClaims.some((claim) => claim.reviewStatus === "rejected") ? "已处理" : "已确认"
         : selectedClaims.length && selectedClaims.every((claim) => claim.reviewStatus === "rejected")
           ? "未采纳"
-          : photoAssets.length
-            ? "录音 + 笔记"
-            : hasPlayableAudio
-              ? "仅录音"
-              : "仅原文";
+          : selectedPoint.sectionKind === "source_excerpt"
+            ? "原始来源"
+            : "AI 草稿";
+
+  const previousSelectionRevision = useRef(sourceSelectionRevision);
+  useEffect(() => {
+    if (previousSelectionRevision.current === sourceSelectionRevision) return;
+    previousSelectionRevision.current = sourceSelectionRevision;
+    pendingPlaybackTarget.current = null;
+    audioRef.current?.pause();
+    const frame = window.requestAnimationFrame(() => {
+      setSelectedPointSelection(null);
+      setSourceSelection(null);
+      setActionComposerOpen(false);
+      setActionComposerRevision(null);
+      setActionStatement("");
+      setActionComposerIssue(null);
+      setActivePlaybackKey(null);
+      setActiveAudioAssetId("");
+      setAudioPlaying(false);
+      setAudioCurrentTime(0);
+      setAudioDuration(0);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [sourceSelectionRevision]);
 
   useEffect(() => {
     if (!activePlaybackKey) return;
@@ -5781,19 +5922,14 @@ function TranscriptArtifactsPanel({
 
   function switchMobilePane(next: "reading" | "actions") {
     if (next === mobilePane) return;
-    if (mobilePane === "reading") mobileReadingScrollY.current = window.scrollY;
-    else mobileActionsScrollY.current = window.scrollY;
-    const targetScrollY = next === "reading" ? mobileReadingScrollY.current : mobileActionsScrollY.current;
     setMobilePane(next);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => window.scrollTo({ top: targetScrollY }));
-    });
   }
 
   function selectSummaryPoint(point: SelectedSummaryPoint, revealActions = true) {
-    setSelectedPoint(point);
+    setSelectedPointSelection({ revision: revisionForPoint(point), point });
     setActionView("source");
     setActionComposerOpen(false);
+    setActionComposerRevision(null);
     setActionStatement("");
     setActionComposerIssue(null);
     if (revealActions) switchMobilePane("actions");
@@ -5803,15 +5939,17 @@ function TranscriptArtifactsPanel({
     if (!selectedPoint) return;
     setActionStatement(selectedPoint.sectionKind === "next_step" ? selectedPoint.summaryText : "");
     setActionComposerIssue(null);
+    setActionComposerRevision(selectedPointRevision);
     setActionComposerOpen(true);
   }
 
   async function submitInlineAction() {
-    if (!selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
+    if (!actionComposerIsCurrent || !selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
     setActionComposerIssue(null);
     try {
       await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8));
       setActionComposerOpen(false);
+      setActionComposerRevision(null);
       setActionStatement("");
     } catch {
       setActionComposerIssue("行动暂时没有保存，请重试。");
@@ -5819,7 +5957,7 @@ function TranscriptArtifactsPanel({
   }
 
   function renderActionComposer() {
-    if (!actionComposerOpen || !selectedPoint) return null;
+    if (!actionComposerIsCurrent || !selectedPoint) return null;
     return <form className="rail-action-composer" onSubmit={(submitEvent) => {
       submitEvent.preventDefault();
       void submitInlineAction();
@@ -5827,7 +5965,7 @@ function TranscriptArtifactsPanel({
       <label><span>要完成什么</span><textarea autoFocus value={actionStatement} onChange={(change) => setActionStatement(change.target.value)} placeholder="例如：负责人周五前发送三份候选方案。" /></label>
       <small>{selectedPoint.sourceIds.length > 8 ? `已关联最相关的 8 段原话（本重点共 ${selectedPoint.sourceIds.length} 段）` : `已关联 ${selectedPoint.sourceIds.length} 段原话`}；保存后进入待确认，不会直接写入可信存档。</small>
       {actionComposerIssue && <p role="alert">{actionComposerIssue}</p>}
-      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={() => { setActionComposerOpen(false); setActionComposerIssue(null); }}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : "加入待确认"}</button></div>
+      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={() => { setActionComposerOpen(false); setActionComposerRevision(null); setActionComposerIssue(null); }}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : "加入待确认"}</button></div>
     </form>;
   }
 
@@ -5843,7 +5981,7 @@ function TranscriptArtifactsPanel({
       supportQuote: claim.evidenceRefs.find((ref) => ref.quote)?.quote || "",
       returnFocusId: `rail-pending-${claim.id}`,
     };
-    setSelectedSourceIds(new Set(sourceIds));
+    setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(sourceIds) });
     selectSummaryPoint(point);
   }
 
@@ -5860,7 +5998,7 @@ function TranscriptArtifactsPanel({
       supportQuote: group.text,
       returnFocusId: `${surface}-group-${group.sourceIds[0] || group.key}`,
     };
-    setSelectedSourceIds(new Set(group.sourceIds));
+    setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(group.sourceIds) });
     selectSummaryPoint(point);
   }
 
@@ -5869,7 +6007,7 @@ function TranscriptArtifactsPanel({
   ) {
     if (!sourceIds.length) return;
     summaryScrollY.current = window.scrollY;
-    setSelectedSourceIds(new Set(sourceIds));
+    setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(sourceIds) });
     const targetGroup = rawDisplayGroups.find((group) => group.sourceIds.includes(sourceIds[0]!));
     const targetId = `raw-group-${targetGroup?.sourceIds[0] || sourceIds[0]}`;
     setWorkspaceView("transcript");
@@ -5952,21 +6090,18 @@ function TranscriptArtifactsPanel({
 
   if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
-  return <section className="transcript-workspace" aria-label="逐字稿阅读区">
+  return <section className={`transcript-workspace${playbackAudioAssetId ? " has-audio" : ""}`} aria-label="逐字稿阅读区">
     {issue && state === "ready" && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
     <nav className="reader-view-tabs" aria-label="阅读方式">
-      <button aria-pressed={workspaceView === "points"} aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true"><Sparkles /></span>重点</button>
-      <button aria-pressed={workspaceView === "chapters"} className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true"><ListTree /></span>主题</button>
-      <button aria-pressed={workspaceView === "speakers"} className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true"><Users /></span>发言人</button>
+      <button aria-pressed={workspaceView === "points"} aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true"><Sparkles /></span>概要</button>
+      <button aria-pressed={workspaceView === "chapters"} className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true"><ListTree /></span>按类型</button>
+      <button aria-pressed={workspaceView === "speakers"} className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true"><Users /></span>按发言人</button>
       <button aria-pressed={workspaceView === "transcript"} className={workspaceView === "transcript" ? "active" : ""} onClick={() => selectWorkspaceSurface("transcript")}><span aria-hidden="true"><FileText /></span>逐字稿</button>
       <span className={`reading-workspace-state ${analysisRunning ? "running" : summaryArtifact ? "ready" : "source-ready"}`}>{analysisRunning ? "整理中 · 已可阅读" : summaryArtifact ? "重点已就绪" : "原文已就绪"}</span>
     </nav>
-    <div className="reader-mobile-switch" aria-label="移动端工作区">
-      <button aria-pressed={mobilePane === "reading"} className={mobilePane === "reading" ? "active" : ""} onClick={() => switchMobilePane("reading")}>阅读</button>
-      <button aria-pressed={mobilePane === "actions"} className={mobilePane === "actions" ? "active" : ""} onClick={() => switchMobilePane("actions")}>处理{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
-    </div>
     <div className="reader-workspace-layout" data-mobile-pane={mobilePane}>
       <div className="reader-reading-pane" role="region" aria-label="阅读内容">
+        <div className="reader-reading-scroll">
     {workspaceView === "points" && <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
       <header className="summary-overview-header">
         <div>
@@ -5982,6 +6117,7 @@ function TranscriptArtifactsPanel({
 
       {tab === "summary" && (summaryArtifact ? <div className="summary-card-content">
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
+        {summaryKeywords.length > 0 && <div className="summary-keywords" aria-label="关键词"><strong>关键词</strong><span>{summaryKeywords.map((keyword) => <i key={keyword}>{keyword}</i>)}</span></div>}
         {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
           <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "本次沟通重点"}</h3></header>
           <div className="summary-sentences">{recordArray(section.items).map((item, itemIndex) => {
@@ -6027,8 +6163,8 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>)}
     </section>}
 
-    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="主题速览">
-      <header><div><span className="section-kicker">主题速览</span><h2>按沟通主题快速回到上下文</h2></div><span>{summarySections.length} 个主题</span></header>
+    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="按类型速览">
+      <header><div><span className="section-kicker">按类型速览</span><h2>按信息类型快速回到上下文</h2></div><span>{summarySections.length} 个类型</span></header>
       {summaryArtifact && summarySections.length ? <div>{summarySections.map((section, sectionIndex) => {
         const sectionKind = firstString(section, ["kind"]) || "";
         const items = recordArray(section.items);
@@ -6048,14 +6184,14 @@ function TranscriptArtifactsPanel({
         return <article key={point.key}>
           <button id={point.returnFocusId} onClick={() => selectSummaryPoint(point)}><time>{compactTranscriptTimestamp(sourceGroup?.startMs)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这个主题的原文已经可以直接阅读。"}</p></span><ArrowRight aria-hidden="true" /></button>
         </article>;
-      })}</div> : <div className="reader-section-empty"><strong>主题正在整理</strong><p>原始逐字稿已经可以阅读，不需要等待主题生成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
+      })}</div> : <div className="reader-section-empty"><strong>信息正在分类</strong><p>原始逐字稿已经可以阅读，不需要等待分类完成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
     </section>}
 
-    {workspaceView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="发言人速览">
-      <header><div><span className="section-kicker">发言人</span><h2>先找到谁说了什么</h2></div><span>{speakerSummaries.length} 人</span></header>
-      {speakerSummaries.length ? <div>{speakerSummaries.map((speaker) => <article key={speaker.speaker}>
-        <button onClick={() => { setSpeakerFilter(speaker.speaker); setWorkspaceView("transcript"); selectArtifactTab(readableArtifact ? "readable" : "raw"); }}>
-          <span className="speaker-avatar" aria-hidden="true"><AudioLines /></span><span><strong>{speaker.speaker}</strong><small>{speaker.groups.length} 段 · {speaker.firstStartMs == null ? "无时间点" : `从 ${compactTranscriptTimestamp(speaker.firstStartMs)} 开始`}</small><p>{speaker.excerpt}</p></span><ArrowRight aria-hidden="true" />
+    {workspaceView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="按发言人查看原话">
+      <header><div><span className="section-kicker">按发言人</span><h2>查看每位发言人的原话摘录</h2></div><span>{speakerSummaries.length} 人</span></header>
+      {speakerSummaries.length ? <div>{speakerSummaries.map((speaker) => <article key={speaker.key}>
+        <button onClick={() => { setSpeakerFilter(speaker.key); setWorkspaceView("transcript"); selectArtifactTab(readableArtifact ? "readable" : "raw"); }}>
+          <span className="speaker-avatar" aria-hidden="true"><AudioLines /></span><span><strong>{speaker.speaker}</strong><small>{hasMultipleTranscriptSources ? `${speaker.sourceLabel} · ` : ""}{speaker.groups.length} 段 · {speaker.firstStartMs == null ? "无时间点" : `从 ${compactTranscriptTimestamp(speaker.firstStartMs)} 开始`}</small><p>{speaker.excerpt}</p></span><ArrowRight aria-hidden="true" />
         </button>
       </article>)}</div> : <div className="reader-section-empty"><strong>还没有可用的发言人分段</strong><p>转写完成后会显示 Speaker 1、Speaker 2，并保留每段时间点。</p></div>}
     </section>}
@@ -6064,7 +6200,7 @@ function TranscriptArtifactsPanel({
 
     {workspaceView === "transcript" && <div className="reader-filter-bar">
       <label className="reader-search"><span className="visually-hidden">搜索逐字稿</span><Search aria-hidden="true" /><input value={transcriptSearch} onChange={(change) => { setTranscriptSearch(change.target.value); setVisibleTranscriptGroups(240); }} placeholder="搜索原话" /></label>
-      <label><span className="visually-hidden">筛选发言人</span><select value={speakerFilter} onChange={(change) => { setSpeakerFilter(change.target.value); setVisibleTranscriptGroups(240); }}><option value="all">全部发言人</option>{availableSpeakers.map((speaker) => <option key={speaker} value={speaker}>{speaker}</option>)}</select></label>
+      <label><span className="visually-hidden">筛选发言人</span><select value={speakerFilter} onChange={(change) => { setSpeakerFilter(change.target.value); setVisibleTranscriptGroups(240); }}><option value="all">全部发言人</option>{speakerSummaries.map((speaker) => <option key={speaker.key} value={speaker.key}>{speaker.speaker}{hasMultipleTranscriptSources ? ` · ${speaker.sourceLabel}` : ""}</option>)}</select></label>
       <label className="reader-source-filter"><input type="checkbox" checked={onlyKeySources} onChange={(change) => { setOnlyKeySources(change.target.checked); setVisibleTranscriptGroups(240); }} /><span>只看重点来源</span></label>
     </div>}
 
@@ -6113,7 +6249,7 @@ function TranscriptArtifactsPanel({
             {group.needsCheck && <em>请核对</em>}
             {(group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
               <summary aria-label="查看整理详情"><MoreHorizontal aria-hidden="true" /></summary>
-              <div><button className="text-button" onClick={() => { setSelectedSourceIds(new Set(group.sourceIds)); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
+              <div><button className="text-button" onClick={() => { setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(group.sourceIds) }); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
             </details>}
           </div>
           <button className="transcript-copy-button" onClick={() => selectTranscriptGroup(group, "readable")}><span>{group.text}</span><small>在右侧处理</small></button>
@@ -6126,7 +6262,7 @@ function TranscriptArtifactsPanel({
     </div>}
 
     {workspaceView === "transcript" && readerTab === "raw" && <div className="artifact-panel raw-artifact">
-      {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSelectedSourceIds(new Set())}>查看完整原稿</button></header>}
+      {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSourceSelection(null)}>查看完整原稿</button></header>}
       {rawSegments.length ? <>{visibleRawGroups.map((group) => {
         const groupPlaybackKey = `raw:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
@@ -6138,20 +6274,31 @@ function TranscriptArtifactsPanel({
       })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
 
+        </div>
+        {playbackAudioAssetId && <footer className="reader-audio-player" aria-label="录音播放器">
+          <button className="audio-play-button" aria-label={`${audioPlaying ? "暂停" : "播放"}录音：${playbackAudioLabel}`} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
+          <span className="reader-audio-label" title={playbackAudioLabel}><AudioLines aria-hidden="true" />{playbackAudioLabel}</span>
+          <time>{formatTimestamp(audioCurrentTime)}</time>
+          <input aria-label="录音进度" type="range" min={0} max={Math.max(audioDuration, 1)} step={0.1} value={Math.min(audioCurrentTime, Math.max(audioDuration, 1))} onChange={(change) => { const next = Number(change.target.value); if (audioRef.current) audioRef.current.currentTime = next; setAudioCurrentTime(next); }} />
+          <time>{formatTimestamp(audioDuration)}</time>
+          <label><span className="visually-hidden">播放速度</span><select aria-label="播放速度" value={audioRate} onChange={(change) => { const next = Number(change.target.value); setAudioRate(next); if (audioRef.current) audioRef.current.playbackRate = next; }}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
+        </footer>}
       </div>
-      <aside className="reader-action-rail" aria-label="本次操作">
+      <aside className="reader-action-rail" data-sheet={mobilePane === "actions" ? "open" : "peek"} aria-label="本次操作">
         <header className="reader-action-heading">
           <div><span className="section-kicker">本次操作</span><strong>{selectedPoint ? selectedPoint.sectionLabel : "把重点变成下一步"}</strong></div>
           <span className={`point-trust-state ${selectedPointStatus === "已确认" ? "verified" : selectedPointStatus === "未采纳" ? "rejected" : selectedPointStatus === "已处理" ? "processed" : selectedPointStatus === "需确认" ? "pending" : "source"}`}>{selectedPointStatus}</span>
+          <button className="reader-sheet-toggle" aria-label={mobilePane === "actions" ? "收起本次操作" : "展开本次操作"} aria-expanded={mobilePane === "actions"} aria-controls="reader-action-panel" onClick={() => switchMobilePane(mobilePane === "actions" ? "reading" : "actions")}><ChevronDown aria-hidden="true" /></button>
         </header>
         <nav className="reader-action-tabs" aria-label="操作类型">
           <button aria-pressed={actionView === "source"} className={actionView === "source" ? "active" : ""} onClick={() => setActionView("source")}>来源</button>
-          <button aria-pressed={actionView === "pending"} className={actionView === "pending" ? "active" : ""} onClick={() => setActionView("pending")}>待确认{pendingReviewCount > 0 && <span>{pendingReviewCount}</span>}</button>
+          <button aria-pressed={actionView === "pending"} className={actionView === "pending" ? "active" : ""} onClick={() => setActionView("pending")}>待确认{visiblePendingReviewCount > 0 && <span>{visiblePendingReviewCount}</span>}</button>
           <button aria-pressed={actionView === "actions"} className={actionView === "actions" ? "active" : ""} onClick={() => setActionView("actions")}>行动{trustedEventActionItems.length > 0 && <span>{trustedEventActionItems.length}</span>}</button>
         </nav>
 
-        {actionView === "source" && <div className="reader-action-body source-view">
+        {actionView === "source" && <div className="reader-action-body source-view" id="reader-action-panel">
           {selectedPoint ? <>
+            <div className="source-readiness rail-source-readiness" aria-label="本次来源"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div>
             <section className="selected-point-card"><small>{selectedPoint.sectionLabel}</small><h3>{selectedPoint.summaryText}</h3>{selectedPoint.supportQuote && <q>{selectedPoint.supportQuote}</q>}</section>
             <section className="rail-source-section">
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
@@ -6184,7 +6331,7 @@ function TranscriptArtifactsPanel({
                   {claim.reviewStatus === "pending" && confirmNeedsDetail && <div className="rail-review-warning" id={`rail-review-warning-${claim.id}`}><AlertTriangle aria-hidden="true" /><span>这条还需补证据或判断与旧记录的关系。</span><button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>打开详情核对</button></div>}
                 </div>;
               })}
-              {selectedPoint.sourceIds.length > 0 && (actionComposerOpen ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从这条重点建立行动</button>)}
+              {selectedPoint.sourceIds.length > 0 && (actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从这条重点建立行动</button>)}
             </section>
             <section className="handwriting-check-section">
               <header><strong>手写笔记核对</strong><span>{selectedPhotoEvidence.length ? "已关联" : photoAssets.length ? "待关联" : "可选"}</span></header>
@@ -6196,16 +6343,19 @@ function TranscriptArtifactsPanel({
           </> : <div className="rail-empty-state"><ArrowLeft aria-hidden="true" /><strong>点左侧任意重点或原话</strong><p>这里会立即显示对应原句、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button></div>}
         </div>}
 
-        {actionView === "pending" && <div className="reader-action-body pending-view">
+        {actionView === "pending" && <div className="reader-action-body pending-view" id="reader-action-panel">
           <div className="rail-explainer"><strong>核对是可选的可信度层</strong><p>你可以先用摘要和行动；金额、日期、责任人等高风险内容会一直保留“需确认”标记，确认后才进入可信存档。</p></div>
           {reviewBlocked && <p className="rail-context-note">使用场景尚未补充，不影响阅读和逐条查看；正式项目报告前再补即可。</p>}
-          {pendingClaims.length ? <div className="rail-pending-list">{pendingClaims.slice(0, 10).map((claim) => <button id={`rail-pending-${claim.id}`} key={claim.id} onClick={() => selectClaimInRail(claim)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}</div> : <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
-          {reviewReady && pendingClaims.length > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={() => selectClaimInRail(pendingClaims[0]!)}>从第一条开始确认</button>}
+          {visiblePendingReviewCount > 0 ? <div className="rail-pending-list">
+            {pendingClaims.map((claim) => <button id={`rail-pending-${claim.id}`} key={claim.id} onClick={() => selectClaimInRail(claim)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
+            {pendingOccurrences.map((candidate) => <button id={`rail-occurrence-${candidate.id}`} key={candidate.id} onClick={onOpenFullReview}><span><small>再次提到 · 需要判断</small><strong>{candidate.proposed_statement || candidate.target_statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
+          </div> : <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length || occurrenceCandidates.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length || occurrenceCandidates.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
+          {reviewReady && visiblePendingReviewCount > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={() => pendingClaims[0] ? selectClaimInRail(pendingClaims[0]) : onOpenFullReview()}>{pendingClaims.length ? "从第一条开始确认" : "判断再次提到的内容"}</button>}
         </div>}
 
-        {actionView === "actions" && <div className="reader-action-body actions-view">
+        {actionView === "actions" && <div className="reader-action-body actions-view" id="reader-action-panel">
           <div className="rail-explainer"><strong>只把确认过的事当作行动</strong><p>AI 建议先留在“待确认”；这里的清单来自已确认记录，可直接完成并写回项目进展。</p></div>
-          {selectedPoint?.sourceIds.length ? actionComposerOpen ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">在左侧先点一条重点，即可带着原文创建行动。</p>}
+          {selectedPoint?.sourceIds.length ? actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">在左侧先点一条重点，即可带着原文创建行动。</p>}
           {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
           {projectActions.isError && <div className="rail-inline-error"><span>行动暂时没有读到，其他内容不受影响。</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
           {!projectActions.isLoading && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
@@ -6216,15 +6366,6 @@ function TranscriptArtifactsPanel({
         </div>}
       </aside>
     </div>
-
-    {playbackAudioAssetId && <footer className="reader-audio-player" aria-label="录音播放器">
-      <button className="audio-play-button" aria-label={`${audioPlaying ? "暂停" : "播放"}录音：${playbackAudioLabel}`} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
-      <span className="reader-audio-label" title={playbackAudioLabel}><AudioLines aria-hidden="true" />{playbackAudioLabel}</span>
-      <time>{formatTimestamp(audioCurrentTime)}</time>
-      <input aria-label="录音进度" type="range" min={0} max={Math.max(audioDuration, 1)} step={0.1} value={Math.min(audioCurrentTime, Math.max(audioDuration, 1))} onChange={(change) => { const next = Number(change.target.value); if (audioRef.current) audioRef.current.currentTime = next; setAudioCurrentTime(next); }} />
-      <time>{formatTimestamp(audioDuration)}</time>
-      <label><span className="visually-hidden">播放速度</span><select aria-label="播放速度" value={audioRate} onChange={(change) => { const next = Number(change.target.value); setAudioRate(next); if (audioRef.current) audioRef.current.playbackRate = next; }}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
-    </footer>}
 
   </section>;
 }
@@ -6428,6 +6569,7 @@ function SimpleTestScreen({
   transcriptionRun,
   transcriptionRunsByAssetId,
   claims,
+  occurrenceCandidates,
   busy,
   projectWorkflow,
   readingTab,
@@ -6444,6 +6586,7 @@ function SimpleTestScreen({
   onConfirmScenario,
   onResult,
   onOpenClaim,
+  onOpenFullReview,
   onQuickVerdict,
   onCreateActionInline,
   onCompleteAction,
@@ -6851,11 +6994,12 @@ function SimpleTestScreen({
           <label className="simple-event-select">
             <span>当前沟通</span>
             <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => selectEvent(change.target.value)}>
-              {events.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              {events.map((item) => <option key={item.id} value={item.id}>{item.id === event?.id ? event.title : item.title}</option>)}
             </select>
           </label>
           <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加一次沟通"><Plus aria-hidden="true" /></button>
         </>}
+        {event && <span className={`simple-session-status current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
         <DropdownMenu.Root open={showProjectMenu} onOpenChange={setShowProjectMenu}>
           <div className="project-menu-wrap">
             <DropdownMenu.Trigger asChild>
@@ -7031,12 +7175,13 @@ function SimpleTestScreen({
                 transcriptionRun={transcriptionRun}
                 analysisRun={run}
                 claims={claims}
-                pendingReviewCount={pendingCount}
+                occurrenceCandidates={occurrenceCandidates}
                 reviewReady={factsCanBeReviewed}
                 reviewBlocked={false}
                 reviewMode={activeTab === "review"}
                 busy={busy}
                 onOpenClaim={onOpenClaim}
+                onOpenFullReview={onOpenFullReview}
                 onQuickVerdict={onQuickVerdict}
                 onCreateActionInline={onCreateActionInline}
                 onCompleteAction={onCompleteAction}
