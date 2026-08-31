@@ -131,8 +131,13 @@ test("summary sources stay available in the action rail and artifact polling doe
 });
 
 test("the continuous workspace preserves its local view and fails visibly at partial boundaries", () => {
-  assert.match(page, /requestedWorkspaceView\.current = next/);
+  assert.match(page, /requestedWorkspaceView\.current = null/);
   assert.match(page, /localWorkspaceView \?\? "points"/);
+  assert.match(page, /const insightView:[\s\S]{0,120}workspaceView === "transcript" \? "points" : workspaceView/);
+  assert.ok(
+    page.indexOf('className="reader-intelligence-heading"') < page.indexOf('id="transcript-document"'),
+    "the intelligent overview must precede the transcript in the same reading document",
+  );
   assert.match(page, /asset\.transform\?\.source_audio_asset_id/);
   assert.match(page, /audioAssetIdForVersion\(group\.assetVersionId\)/);
   assert.match(page, /const partialFailure = artifactResult\.status === "rejected"/);
@@ -174,8 +179,10 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(page, /setActionView\("pending"\)/);
   assert.match(page, /从第一条开始确认/);
   assert.match(styles, /\.reader-action-rail/);
-  assert.match(page, /workspaceView === "points" && rawSegments\.length > 0 && <div className="summary-detail-entry"/);
-  assert.match(page, /tab === "summary" && \(summaryArtifact \? <div className="summary-card-content"/);
+  assert.match(page, /className="reader-intelligence-heading"/);
+  assert.match(page, /insightView === "points" && <section className=\{`summary-overview-card/);
+  assert.match(page, /<header className="transcript-document-toolbar" id="transcript-document">/);
+  assert.doesNotMatch(page, /summary-detail-entry/, "the summary must sit above the transcript instead of opening a second framed detail view");
   assert.match(page, /reviewReady && visiblePendingReviewCount > 0/);
   assert.match(page, /pendingOccurrences\.map/);
   assert.doesNotMatch(page, /pendingClaims\.slice\(0, 10\)/, "the rail must not silently hide review items");

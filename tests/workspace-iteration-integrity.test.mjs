@@ -160,7 +160,7 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.match(page, /from "lucide-react"/);
   assert.match(page, /className="brand-mark"><NotebookPen/);
   assert.match(page, /<LayoutDashboard aria-hidden="true" \/>/);
-  assert.match(page, /<Sparkles \/><\/span>概要/);
+  assert.match(page, /className="reader-intelligence-mark" aria-hidden="true"><Sparkles \/>/);
   assert.match(page, /<Pause aria-hidden="true" \/> : <Play aria-hidden="true" \/>/);
   assert.match(page, /<FileImage \/><\/span><span><strong>选择手写笔记照片/);
   assert.match(page, /className="speaker-avatar" aria-hidden="true"><AudioLines \/>/);

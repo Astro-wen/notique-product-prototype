@@ -5308,6 +5308,7 @@ function TranscriptArtifactsPanel({
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [speakerFilter, setSpeakerFilter] = useState("all");
   const [onlyKeySources, setOnlyKeySources] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [visibleTranscriptGroups, setVisibleTranscriptGroups] = useState(240);
   const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
   const [runs, setRuns] = useState<EventAiArtifactRun[]>([]);
@@ -5600,6 +5601,7 @@ function TranscriptArtifactsPanel({
     });
   };
   const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
+  const insightView: Exclude<ReadingWorkspaceView, "transcript"> = workspaceView === "transcript" ? "points" : workspaceView;
   const summarySourceIds = new Set(
     summarySections.flatMap((section) => recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids))),
   );
@@ -5636,6 +5638,10 @@ function TranscriptArtifactsPanel({
       excerpt: groups.slice(0, 2).map((group) => group.text).join(" "),
     };
   });
+  const speakerToneClass = (group: { assetVersionId: string | null; speaker: unknown }) => {
+    const speakerIndex = speakerSummaries.findIndex((speaker) => speaker.key === speakerBucketKey(group));
+    return `speaker-tone-${Math.max(speakerIndex, 0) % 4}`;
+  };
   const pendingClaims = claims.filter((claim) =>
     claim.reviewStatus === "pending" && (!claim.eventId || claim.eventId === event.id),
   );
@@ -5910,14 +5916,13 @@ function TranscriptArtifactsPanel({
   }
 
   function selectWorkspaceSurface(next: ReadingWorkspaceView) {
-    requestedWorkspaceView.current = next;
+    requestedWorkspaceView.current = null;
     setWorkspaceView(next);
     switchMobilePane("reading");
     if (next === "transcript") {
       selectArtifactTab(readableArtifact ? "readable" : "raw");
-      return;
+      window.setTimeout(() => document.getElementById("transcript-document")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     }
-    selectArtifactTab("summary");
   }
 
   function switchMobilePane(next: "reading" | "actions") {
@@ -6092,31 +6097,29 @@ function TranscriptArtifactsPanel({
   if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className={`transcript-workspace${playbackAudioAssetId ? " has-audio" : ""}`} aria-label="逐字稿阅读区">
     {issue && state === "ready" && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
-    <nav className="reader-view-tabs" aria-label="阅读方式">
-      <button aria-pressed={workspaceView === "points"} aria-label="AI 摘要 · 本次重点" className={workspaceView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}><span aria-hidden="true"><Sparkles /></span>概要</button>
-      <button aria-pressed={workspaceView === "chapters"} className={workspaceView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}><span aria-hidden="true"><ListTree /></span>按类型</button>
-      <button aria-pressed={workspaceView === "speakers"} className={workspaceView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}><span aria-hidden="true"><Users /></span>按发言人</button>
-      <button aria-pressed={workspaceView === "transcript"} className={workspaceView === "transcript" ? "active" : ""} onClick={() => selectWorkspaceSurface("transcript")}><span aria-hidden="true"><FileText /></span>逐字稿</button>
-      <span className={`reading-workspace-state ${analysisRunning ? "running" : summaryArtifact ? "ready" : "source-ready"}`}>{analysisRunning ? "整理中 · 已可阅读" : summaryArtifact ? "重点已就绪" : "原文已就绪"}</span>
-    </nav>
     <div className="reader-workspace-layout" data-mobile-pane={mobilePane}>
       <div className="reader-reading-pane" role="region" aria-label="阅读内容">
         <div className="reader-reading-scroll">
-    {workspaceView === "points" && <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
+    <header className="reader-intelligence-heading">
+      <div><span className="reader-intelligence-mark" aria-hidden="true"><Sparkles /></span><span><strong>智能速览</strong><small>{analysisRunning ? "正在整理，原文已可阅读" : summaryArtifact ? "已从原文中整理" : "原文优先"}</small></span></div>
+      <nav className="reader-insight-tabs" aria-label="智能速览方式">
+        <button aria-pressed={insightView === "points"} aria-label="AI 摘要 · 全文概要" className={insightView === "points" ? "active" : ""} onClick={() => selectWorkspaceSurface("points")}>全文概要</button>
+        <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
+        <button aria-pressed={insightView === "speakers"} className={insightView === "speakers" ? "active" : ""} onClick={() => selectWorkspaceSurface("speakers")}>发言总结</button>
+      </nav>
+    </header>
+    {insightView === "points" && <section className={`summary-overview-card${summaryArtifact ? " ready" : summaryRun?.status === "failed" ? " failed" : summaryRun ? " running" : " empty"}`} aria-live="polite" aria-label="AI 摘要卡片">
       <header className="summary-overview-header">
         <div>
           <div className="summary-card-title active">
-            <span className="summary-spark" aria-hidden="true"><Sparkles /></span>
-            本次重点 <small>AI 草稿</small>
-            {summaryRun || summaryArtifact ? <StatusBadge value={summaryRun?.status || "succeeded"} /> : <span className="summary-card-state">未生成</span>}
+            全文概要
+            {summaryArtifact && <small>AI 草稿</small>}
+            {summaryRun?.status === "queued" || summaryRun?.status === "processing" || summaryRun?.status === "failed" ? <StatusBadge value={summaryRun.status} /> : null}
           </div>
-          <p>{summaryArtifact ? "重点已经整理好；点击定位可跳到对应原句和时间。" : summaryRun?.status === "queued" ? "AI 摘要正在启动，原始逐字稿已经可以先读。" : summaryRun?.status === "processing" ? "AI 正在逐条整理重点，原始逐字稿已经可以先读。" : summaryRun?.status === "failed" ? "这次摘要没有通过引用安全检查，原始逐字稿不受影响。" : "新分析会在原始逐字稿完成后自动生成摘要。"}</p>
         </div>
-        {summaryArtifact && <span className="summary-ready-check" aria-hidden="true"><CheckCircle2 /></span>}
       </header>
 
-      {tab === "summary" && (summaryArtifact ? <div className="summary-card-content">
-        <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
+      {summaryArtifact ? <><div className={`summary-card-content${summaryExpanded ? " expanded" : ""}`}>
         {summaryKeywords.length > 0 && <div className="summary-keywords" aria-label="关键词"><strong>关键词</strong><span>{summaryKeywords.map((keyword) => <i key={keyword}>{keyword}</i>)}</span></div>}
         {summarySections.map((section, sectionIndex) => <section key={firstString(section, ["kind"]) || sectionIndex}>
           <header><span className="section-kicker">{summarySectionLabel(firstString(section, ["kind"]))}</span><h3>{firstString(section, ["title"]) || "本次沟通重点"}</h3></header>
@@ -6157,13 +6160,14 @@ function TranscriptArtifactsPanel({
             </article>;
           })}</div>
         </section>)}
-      </div> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
+        <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
+      </div><button className="summary-expand-button" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((expanded) => !expanded)}>{summaryExpanded ? "收起概要" : "展开全部"}</button></> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
         <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
         <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
-      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>)}
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>}
     </section>}
 
-    {workspaceView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="按类型速览">
+    {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="按类型速览">
       <header><div><span className="section-kicker">按类型速览</span><h2>按信息类型快速回到上下文</h2></div><span>{summarySections.length} 个类型</span></header>
       {summaryArtifact && summarySections.length ? <div>{summarySections.map((section, sectionIndex) => {
         const sectionKind = firstString(section, ["kind"]) || "";
@@ -6187,31 +6191,30 @@ function TranscriptArtifactsPanel({
       })}</div> : <div className="reader-section-empty"><strong>信息正在分类</strong><p>原始逐字稿已经可以阅读，不需要等待分类完成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
     </section>}
 
-    {workspaceView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="按发言人查看原话">
+    {insightView === "speakers" && <section className="reader-section-panel reader-speakers" aria-label="按发言人查看原话">
       <header><div><span className="section-kicker">按发言人</span><h2>查看每位发言人的原话摘录</h2></div><span>{speakerSummaries.length} 人</span></header>
       {speakerSummaries.length ? <div>{speakerSummaries.map((speaker) => <article key={speaker.key}>
-        <button onClick={() => { setSpeakerFilter(speaker.key); setWorkspaceView("transcript"); selectArtifactTab(readableArtifact ? "readable" : "raw"); }}>
+        <button onClick={() => { setSpeakerFilter(speaker.key); selectWorkspaceSurface("transcript"); }}>
           <span className="speaker-avatar" aria-hidden="true"><AudioLines /></span><span><strong>{speaker.speaker}</strong><small>{hasMultipleTranscriptSources ? `${speaker.sourceLabel} · ` : ""}{speaker.groups.length} 段 · {speaker.firstStartMs == null ? "无时间点" : `从 ${compactTranscriptTimestamp(speaker.firstStartMs)} 开始`}</small><p>{speaker.excerpt}</p></span><ArrowRight aria-hidden="true" />
         </button>
       </article>)}</div> : <div className="reader-section-empty"><strong>还没有可用的发言人分段</strong><p>转写完成后会显示 Speaker 1、Speaker 2，并保留每段时间点。</p></div>}
     </section>}
 
-    {workspaceView === "points" && rawSegments.length > 0 && <div className="summary-detail-entry"><span>{summaryArtifact ? "需要更多上下文时再展开完整逐字稿。" : "原始逐字稿已经可以阅读，不需要等待分析完成。"}</span><button className="text-button" onClick={() => selectWorkspaceSurface("transcript")}>{summaryArtifact ? "查看完整逐字稿" : "先看原始逐字稿"}</button></div>}
-
-    {workspaceView === "transcript" && <header className="transcript-document-toolbar">
+    <header className="transcript-document-toolbar" id="transcript-document">
+      <div className="transcript-document-title"><FileText aria-hidden="true" /><strong>逐字稿</strong></div>
       <nav className="transcript-subtabs" aria-label="逐字稿版本">
-        <button aria-pressed={readerTab === "readable"} className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读逐字稿 <small>{filteredReadableGroups.length} 段</small>{readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
-        <button aria-pressed={readerTab === "raw"} className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原始逐字稿 <small>{filteredRawGroups.length} 段</small></button>
+        <button aria-pressed={readerTab === "raw"} className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原文 <small>{filteredRawGroups.length} 段</small></button>
+        <button aria-pressed={readerTab === "readable"} className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读版 <small>{filteredReadableGroups.length} 段</small>{readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       </nav>
       <details className="transcript-tools">
-        <summary aria-label="搜索和筛选逐字稿"><Settings2 aria-hidden="true" /><span>搜索与筛选</span>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources) > 0 && <b>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources)}</b>}</summary>
+        <summary role="button" aria-label="搜索和筛选逐字稿"><Settings2 aria-hidden="true" /><span>搜索与筛选</span>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources) > 0 && <b>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources)}</b>}</summary>
         <div className="reader-filter-bar">
           <label className="reader-search"><span className="visually-hidden">搜索逐字稿</span><Search aria-hidden="true" /><input value={transcriptSearch} onChange={(change) => { setTranscriptSearch(change.target.value); setVisibleTranscriptGroups(240); }} placeholder="搜索原话" /></label>
           <label><span className="visually-hidden">筛选发言人</span><select value={speakerFilter} onChange={(change) => { setSpeakerFilter(change.target.value); setVisibleTranscriptGroups(240); }}><option value="all">全部发言人</option>{speakerSummaries.map((speaker) => <option key={speaker.key} value={speaker.key}>{speaker.speaker}{hasMultipleTranscriptSources ? ` · ${speaker.sourceLabel}` : ""}</option>)}</select></label>
           <label className="reader-source-filter"><input type="checkbox" checked={onlyKeySources} onChange={(change) => { setOnlyKeySources(change.target.checked); setVisibleTranscriptGroups(240); }} /><span>只看重点来源</span></label>
         </div>
       </details>
-    </header>}
+    </header>
     {playbackAudioAssetId && <audio
       key={playbackAudioAssetId}
       className="reader-audio-element"
@@ -6241,13 +6244,13 @@ function TranscriptArtifactsPanel({
       }}
     />}
 
-    {workspaceView === "transcript" && readerTab === "readable" && <div className="artifact-panel readable-artifact">
+    {readerTab === "readable" && <div className="artifact-panel readable-artifact">
       {readableArtifact ? <>{visibleReadableGroups.map((group) => {
         const diffKey = `${event.id}:${group.key}`;
         const groupPlaybackKey = `readable:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
-        return <article data-testid="transcript-turn" id={`readable-group-${group.sourceIds[0] || group.key}`} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`transcript-turn${group.needsCheck ? " needs-check" : ""}${playing ? " playing" : ""}${selectedPoint?.key === `readable-${group.key}` ? " selected" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
-          <div className="readable-meta transcript-turn-meta">
+        return <article data-testid="transcript-turn" id={`readable-group-${group.sourceIds[0] || group.key}`} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`transcript-turn ${speakerToneClass(group)}${group.needsCheck ? " needs-check" : ""}${playing ? " playing" : ""}${selectedPoint?.key === `readable-${group.key}` ? " selected" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
+          <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta">
             <span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span>
             <strong>{displaySpeakerLabel(group.speaker)}</strong>
             <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button>
@@ -6257,7 +6260,7 @@ function TranscriptArtifactsPanel({
               <div><button className="text-button" onClick={() => { setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(group.sourceIds) }); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
             </details>}
           </div>
-          <button className="transcript-copy-button" onClick={() => selectTranscriptGroup(group, "readable")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
+          <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-pressed={selectedPoint?.key === `readable-${group.key}`} onClick={() => selectTranscriptGroup(group, "readable")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
       })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
@@ -6266,16 +6269,16 @@ function TranscriptArtifactsPanel({
       }} onRaw={() => selectArtifactTab("raw")} />}
     </div>}
 
-    {workspaceView === "transcript" && readerTab === "raw" && <div className="artifact-panel raw-artifact">
+    {readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSourceSelection(null)}>查看完整原稿</button></header>}
       {rawSegments.length ? <>{visibleRawGroups.map((group) => {
         const groupPlaybackKey = `raw:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
         const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
-        return <article data-testid="transcript-turn" id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`transcript-turn${selected ? " selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
+        return <article data-testid="transcript-turn" id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`transcript-turn ${speakerToneClass(group)}${selected ? " selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
-          <div className="readable-meta transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong><button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button></div>
-          <button className="transcript-copy-button" onClick={() => selectTranscriptGroup(group, "raw")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
+          <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong><button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button></div>
+          <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-pressed={selected} onClick={() => selectTranscriptGroup(group, "raw")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
         </article>;
       })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
@@ -7173,7 +7176,7 @@ function SimpleTestScreen({
             </section>
           </div>}
 
-          {(activeTab === "transcript" || activeTab === "review" || readerWasOpened) && <div className="meeting-tab-panel" hidden={activeTab !== "transcript" && activeTab !== "review"}>
+          {(activeTab === "transcript" || activeTab === "review" || readerWasOpened) && <div className="meeting-tab-panel reading-tab-panel" hidden={activeTab !== "transcript" && activeTab !== "review"}>
             {event ? <>
               <TranscriptArtifactsPanel
                 key={event.id}

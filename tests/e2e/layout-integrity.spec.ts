@@ -74,7 +74,11 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
     return {
       sidebarWidth: sidebar?.width ?? 0,
       readerWidth: reader?.width ?? 0,
+      readerLeft: reader?.left ?? 0,
+      readerRight: reader?.right ?? 0,
       railWidth: rail?.width ?? 0,
+      railLeft: rail?.left ?? 0,
+      railRight: rail?.right ?? 0,
       visibleSidebarLabels,
     };
   });
@@ -83,6 +87,9 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
   expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
   expect(layout.railWidth).toBeGreaterThanOrEqual(340);
   expect(layout.railWidth).toBeLessThanOrEqual(400);
+  expect(layout.readerLeft).toBeLessThan(layout.readerRight);
+  expect(layout.railLeft).toBeLessThan(layout.railRight);
+  expect(layout.readerRight, "the transcript canvas must end before the operation rail begins").toBeLessThanOrEqual(layout.railLeft + 1);
   expect(layout.visibleSidebarLabels).toEqual([]);
 });
 

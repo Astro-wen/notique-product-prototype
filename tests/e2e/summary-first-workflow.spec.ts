@@ -155,7 +155,7 @@ test("a readable transcript is offered when Summary is unavailable", async ({ pa
   await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
   await page.getByRole("button", { name: "先看易读稿" }).click();
   await expect(page.getByText("预算上限是 120 万美元。", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: /^易读逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^易读版/ })).toHaveClass(/active/);
   expect(apiFixture.writes).toEqual([]);
 });
 
@@ -191,9 +191,11 @@ test("the source rail stays open when another reading artifact finishes", async 
   await expect.poll(() => apiFixture.completedReadCount("/api/v1/events/event-a/ai-artifacts"), { timeout: 8_000 }).toBeGreaterThan(1);
   await expect(rail.getByRole("heading", { name: "预算上限是 120 万美元" })).toBeVisible();
   await rail.getByRole("button", { name: "在逐字稿中定位" }).click();
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-  const selectedSource = page.locator(".raw-artifact article.selected");
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
+  const selectedSource = page.getByTestId("transcript-turn").filter({ hasText: "预算上限是 120 万美元。" });
   await expect(selectedSource).toContainText("预算上限是 120 万美元。");
+  await expect(selectedSource.getByTestId("transcript-turn-body")).toHaveAttribute("aria-pressed", "true");
   await expect(selectedSource).toBeFocused();
 });
 
@@ -222,31 +224,72 @@ test("a Summary point opens a persistent operation rail without covering the rea
 test("a raw transcript paragraph can be handled in the rail without a detour", async ({ page, apiFixture }) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  await page.getByRole("button", { name: "逐字稿", exact: true }).click();
-  await page.getByRole("button", { name: /^原始逐字稿/ }).click();
-  const firstParagraph = page.locator(".raw-artifact .transcript-copy-button").first();
-  const paragraphText = await firstParagraph.locator("span").innerText();
-  await firstParagraph.click();
+  await expect.poll(() => apiFixture.completedReadCount("/api/v1/events/event-a/transcript-segments")).toBeGreaterThan(0);
+  const targetParagraph = page.getByTestId("transcript-turn-body").filter({ hasText: "预算上限是 120 万美元" }).first();
+  await expect(targetParagraph).toBeVisible();
+  const paragraphText = await targetParagraph.locator("span").innerText();
+  await targetParagraph.click();
 
   await expect(page.locator(".reader-action-rail .selected-point-card h3")).toHaveText(paragraphText);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page).toHaveURL(/view=simple/);
 });
 
-test("the transcript is a compact continuous document instead of a stack of modules", async ({ page, apiFixture }, testInfo) => {
-  apiFixture.enableLegacyRawFlow();
+test("the summary and transcript are one continuous left-hand document without an extra transcript click", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
   apiFixture.enableCompactTranscript();
-  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
 
-  await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  const readingDocument = page.locator(".reader-reading-scroll");
+  const intelligence = page.locator(".reader-intelligence-heading");
+  const summary = page.getByLabel("AI 摘要卡片");
+  const transcriptToolbar = page.locator("#transcript-document");
+  const turns = page.getByTestId("transcript-turn");
+
+  await expect(intelligence).toContainText("智能速览");
+  await expect(summary).toBeVisible();
+  await expect(transcriptToolbar).toContainText("逐字稿");
+  await expect(turns).toHaveCount(8);
+  await expect(page.getByRole("navigation", { name: "逐字稿版本" }).getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "查看完整逐字稿", exact: true })).toHaveCount(0);
+
+  const oneDocument = await readingDocument.evaluate((documentNode) => {
+    const summaryNode = documentNode.querySelector('[aria-label="AI 摘要卡片"]');
+    const transcriptNode = documentNode.querySelector("#transcript-document");
+    const firstTurn = documentNode.querySelector('[data-testid="transcript-turn"]');
+    if (!summaryNode || !transcriptNode || !firstTurn) return null;
+    const summaryRect = summaryNode.getBoundingClientRect();
+    const transcriptRect = transcriptNode.getBoundingClientRect();
+    const firstTurnRect = firstTurn.getBoundingClientRect();
+    return {
+      summaryBeforeTranscript: summaryRect.top < transcriptRect.top,
+      transcriptBeforeTurn: transcriptRect.top < firstTurnRect.top,
+      containsAll: documentNode.contains(summaryNode) && documentNode.contains(transcriptNode) && documentNode.contains(firstTurn),
+    };
+  });
+  expect(oneDocument).toEqual({
+    summaryBeforeTranscript: true,
+    transcriptBeforeTurn: true,
+    containsAll: true,
+  });
+});
+
+test("the transcript is a compact continuous document with stable speaker identity", async ({ page, apiFixture }, testInfo) => {
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  apiFixture.enableCompactTranscript();
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
 
   const turns = page.getByTestId("transcript-turn");
   await expect(turns).toHaveCount(8);
   const geometry = await turns.evaluateAll((items) => items.slice(0, 6).map((item) => {
-    const body = item.querySelector<HTMLElement>(".transcript-copy-button");
+    const body = item.querySelector<HTMLElement>('[data-testid="transcript-turn-body"]');
     const rect = item.getBoundingClientRect();
     const bodyRect = body?.getBoundingClientRect();
     const style = body ? getComputedStyle(body) : null;
@@ -258,14 +301,16 @@ test("the transcript is a compact continuous document instead of a stack of modu
       bodyX: bodyRect?.x ?? 0,
       bodyHeight: bodyRect?.height ?? 0,
       radius: Number.parseFloat(style?.borderRadius ?? "0"),
+      shadow: style?.boxShadow ?? "none",
       fontSize: Number.parseFloat(textStyle?.fontSize ?? "0"),
       lineHeight: Number.parseFloat(textStyle?.lineHeight ?? "0"),
     };
   }));
 
-  expect(geometry[5].bottom - geometry[0].top, "six short turns should fit in a compact reading viewport").toBeLessThanOrEqual(isMobile(testInfo) ? 520 : 510);
+  expect(geometry[5].bottom - geometry[0].top, "six short turns should fit in a compact reading viewport").toBeLessThanOrEqual(isMobile(testInfo) ? 480 : 450);
   expect(geometry.every((turn) => turn.bodyHeight >= 44)).toBe(true);
-  expect(geometry.every((turn) => turn.radius <= 8)).toBe(true);
+  expect(geometry.every((turn) => turn.radius <= 2)).toBe(true);
+  expect(geometry.every((turn) => turn.shadow === "none")).toBe(true);
   expect(geometry.every((turn) => turn.fontSize >= 14 && turn.lineHeight / turn.fontSize >= 1.45 && turn.lineHeight / turn.fontSize <= 1.75)).toBe(true);
   expect(Math.max(...geometry.map((turn) => turn.bodyX)) - Math.min(...geometry.map((turn) => turn.bodyX))).toBeLessThanOrEqual(1);
   for (let index = 1; index < geometry.length; index += 1) {
@@ -273,18 +318,62 @@ test("the transcript is a compact continuous document instead of a stack of modu
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth));
 
-  await page.locator("details.transcript-tools > summary").click();
+  const speakerTones = await turns.evaluateAll((items) => items.map((item) => {
+    const speaker = item.querySelector('[data-testid="transcript-turn-meta"] strong')?.textContent?.trim() ?? "";
+    const mark = item.querySelector<HTMLElement>(".transcript-speaker-mark");
+    const style = mark ? getComputedStyle(mark) : null;
+    return { speaker, background: style?.backgroundColor ?? "", color: style?.color ?? "" };
+  }));
+  for (const speaker of new Set(speakerTones.map((tone) => tone.speaker))) {
+    const tones = speakerTones.filter((tone) => tone.speaker === speaker).map((tone) => `${tone.background}|${tone.color}`);
+    expect(new Set(tones).size, `${speaker} should keep one stable visual identity`).toBe(1);
+  }
+  expect(new Set(speakerTones.map((tone) => `${tone.background}|${tone.color}`)).size).toBeGreaterThan(1);
+
+  await page.getByRole("button", { name: "搜索和筛选逐字稿" }).click();
   const search = page.getByPlaceholder("搜索原话");
   await expect(search).toBeVisible();
   await search.fill("Buyer detail 5");
   await expect(turns).toHaveCount(1);
   await search.fill("");
-  await page.locator("details.transcript-tools > summary").click();
+  await page.getByRole("button", { name: "搜索和筛选逐字稿" }).click();
 
   const readerWidth = await page.locator(".reader-reading-pane").evaluate((element) => element.getBoundingClientRect().width);
   await turns.nth(1).getByRole("button", { name: /Agent response 2/ }).click();
   await expect(page.locator(".reader-action-rail .selected-point-card")).toContainText("Agent response 2.");
   expect(await page.locator(".reader-reading-pane").evaluate((element) => element.getBoundingClientRect().width)).toBe(readerWidth);
+});
+
+test("390px keeps the continuous document usable and every primary transcript control touchable", async ({ page, apiFixture }, testInfo) => {
+  test.skip(!isMobile(testInfo), "390px touch target assertion");
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  apiFixture.enableCompactTranscript();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
+
+  const firstTurn = page.getByTestId("transcript-turn").first();
+  const body = firstTurn.getByTestId("transcript-turn-body");
+  const timestamp = firstTurn.getByRole("button", { name: /前三秒播放/ });
+  const tools = page.getByRole("button", { name: "搜索和筛选逐字稿" });
+  await expect(firstTurn).toBeVisible();
+
+  for (const [name, target] of [["原话", body], ["时间点", timestamp], ["搜索与筛选", tools]] as const) {
+    const box = await target.boundingBox();
+    expect(box, `${name} control should have layout`).not.toBeNull();
+    expect(box?.height ?? 0, `${name} control should be at least 40px high`).toBeGreaterThanOrEqual(40);
+  }
+
+  await body.click();
+  const rail = page.locator(".reader-action-rail");
+  await expect(rail).toHaveAttribute("data-sheet", "open");
+  const sheetToggle = rail.getByRole("button", { name: "收起本次操作" });
+  const toggleBox = await sheetToggle.boundingBox();
+  expect(toggleBox?.width ?? 0).toBeGreaterThanOrEqual(40);
+  expect(toggleBox?.height ?? 0).toBeGreaterThanOrEqual(40);
+  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test("a visible source can be confirmed in place without leaving the reading workspace", async ({ page, apiFixture }) => {
@@ -377,7 +466,7 @@ test("a topic with more than eight sources stays in the rail with bounded eviden
   apiFixture.completeReadableTranscript();
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  await page.getByRole("button", { name: "按类型", exact: true }).click();
+  await page.getByRole("button", { name: "章节速览", exact: true }).click();
   await page.locator(".reader-chapters article").first().getByRole("button").click();
   await page.locator(".reader-action-rail").getByRole("button", { name: "从这条重点建立行动" }).click();
 
@@ -389,18 +478,20 @@ test("a topic with more than eight sources stays in the rail with bounded eviden
   expect(apiFixture.writes).toEqual([]);
 });
 
-test("topic and speaker views stay selected while the Summary URL is synchronized", async ({ page, apiFixture }) => {
+test("chapter and speaker insights stay selected above the same transcript document", async ({ page, apiFixture }) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  const topics = page.getByRole("button", { name: "按类型", exact: true });
+  const topics = page.getByRole("button", { name: "章节速览", exact: true });
   await topics.click();
   await expect(topics).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "按信息类型快速回到上下文" })).toBeVisible();
   await expect(page).toHaveURL(/readingTab=summary/);
 
-  const speakers = page.getByRole("button", { name: "按发言人", exact: true });
+  await expect(page.locator("#transcript-document")).toBeVisible();
+
+  const speakers = page.getByRole("button", { name: "发言总结", exact: true });
   await speakers.click();
   await expect(speakers).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "查看每位发言人的原话摘录" })).toBeVisible();
@@ -408,6 +499,7 @@ test("topic and speaker views stay selected while the Summary URL is synchronize
   await expect(avatars).toHaveCount(2);
   await expect(page.locator(".reader-speakers .speaker-avatar svg")).toHaveCount(2);
   expect(await avatars.allTextContents()).toEqual(["", ""]);
+  await expect(page.locator("#transcript-document")).toBeVisible();
 });
 
 test("mobile operations open as a bottom sheet without replacing the reader", async ({ page, apiFixture }) => {
@@ -470,7 +562,7 @@ test("an old Run without reading artifacts falls back to the original transcript
   await expect(page.getByRole("button", { name: "查看原始逐字稿" }).first()).toBeVisible();
   await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
 
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
   await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
   expect(apiFixture.writes).toEqual([]);
 });
@@ -480,11 +572,10 @@ test("failed Summary and readable transcript fall back to Raw without exposing m
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "failed", readableStatus: "failed" });
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
 
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
   await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page.getByRole("heading", { name: "AI 摘要未通过安全检查" })).toBeVisible();
   await expect(page.getByText("事实识别和原始逐字稿都已保留。", { exact: false })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
@@ -498,33 +589,33 @@ test("manual Raw selection replaces the route and survives reload from a Summary
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
 
-  await page.getByRole("button", { name: "查看完整逐字稿", exact: true }).click();
-  await page.getByRole("button", { name: /^原始逐字稿/ }).click();
+  await page.getByRole("button", { name: /^原文/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
 
   await page.reload();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
   await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
 });
 
-test("manual Summary selection replaces the route and survives reload", async ({ page, apiFixture }) => {
+test("a Summary deep link restores the pinned intelligence and transcript in one document", async ({ page, apiFixture }) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
-  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
-
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page.getByRole("button", { name: "AI 摘要 · 全文概要" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expect(page.locator("#transcript-document")).toBeVisible();
+  await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
 
   await page.reload();
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
-  await expect(page.getByRole("button", { name: /^AI 摘要/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: "AI 摘要 · 全文概要" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
+  await expect(page.locator("#transcript-document")).toBeVisible();
 });
 
 test("workspace Transcript selection is routed and leaving Transcript clears the reading tab", async ({ page, apiFixture }) => {
@@ -534,7 +625,7 @@ test("workspace Transcript selection is routed and leaving Transcript clears the
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
-  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
 
   await page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ }).click();
   await expect(page).toHaveURL(/view=simple(?!.*readingTab)/);
@@ -544,13 +635,13 @@ test("workspace Transcript selection is routed and leaving Transcript clears the
 test("a new processing Summary Run never renders an older Run's Artifact", async ({ page, apiFixture }) => {
   apiFixture.enableNewSummaryRunWithStaleArtifact();
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
-  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
-  await page.getByRole("button", { name: /^本次重点/ }).click();
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
   await expect(page.getByText("正在生成 AI 摘要", { exact: true })).toBeVisible();
+  await expect(page.locator("#transcript-document")).toBeVisible();
+  await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
   await expect(page.getByText("预算上限是 120 万美元", { exact: true })).toHaveCount(0);
 });
