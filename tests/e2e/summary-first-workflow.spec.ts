@@ -278,7 +278,7 @@ test("the summary and transcript are one continuous left-hand document without a
     };
   });
   expect(oneDocument).toMatchObject({ summaryBeforeTranscript: true, transcriptBeforeTurn: true, containsAll: true });
-  expect(oneDocument?.transcriptOffset, "the collapsed intelligence section must leave the transcript in the first reading viewport").toBeLessThanOrEqual(520);
+  expect(oneDocument?.transcriptOffset, "the collapsed intelligence section must leave the transcript body in the first reading viewport").toBeLessThanOrEqual(440);
 });
 
 test("the transcript is a compact continuous document with stable speaker identity", async ({ page, apiFixture }, testInfo) => {

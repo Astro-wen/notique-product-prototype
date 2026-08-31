@@ -1241,7 +1241,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .reader-insight-tabs > button.active { color: #33334f; }
 .reader-insight-tabs > button.active::after { background: #6558d9; }
 .reader-reading-pane .summary-overview-card { margin: 0; }
-.reader-reading-pane .summary-card-content { max-height: 240px; overflow: hidden; }
+.reader-reading-pane .summary-card-content { max-height: 180px; overflow: hidden; }
 .reader-reading-pane .summary-card-content.expanded { max-height: none; }
 .reader-reading-pane .summary-sentences > article { grid-template-columns: 1fr; }
 .reader-reading-pane .summary-point-actions { justify-content: flex-start; }
