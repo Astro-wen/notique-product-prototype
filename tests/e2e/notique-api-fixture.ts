@@ -528,6 +528,7 @@ export class NotiqueApiFixture {
   summaryIncompleteEvidence = false;
   transcriptionProgressMode = false;
   analysisProgressMode = false;
+  compactTranscriptMode = false;
 
   private readonly claimsGate = gate();
   private readonly snapshotGate = gate();
@@ -633,6 +634,10 @@ export class NotiqueApiFixture {
 
   enableTranscriptionProgress() {
     this.transcriptionProgressMode = true;
+  }
+
+  enableCompactTranscript() {
+    this.compactTranscriptMode = true;
   }
 
   enableAnalysisProgress() {
@@ -1105,7 +1110,18 @@ export class NotiqueApiFixture {
       if (transcriptMatch) {
         const eventId = decodeURIComponent(transcriptMatch[1]);
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
-        const segments = this.transcriptionProgressMode && eventId === "event-a"
+        const segments = this.compactTranscriptMode && eventId === "event-a"
+          ? Array.from({ length: 8 }, (_, index) => ({
+              id: `compact-seg-${index}`,
+              event_id: eventId,
+              asset_version_id: "asset-event-a-version-1",
+              ordinal: index,
+              speaker: index % 2 === 0 ? "Buyer" : "Agent",
+              start_ms: index * 4_000,
+              end_ms: index * 4_000 + 3_000,
+              text: index % 2 === 0 ? `Buyer detail ${index + 1}.` : `Agent response ${index + 1}.`,
+            }))
+          : this.transcriptionProgressMode && eventId === "event-a"
           ? [
               { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_000, text: "Opening." },
               { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 2_000, text: "Reply." },

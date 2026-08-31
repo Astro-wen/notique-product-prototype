@@ -235,6 +235,58 @@ test("a raw transcript paragraph can be handled in the rail without a detour", a
   await expect(page).toHaveURL(/view=simple/);
 });
 
+test("the transcript is a compact continuous document instead of a stack of modules", async ({ page, apiFixture }, testInfo) => {
+  apiFixture.enableLegacyRawFlow();
+  apiFixture.enableCompactTranscript();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+
+  await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
+  await expect(page.getByRole("button", { name: /^原始逐字稿/ })).toHaveClass(/active/);
+
+  const turns = page.getByTestId("transcript-turn");
+  await expect(turns).toHaveCount(8);
+  const geometry = await turns.evaluateAll((items) => items.slice(0, 6).map((item) => {
+    const body = item.querySelector<HTMLElement>(".transcript-copy-button");
+    const rect = item.getBoundingClientRect();
+    const bodyRect = body?.getBoundingClientRect();
+    const style = body ? getComputedStyle(body) : null;
+    const text = body?.querySelector<HTMLElement>("span");
+    const textStyle = text ? getComputedStyle(text) : null;
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      bodyX: bodyRect?.x ?? 0,
+      bodyHeight: bodyRect?.height ?? 0,
+      radius: Number.parseFloat(style?.borderRadius ?? "0"),
+      fontSize: Number.parseFloat(textStyle?.fontSize ?? "0"),
+      lineHeight: Number.parseFloat(textStyle?.lineHeight ?? "0"),
+    };
+  }));
+
+  expect(geometry[5].bottom - geometry[0].top, "six short turns should fit in a compact reading viewport").toBeLessThanOrEqual(isMobile(testInfo) ? 520 : 510);
+  expect(geometry.every((turn) => turn.bodyHeight >= 44)).toBe(true);
+  expect(geometry.every((turn) => turn.radius <= 8)).toBe(true);
+  expect(geometry.every((turn) => turn.fontSize >= 14 && turn.lineHeight / turn.fontSize >= 1.45 && turn.lineHeight / turn.fontSize <= 1.75)).toBe(true);
+  expect(Math.max(...geometry.map((turn) => turn.bodyX)) - Math.min(...geometry.map((turn) => turn.bodyX))).toBeLessThanOrEqual(1);
+  for (let index = 1; index < geometry.length; index += 1) {
+    expect(geometry[index].top - geometry[index - 1].bottom).toBeLessThanOrEqual(6);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth));
+
+  await page.locator("details.transcript-tools > summary").click();
+  const search = page.getByPlaceholder("搜索原话");
+  await expect(search).toBeVisible();
+  await search.fill("Buyer detail 5");
+  await expect(turns).toHaveCount(1);
+  await search.fill("");
+  await page.locator("details.transcript-tools > summary").click();
+
+  const readerWidth = await page.locator(".reader-reading-pane").evaluate((element) => element.getBoundingClientRect().width);
+  await turns.nth(1).getByRole("button", { name: /Agent response 2/ }).click();
+  await expect(page.locator(".reader-action-rail .selected-point-card")).toContainText("Agent response 2.");
+  expect(await page.locator(".reader-reading-pane").evaluate((element) => element.getBoundingClientRect().width)).toBe(readerWidth);
+});
+
 test("a visible source can be confirmed in place without leaving the reading workspace", async ({ page, apiFixture }) => {
   apiFixture.allowMutation("POST", "/api/v1/claims/claim-summary-pending/verdicts");
   apiFixture.completeSummary();
