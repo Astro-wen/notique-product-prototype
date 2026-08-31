@@ -1266,7 +1266,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .reader-reading-pane .summary-point-copy:hover mark { background: linear-gradient(transparent 50%, #c6ead7 50%); }
 .reader-reading-pane .summary-point-copy > span { width: fit-content; color: var(--brand-green-dark); font-size: var(--text-2xs); font-weight: 750; opacity: 0; transform: translateY(-2px); transition: opacity 140ms ease, transform 140ms ease; }
 .reader-reading-pane .summary-reveal-line:hover .summary-point-copy > span, .reader-reading-pane .summary-reveal-line.selected .summary-point-copy > span { opacity: 1; transform: none; }
-.reader-reading-pane .summary-reveal-line.selected { border-color: #8fc5ae; background: #f4fbf7; box-shadow: inset 3px 0 var(--brand-green); }
+.reader-reading-pane .summary-reveal-line.selected { border-color: #8fc5ae; background: #f4fbf7; padding-left: 8px; box-shadow: inset 3px 0 var(--brand-green); }
 .reader-section-panel { min-height: 210px; padding: 16px 32px 24px; }
 .reader-section-panel > header { min-height: 46px; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .reader-section-panel > header h2 { margin: 2px 0 0; font-size: var(--text-sm); }

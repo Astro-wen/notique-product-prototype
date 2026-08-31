@@ -432,6 +432,13 @@ test("390px keeps every Summary point inside the visible reading column", async 
   expect(summaryGeometry.pointCount).toBeGreaterThan(1);
   expect(summaryGeometry.scrollWidth, "mobile Summary must not hide horizontally overflowing content").toBeLessThanOrEqual(summaryGeometry.clientWidth + 1);
   expect(summaryGeometry.furthestPointRight, "every Summary point must stay inside the visible Summary column").toBeLessThanOrEqual(summaryGeometry.contentRight + 1);
+
+  await page.locator(".summary-point-copy").first().click();
+  const selectedInset = await page.locator(".summary-reveal-line.selected").evaluate((selected) => {
+    const point = selected.querySelector<HTMLElement>(".summary-point-copy");
+    return point ? point.getBoundingClientRect().left - selected.getBoundingClientRect().left : 0;
+  });
+  expect(selectedInset, "the selection marker must not cover the first Summary character").toBeGreaterThanOrEqual(7);
 });
 
 test("a visible source can be confirmed in place without leaving the reading workspace", async ({ page, apiFixture }) => {
