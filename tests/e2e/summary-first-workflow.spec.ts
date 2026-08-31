@@ -10,11 +10,22 @@ const test = base.extend<Fixtures>({
   apiFixture: [async ({ page }, provide) => {
     const fixture = new NotiqueApiFixture();
     fixture.enableSummaryFirstFlow();
+    // These are cheap wakes for Runs already persisted in the fixture, not
+    // creation/retry mutations. Keep every other mutation blocked.
+    fixture.allowMutation("POST", "/api/v1/jobs/dispatch");
     await fixture.install(page);
     await provide(fixture);
+    for (const wake of fixture.writes.filter(({ path }) => path === "/api/v1/jobs/dispatch")) {
+      expect(wake.body).toMatchObject({ kind: expect.stringMatching(/^(artifact|extraction)$/) });
+      expect(wake.body).toMatchObject({ run_id: expect.stringMatching(/^(artifact-run-|run-a$)/) });
+    }
     fixture.assertNoUnexpectedWrites();
   }, { auto: true }],
 });
+
+function nonWakeWrites(apiFixture: NotiqueApiFixture) {
+  return apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
+}
 
 function isMobile(testInfo: TestInfo): boolean {
   return testInfo.project.name === "mobile-chromium";
@@ -36,31 +47,36 @@ async function expandSummaryIfCollapsed(page: Page): Promise<void> {
   }
 }
 
-test("a finished Summary opens once while facts continue without creating another Run", async ({ page, apiFixture }, testInfo) => {
-  apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
+test("Raw opens first and a finished Summary appears above it without stealing focus", async ({ page, apiFixture }, testInfo) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
-  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
 
   apiFixture.completeSummary();
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.locator(".reader-action-rail")).toBeVisible();
   if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
   await expect(page.getByRole("button", { name: /连续核对/ })).toHaveCount(0);
   await expect(page.locator(".summary-trust-note")).toBeVisible();
   await expect(page.locator(".summary-trust-note")).toContainText("原文定位不代表语义已经核对");
 
-  const nonWakeWrites = apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
-  expect(nonWakeWrites, "Summary-first navigation must not create or retry any paid Run").toEqual([]);
+  expect(nonWakeWrites(apiFixture), "Raw-first navigation must not create or retry any paid Run").toEqual([]);
   for (const wake of apiFixture.writes) {
     expect(wake.path).toBe("/api/v1/jobs/dispatch");
-    expect(wake.body).toMatchObject({ kind: "artifact" });
+    expect(wake.body).toMatchObject({
+      kind: expect.stringMatching(/^(?:artifact|extraction)$/),
+      run_id: expect.stringMatching(/^(?:artifact-run-|run-)/),
+    });
   }
 });
 
-test("the first completed snapshot opens Summary and a refresh restores it without another paid Run", async ({ page, apiFixture }, testInfo) => {
+test("the first completed snapshot opens Raw and a refresh restores it without another paid Run", async ({ page, apiFixture }, testInfo) => {
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
@@ -86,7 +102,7 @@ test("the first completed snapshot opens Summary and a refresh restores it witho
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
-  expect(apiFixture.writes, "restoring Summary must remain a navigation-only action").toEqual([]);
+  expect(nonWakeWrites(apiFixture), "restoring Raw must remain a navigation-only action").toEqual([]);
 });
 
 test("an explicit workspace tab choice is never replaced when Summary finishes", async ({ page, apiFixture }) => {
@@ -98,18 +114,20 @@ test("an explicit workspace tab choice is never replaced when Summary finishes",
 
   apiFixture.completeSummary();
 
-  await expect(page.getByRole("button", { name: "先看 AI 摘要" })).toBeVisible();
   await expect(projectScope).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
-  expect(apiFixture.writes).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("a completed Summary never closes an open direct-recording material interaction", async ({ page, apiFixture }) => {
-  apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.addInitScript(() => {
     window.sessionStorage.setItem("notique.ui.public-workspace-acknowledged", "1");
   });
   await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  const materialsTab = page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ });
+  await materialsTab.click();
+  await expect(materialsTab).toHaveClass(/active/);
   await page.getByRole("button", { name: "添加材料", exact: true }).click();
   await page.locator(".simple-import-action").filter({ hasText: "直接录音" }).click();
   await expect(page.getByRole("region", { name: "直接录音" })).toBeVisible();
@@ -158,18 +176,18 @@ test("facts finishing preserves the open Summary and its scroll position", async
   }
 });
 
-test("a readable transcript is offered when Summary is unavailable", async ({ page, apiFixture }) => {
+test("a readable transcript can be chosen when Summary is unavailable without replacing Raw", async ({ page, apiFixture }) => {
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "failed", readableStatus: "processing" });
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
   apiFixture.completeReadableTranscript();
 
-  await expect(page.getByRole("button", { name: "先看易读稿" })).toBeVisible();
-  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
-  await page.getByRole("button", { name: "先看易读稿" }).click();
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
+  await page.getByRole("button", { name: /^易读版/ }).click();
   await expect(page.getByText("预算上限是 120 万美元。", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: /^易读版/ })).toHaveClass(/active/);
-  expect(apiFixture.writes).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("a Summary sentence with two overlapping Claims requires an explicit choice", async ({ page, apiFixture }) => {
@@ -390,6 +408,32 @@ test("390px keeps the continuous document usable and every primary transcript co
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
+test("390px keeps every Summary point inside the visible reading column", async ({ page, apiFixture }, testInfo) => {
+  test.skip(!isMobile(testInfo), "390px internal overflow assertion");
+  apiFixture.enableSummaryFirstFlow({ summaryStatus: "succeeded", readableStatus: "succeeded" });
+  apiFixture.completeFacts();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
+  await expect(page.locator(".summary-overview-card.ready")).toBeVisible();
+  await expandSummaryIfCollapsed(page);
+
+  const summaryGeometry = await page.locator(".summary-card-content").evaluate((content) => {
+    const contentRect = content.getBoundingClientRect();
+    const pointRects = [...content.querySelectorAll<HTMLElement>(".summary-point-copy")]
+      .map((point) => point.getBoundingClientRect());
+    return {
+      clientWidth: content.clientWidth,
+      scrollWidth: content.scrollWidth,
+      contentRight: contentRect.right,
+      pointCount: pointRects.length,
+      furthestPointRight: Math.max(contentRect.right, ...pointRects.map((rect) => rect.right)),
+    };
+  });
+  expect(summaryGeometry.pointCount).toBeGreaterThan(1);
+  expect(summaryGeometry.scrollWidth, "mobile Summary must not hide horizontally overflowing content").toBeLessThanOrEqual(summaryGeometry.clientWidth + 1);
+  expect(summaryGeometry.furthestPointRight, "every Summary point must stay inside the visible Summary column").toBeLessThanOrEqual(summaryGeometry.contentRight + 1);
+});
+
 test("a visible source can be confirmed in place without leaving the reading workspace", async ({ page, apiFixture }) => {
   apiFixture.allowMutation("POST", "/api/v1/claims/claim-summary-pending/verdicts");
   apiFixture.completeSummary();
@@ -492,7 +536,7 @@ test("a topic with more than eight sources stays in the rail with bounded eviden
   await expect(composer.getByRole("textbox", { name: "要完成什么" })).toHaveValue("");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await composer.getByRole("button", { name: "取消" }).click();
-  expect(apiFixture.writes).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("chapter and speaker insights stay selected above the same transcript document", async ({ page, apiFixture }) => {
@@ -579,12 +623,10 @@ test("an old Run without reading artifacts falls back to the original transcript
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
-  await expect(page.getByRole("button", { name: "查看原始逐字稿" }).first()).toBeVisible();
-  await page.getByRole("button", { name: "查看原始逐字稿" }).first().click();
-
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
-  expect(apiFixture.writes).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("failed Summary and readable transcript fall back to Raw without exposing model error codes", async ({ page, apiFixture }) => {
@@ -659,7 +701,7 @@ test("a new processing Summary Run never renders an older Run's Artifact", async
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
-  await expect(page.getByText("正在生成 AI 摘要", { exact: true })).toBeVisible();
+  await expect(page.getByText("正在整理全文概要", { exact: true })).toBeVisible();
   await expect(page.locator("#transcript-document")).toBeVisible();
   await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);

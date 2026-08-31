@@ -107,48 +107,101 @@ test("legacy Artifact fallback is explicit and restricted to current raw Segment
   assert.equal(wrongSource.legacyFallback, false);
 });
 
-test("Summary is the first reading aid and legacy Runs fall back to Raw", async () => {
+test("Raw is primary as soon as it is available and AI reading aids stay in the background", async () => {
   const { preferredReadingAid } = await loadWorkflow();
   assert.equal(preferredReadingAid({
+    rawAvailable: true,
+    summaryStatus: "processing",
+    readableTranscriptStatus: "queued",
+    extractionStatus: "processing",
+  }), "raw");
+  assert.equal(preferredReadingAid({
+    rawAvailable: true,
     summaryStatus: "succeeded",
     readableTranscriptStatus: "succeeded",
+    extractionStatus: "succeeded",
+  }), "raw");
+  assert.equal(preferredReadingAid({
+    rawAvailable: false,
+    summaryStatus: "succeeded",
+    readableTranscriptStatus: "processing",
     extractionStatus: "processing",
   }), "summary");
   assert.equal(preferredReadingAid({
+    rawAvailable: false,
     summaryStatus: "failed",
     readableTranscriptStatus: "succeeded",
     extractionStatus: "processing",
   }), "readable");
   assert.equal(preferredReadingAid({
+    rawAvailable: false,
+    summaryStatus: "processing",
+    readableTranscriptStatus: "processing",
+    extractionStatus: "processing",
+  }), null);
+  assert.equal(preferredReadingAid({
     summaryStatus: null,
     readableTranscriptStatus: null,
     extractionStatus: "succeeded",
   }), "raw");
-  assert.equal(preferredReadingAid({
-    summaryStatus: null,
-    readableTranscriptStatus: null,
-    extractionStatus: "processing",
-  }), null);
 });
 
-test("only an untouched waiting surface auto-focuses a completed Summary", async () => {
-  const { shouldAutoFocusSummary } = await loadWorkflow();
+test("only untouched Raw readiness may auto-focus; completed AI aids never do", async () => {
+  const { shouldAutoFocusReadingAid, shouldAutoFocusSummary } = await loadWorkflow();
   const base = {
+    target: "raw",
+    activeWorkspaceTab: "materials",
+    userNavigated: false,
+    alreadyFocused: false,
+    materialInteractionActive: false,
+  };
+  assert.equal(shouldAutoFocusReadingAid(base), true);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, target: "summary" }), false);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, target: "readable" }), false);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, activeWorkspaceTab: "results" }), false);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, userNavigated: true }), false);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, alreadyFocused: true }), false);
+  assert.equal(shouldAutoFocusReadingAid({ ...base, materialInteractionActive: true }), false);
+  assert.equal(shouldAutoFocusSummary({
     summaryStatus: "succeeded",
     extractionStatus: "processing",
     activeWorkspaceTab: "materials",
     userNavigated: false,
     alreadyFocused: false,
     materialInteractionActive: false,
-  };
-  assert.equal(shouldAutoFocusSummary(base), true);
-  assert.equal(shouldAutoFocusSummary({ ...base, activeWorkspaceTab: "results" }), false);
-  assert.equal(shouldAutoFocusSummary({ ...base, userNavigated: true }), false);
-  assert.equal(shouldAutoFocusSummary({ ...base, alreadyFocused: true }), false);
-  assert.equal(shouldAutoFocusSummary({ ...base, materialInteractionActive: true }), false);
-  assert.equal(shouldAutoFocusSummary({ ...base, extractionStatus: "succeeded" }), true);
-  assert.equal(shouldAutoFocusSummary({ ...base, extractionStatus: "completed_with_warnings" }), true);
-  assert.equal(shouldAutoFocusSummary({ ...base, extractionStatus: null }), false);
+  }), false);
+});
+
+test("a later Summary completion keeps the Raw destination stable", async () => {
+  const { preferredReadingAid, shouldAutoFocusReadingAid } = await loadWorkflow();
+  const before = preferredReadingAid({
+    rawAvailable: true,
+    summaryStatus: "processing",
+    readableTranscriptStatus: "processing",
+    extractionStatus: "processing",
+  });
+  const after = preferredReadingAid({
+    rawAvailable: true,
+    summaryStatus: "succeeded",
+    readableTranscriptStatus: "succeeded",
+    extractionStatus: "processing",
+  });
+  assert.equal(before, "raw");
+  assert.equal(after, "raw");
+  assert.equal(shouldAutoFocusReadingAid({
+    target: before,
+    activeWorkspaceTab: "materials",
+    userNavigated: false,
+    alreadyFocused: false,
+    materialInteractionActive: false,
+  }), true);
+  assert.equal(shouldAutoFocusReadingAid({
+    target: after,
+    activeWorkspaceTab: "transcript",
+    userNavigated: false,
+    alreadyFocused: true,
+    materialInteractionActive: false,
+  }), false);
 });
 
 test("facts can finish without changing the reading destination", async () => {

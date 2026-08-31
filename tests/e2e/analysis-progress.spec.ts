@@ -15,14 +15,18 @@ const test = base.extend<Fixtures>({
   }, { auto: true }],
 });
 
-test("fact analysis shows honest progress without internal model diagnostics", async ({ page }) => {
+test("fact analysis stays in the background without a fake percentage", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  const card = page.getByRole("region", { name: "整组沟通处理" });
-  await expect(card.getByRole("progressbar", { name: "本次事实分析进度" })).toHaveAttribute("value", "25");
-  await expect(card).toContainText("已完成 1/4 步");
+  const reader = page.getByRole("region", { name: "逐字稿阅读区" });
+  await expect(reader).toBeVisible();
+  await expect(reader).toContainText("正在整理，原文已可阅读");
+  await expect(reader.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(reader.getByTestId("transcript-turn").first()).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "本次事实分析进度" })).toHaveCount(0);
+  await expect(page.getByRole("main")).not.toContainText(/\d+%|已完成 \d+\/\d+ 步/);
 
-  await expect(card.getByText("处理详情", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("处理详情", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("analysis-progress-journey")).toHaveCount(0);
   await expect(page.getByText(/xhigh|reasoning effort|复用 .*tokens|后端会保存进度/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "正在处理，请稍候", exact: true })).toHaveCount(0);

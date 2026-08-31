@@ -53,6 +53,10 @@ function cleanReadableText(text: string): string {
     .trim();
 }
 
+function usesRawFallback(segment: Pick<TranscriptDisplaySegment, "key">): boolean {
+  return segment.key.includes("raw_fallback_");
+}
+
 function sameSpeaker(left: TranscriptDisplaySegment, right: TranscriptDisplaySegment): boolean {
   const leftSpeaker = speakerIdentity(left.speaker);
   return Boolean(leftSpeaker && leftSpeaker === speakerIdentity(right.speaker));
@@ -69,6 +73,10 @@ function canBridgeBriefBackchannel(
   interruption: TranscriptDisplayGroup,
   right: TranscriptDisplayGroup,
 ): boolean {
+  // A validated readable Artifact may contain exact-raw safety fallbacks.
+  // Presentation cleanup must never hide any part of those source-preserving
+  // rows, even when they resemble a hesitation or a brief backchannel.
+  if (usesRawFallback(left) || usesRawFallback(interruption) || usesRawFallback(right)) return false;
   if (!sameSpeaker(left, right) || sameSpeaker(left, interruption)) return false;
   if (!left.assetVersionId || left.assetVersionId !== interruption.assetVersionId || left.assetVersionId !== right.assetVersionId) {
     return false;
@@ -147,6 +155,7 @@ export function groupReadableTranscriptSegments(
   segments: TranscriptDisplaySegment[],
 ): TranscriptDisplayGroup[] {
   const cleaned = segments.map((segment) => {
+    if (usesRawFallback(segment)) return segment;
     const text = cleanReadableText(segment.text);
     if (text === segment.text.trim()) return segment;
     return {

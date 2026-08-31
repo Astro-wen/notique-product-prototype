@@ -110,23 +110,21 @@ test("anonymous diarization labels are shown as Speaker 1, Speaker 2, Speaker 3"
   assert.equal(displaySpeakerLabel(null), "说话人未标注");
 });
 
-test("the meeting workspace uses the persistent progress journey instead of per-chunk toasts", async () => {
+test("the meeting workspace keeps one quiet progress bar and hides pipeline mechanics", async () => {
   const [page, styles] = await Promise.all([
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
   assert.match(page, /data-testid="transcription-journey"/);
-  assert.match(page, /\$\{progress\.processing\} 段正在识别/);
-  assert.match(page, /\$\{progress\.queued\} 段等待并行空位/);
-  assert.match(page, /系统会自动继续，不需要手动开启后台任务/);
+  assert.match(page, /正在生成逐字稿 · \$\{progress\.completed\}\/\$\{progress\.total\} 段/);
+  assert.match(page, /可以离开此页，结果会自动更新/);
+  assert.match(page, /aria-label="逐字稿生成进度"/);
   assert.match(page, /audioPreparationConcurrency\(\{/);
   assert.match(page, /\}\>\(plan, preparationConcurrency, async/);
-  assert.match(page, /后端最多 6 段同时识别/);
   assert.match(page, /currentAudioPreparations\.map/);
   assert.match(page, /transcriptionRunsByAssetId\[asset\.id\]/);
   assert.doesNotMatch(page, /正在整理长录音：第 \$\{item\.index \+ 1\}/);
+  assert.doesNotMatch(page, /浏览器最多 4 段|后端最多 6 段|等待并行空位/);
+  assert.doesNotMatch(page, /transcription-chunk-nodes|transcription-milestones|transcription-progress-active/);
   assert.match(styles, /\.transcription-progress-bar/);
-  assert.match(styles, /\.transcription-progress-active/);
-  assert.match(styles, /\.transcription-chunk-node\.completed/);
-  assert.match(styles, /\.transcription-milestones/);
 });

@@ -134,28 +134,40 @@ function audioAssetRecord(id: string, projectId: string, eventId: string) {
   };
 }
 
-function chunkedTranscriptionRun() {
+function progressTranscriptSegments() {
+  return [
+    { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_000, text: "Opening." },
+    { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 2_000, text: "Reply." },
+    { id: "speaker-seg-c", ordinal: 2, speaker: "C", start_ms: 2_000, end_ms: 3_000, text: "Follow-up." },
+  ];
+}
+
+function chunkedTranscriptionRun(completed = false) {
+  const now = new Date().toISOString();
   return {
     id: "transcription-a",
     event_id: "event-a",
     audio_asset_id: "audio-event-a",
-    status: "processing",
+    status: completed ? "succeeded" : "processing",
     model: "gpt-4o-transcribe-diarize",
     orchestration_mode: "chunked",
     chunk_count: 10,
-    completed_chunk_count: 4,
+    completed_chunk_count: completed ? 10 : 4,
+    derived_transcript_asset_id: completed ? "transcript-event-a" : null,
+    segment_count: completed ? 3 : null,
+    duration_ms: completed ? 3_000 : null,
     created_at: new Date(Date.now() - 74_000).toISOString(),
     queued_at: new Date(Date.now() - 73_000).toISOString(),
     started_at: new Date(Date.now() - 72_000).toISOString(),
-    finished_at: null,
-    segments: [],
+    finished_at: completed ? now : null,
+    segments: completed ? progressTranscriptSegments() : [],
     chunks: Array.from({ length: 10 }, (_, index) => ({
       id: `transcription-a-chunk-${index}`,
       index,
       start_ms: index * 175_000,
       end_ms: (index + 1) * 180_000,
-      status: index < 4 ? "succeeded" : index < 7 ? "processing" : "queued",
-      processing_attempt_no: index < 7 ? 1 : 0,
+      status: completed || index < 4 ? "succeeded" : index < 7 ? "processing" : "queued",
+      processing_attempt_no: completed || index < 7 ? 1 : 0,
       error_code: null,
     })),
   };
@@ -527,6 +539,8 @@ export class NotiqueApiFixture {
   summarySharedClaims = false;
   summaryIncompleteEvidence = false;
   transcriptionProgressMode = false;
+  transcriptionProgressCompleted = false;
+  failTranscriptReadingRequests = false;
   analysisProgressMode = false;
   compactTranscriptMode = false;
 
@@ -634,6 +648,11 @@ export class NotiqueApiFixture {
 
   enableTranscriptionProgress() {
     this.transcriptionProgressMode = true;
+  }
+
+  completeTranscriptionProgress(options: { failReadingRequests?: boolean } = {}) {
+    this.transcriptionProgressCompleted = true;
+    this.failTranscriptReadingRequests = options.failReadingRequests === true;
   }
 
   enableCompactTranscript() {
@@ -1068,6 +1087,13 @@ export class NotiqueApiFixture {
 
       const eventArtifactsMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/ai-artifacts$/);
       if (eventArtifactsMatch) {
+        if (this.failTranscriptReadingRequests && eventArtifactsMatch[1] === "event-a") {
+          await this.fulfill(route, {
+            error: { code: "TEMPORARY_UNAVAILABLE", message: "Artifact reading is temporarily unavailable." },
+            request_id: requestId,
+          }, 503);
+          return;
+        }
         const eventId = decodeURIComponent(eventArtifactsMatch[1]);
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
         const summaryStatus = projectId === "project-a" && this.summaryFirstMode
@@ -1109,6 +1135,13 @@ export class NotiqueApiFixture {
       const transcriptMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/transcript-segments$/);
       if (transcriptMatch) {
         const eventId = decodeURIComponent(transcriptMatch[1]);
+        if (this.failTranscriptReadingRequests && eventId === "event-a") {
+          await this.fulfill(route, {
+            error: { code: "TEMPORARY_UNAVAILABLE", message: "Transcript reading is temporarily unavailable." },
+            request_id: requestId,
+          }, 503);
+          return;
+        }
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
         const segments = this.compactTranscriptMode && eventId === "event-a"
           ? Array.from({ length: 8 }, (_, index) => ({
@@ -1122,11 +1155,7 @@ export class NotiqueApiFixture {
               text: index % 2 === 0 ? `Buyer detail ${index + 1}.` : `Agent response ${index + 1}.`,
             }))
           : this.transcriptionProgressMode && eventId === "event-a"
-          ? [
-              { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_000, text: "Opening." },
-              { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 2_000, text: "Reply." },
-              { id: "speaker-seg-c", ordinal: 2, speaker: "C", start_ms: 2_000, end_ms: 3_000, text: "Follow-up." },
-            ]
+          ? progressTranscriptSegments()
           : transcriptSegments(projectId, eventId);
         await this.fulfill(route, envelope({ segments }));
         return;
@@ -1136,7 +1165,7 @@ export class NotiqueApiFixture {
       if (transcriptionRunMatch) {
         const runId = decodeURIComponent(transcriptionRunMatch[1]);
         if (this.transcriptionProgressMode && runId === "transcription-a") {
-          await this.fulfill(route, envelope({ transcription_run: chunkedTranscriptionRun() }));
+          await this.fulfill(route, envelope({ transcription_run: chunkedTranscriptionRun(this.transcriptionProgressCompleted) }));
           return;
         }
       }

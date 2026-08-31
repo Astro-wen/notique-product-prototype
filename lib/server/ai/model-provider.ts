@@ -16,6 +16,7 @@ import {
 } from "@/lib/domain/model-contract";
 import type { RuntimeBindings } from "@/db";
 import {
+  downgradeRecoverableEventSummaryProviderSpans,
   EVENT_SUMMARY_SCHEMA_VERSION,
   READABLE_TRANSCRIPT_SCHEMA_VERSION,
   validateEventSummaryProviderOutput,
@@ -840,7 +841,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "Organize only supported content into overview, key facts, decisions, preferences, open questions, risks, and next steps.",
       "Keep the entire summary to 40 supported items or fewer.",
       "Every summary item must cite the smallest useful contiguous source span from one raw Asset Version, using source_segment_ids in exact raw order. Usually cite one segment.",
-      "Always return source_character_span. Use null when the complete cited Segment span is concise. If one cited raw Segment is long, cite exactly that one Segment and set segment_id plus inclusive start_codepoint and exclusive end_codepoint offsets counted in Unicode code points. The span must be non-empty, contain meaningful raw text, and be at most 12,000 code points. Never use a character span with multiple source_segment_ids.",
+      "Always return source_character_span. Set it to null whenever the complete resolved raw citation is 12,000 Unicode code points or fewer; short Segments must use null. Only when one cited raw Segment is longer than 12,000 code points may you set segment_id plus inclusive start_codepoint and exclusive end_codepoint offsets counted in Unicode code points. The span must be non-empty, contain meaningful raw text, and be at most 12,000 code points. Never use a character span with multiple source_segment_ids.",
       "Do not return support_quote. The server will resolve the cited raw Segment IDs into the exact quote shown to users. Do not add outside knowledge or infer intent.",
       "Keep separate business propositions separate. Use plain language suitable for a nontechnical reader.",
       `Return strict JSON matching ${EVENT_SUMMARY_SCHEMA_VERSION}.`,
@@ -857,10 +858,17 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       eventSummaryJsonSchema(),
       options,
     );
-    const validated = validateEventSummaryProviderOutput(result.value, {
+    const summaryInput = {
       eventId: input.new_event.event_id,
       segments: input.new_event.transcript_segments,
-    });
+    };
+    let validated = validateEventSummaryProviderOutput(result.value, summaryInput);
+    if (!validated.valid) {
+      const downgraded = downgradeRecoverableEventSummaryProviderSpans(result.value, summaryInput);
+      if (downgraded !== result.value) {
+        validated = validateEventSummaryProviderOutput(downgraded, summaryInput);
+      }
+    }
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }

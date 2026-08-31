@@ -1,5 +1,6 @@
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import {
+  EVENT_AI_ARTIFACT_REASONING_EFFORTS,
   EVENT_SUMMARY_PROMPT_VERSION,
   EVENT_SUMMARY_SCHEMA_VERSION,
   READABLE_TRANSCRIPT_PROMPT_VERSION,
@@ -11,7 +12,6 @@ import {
 } from "@/lib/domain/event-ai-artifacts";
 import type { ModelUsage } from "@/lib/domain/model-contract";
 import type { TranscriptSegment } from "@/lib/domain/types";
-import { normalizeVerifierReasoningEffort } from "@/lib/domain/model-config";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import { assetObjectKey, sha256Hex } from "@/lib/server/storage/keys";
@@ -398,7 +398,6 @@ export async function ensureEventAiArtifactRuns(input: {
   const manifest = parseJson<Array<{ kind?: unknown }>>(input.inputManifestJson, []);
   if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return [];
   const timestamp = now();
-  const efforts = normalizeVerifierReasoningEffort(bindings.AI_VERIFIER_REASONING_EFFORT);
   const definitions: Array<{
     kind: EventAiArtifactKind;
     prompt: string;
@@ -421,13 +420,14 @@ export async function ensureEventAiArtifactRuns(input: {
   for (const definition of definitions.filter((item) => item.enabled)) {
     const runId = id("earun");
     const idempotencyKey = `${input.extractionRunId}:${definition.kind}`;
+    const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[definition.kind];
     const inputHash = await hashText(JSON.stringify({
       extraction_run_id: input.extractionRunId,
       input_manifest: parseJson(input.inputManifestJson, []),
       kind: definition.kind,
       provider: input.provider,
       model: input.model,
-      effort: efforts,
+      effort: reasoningEffort,
       prompt: definition.prompt,
       schema: definition.schema,
     }));
@@ -452,7 +452,7 @@ export async function ensureEventAiArtifactRuns(input: {
         input.inputManifestJson,
         input.provider,
         input.model,
-        efforts,
+        reasoningEffort,
         definition.prompt,
         definition.schema,
         timestamp,
@@ -559,12 +559,7 @@ export async function createEventAiArtifactRetry(
   const timestamp = now();
   const promptVersion = kind === "summary" ? EVENT_SUMMARY_PROMPT_VERSION : READABLE_TRANSCRIPT_PROMPT_VERSION;
   const schemaVersion = kind === "summary" ? EVENT_SUMMARY_SCHEMA_VERSION : READABLE_TRANSCRIPT_SCHEMA_VERSION;
-  const modelParams = parseJson<Record<string, unknown>>(String(source.model_params_json ?? "{}"), {});
-  const reasoningEffort = normalizeVerifierReasoningEffort(
-    typeof modelParams.verifier_reasoning_effort === "string"
-      ? modelParams.verifier_reasoning_effort
-      : getBindings().AI_VERIFIER_REASONING_EFFORT,
-  );
+  const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[kind];
   const inputHash = await hashText(JSON.stringify({
     extraction_run_id: source.extraction_run_id,
     input_manifest: manifest,

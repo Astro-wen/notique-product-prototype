@@ -450,7 +450,7 @@ async function processReadableTranscriptRun(
     const validated = validateReadableTranscriptOutput(merged, {
       eventId: String(run.event_id),
       segments: source.segments,
-    });
+    }, { allowRawFallback: true });
     if (!validated.output) {
       await failRun(run, owner, new ModelOutputInvalidError(validated.issues, aggregateChunkUsage(storedChunks)));
       return "failed";
@@ -479,7 +479,7 @@ async function processReadableTranscriptRun(
     const validated = validateReadableTranscriptOutput(result.output, {
       eventId: String(run.event_id),
       segments: sourceChunk.segments,
-    });
+    }, { allowRawFallback: true });
     if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
     await persistReadableTranscriptChunk(run, owner, chunk.id, validated.output, result.usage);
     const refreshed = await listReadableTranscriptChunks(String(run.id));
@@ -489,7 +489,7 @@ async function processReadableTranscriptRun(
       const finalValidation = validateReadableTranscriptOutput(merged, {
         eventId: String(run.event_id),
         segments: source.segments,
-      });
+      }, { allowRawFallback: true });
       if (!finalValidation.output) {
         throw new ModelOutputInvalidError(finalValidation.issues, aggregateChunkUsage(refreshed));
       }
@@ -614,7 +614,7 @@ export async function dispatchDueEventAiArtifactRuns(input?: {
       `SELECT * FROM event_ai_artifact_runs
         WHERE ${clauses.join(" AND ")}
         ORDER BY next_attempt_at,
-                 CASE kind WHEN 'summary' THEN 0 ELSE 1 END,
+                 CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,
                  created_at, id LIMIT ?`,
     )
     .bind(...bindings, limit)

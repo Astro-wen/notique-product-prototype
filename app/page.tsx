@@ -22,6 +22,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Inbox,
+  Info,
   LayoutDashboard,
   ListChecks,
   ListTree,
@@ -71,13 +72,12 @@ import {
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
 import { ACTIVE_BACKGROUND_WAKE_MS, runNeedsRecovery, runPollDelayMs } from "@/lib/domain/run-timing";
-import { buildAnalysisProgress } from "@/lib/domain/analysis-progress";
 import {
   factsReadyForReview,
   factsStillRunning,
   matchingSummarySourceIndexes,
   preferredReadingAid,
-  shouldAutoFocusSummary,
+  shouldAutoFocusReadingAid,
   type ReadingAidTarget,
 } from "@/lib/domain/summary-first-workflow";
 import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft";
@@ -553,8 +553,8 @@ function rememberPublicWorkspaceAcknowledgement(): void {
   }
 }
 
-function summaryFirstNavigationKey(projectId: string, eventId: string, runId: string): string {
-  return `notique.ui.summary-first:${projectId}:${eventId}:${runId}`;
+function summaryFirstNavigationKey(projectId: string, eventId: string, milestone: string): string {
+  return `notique.ui.summary-first:${projectId}:${eventId}:${milestone}`;
 }
 
 function readSummaryFirstNavigationMark(key: string): "auto" | "user" | null {
@@ -1131,26 +1131,30 @@ function LoadingBlock({ label = "正在读取…" }: { label?: string }) {
 
 function AssetUploadProgressCard({ progress, onCancel }: { progress: AssetUploadProgress; onCancel: () => void }) {
   const finalizing = progress.phase === "finalizing";
-  const title = progress.phase === "initializing"
-    ? `正在准备上传 ${progress.filename}`
-    : finalizing
-      ? `正在保存 ${progress.filename}`
-      : `正在上传 ${progress.filename}`;
-  const detail = progress.phase === "initializing"
-    ? "正在建立上传通道 · 可以取消"
-    : finalizing
-      ? "文件已经上传，正在生成可用材料；此时无需继续等待上传"
-      : `${formatBytes(progress.loaded)} / ${formatBytes(progress.total)} · 上传完成后会自动继续`;
+  const uploading = progress.phase === "uploading";
+  const percent = progress.total > 0
+    ? Math.max(0, Math.min(100, Math.round(progress.loaded / progress.total * 100)))
+    : 0;
+  const title = finalizing
+    ? "上传完成，正在准备内容"
+    : `正在上传${progress.kind === "audio" ? "录音" : "材料"}${uploading ? ` · ${percent}%` : ""}`;
+  const detail = finalizing
+    ? "文件已经保存；接下来会自动生成可读内容。"
+    : uploading
+      ? `${progress.filename} · ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}`
+      : `${progress.filename} · 正在连接上传服务`;
   return <section className="asset-upload-progress" role="status" aria-live="polite">
     <div><span className="spinner" /><span><strong>{title}</strong><small>{detail}</small></span>{!finalizing && <button type="button" className="text-button upload-cancel" onClick={onCancel}><X aria-hidden="true" />取消</button>}</div>
-    <progress max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />
+    {uploading
+      ? <progress aria-label={progress.kind === "audio" ? "录音上传进度" : "材料上传进度"} max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />
+      : <progress aria-label={finalizing ? "正在准备内容" : "正在准备上传"} />}
   </section>;
 }
 
-function MaterialSyncingCard({ detail = "正在转换或保存材料；完成后会自动继续。" }: { detail?: string }) {
+function MaterialSyncingCard({ detail = "内容已收到；完成后会自动更新。" }: { detail?: string }) {
   return <div className="material-syncing-card" role="status" aria-live="polite" aria-busy="true">
     <span className="material-syncing-spinner" aria-hidden="true" />
-    <div><strong>正在同步材料…</strong><p>{detail}</p></div>
+    <div><strong>正在准备内容</strong><p>{detail}</p></div>
   </div>;
 }
 
@@ -1763,6 +1767,8 @@ export default function Home() {
   const screen = route.view;
   const routeRef = useRef(route);
   const routeRestoreAction = useRef<(nextRoute: AppRoute) => void>(() => undefined);
+  const routeRestoring = useRef(false);
+  const routeRestoreEpoch = useRef(0);
   const requestEpochs = useRef({ projects: 0, project: 0, event: 0, claims: 0, view: 0, claim: 0, debug: 0 });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsState, setProjectsState] = useState<AsyncState>("loading");
@@ -1839,6 +1845,11 @@ export default function Home() {
   const completingReviewSessions = useRef(new Set<string>());
   const reviewRefreshEpoch = useRef(0);
   const projectWorkflowRefreshToken = useRef(0);
+  const transcriptionTerminalRefreshToken = useRef(0);
+  const terminalEventRefreshes = useRef(new Map<string, {
+    generation: number;
+    request: Promise<Event>;
+  }>());
   const guidedTransitionKey = useRef("");
   const guidedTransitionAction = useRef<(phase: "waiting_scenario" | "waiting_review" | "draft_ready" | "partially_reviewed" | "complete") => void>(() => undefined);
   const pendingPublicWorkspaceAction = useRef<(() => void) | null>(null);
@@ -1926,6 +1937,8 @@ export default function Home() {
     // Selecting a project owns every piece of project/event-derived UI. A
     // response from the previous selection must not be able to repopulate it.
     projectWorkflowRefreshToken.current += 1;
+    transcriptionTerminalRefreshToken.current += 1;
+    terminalEventRefreshes.current.clear();
     requestEpochs.current.event += 1;
     requestEpochs.current.claims += 1;
     requestEpochs.current.view += 1;
@@ -1938,6 +1951,8 @@ export default function Home() {
     // Event switches keep the project selection, but invalidate every panel
     // whose contents may have been derived from the previous event.
     requestEpochs.current.claims += 1;
+    transcriptionTerminalRefreshToken.current += 1;
+    terminalEventRefreshes.current.clear();
     requestEpochs.current.view += 1;
     requestEpochs.current.claim += 1;
     requestEpochs.current.debug += 1;
@@ -2166,6 +2181,67 @@ export default function Home() {
       return null;
     }
   }, [isCurrentRequestOwner, loadFreshWorkflowSnapshot]);
+
+  const loadTerminalEventRefresh = useCallback(async (
+    eventId: string,
+    owner: RequestOwner,
+  ): Promise<Event | null> => {
+    // The token is a selection generation, not a latest-request-wins lock.
+    // Concurrent terminal jobs for the same Event must be allowed to finish;
+    // project/Event navigation explicitly increments this generation.
+    const token = transcriptionTerminalRefreshToken.current;
+    let inFlight = terminalEventRefreshes.current.get(eventId);
+    if (!inFlight || inFlight.generation !== token) {
+      const request = api.getEvent(eventId);
+      inFlight = { generation: token, request };
+      terminalEventRefreshes.current.set(eventId, inFlight);
+      const clear = () => {
+        if (terminalEventRefreshes.current.get(eventId)?.request === request) {
+          terminalEventRefreshes.current.delete(eventId);
+        }
+      };
+      void request.then(clear, clear);
+    }
+    try {
+      // Same-Event terminal jobs share one read. This prevents both
+      // cancellation ping-pong and an older response overwriting a newer one.
+      const refreshed = await inFlight.request;
+      if (
+        transcriptionTerminalRefreshToken.current !== token
+        || !isCurrentRequestOwner(owner)
+      ) return null;
+      return refreshed;
+    } catch (error) {
+      if (
+        transcriptionTerminalRefreshToken.current !== token
+        || !isCurrentRequestOwner(owner)
+      ) return null;
+      setEventIssue(toIssue(error));
+      return null;
+    }
+  }, [isCurrentRequestOwner]);
+
+  const loadTerminalEventRefreshWithRetry = useCallback(async (
+    eventId: string,
+    owner: RequestOwner,
+  ): Promise<Event | null> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const refreshed = await loadTerminalEventRefresh(eventId, owner);
+      if (refreshed) return refreshed;
+      if (!isCurrentRequestOwner(owner)) return null;
+      if (attempt < 2) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    return null;
+  }, [isCurrentRequestOwner, loadTerminalEventRefresh]);
+
+  const mergeTerminalEventRefresh = useCallback((refreshed: Event) => {
+    setEvent((current) => {
+      if (current && current.id !== refreshed.id) return current;
+      return current ? { ...current, ...refreshed } : refreshed;
+    });
+  }, []);
 
   const loadSimpleProject = useCallback(async (
     projectId: string,
@@ -2496,28 +2572,21 @@ export default function Home() {
         const latest = await api.getTranscriptionRun(runId);
         if (!requestIsCurrent()) return;
         if (!runInProgress.has(latest.status)) {
+          setTranscriptionRun(latest);
+          setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
           if (latest.status === "succeeded") {
-            // Do not publish the terminal Run before its parent Event and
-            // workflow summary have been reloaded. Publishing it first tears
-            // down this polling effect and used to cancel the ready-state
-            // refresh, leaving a completed transcript labelled "transcribing".
-            const [refreshed, workflowSnapshot] = await Promise.all([
-              api.getEvent(eventId),
-              inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot),
-            ]);
-            if (!requestIsCurrent()) return;
-            setTranscriptionRun(latest);
-            setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
-            setEvent(refreshed);
-            setProject(workflowSnapshot.project);
-            setEvents(workflowSnapshot.events);
-            setProjectWorkflow(workflowSnapshot.plan);
-            setEventWorkflowSummaries(workflowSnapshot.eventSummaries);
+            // The terminal Run already contains usable segments, so publish it
+            // before any broader Event or project refresh. This is the user's
+            // first useful result and must not wait behind derived AI work.
+            const refreshed = await loadTerminalEventRefreshWithRetry(eventId, owner);
+            if (!refreshed) return;
+            mergeTerminalEventRefresh(refreshed);
             setEventIssue(null);
             flash(`逐字稿已生成，包含 ${latest.segmentCount ?? latest.segments.length} 个带时间点的片段`);
+            // Badges and AI artifact state are useful context, but they are not
+            // part of the raw-transcript critical path.
+            void refreshProjectWorkflow(projectId);
           } else if (latest.status === "failed") {
-            setTranscriptionRun(latest);
-            setTranscriptionRunsByAssetId((current) => ({ ...current, [latest.audioAssetId]: latest }));
             setEventIssue({
               code: latest.errorCode || "TRANSCRIPTION_FAILED",
               message: "录音仍然保留在这次沟通中。请检查错误后点击“重新转写”。",
@@ -2548,7 +2617,7 @@ export default function Home() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, isCurrentRequestOwner, loadFreshWorkflowSnapshot, project?.id, transcriptionPollCycle]);
+  }, [activeTranscriptionRunChunkCount, activeTranscriptionRunId, activeTranscriptionRunStatus, event?.id, flash, isCurrentRequestOwner, loadTerminalEventRefreshWithRetry, mergeTerminalEventRefresh, project?.id, refreshProjectWorkflow, transcriptionPollCycle]);
 
   const secondaryTranscriptionRuns = Object.values(transcriptionRunsByAssetId)
     .filter((item) => item.id !== activeTranscriptionRunId && runInProgress.has(item.status));
@@ -2587,28 +2656,22 @@ export default function Home() {
       if (cancelled || !isCurrentRequestOwner(owner)) return;
       const latestRuns = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
       const completedCurrentEvent = latestRuns.some((item) => item.eventId === eventId && item.status === "succeeded");
-      let refreshed: Event | null = null;
-      let workflowSnapshot: ProjectWorkflowSnapshot | null = null;
-      if (completedCurrentEvent) {
-        [refreshed, workflowSnapshot] = await Promise.all([
-          api.getEvent(eventId).catch(() => null),
-          inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot).catch(() => null),
-        ]);
-      }
-      if (cancelled || !isCurrentRequestOwner(owner)) return;
       if (latestRuns.length > 0) {
         setTranscriptionRunsByAssetId((current) => ({
           ...current,
           ...Object.fromEntries(latestRuns.map((item) => [item.audioAssetId, item])),
         }));
       }
-      if (refreshed) setEvent(refreshed);
-      if (workflowSnapshot) {
-        setProject(workflowSnapshot.project);
-        setEvents(workflowSnapshot.events);
-        setProjectWorkflow(workflowSnapshot.plan);
-        setEventWorkflowSummaries(workflowSnapshot.eventSummaries);
+      let refreshed: Event | null = null;
+      if (completedCurrentEvent) {
+        refreshed = await loadTerminalEventRefreshWithRetry(eventId, owner);
       }
+      if (refreshed) {
+        mergeTerminalEventRefresh(refreshed);
+        setEventIssue(null);
+        void refreshProjectWorkflow(projectId);
+      }
+      if (cancelled || !isCurrentRequestOwner(owner)) return;
       if (!cancelled && latestRuns.some((item) => runInProgress.has(item.status))) {
         timer = window.setTimeout(() => void poll(), 2_000);
       }
@@ -2624,7 +2687,7 @@ export default function Home() {
     // The stable key intentionally owns the polling lifetime; the captured
     // list is refreshed whenever any secondary Run changes state or progress.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondaryTranscriptionRunKey, event?.id, isCurrentRequestOwner, loadFreshWorkflowSnapshot, project?.id]);
+  }, [secondaryTranscriptionRunKey, event?.id, isCurrentRequestOwner, loadTerminalEventRefreshWithRetry, mergeTerminalEventRefresh, project?.id, refreshProjectWorkflow]);
 
   const activeExtractionRunId = run?.id;
   const activeExtractionRunStatus = run?.status;
@@ -3790,14 +3853,23 @@ export default function Home() {
 
   async function retryAudioTranscription(audioAssetId: string) {
     if (!event) return;
+    const projectId = event.projectId || routeRef.current.projectId || project?.id;
+    if (!projectId) return;
+    const owner: RequestOwner = {
+      projectId,
+      projectEpoch: requestEpochs.current.project,
+      eventId: event.id,
+      eventEpoch: requestEpochs.current.event,
+    };
     setBusyAction("transcription");
     setEventIssue(null);
     try {
       let current = transcriptionRunsByAssetId[audioAssetId]
         ?? (transcriptionRun?.audioAssetId === audioAssetId ? transcriptionRun : null);
       if (!current) {
-        const refreshedEvent = await api.getEvent(event.id);
-        setEvent(refreshedEvent);
+        const refreshedEvent = await loadTerminalEventRefresh(event.id, owner);
+        if (!refreshedEvent) return;
+        mergeTerminalEventRefresh(refreshedEvent);
         const persistedAudio = refreshedEvent.assets.find((asset) => asset.id === audioAssetId);
         const persistedRunId = persistedAudio
           ? stringValue(persistedAudio.metadata.transcription_run_id)
@@ -3853,7 +3925,8 @@ export default function Home() {
         if (latest.status === "succeeded") {
           setTranscriptionRun(latest);
           setTranscriptionRunsByAssetId((runs) => ({ ...runs, [latest.audioAssetId]: latest }));
-          setEvent(await api.getEvent(event.id));
+          const refreshedEvent = await loadTerminalEventRefresh(event.id, owner);
+          if (refreshedEvent) mergeTerminalEventRefresh(refreshedEvent);
           flash("逐字稿已经生成");
           return;
         }
@@ -4672,6 +4745,10 @@ export default function Home() {
   }
 
   async function restoreAppRoute(requestedRoute: AppRoute): Promise<void> {
+    const restoreEpoch = routeRestoreEpoch.current + 1;
+    routeRestoreEpoch.current = restoreEpoch;
+    routeRestoring.current = true;
+    try {
     const target = normalizeAppRoute(requestedRoute);
     if (target.view === "projects") {
       navigateRoute(target, "none");
@@ -4728,6 +4805,10 @@ export default function Home() {
     }
 
     await loadSimpleProject(target.projectId, target.eventId, "none");
+    // A visible workspace can become interactive while its initial route is
+    // still finishing slower background reads. Never let that stale restore
+    // overwrite a tab the user has already chosen.
+    if (routeRestoreEpoch.current !== restoreEpoch) return;
     if (target.view === "simple") {
       navigateRoute(target, "none");
       restoreReadingTabIfNeeded();
@@ -4769,6 +4850,9 @@ export default function Home() {
       return;
     }
     navigateRoute({ view: "simple", projectId: target.projectId, ...(target.eventId ? { eventId: target.eventId } : {}) }, "none");
+    } finally {
+      if (routeRestoreEpoch.current === restoreEpoch) routeRestoring.current = false;
+    }
   }
 
   routeRestoreAction.current = (nextRoute) => {
@@ -4885,6 +4969,8 @@ export default function Home() {
           onRetryArtifact={retryEventAiArtifact}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
           onFocusTranscriptArtifact={(eventId, tab) => {
+            routeRestoreEpoch.current += 1;
+            routeRestoring.current = false;
             setTranscriptFocusRequest({ id: Date.now(), eventId, tab });
             if (routeRef.current.view === "simple") {
               navigateRoute({
@@ -4895,6 +4981,8 @@ export default function Home() {
             }
           }}
           onClearTranscriptArtifact={() => {
+            routeRestoreEpoch.current += 1;
+            routeRestoring.current = false;
             setTranscriptFocusRequest(null);
             if (routeRef.current.view !== "simple" || !routeRef.current.readingTab) return;
             navigateRoute({ ...routeRef.current, readingTab: undefined }, "replace");
@@ -4908,7 +4996,8 @@ export default function Home() {
             || showPublicWorkspaceConfirmation
             || Boolean(deletePreview)
             || showTrash
-            || showMissingClaim}
+            || showMissingClaim
+            || routeRestoring.current}
           onDeleteProject={openProjectDeletePreview}
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
         />}
@@ -5293,7 +5382,7 @@ function TranscriptArtifactsPanel({
     ...projectActionsQuery(event.projectId || "no-project"),
     enabled: Boolean(event.projectId),
   });
-  const [tab, setTab] = useState<TranscriptArtifactTab>("readable");
+  const [tab, setTab] = useState<TranscriptArtifactTab>("raw");
   const [workspaceView, setWorkspaceView] = useState<ReadingWorkspaceView>("points");
   const [actionView, setActionView] = useState<ReadingActionView>("source");
   const [mobilePane, setMobilePane] = useState<"reading" | "actions">("reading");
@@ -5506,9 +5595,38 @@ function TranscriptArtifactsPanel({
     return () => window.clearInterval(timer);
   }, [runningRunIds]);
 
+  const derivedTranscriptVersionId = event.assets.find(
+    (asset) => asset.id === transcriptionRun?.derivedTranscriptAssetId,
+  )?.versionId ?? "";
+  const immediateRawSegments = useMemo<TranscriptSegment[]>(() =>
+    transcriptionRun?.status === "succeeded"
+      ? transcriptionRun.segments.map((segment) => ({
+          id: segment.id,
+          event_id: event.id,
+          asset_version_id: derivedTranscriptVersionId,
+          ordinal: segment.ordinal,
+          speaker: segment.speaker,
+          start_ms: segment.startMs,
+          end_ms: segment.endMs,
+          text: segment.text,
+        }))
+      : [],
+  [derivedTranscriptVersionId, event.id, transcriptionRun]);
+  // A terminal transcription response already contains the exact diarized
+  // source segments. Merge it immediately with any older source transcript;
+  // choosing one list or the other hid a newly completed second recording
+  // until the canonical Event refresh finished.
+  const availableRawSegments = useMemo(() => {
+    if (immediateRawSegments.length === 0) return rawSegments;
+    const canonicalRawSegmentIds = new Set(rawSegments.map((segment) => segment.id));
+    return [
+      ...rawSegments,
+      ...immediateRawSegments.filter((segment) => !canonicalRawSegmentIds.has(segment.id)),
+    ];
+  }, [immediateRawSegments, rawSegments]);
   const rawSegmentIds = useMemo(
-    () => new Set(rawSegments.map((segment) => segment.id)),
-    [rawSegments],
+    () => new Set(availableRawSegments.map((segment) => segment.id)),
+    [availableRawSegments],
   );
   const summaryPair = selectTranscriptArtifactPair({
     runs,
@@ -5544,9 +5662,8 @@ function TranscriptArtifactsPanel({
     || summarySections.some((section) => recordArray(section.items).length > 1)
     || summarySections.some((section) => recordArray(section.items).some((item) => Boolean(firstString(item, ["support_quote"]))))
     || summaryKeywords.length > 0;
-  const rawSegmentById = new Map(rawSegments.map((segment) => [segment.id, segment]));
-  const readableDisplayGroups = groupReadableTranscriptSegments(
-    (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
+  const rawSegmentById = new Map(availableRawSegments.map((segment) => [segment.id, segment]));
+  const readableDisplaySegments = (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
       key: firstString(segment, ["readable_key"]) || `readable-${index}`,
       assetVersionId: rawSegmentById.get(stringValues(segment.source_segment_ids)[0] ?? "")?.asset_version_id ?? null,
       speaker: firstString(segment, ["speaker"]) ?? null,
@@ -5556,10 +5673,14 @@ function TranscriptArtifactsPanel({
       sourceIds: stringValues(segment.source_segment_ids),
       edits: recordArray(segment.edits),
       needsCheck: segment.needs_human_check === true,
-    })),
-  );
+    }));
+  const readableFallbackCount = readableDisplaySegments.filter((segment) => segment.key.includes("raw_fallback_")).length;
+  const readableUsesRawFallback = readableFallbackCount > 0;
+  const readableEntirelyRawFallback = readableDisplaySegments.length > 0
+    && readableFallbackCount === readableDisplaySegments.length;
+  const readableDisplayGroups = groupReadableTranscriptSegments(readableDisplaySegments);
   const rawDisplayGroups = groupConsecutiveSpeakerSegments(
-    rawSegments.map((segment) => ({
+    availableRawSegments.map((segment) => ({
       key: segment.id,
       assetVersionId: segment.asset_version_id,
       speaker: segment.speaker,
@@ -5581,7 +5702,7 @@ function TranscriptArtifactsPanel({
   );
   const mappedAudioAssetIds = new Set(audioAssetIdByTranscriptVersion.values());
   const rawTranscriptVersionIds = new Set(
-    rawSegments.map((segment) => segment.asset_version_id).filter(Boolean),
+    availableRawSegments.map((segment) => segment.asset_version_id).filter(Boolean),
   );
   const eventAudioAssetIds = event.assets
     .filter((asset) => asset.kind === "audio")
@@ -5661,7 +5782,7 @@ function TranscriptArtifactsPanel({
   const sourceSelectionRevision = [
     event.id,
     analysisRun?.id || "",
-    ...rawSegments
+    ...availableRawSegments
       .map((segment) => `${segment.asset_version_id}:${segment.id}`)
       .sort(),
   ].join("|");
@@ -5800,17 +5921,15 @@ function TranscriptArtifactsPanel({
 
   useEffect(() => {
     if (state === "loading" || state === "idle") return;
-    const hasSummary = Boolean(
-      summaryArtifact
-      || summaryRun?.status === "queued"
-      || summaryRun?.status === "processing",
-    );
-    const hasReadable = Boolean(
-      readableArtifact
-      || readableRun?.status === "queued"
-      || readableRun?.status === "processing",
-    );
-    const fallbackTab: TranscriptArtifactTab = hasReadable ? "readable" : hasSummary ? "summary" : "raw";
+    const hasSummary = Boolean(summaryArtifact);
+    const hasReadable = Boolean(readableArtifact);
+    const fallbackTab: TranscriptArtifactTab = availableRawSegments.length > 0
+      ? "raw"
+      : hasReadable
+        ? "readable"
+        : hasSummary
+          ? "summary"
+          : "raw";
     if (
       focusRequest
       && focusRequest.eventId === event.id
@@ -5855,6 +5974,7 @@ function TranscriptArtifactsPanel({
     onFocusHandled,
     readableArtifact,
     readableRun,
+    availableRawSegments.length,
     state,
     summaryArtifact,
     summaryRun,
@@ -5928,12 +6048,16 @@ function TranscriptArtifactsPanel({
   }
 
   function selectWorkspaceSurface(next: ReadingWorkspaceView) {
-    requestedWorkspaceView.current = null;
+    requestedWorkspaceView.current = next === "transcript" ? null : next;
     setWorkspaceView(next);
     switchMobilePane("reading");
     if (next === "transcript") {
       selectArtifactTab(readableArtifact ? "readable" : "raw");
       window.setTimeout(() => document.getElementById("transcript-document")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    } else {
+      // Intelligence surfaces live above the same source transcript, but the
+      // route still records that explicit choice so reload/back can restore it.
+      selectArtifactTab("summary");
     }
   }
 
@@ -6078,7 +6202,7 @@ function TranscriptArtifactsPanel({
     setOpenDiffs((current) => new Set(current).add(key));
     if (readableDiffs[key] || diffLoadsInFlight.current.has(key)) return;
 
-    const mappedRaw = mappedRawParagraph(sourceIds, rawSegments);
+    const mappedRaw = mappedRawParagraph(sourceIds, availableRawSegments);
     if (mappedRaw.missingIds.length > 0) {
       setReadableDiffs((current) => ({
         ...current,
@@ -6105,10 +6229,10 @@ function TranscriptArtifactsPanel({
       .finally(() => diffLoadsInFlight.current.delete(key));
   }
 
-  if (state === "loading") return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
-  if (state === "error" && issue) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
+  if (state === "loading" && availableRawSegments.length === 0) return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
+  if (state === "error" && issue && availableRawSegments.length === 0) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className={`transcript-workspace${playbackAudioAssetId ? " has-audio" : ""}`} aria-label="逐字稿阅读区">
-    {issue && state === "ready" && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
+    {issue && (state === "ready" || availableRawSegments.length > 0) && <aside className="reader-partial-error" role="status"><span>一部分内容暂时没有读到，已显示的内容仍可继续使用。</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
     <div className="reader-workspace-layout" data-mobile-pane={mobilePane}>
       <div className="reader-reading-pane" role="region" aria-label="阅读内容">
         <div className="reader-reading-scroll">
@@ -6176,9 +6300,8 @@ function TranscriptArtifactsPanel({
         </section>})}
         <aside className="summary-trust-note"><strong>AI 草稿</strong><span>原文定位不代表语义已经核对；重要信息确认后才进入可信记忆。</span></aside>
       </div>{summaryHasMore && <button className="summary-expand-button" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((expanded) => !expanded)}>{summaryExpanded ? "收起概要" : "展开全部"}</button>}</> : summaryRun?.status === "queued" || summaryRun?.status === "processing" ? <div className="summary-card-loading" role="status">
-        <div className="summary-loading-copy"><span className="spinner" /><strong>{summaryRun.status === "queued" ? "AI 摘要正在启动" : "正在生成 AI 摘要"}</strong></div>
-        <div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div>
-      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" /><strong>分析已启动，正在建立 AI 摘要任务</strong></div><div className="summary-loading-lines" aria-hidden="true"><i /><i /><i /></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>逐字稿已经准备好</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>}
+        <div className="summary-loading-copy"><span className="spinner" aria-hidden="true" /><span><strong>正在整理全文概要</strong><small>{availableRawSegments.length ? "可先查看原稿" : "内容完成后自动更新"}</small></span></div>
+      </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" aria-hidden="true" /><span><strong>正在整理全文概要</strong><small>{availableRawSegments.length ? "可先查看原稿" : "内容完成后自动更新"}</small></span></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>{availableRawSegments.length ? "逐字稿已经准备好" : "还没有可阅读的内容"}</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="按类型速览">
@@ -6259,7 +6382,7 @@ function TranscriptArtifactsPanel({
     />}
 
     {readerTab === "readable" && <div className="artifact-panel readable-artifact">
-      {readableArtifact ? <>{visibleReadableGroups.map((group) => {
+      {readableArtifact ? <>{readableUsesRawFallback && <aside className="readable-fallback-note"><Info aria-hidden="true" /><span><strong>{readableEntirelyRawFallback ? "已显示原稿" : "部分段落保留原稿"}</strong><small>{readableEntirelyRawFallback ? "AI 的整理没有通过完整性检查，已完整显示原文；没有丢失内容。" : "AI 的整理没有通过完整性检查，这些段落已安全回退到原文，没有丢失内容。"}</small></span></aside>}{visibleReadableGroups.map((group) => {
         const diffKey = `${event.id}:${group.key}`;
         const groupPlaybackKey = `readable:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
@@ -6277,7 +6400,7 @@ function TranscriptArtifactsPanel({
           <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-pressed={selectedPoint?.key === `readable-${group.key}`} onClick={() => selectTranscriptGroup(group, "readable")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
           {openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
-      })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
+      })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} rawAvailable={availableRawSegments.length > 0} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
         await onRetryArtifact(event.id, "readable_transcript");
         await load(true);
       }} onRaw={() => selectArtifactTab("raw")} />}
@@ -6285,7 +6408,7 @@ function TranscriptArtifactsPanel({
 
     {readerTab === "raw" && <div className="artifact-panel raw-artifact">
       {selectedSourceIds.size > 0 && <header className="raw-focus-header"><strong>摘要或易读稿对应的原始位置</strong><button className="text-button" onClick={() => setSourceSelection(null)}>查看完整原稿</button></header>}
-      {rawSegments.length ? <>{visibleRawGroups.map((group) => {
+      {availableRawSegments.length ? <>{visibleRawGroups.map((group) => {
         const groupPlaybackKey = `raw:${group.key}`;
         const playing = activePlaybackKey === groupPlaybackKey;
         const selected = group.sourceIds.some((id) => selectedSourceIds.has(id));
@@ -6294,7 +6417,7 @@ function TranscriptArtifactsPanel({
           <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong><button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button></div>
           <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-pressed={selected} onClick={() => selectTranscriptGroup(group, "raw")}><span>{group.text}</span><small className="visually-hidden">在右侧处理</small></button>
         </article>;
-      })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "loading" ? <div className="reader-section-empty" role="status"><span className="spinner" aria-hidden="true" /><strong>正在读取逐字稿…</strong></div> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
 
         </div>
@@ -6321,7 +6444,7 @@ function TranscriptArtifactsPanel({
 
         {actionView === "source" && <div className="reader-action-body source-view" id="reader-action-panel">
           {selectedPoint ? <>
-            <div className="source-readiness rail-source-readiness" aria-label="本次来源"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div>
+            <div className="source-readiness rail-source-readiness" aria-label="本次来源"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={availableRawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div>
             <section className="selected-point-card"><small>{selectedPoint.sectionLabel}</small><h3>{selectedPoint.summaryText}</h3>{selectedPoint.supportQuote && <q>{selectedPoint.supportQuote}</q>}</section>
             <section className="rail-source-section">
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
@@ -6363,7 +6486,7 @@ function TranscriptArtifactsPanel({
               {!photoAssets.length && <p>需要时可以直接补拍或选择手写笔记；它不会阻塞录音重点先出现。</p>}
               <button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button>
             </section>
-          </> : <div className="rail-empty-state"><ArrowLeft aria-hidden="true" /><strong>点左侧任意重点或原话</strong><p>这里会立即显示对应原句、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={rawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button></div>}
+          </> : <div className="rail-empty-state"><ArrowLeft aria-hidden="true" /><strong>点左侧任意重点或原话</strong><p>这里会立即显示对应原句、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={availableRawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button></div>}
         </div>}
 
         {actionView === "pending" && <div className="reader-action-body pending-view" id="reader-action-panel">
@@ -6372,7 +6495,7 @@ function TranscriptArtifactsPanel({
           {visiblePendingReviewCount > 0 ? <div className="rail-pending-list">
             {pendingClaims.map((claim) => <button id={`rail-pending-${claim.id}`} key={claim.id} onClick={() => selectClaimInRail(claim)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
             {pendingOccurrences.map((candidate) => <button id={`rail-occurrence-${candidate.id}`} key={candidate.id} onClick={onOpenFullReview}><span><small>再次提到 · 需要判断</small><strong>{candidate.proposed_statement || candidate.target_statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
-          </div> : <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length || occurrenceCandidates.length ? "本次重点已处理完成" : "暂时没有待确认内容"}</strong><p>{claims.length || occurrenceCandidates.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "分析完成后，重要信息会出现在这里。"}</p></div>}
+          </div> : analysisRunning ? <div className="rail-loading" role="status"><span className="spinner" aria-hidden="true" /><span><strong>待确认内容仍在整理</strong><small>{claims.length || occurrenceCandidates.length ? `已发现 ${claims.length + occurrenceCandidates.length} 条，完成后即可核对。` : "你可以先阅读逐字稿；整理完成后这里会自动更新。"}</small></span></div> : analysisComplete ? <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length || occurrenceCandidates.length ? "本次重点已处理完成" : "没有需要确认的内容"}</strong><p>{claims.length || occurrenceCandidates.length ? "已确认内容进入项目记忆，原始来源仍然保留。" : "这次分析没有发现需要人工确认的重点。"}</p></div> : analysisRun ? <div className="rail-complete-state warning"><AlertTriangle aria-hidden="true" /><strong>重点整理未完成</strong><p>逐字稿不受影响；可以稍后重新尝试，待确认内容不会被当成准确记录。</p></div> : <div className="rail-complete-state"><FileText aria-hidden="true" /><strong>尚未开始整理重点</strong><p>可以先阅读逐字稿；需要时再重新启动分析。</p></div>}
           {reviewReady && visiblePendingReviewCount > 0 && <button className="button primary full" disabled={Boolean(busy)} onClick={() => pendingClaims[0] ? selectClaimInRail(pendingClaims[0]) : onOpenFullReview()}>{pendingClaims.length ? "从第一条开始确认" : "判断再次提到的内容"}</button>}
         </div>}
 
@@ -6381,7 +6504,7 @@ function TranscriptArtifactsPanel({
           {selectedPoint?.sourceIds.length ? actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">在左侧先点一条重点，即可带着原文创建行动。</p>}
           {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
           {projectActions.isError && <div className="rail-inline-error"><span>行动暂时没有读到，其他内容不受影响。</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
-          {!projectActions.isLoading && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
+          {!projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
           {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
             const actionClaim = claims.find((claim) => claim.id === action.claim_id);
             return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>在右侧查看来源</button></span></article>;
@@ -6454,12 +6577,13 @@ function ReadableTranscriptDiff({ state, edits, needsCheck }: {
   </div>;
 }
 
-function ArtifactFallback({ kind, run, busy, analysisRunning, analysisComplete, onStartAnalysis, onRetry, onRaw }: {
+function ArtifactFallback({ kind, run, busy, analysisRunning, analysisComplete, rawAvailable, onStartAnalysis, onRetry, onRaw }: {
   kind: EventAiArtifactRun["kind"];
   run?: EventAiArtifactRun;
   busy: string | null;
   analysisRunning: boolean;
   analysisComplete: boolean;
+  rawAvailable: boolean;
   onStartAnalysis: () => Promise<void>;
   onRetry: () => Promise<void>;
   onRaw: () => void;
@@ -6470,31 +6594,29 @@ function ArtifactFallback({ kind, run, busy, analysisRunning, analysisComplete, 
     const body = kind === "summary"
       ? "系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。"
       : "系统没有采用可能遗漏、错位或改写事实的版本，已安全回退到原始逐字稿。";
-    return <div className="artifact-fallback failed" role="status"><h3>{title}</h3><p>{body}</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+    return <div className="artifact-fallback failed" role="status"><div className="artifact-fallback-copy"><h3>{title}</h3><p>{body}</p></div><div className="artifact-fallback-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>单独重新生成</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
   }
-  if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback"><span className="spinner" /><h3>{run.status === "queued" ? `${name}正在启动` : `正在生成 ${name}`}</h3><p>这项与事实识别独立运行。你现在可以直接阅读原始逐字稿。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
-  if (analysisRunning) return <div className="artifact-fallback"><span className="spinner" /><h3>分析已启动，正在建立 {name} 任务</h3><p>原始逐字稿已经可以阅读，不需要重复点击。</p><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div>;
-  if (!analysisComplete) return <div className="artifact-fallback"><h3>逐字稿已经准备好</h3><p>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onStartAnalysis().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button><button className="text-button" onClick={onRaw}>先看原始逐字稿</button></div></div>;
-  return <div className="artifact-fallback"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button><button className="text-button" onClick={onRaw}>查看原始逐字稿</button></div></div>;
+  const backgroundCopy = rawAvailable ? "逐字稿已可读，完成后这里会自动更新。" : "内容完成后会自动更新。";
+  if (run?.status === "queued" || run?.status === "processing") return <div className="artifact-fallback" role="status"><span className="spinner" aria-hidden="true" /><div className="artifact-fallback-copy"><h3>正在生成{name}</h3><p>{backgroundCopy}</p></div>{rawAvailable && <button className="text-button" onClick={onRaw}>先看原始逐字稿</button>}</div>;
+  if (analysisRunning) return <div className="artifact-fallback" role="status"><span className="spinner" aria-hidden="true" /><div className="artifact-fallback-copy"><h3>正在准备{name}</h3><p>{backgroundCopy}</p></div>{rawAvailable && <button className="text-button" onClick={onRaw}>先看原始逐字稿</button>}</div>;
+  if (!analysisComplete) return <div className="artifact-fallback"><div className="artifact-fallback-copy"><h3>{rawAvailable ? "逐字稿已经准备好" : `还没有 ${name}`}</h3><p>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</p></div><div className="artifact-fallback-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onStartAnalysis().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button>{rawAvailable && <button className="text-button" onClick={onRaw}>先看原始逐字稿</button>}</div></div>;
+  return <div className="artifact-fallback"><div className="artifact-fallback-copy"><h3>还没有 {name}</h3><p>新分析会自动生成；旧项目也可以只生成这一项，不必重新识别事实。</p></div><div className="artifact-fallback-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRetry().catch(() => undefined)}>生成 {name}</button>{rawAvailable && <button className="text-button" onClick={onRaw}>查看原始逐字稿</button>}</div></div>;
 }
 
 function AudioTranscriptionProgressPanel({
   preparation,
   run,
   label,
-  durationMs,
   busy,
   onRetry,
 }: {
   preparation: AudioPreparationProgress | null;
   run: TranscriptionRun | null;
   label?: string;
-  durationMs: number | null;
   busy: string | null;
   onRetry: (audioAssetId: string) => void;
 }) {
   const preparing = Boolean(preparation);
-  const inspecting = preparation?.stage === "inspecting";
   const chunkedRun = !preparation && run?.orchestrationMode === "chunked" ? run : null;
   const total = preparation?.total ?? chunkedRun?.chunkCount ?? chunkedRun?.chunks.length ?? 0;
   const completed = preparation?.completed ?? chunkedRun?.completedChunkCount ?? 0;
@@ -6508,70 +6630,36 @@ function AudioTranscriptionProgressPanel({
   const failed = !preparation && run?.status === "failed";
   const singleRun = !preparation && run?.orchestrationMode !== "chunked" ? run : null;
   const hasChunkPlan = Boolean(preparation || chunkedRun);
-  const chunksFinished = hasChunkPlan && !inspecting && progress.total > 0 && progress.remaining === 0;
-  const title = inspecting
-    ? "正在读取录音并规划分段"
-    : preparation?.stage === "starting"
-      ? "分段已经准备完毕，正在启动并行识别"
-      : preparing
-        ? "正在并行整理并上传录音分段"
-        : chunkedRun
-          ? failed
-            ? "有分段识别没有完成"
-            : "正在分段并行识别说话人和时间点"
-          : singleRun
-            ? failed
-              ? "录音转写没有完成"
-              : "正在识别说话人和时间点"
-            : "正在准备逐字稿";
-  const statusText = inspecting
-    ? "读取时长后会立即显示分段数量"
-    : hasChunkPlan && total > 0
-      ? preparing
-        ? `已准备 ${progress.completed}/${progress.total} 段 · ${progress.processing} 段并行处理中 · ${progress.percent}%`
-        : `已完成 ${progress.completed}/${progress.total} 段 · ${progress.processing} 段识别中 · ${progress.queued} 段等待`
-      : run?.errorCode || (singleRun ? statusLabel(singleRun.status) : "正在启动");
-  const nextStepText = inspecting
-    ? "录音已经保存；这里只读取时长，不会重复上传整份文件。"
-    : singleRun
-      ? failed
-        ? "录音仍然安全保留，可以直接重新转写。"
-        : "录音正在识别；完成后即可查看逐字稿并开始分析。"
-    : progress.remaining > 0
-      ? preparing
-        ? `浏览器最多 4 段同时准备；全部登记后，后端最多 6 段同时识别。`
-        : progress.processing > 0
-          ? `${progress.processing} 段正在识别${progress.queued > 0 ? `，${progress.queued} 段等待并行空位` : ""}；每完成一段就会立即打勾。`
-          : `还差 ${progress.remaining} 段完成识别；随后自动合并，完成后即可开始分析。`
-      : preparing
-        ? "所有分段已经准备好，正在交给并行识别。"
-        : "所有分段已经识别，正在合并完整逐字稿；合并后即可开始分析。";
-  const timeText = durationMs != null ? ` · 已用 ${formatReviewDuration(durationMs)}` : "";
+  const chunksFinished = Boolean(chunkedRun && progress.total > 0 && progress.remaining === 0);
+  const determinate = Boolean(chunkedRun && progress.total > 0 && !chunksFinished && !failed);
+  const visiblePercent = determinate ? Math.min(progress.percent, 94) : 0;
+  const title = failed
+    ? "逐字稿没有生成完成"
+    : preparing
+      ? "正在准备逐字稿"
+      : chunkedRun
+        ? chunksFinished
+          ? "正在整理逐字稿"
+          : `正在生成逐字稿 · ${progress.completed}/${progress.total} 段`
+        : singleRun
+          ? "正在生成逐字稿"
+          : "正在准备逐字稿";
+  const statusText = failed
+    ? "录音仍然安全保留，可以直接重试。"
+    : preparing
+      ? "录音已保存；完成后会自动打开逐字稿。"
+      : chunksFinished
+        ? "正在合并时间点和说话人；完成后会自动打开逐字稿。"
+        : hasChunkPlan && progress.total > 0
+          ? `已完成 ${progress.completed}/${progress.total} 段；可以离开此页，结果会自动更新。`
+          : "正在识别说话人和时间点；完成后会自动打开逐字稿。";
 
-  return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" data-testid="transcription-journey">
+  return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" aria-busy={!failed} data-testid="transcription-journey">
     <header>
       <FileKindIcon kind="audio" />
-      <div><span className="section-kicker">录音处理进度{preparation?.filename || label ? ` · ${preparation?.filename ?? label}` : ""}</span><h3>{title}</h3><p>{statusText}{timeText}</p></div>
-      {!inspecting && total > 0 && <strong className="transcription-percent">{progress.percent}%</strong>}
+      <div><span className="section-kicker">{preparation?.filename ?? label ?? "录音"}</span><h3>{title}</h3><p>{statusText}</p></div>
     </header>
-    <div className={`transcription-progress-bar${inspecting ? " indeterminate" : ""}`} role="progressbar" aria-label="录音分段处理进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={inspecting ? undefined : progress.percent}>
-      {!inspecting && progress.activePercent > progress.percent && <i className="transcription-progress-active" style={{ width: `${progress.activePercent}%` }} />}
-      <span style={{ width: inspecting ? "34%" : `${progress.percent}%` }} />
-    </div>
-    {progress.nodes.length > 0 && <div className="transcription-chunk-nodes" aria-label={`${progress.total} 个录音分段`}>
-      {progress.nodes.map((node) => <span className={`transcription-chunk-node ${node.status}`} key={node.index} aria-label={`第 ${node.index + 1} 段：${node.status === "completed" ? "已完成" : node.status === "processing" ? "处理中" : node.status === "failed" ? "失败" : "等待"}`}>
-        <i>{node.status === "completed" ? <Check aria-hidden="true" /> : node.status === "failed" ? <AlertTriangle aria-hidden="true" /> : node.index + 1}</i>
-        <small>第{node.index + 1}段</small>
-        <em>{node.status === "completed" ? "已完成" : node.status === "processing" ? preparing ? "准备中" : "识别中" : node.status === "failed" ? "需重试" : "等待"}</em>
-      </span>)}
-    </div>}
-    <div className="transcription-next-step"><strong>{failedCount > 0 ? `${failedCount} 段需要重试` : nextStepText}</strong><span>系统会自动继续，不需要手动开启后台任务。</span></div>
-    <ol className="transcription-milestones" aria-label="距离自动整理完成的步骤">
-      <li className="complete"><span><Check aria-hidden="true" /></span><b>录音已保存</b></li>
-      <li className={chunksFinished ? "complete" : "active"}><span>{chunksFinished ? <Check aria-hidden="true" /> : "2"}</span><b>{hasChunkPlan ? "分段识别" : "识别逐字稿"}</b></li>
-      <li className={chunksFinished && !preparing ? "active" : "pending"}><span>3</span><b>合并逐字稿</b></li>
-      <li className="pending"><span>4</span><b>自动整理重点</b></li>
-    </ol>
+    {!failed && <div className={`transcription-progress-bar${determinate ? "" : " indeterminate"}`} role="progressbar" aria-label="逐字稿生成进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={determinate ? visiblePercent : undefined}><span style={{ width: determinate ? `${visiblePercent}%` : "34%" }} /></div>}
     {failed && run && <button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetry(run.audioAssetId)}>{busy === "transcription" ? "正在重试…" : failedCount > 0 ? `重试失败的 ${failedCount} 段` : "重新转写"}</button>}
   </section>;
 }
@@ -6631,7 +6719,6 @@ function SimpleTestScreen({
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
-  const [timingNow, setTimingNow] = useState(() => Date.now());
   const audioFileRef = useRef<HTMLInputElement>(null);
   const transcriptFileRef = useRef<HTMLInputElement>(null);
   const photoFileRef = useRef<HTMLInputElement>(null);
@@ -6641,6 +6728,10 @@ function SimpleTestScreen({
   const interactionScope = useRef("");
   const userNavigatedFromWaiting = useRef(false);
   const autoFocusedSummaryKeys = useRef(new Set<string>());
+  const currentTranscriptFocusRequest = useRef(transcriptFocusRequest);
+  useEffect(() => {
+    currentTranscriptFocusRequest.current = transcriptFocusRequest;
+  }, [transcriptFocusRequest]);
   const sortedProjects = [...projects].sort((left, right) => {
     const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
     const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
@@ -6663,14 +6754,19 @@ function SimpleTestScreen({
   const extractionStatus = currentEventSummary?.statusSummary.extractionStatus ?? run?.status ?? null;
   const summaryStatus = currentEventSummary?.statusSummary.summaryStatus ?? null;
   const readableTranscriptStatus = currentEventSummary?.statusSummary.readableTranscriptStatus ?? null;
-  const extractionRunId = currentEventSummary?.extraction?.run_id ?? run?.id ?? null;
+  const rawTranscriptAsset = readyAssets.find((asset) => asset.kind === "transcript" || asset.kind === "text");
+  const rawTranscriptAvailable = Boolean(
+    rawTranscriptAsset
+    || currentTranscriptionRuns.some((item) => item.status === "succeeded" && item.segments.length > 0),
+  );
   const readingAid = preferredReadingAid({
+    rawAvailable: rawTranscriptAvailable,
     summaryStatus,
     readableTranscriptStatus,
     extractionStatus,
   });
-  const summaryFirstScopeKey = project?.id && event?.id && extractionRunId
-    ? summaryFirstNavigationKey(project.id, event.id, extractionRunId)
+  const summaryFirstScopeKey = project?.id && event?.id && rawTranscriptAvailable
+    ? summaryFirstNavigationKey(project.id, event.id, "raw-ready")
     : null;
   const pendingCount = currentEventSummary
     ? currentEventSummary.statusSummary.pendingCount
@@ -6763,8 +6859,10 @@ function SimpleTestScreen({
         : "每次处理一条沟通。进入整组流程后会自动衔接分析；AI 草稿生成后可以立即阅读，核对可以现在做，也可以稍后继续。",
     },
     running: {
-      title: `${extractionProgressLabel(run)} · 第 ${workflowPosition}/${projectWorkflow.total} 次沟通`,
-      body: extractionProgressBody(run),
+      title: rawTranscriptAvailable ? "逐字稿已就绪，正在整理重点" : "正在准备本次内容",
+      body: rawTranscriptAvailable
+        ? "可以直接开始阅读；易读版、全文概要和待确认内容会在后台更新。"
+        : "完成后会自动更新，不需要重复点击。",
     },
     empty_output: {
       title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通没有生成可核对的记录`,
@@ -6801,31 +6899,6 @@ function SimpleTestScreen({
   const workflowSelectedCurrent = Boolean(
     event?.id && event.id === projectWorkflow.currentEventId,
   );
-  const showLiveTiming = transcriptionRunning;
-  useEffect(() => {
-    if (!showLiveTiming) return;
-    const timer = window.setInterval(() => setTimingNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [showLiveTiming, transcriptionRun?.id]);
-  const analysisProgress = run && workflowSelectedCurrent && projectWorkflow.phase === "running"
-    ? buildAnalysisProgress({
-        runStatus: run.status,
-        pipelineStage: run.pipelineStage,
-        stages: run.stages,
-      })
-    : null;
-  const transcriptionTimingStart = transcriptionRun
-    ? Date.parse(transcriptionRun.startedAt || transcriptionRun.queuedAt || transcriptionRun.createdAt || "")
-    : Number.NaN;
-  const transcriptionTimingEnd = transcriptionRun?.finishedAt
-    ? Date.parse(transcriptionRun.finishedAt)
-    : transcriptionRunning
-      ? timingNow
-      : Number.NaN;
-  const transcriptionProcessingDurationMs = Number.isFinite(transcriptionTimingStart)
-    && Number.isFinite(transcriptionTimingEnd)
-    ? Math.max(0, transcriptionTimingEnd - transcriptionTimingStart)
-    : null;
   const currentAudioPreparations = event
     ? Object.values(audioPreparationProgressByAssetId).filter((item) => item.eventId === event.id)
     : [];
@@ -6877,25 +6950,40 @@ function SimpleTestScreen({
 
   useEffect(() => {
     const nextScope = summaryFirstScopeKey ?? `${project?.id ?? "none"}:${event?.id ?? "none"}:no-run`;
-    if (interactionScope.current === nextScope) return;
+    const previousScope = interactionScope.current;
+    if (previousScope === nextScope) return;
+    const sameEventBecameReadable = Boolean(
+      summaryFirstScopeKey
+      && project?.id
+      && event?.id
+      && previousScope === `${project.id}:${event.id}:no-run`,
+    );
+    const preservedUserChoice = sameEventBecameReadable && userNavigatedFromWaiting.current;
     interactionScope.current = nextScope;
     const storedMark = summaryFirstScopeKey
       ? readSummaryFirstNavigationMark(summaryFirstScopeKey)
       : null;
-    userNavigatedFromWaiting.current = storedMark === "user";
+    const explicitReadingTarget = Boolean(
+      readingTab
+      || (transcriptFocusRequest && transcriptFocusRequest.eventId === event?.id),
+    );
+    userNavigatedFromWaiting.current = preservedUserChoice || storedMark === "user" || explicitReadingTarget;
+    if (preservedUserChoice && summaryFirstScopeKey && storedMark !== "user") {
+      storeSummaryFirstNavigationMark(summaryFirstScopeKey, "user");
+    }
     // An `auto` mark means this tab was already showing Summary before a
     // refresh. Do not treat it as an in-memory focus in the new page instance:
     // allowing the normal guarded effect to run once restores that reading
     // surface. A later explicit tab choice overwrites the mark with `user` and
     // remains protected from automatic navigation.
-  }, [event?.id, project?.id, summaryFirstScopeKey]);
+  }, [event?.id, project?.id, readingTab, summaryFirstScopeKey, transcriptFocusRequest]);
 
   useEffect(() => {
     if (!event?.id || !summaryFirstScopeKey) return;
+    if (readingTab || transcriptFocusRequest?.eventId === event.id) return;
     const alreadyFocused = autoFocusedSummaryKeys.current.has(summaryFirstScopeKey);
-    if (!shouldAutoFocusSummary({
-      summaryStatus,
-      extractionStatus,
+    if (!shouldAutoFocusReadingAid({
+      target: readingAid,
       activeWorkspaceTab: activeTab,
       userNavigated: userNavigatedFromWaiting.current,
       alreadyFocused,
@@ -6904,24 +6992,27 @@ function SimpleTestScreen({
     autoFocusedSummaryKeys.current.add(summaryFirstScopeKey);
     storeSummaryFirstNavigationMark(summaryFirstScopeKey, "auto");
     const timer = window.setTimeout(() => {
+      if (userNavigatedFromWaiting.current) return;
       setReaderWasOpened(true);
       setActiveTab("transcript");
-      onFocusTranscriptArtifact(event.id, "summary");
+      onFocusTranscriptArtifact(event.id, "raw");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [
     activeTab,
     event?.id,
-    extractionStatus,
     materialInteractionActive,
     onFocusTranscriptArtifact,
+    readingTab,
+    readingAid,
     summaryFirstScopeKey,
-    summaryStatus,
+    transcriptFocusRequest,
   ]);
 
   useEffect(() => {
     if (!transcriptFocusRequest || transcriptFocusRequest.eventId !== event?.id) return;
     const timer = window.setTimeout(() => {
+      if (currentTranscriptFocusRequest.current?.id !== transcriptFocusRequest.id) return;
       setReaderWasOpened(true);
       setActiveTab("transcript");
     }, 0);
@@ -6946,6 +7037,9 @@ function SimpleTestScreen({
       setReaderWasOpened(true);
       onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
     } else if (next !== "transcript" && next !== "review") {
+      // Cancel the child timer synchronously. Waiting for the parent prop to
+      // clear leaves one frame where a stale focus request can reopen Raw.
+      currentTranscriptFocusRequest.current = null;
       onClearTranscriptArtifact();
     }
   }
@@ -7113,7 +7207,6 @@ function SimpleTestScreen({
               preparation={preparation}
               run={null}
               label={preparation.filename}
-              durationMs={null}
               busy={busy}
               onRetry={onRetryTranscription}
             />)}
@@ -7124,13 +7217,12 @@ function SimpleTestScreen({
                 preparation={null}
                 run={item}
                 label={visibleAssets.find((asset) => asset.id === item.audioAssetId)?.filename}
-                durationMs={item.id === transcriptionRun?.id ? transcriptionProcessingDurationMs : null}
                 busy={busy}
                 onRetry={onRetryTranscription}
               />)}
           </div>}
 
-          {factsRunningInBackground && readingAid && activeTab !== "transcript" && <aside className="workflow-reading-banner" aria-live="polite">
+          {factsRunningInBackground && readingAid && activeTab !== "transcript" && activeTab !== "materials" && <aside className="workflow-reading-banner" aria-live="polite">
             <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
             <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 原文定位不代表语义已经核对。" : " 原始逐字稿仍是最终核对依据。"}</p></div>
             <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : readingAid === "readable" ? "先看易读稿" : "查看原始逐字稿"}</button>
@@ -7153,14 +7245,13 @@ function SimpleTestScreen({
 
           {activeTab === "materials" && <div className="meeting-tab-panel">
             {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
-              <div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>
-              {analysisProgress ? <div className="project-workflow-progress analysis"><div><span>本次分析</span><strong>{analysisProgress.percent}%</strong></div><progress aria-label="本次事实分析进度" max={100} value={analysisProgress.percent} /><small>已完成 {analysisProgress.completed}/{analysisProgress.total} 步</small></div> : projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}
+              {projectWorkflow.phase === "running" ? <div className="project-workflow-copy running"><span className="processing-inline"><i className="spinner" aria-hidden="true" />正在整理重点</span><h2>{currentWorkflowCopy.title}</h2><p>{currentWorkflowCopy.body}</p></div> : <><div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>{projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}</>}
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
               <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份来源时，系统会自动建立沟通。"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? <><X aria-hidden="true" />收起</> : <><Plus aria-hidden="true" />添加来源</>}</button>}</header>
-              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在准备本次沟通，马上可以添加材料。" : "正在转换或保存材料；完成后会自动继续。"} />}
+              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在建立本次沟通，马上可以添加内容。" : "内容已收到；完成后会自动更新。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record" aria-hidden="true"><Mic /></span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
@@ -7182,7 +7273,7 @@ function SimpleTestScreen({
                   return <article key={asset.id}><span className="file-kind" aria-hidden="true">{asset.kind === "audio" ? <FileAudio /> : asset.kind === "photo" ? <ImageIcon /> : <FileText />}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
                 })}
               </div> : <section className="capture-launchpad" aria-label="开始一次沟通">
-                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">从真实沟通开始</span><h3>录下来，其余交给 Notique</h3><p>录音先形成重点；手写照片可以同时上传或稍后补充，不阻塞阅读。</p></div></header>
+                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">从真实沟通开始</span><h3>录下来，其余交给 Notique</h3><p>录音先形成逐字稿；重点和待确认内容随后在后台补齐，手写照片也可以稍后添加。</p></div></header>
                 <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>录音或导入原文</strong><small>手机、录音笔或 Transcript 都可以</small></span><span><b>2</b><strong>需要时补充照片</strong><small>手写内容会和这次沟通放在一起</small></span><span><b>3</b><strong>边读边处理</strong><small>重点、原话、待确认和行动同屏</small></span></div>
                 <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}><Upload aria-hidden="true" />上传录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceTranscriptFileRef.current?.click())}><FileText aria-hidden="true" />上传 Transcript</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}><Mic aria-hidden="true" />直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}><Camera aria-hidden="true" />拍手写笔记</button></div>
                 <p className="capture-device-note">使用录音笔时，可通过 USB-C 将音频快速导入手机后上传。</p>

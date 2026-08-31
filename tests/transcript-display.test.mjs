@@ -207,3 +207,34 @@ test("完整句、不同素材或非白名单插话不会被跨说话人合并",
   ]);
   assert.equal(differentAsset.length, 3);
 });
+
+test("原稿安全回退不会再被易读版清理或隐藏", () => {
+  const groups = groupReadableTranscriptSegments([
+    segment({
+      key: "raw_fallback_0_seg-1",
+      speaker: "Speaker 1",
+      text: "Uh, I would",
+      endMs: 4_000,
+    }),
+    segment({
+      key: "raw_fallback_1_seg-2",
+      speaker: "Speaker 2",
+      text: "Okay.",
+      startMs: 4_100,
+      endMs: 4_400,
+      sourceIds: ["seg-2"],
+    }),
+    segment({
+      key: "raw_fallback_2_seg-3",
+      speaker: "Speaker 1",
+      text: "say yes.",
+      startMs: 4_500,
+      sourceIds: ["seg-3"],
+    }),
+  ]);
+
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups.map((group) => group.text), ["Uh, I would", "Okay.", "say yes."]);
+  assert.deepEqual(groups.flatMap((group) => group.sourceIds), ["seg-1", "seg-2", "seg-3"]);
+  assert.equal(groups.some((group) => group.edits.some((edit) => edit.kind === "filler")), false);
+});

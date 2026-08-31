@@ -6,6 +6,10 @@ export const READABLE_TRANSCRIPT_PROMPT_VERSION = "readable-transcript-prompt.v2
 export const READABLE_TRANSCRIPT_SCHEMA_VERSION = "readable-transcript.v1" as const;
 
 export type EventAiArtifactKind = "summary" | "readable_transcript";
+export const EVENT_AI_ARTIFACT_REASONING_EFFORTS = {
+  summary: "low",
+  readable_transcript: "low",
+} as const satisfies Record<EventAiArtifactKind, "low">;
 export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type EventSummarySectionKind =
   | "overview"
@@ -227,6 +231,26 @@ export type ArtifactValidation<T> = {
   output: T | null;
 };
 
+export function rawReadableTranscriptFallback(
+  eventId: string,
+  segments: TranscriptSegment[],
+): ReadableTranscriptOutput {
+  return {
+    schema_version: READABLE_TRANSCRIPT_SCHEMA_VERSION,
+    event_id: eventId,
+    segments: segments.map((segment, index) => ({
+      readable_key: `raw_fallback_${index}_${segment.id}`,
+      source_segment_ids: [segment.id],
+      speaker: segment.speaker,
+      start_ms: segment.startMs,
+      end_ms: segment.endMs,
+      readable_text: segment.textRaw,
+      edits: [],
+      needs_human_check: false,
+    })),
+  };
+}
+
 const EVENT_SUMMARY_SUPPORT_QUOTE_MAX = 12_000;
 
 const SUMMARY_KINDS = new Set<EventSummarySectionKind>([
@@ -302,6 +326,103 @@ function segmentIds(
     }
   });
   return output;
+}
+
+/**
+ * A character span only narrows an already valid raw citation. If a provider
+ * miscounts that optional span, the server may safely discard it when the
+ * complete citation is itself bounded. The strict validator still owns every
+ * trust decision after this normalization; unsupported, reordered, duplicate,
+ * cross-Asset, or oversized citations are deliberately left untouched.
+ */
+export function downgradeRecoverableEventSummaryProviderSpans(
+  value: unknown,
+  input: { eventId: string; segments: TranscriptSegment[] },
+): unknown {
+  if (!record(value) || !Array.isArray(value.sections)) return value;
+
+  const rawById = new Map<string, TranscriptSegment>();
+  const rawPosition = new Map<string, number>();
+  const closedAssets = new Set<string>();
+  const lastOrdinalByAsset = new Map<string, number>();
+  let currentAssetVersionId: string | null = null;
+  for (const [index, segment] of input.segments.entries()) {
+    const previousOrdinal = lastOrdinalByAsset.get(segment.assetVersionId);
+    if (
+      !segment.id || rawById.has(segment.id) || segment.eventId !== input.eventId ||
+      !segment.assetVersionId || !segment.textRaw || !Number.isInteger(segment.ordinal) ||
+      segment.ordinal < 0 || (previousOrdinal !== undefined && segment.ordinal <= previousOrdinal)
+    ) {
+      return value;
+    }
+    if (currentAssetVersionId !== segment.assetVersionId) {
+      if (currentAssetVersionId !== null) closedAssets.add(currentAssetVersionId);
+      if (closedAssets.has(segment.assetVersionId)) return value;
+      currentAssetVersionId = segment.assetVersionId;
+    }
+    lastOrdinalByAsset.set(segment.assetVersionId, segment.ordinal);
+    rawById.set(segment.id, segment);
+    rawPosition.set(segment.id, index);
+  }
+
+  let changed = false;
+  const sections = value.sections.map((section) => {
+    if (!record(section) || !Array.isArray(section.items)) return section;
+    const sourceItems = section.items;
+    const items = sourceItems.map((item) => {
+      if (!record(item) || item.source_character_span === null) return item;
+      if (
+        !Array.isArray(item.source_segment_ids) || item.source_segment_ids.length < 1 ||
+        item.source_segment_ids.length > 24
+      ) {
+        return item;
+      }
+      const ids = item.source_segment_ids;
+      if (ids.some((id) => typeof id !== "string" || !id.trim() || id.length > 128)) return item;
+      const stringIds = ids as string[];
+      if (new Set(stringIds).size !== stringIds.length) return item;
+      const citedSegments = stringIds.map((id) => rawById.get(id));
+      if (citedSegments.some((segment) => !segment)) return item;
+      const raw = citedSegments as TranscriptSegment[];
+      if (raw.some((segment) => segment.assetVersionId !== raw[0].assetVersionId)) return item;
+      const positions = stringIds.map((id) => rawPosition.get(id));
+      if (positions.some((position, index) =>
+        position === undefined || (index > 0 && Number(position) <= Number(positions[index - 1]))
+      )) {
+        return item;
+      }
+      const fullQuote = raw.map((segment, index) => {
+        if (index === 0) return segment.textRaw;
+        return positions[index] === Number(positions[index - 1]) + 1
+          ? `\n${segment.textRaw}`
+          : `\n…\n${segment.textRaw}`;
+      }).join("");
+      if (Array.from(fullQuote).length > EVENT_SUMMARY_SUPPORT_QUOTE_MAX) return item;
+
+      const span = item.source_character_span;
+      const spanKeysAreExact = record(span) &&
+        Object.keys(span).sort().join("\u0000") ===
+          ["segment_id", "start_codepoint", "end_codepoint"].sort().join("\u0000");
+      const start = record(span) ? span.start_codepoint : null;
+      const end = record(span) ? span.end_codepoint : null;
+      const spanSegment = record(span) && stringIds.length === 1 && span.segment_id === stringIds[0]
+        ? rawById.get(stringIds[0])
+        : undefined;
+      const spanText = spanSegment && Number.isSafeInteger(start) && Number.isSafeInteger(end)
+        ? Array.from(spanSegment.textRaw).slice(Number(start), Number(end)).join("")
+        : "";
+      const spanIsValid = spanKeysAreExact && Boolean(spanSegment) &&
+        typeof start === "number" && Number.isSafeInteger(start) && start >= 0 &&
+        typeof end === "number" && Number.isSafeInteger(end) && end > start &&
+        end <= Array.from(spanSegment!.textRaw).length && Boolean(spanText.trim());
+      if (spanIsValid) return item;
+
+      changed = true;
+      return { ...item, source_character_span: null };
+    });
+    return items.some((item, index) => item !== sourceItems[index]) ? { ...section, items } : section;
+  });
+  return changed ? { ...value, sections } : value;
 }
 
 export function validateEventSummaryOutput(
@@ -858,7 +979,12 @@ export function validateReadableTranscriptOutput(
   options: { allowRawFallback?: boolean } = {},
 ): ArtifactValidation<ReadableTranscriptOutput> {
   const issues: ArtifactContractIssue[] = [];
-  if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
+  if (!record(value)) {
+    if (options.allowRawFallback) {
+      return { valid: true, issues: [], output: rawReadableTranscriptFallback(input.eventId, input.segments) };
+    }
+    return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
+  }
   exactKeys(value, ["schema_version", "event_id", "segments"], "$", issues);
   if (value.schema_version !== READABLE_TRANSCRIPT_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: `Expected ${READABLE_TRANSCRIPT_SCHEMA_VERSION}.` });
@@ -1035,7 +1161,7 @@ export function validateReadableTranscriptOutput(
         issues.splice(repairableIssueStart);
         if (sameAssetVersion && sameSpeaker) {
           segments.push({
-            readable_key: key,
+            readable_key: `raw_fallback_${index}_${key}`,
             source_segment_ids: ids,
             speaker: expectedSpeaker,
             start_ms: first?.startMs ?? null,
@@ -1046,7 +1172,7 @@ export function validateReadableTranscriptOutput(
           });
         } else {
           raw.forEach((segment, rawIndex) => segments.push({
-            readable_key: `fallback_${index}_${rawIndex}`,
+            readable_key: `raw_fallback_${index}_${rawIndex}`,
             source_segment_ids: [segment.id],
             speaker: segment.speaker,
             start_ms: segment.startMs,
@@ -1079,5 +1205,8 @@ export function validateReadableTranscriptOutput(
     event_id: input.eventId,
     segments,
   };
+  if (issues.length > 0 && options.allowRawFallback) {
+    return { valid: true, issues: [], output: rawReadableTranscriptFallback(input.eventId, input.segments) };
+  }
   return { valid: issues.length === 0, issues, output: issues.length ? null : output };
 }

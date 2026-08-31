@@ -5,7 +5,9 @@ import test from "node:test";
 
 import { uiSource } from "./helpers/ui-source.mjs";
 import {
+  EVENT_AI_ARTIFACT_REASONING_EFFORTS,
   chunkReadableTranscriptSource,
+  downgradeRecoverableEventSummaryProviderSpans,
   eventAiArtifactContractMismatch,
   mergeReadableTranscriptChunks,
   readableTranscriptSegmentsForVerification,
@@ -371,6 +373,7 @@ test("readable provider may fall back only an invalid text/edit group to its exa
   );
   assert.deepEqual(repaired.output.segments[0].edits, []);
   assert.equal(repaired.output.segments[0].needs_human_check, false);
+  assert.match(repaired.output.segments[0].readable_key, /^raw_fallback_/);
 });
 
 test("readable provider replaces wrong timing and cross-speaker grouping with raw-safe rows", () => {
@@ -386,6 +389,7 @@ test("readable provider replaces wrong timing and cross-speaker grouping with ra
   assert.equal(repairedTiming.valid, true);
   assert.equal(repairedTiming.output.segments[0].end_ms, 8_000);
   assert.equal(repairedTiming.output.segments[0].readable_text, raw.map((segment) => segment.textRaw).join(" "));
+  assert.match(repairedTiming.output.segments[0].readable_key, /^raw_fallback_/);
 
   const crossSpeaker = readable({ speaker: "Alex" });
   const repairedSpeakers = validateReadableTranscriptOutput(
@@ -402,6 +406,30 @@ test("readable provider replaces wrong timing and cross-speaker grouping with ra
     repairedSpeakers.output.segments.map((segment) => segment.speaker),
     ["Alex", "Blair"],
   );
+  assert.ok(repairedSpeakers.output.segments.every((segment) => segment.readable_key.startsWith("raw_fallback_")));
+});
+
+test("readable provider falls back to exact raw rows when its source coverage is malformed", () => {
+  const candidate = readable();
+  candidate.segments[0].source_segment_ids = [raw[1].id, raw[0].id];
+  const strict = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strict.valid, false);
+
+  const repaired = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repaired.valid, true);
+  assert.deepEqual(
+    repaired.output.segments.map((segment) => segment.source_segment_ids),
+    raw.map((segment) => [segment.id]),
+  );
+  assert.deepEqual(
+    repaired.output.segments.map((segment) => segment.readable_text),
+    raw.map((segment) => segment.textRaw),
+  );
+  assert.ok(repaired.output.segments.every((segment) => segment.readable_key.startsWith("raw_fallback_")));
 });
 
 test("readable transcript rejects a responsible-party swap disguised as punctuation", () => {
@@ -819,11 +847,13 @@ test("long readable transcripts split deterministically and merge in raw order",
   assert.equal(new Set(merged.segments.map((segment) => segment.readable_key)).size, 7);
 });
 
-test("artifact backlog gives Summary a stable tie-break without serializing targeted pairs", async () => {
+test("artifact backlog prefers readable work without allowing it to starve Summary", async () => {
   const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
-  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'summary' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
+  assert.doesNotMatch(jobs, /kind <> 'summary'[\s\S]*readable\.status IN \('queued', 'processing'\)/);
+  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
   assert.match(jobs, /input\?\.extractionRunId \? 2 : 2/);
   assert.match(jobs, /await Promise\.all\(\(rows\.results \?\? \[\]\)\.map/);
+  assert.equal((jobs.match(/allowRawFallback: true/g) ?? []).length, 3);
 });
 
 test("summary provider output gets a deterministic raw quote before persistence", () => {
@@ -1033,6 +1063,84 @@ test("summary character spans reject empty, reversed, out-of-bounds, mismatched,
   }
 });
 
+test("summary provider safely downgrades only invalid optional spans with bounded valid raw citations", () => {
+  const providerOutput = (sourceSegmentIds, span) => ({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "key_fact",
+      title: "Facts",
+      items: [{
+        item_key: "sum_span_fallback",
+        text: "Summary",
+        source_segment_ids: sourceSegmentIds,
+        source_character_span: span,
+      }],
+    }],
+  });
+  for (const candidate of [
+    providerOutput(["seg_1"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 10_000 }),
+    providerOutput(["seg_1", "seg_2"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }),
+  ]) {
+    assert.equal(validateEventSummaryProviderOutput(candidate, { eventId: "evt_1", segments: raw }).valid, false);
+    const downgraded = downgradeRecoverableEventSummaryProviderSpans(
+      candidate,
+      { eventId: "evt_1", segments: raw },
+    );
+    assert.equal(downgraded.sections[0].items[0].source_character_span, null);
+    const validated = validateEventSummaryProviderOutput(downgraded, { eventId: "evt_1", segments: raw });
+    assert.equal(validated.valid, true);
+    assert.ok(raw.some((segment) => validated.output.sections[0].items[0].support_quote.includes(segment.textRaw)));
+  }
+
+  const validSpan = providerOutput(["seg_1"], {
+    segment_id: "seg_1",
+    start_codepoint: 0,
+    end_codepoint: 2,
+  });
+  assert.equal(
+    downgradeRecoverableEventSummaryProviderSpans(validSpan, { eventId: "evt_1", segments: raw }),
+    validSpan,
+    "an already-valid precise span stays intact",
+  );
+
+  const crossAssetSegments = [raw[0], { ...raw[1], assetVersionId: "av_2" }];
+  const unsafeCandidates = [
+    [providerOutput(["seg_missing"], { segment_id: "seg_missing", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_1", "seg_1"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_2", "seg_1"], { segment_id: "seg_2", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_1", "seg_2"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }), crossAssetSegments],
+  ];
+  for (const [candidate, segments] of unsafeCandidates) {
+    assert.equal(
+      downgradeRecoverableEventSummaryProviderSpans(candidate, { eventId: "evt_1", segments }),
+      candidate,
+      "unsafe source IDs must not be normalized",
+    );
+    assert.equal(validateEventSummaryProviderOutput(candidate, { eventId: "evt_1", segments }).valid, false);
+  }
+
+  const longSegment = {
+    ...raw[0],
+    textRaw: "x".repeat(12_001),
+    textNormalized: "x".repeat(12_001),
+  };
+  const oversized = providerOutput(["seg_1"], {
+    segment_id: "seg_1",
+    start_codepoint: 0,
+    end_codepoint: 20_000,
+  });
+  assert.equal(
+    downgradeRecoverableEventSummaryProviderSpans(oversized, { eventId: "evt_1", segments: [longSegment] }),
+    oversized,
+    "an oversized full quote still fails closed",
+  );
+  assert.equal(validateEventSummaryProviderOutput(oversized, {
+    eventId: "evt_1",
+    segments: [longSegment],
+  }).valid, false);
+});
+
 test("summary rejects an unknown raw segment instead of fabricating a quote", () => {
   const unsupported = validateEventSummaryProviderOutput({
     schema_version: "event-summary.v2",
@@ -1081,6 +1189,45 @@ test("artifact jobs use durable Background Responses and independent retries", a
   assert.match(repository, /persistReadableTranscriptChunk/);
 });
 
+test("new and retried reading artifacts use low effort while existing Runs keep their frozen effort", async () => {
+  assert.deepEqual(EVENT_AI_ARTIFACT_REASONING_EFFORTS, {
+    summary: "low",
+    readable_transcript: "low",
+  });
+  const [repository, jobs] = await Promise.all([
+    readFile(new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8"),
+  ]);
+  const initialCreation = repository.slice(
+    repository.indexOf("export async function ensureEventAiArtifactRuns"),
+    repository.indexOf("export async function listEventAiArtifacts"),
+  );
+  const retryCreation = repository.slice(
+    repository.indexOf("export async function createEventAiArtifactRetry"),
+    repository.indexOf("export async function persistSummaryArtifact"),
+  );
+
+  assert.match(
+    initialCreation,
+    /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[definition\.kind\]/,
+  );
+  assert.match(initialCreation, /effort: reasoningEffort/);
+  assert.match(initialCreation, /input\.model,\s*reasoningEffort,\s*definition\.prompt/);
+  assert.doesNotMatch(initialCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
+  assert.match(
+    retryCreation,
+    /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[kind\]/,
+  );
+  assert.match(retryCreation, /effort: reasoningEffort/);
+  assert.match(retryCreation, /source\.model,\s*reasoningEffort,\s*promptVersion/);
+  assert.doesNotMatch(retryCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
+  assert.match(
+    jobs,
+    /reasoningEffort: String\(run\.reasoning_effort\)/,
+    "dispatch must resume an old Run with its persisted effort instead of replacing it",
+  );
+});
+
 test("Summary v2 provider schema and prompt request locations, never model-authored quotes", async () => {
   const provider = await readFile(
     new URL("../lib/server/ai/model-provider.ts", import.meta.url),
@@ -1100,11 +1247,13 @@ test("Summary v2 provider schema and prompt request locations, never model-autho
 test("artifact dispatch accepts only the exact frozen provider contract for each kind", async () => {
   assert.equal(eventAiArtifactContractMismatch({
     kind: "summary",
+    reasoning_effort: "high",
     prompt_version: "event-summary-prompt.v2",
     schema_version: "event-summary.v2",
   }), null);
   assert.equal(eventAiArtifactContractMismatch({
     kind: "readable_transcript",
+    reasoning_effort: "high",
     prompt_version: "readable-transcript-prompt.v2",
     schema_version: "readable-transcript.v1",
   }), null);

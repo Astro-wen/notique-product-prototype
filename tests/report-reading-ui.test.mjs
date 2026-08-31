@@ -104,14 +104,19 @@ test("public uploads require a per-session safety acknowledgement", () => {
   assert.match(styles, /\.public-workspace-notice/);
 });
 
-test("completed analysis opens the summary and restores it after reading evidence", () => {
+test("the raw transcript opens first while explicit Summary evidence returns remain restorable", () => {
   assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: targetEventId, tab: "summary" \}\)/);
   assert.match(page, /openClaimFromTranscriptSummary/);
   assert.match(page, /summaryReturnContext\.current/);
   assert.match(page, /restoreScrollY: context\.scrollY/);
-  assert.match(page, /hasReadable \? "readable" : hasSummary \? "summary" : "raw"/);
-  assert.match(page, /summaryRun\?\.status === "queued"/);
-  assert.match(page, /readableRun\?\.status === "processing"/);
+  assert.match(page, /useState<TranscriptArtifactTab>\("raw"\)/);
+  assert.match(page, /availableRawSegments\.length > 0\s*\? "raw"\s*:\s*hasReadable\s*\? "readable"\s*:\s*hasSummary\s*\? "summary"/);
+  assert.match(page, /summaryFirstNavigationKey\(project\.id, event\.id, "raw-ready"\)/);
+  assert.match(page, /if \(readingTab \|\| transcriptFocusRequest\?\.eventId === event\.id\) return/);
+  assert.match(page, /canonicalRawSegmentIds = new Set\(rawSegments\.map/);
+  assert.match(page, /immediateRawSegments\.filter\(\(segment\) => !canonicalRawSegmentIds\.has\(segment\.id\)\)/);
+  assert.match(page, /onFocusTranscriptArtifact\(event\.id, "raw"\)/);
+  assert.doesNotMatch(page, /onFocusTranscriptArtifact\(event\.id, "summary"\)/);
 });
 
 test("summary sources stay available in the action rail and artifact polling does not refetch raw transcript", () => {

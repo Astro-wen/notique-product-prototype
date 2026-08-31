@@ -78,16 +78,30 @@ test("mobile keeps one event selector and resets the tab when switching events",
   assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });
 
-test("terminal transcription refreshes the Event and workflow before publishing success", () => {
+test("terminal transcription publishes the ready Event before refreshing workflow context", () => {
   const effect = effectContaining("const activeTranscriptionRunId = transcriptionRun?.id");
   const terminalBranch = effect.slice(effect.indexOf('if (latest.status === "succeeded")'));
 
-  assert.match(terminalBranch, /Promise\.all\(\[\s*api\.getEvent\(eventId\),\s*inspectProjectWorkflow\(projectId, loadFreshWorkflowSnapshot\)/);
+  assert.match(uiSource, /const transcriptionTerminalRefreshToken = useRef\(0\)/);
+  assert.match(uiSource, /const terminalEventRefreshes = useRef\(new Map/);
+  assert.match(uiSource, /const loadTerminalEventRefresh = useCallback/);
+  assert.match(uiSource, /const refreshed = await inFlight\.request/);
+  assert.match(uiSource, /const loadTerminalEventRefreshWithRetry = useCallback/);
+  assert.match(uiSource, /transcriptionTerminalRefreshToken\.current !== token/);
+  assert.match(uiSource, /const mergeTerminalEventRefresh = useCallback/);
+  assert.match(effect, /setTranscriptionRun\(latest\)[\s\S]*if \(latest\.status === "succeeded"\)/);
+  assert.match(terminalBranch, /const refreshed = await loadTerminalEventRefreshWithRetry\(eventId, owner\)/);
   assert.ok(
-    terminalBranch.indexOf("api.getEvent(eventId)") < terminalBranch.indexOf("setTranscriptionRun(latest)"),
-    "the terminal Run must not tear down polling before the ready Event is loaded",
+    effect.indexOf("setTranscriptionRun(latest)") < effect.indexOf("await loadTerminalEventRefreshWithRetry(eventId, owner)"),
+    "the terminal Run segments must publish before the broader Event refresh",
   );
-  assert.match(terminalBranch, /setEventWorkflowSummaries\(workflowSnapshot\.eventSummaries\)/);
+  assert.doesNotMatch(terminalBranch, /if \(!refreshed \|\| !requestIsCurrent\(\)\)/);
+  assert.match(terminalBranch, /mergeTerminalEventRefresh\(refreshed\)/);
+  assert.match(terminalBranch, /void refreshProjectWorkflow\(projectId\)/);
+  assert.doesNotMatch(terminalBranch, /inspectProjectWorkflow/);
+  const secondaryEffect = effectContaining("if (!secondaryTranscriptionRunKey) return");
+  assert.match(secondaryEffect, /setTranscriptionRunsByAssetId[\s\S]*await loadTerminalEventRefreshWithRetry\(eventId, owner\)/);
+  assert.doesNotMatch(secondaryEffect, /Promise\.all\(\[[\s\S]*api\.getEvent[\s\S]*inspectProjectWorkflow/);
   assert.match(effect, /isCurrentRequestOwner\(owner\)/);
 });
 
