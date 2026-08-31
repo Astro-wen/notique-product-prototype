@@ -59,6 +59,41 @@ test("long audio is split into deterministic overlapping time chunks without cov
   for (let index = 1; index < chunks.length; index += 1) {
     assert.equal(chunks[index - 1].endMs - chunks[index].startMs, 5_000);
   }
+
+  assert.deepEqual(
+    chunking.stableCompletedChunkPrefix([
+      { index: 2, status: "succeeded" },
+      { index: 0, status: "succeeded" },
+      { index: 1, status: "processing" },
+    ]),
+    [{ index: 0, status: "succeeded" }],
+  );
+  assert.deepEqual(
+    chunking.stableCompletedChunkPrefix([
+      { index: 1, status: "succeeded" },
+      { index: 0, status: "succeeded" },
+    ]).map((chunk) => chunk.index),
+    [0, 1],
+  );
+
+  const preview = chunking.stableTranscriptPreview([
+    {
+      index: 0,
+      startMs: 0,
+      endMs: 180_000,
+      assetVersionId: "chunk-0",
+      transcript: {
+        durationSeconds: 180,
+        text: "Stable sentence. Boundary sentence.",
+        segments: [
+          { speaker: "A", text: "Stable sentence.", startSeconds: 150, endSeconds: 164 },
+          { speaker: "A", text: "Boundary sentence.", startSeconds: 164.5, endSeconds: 170 },
+        ],
+      },
+    },
+  ], 165_000);
+  assert.equal(preview.stableUntilMs, 165_000);
+  assert.deepEqual(preview.segments.map((segment) => segment.text), ["Stable sentence."]);
 });
 
 test("chunk transcripts merge onto the original timeline and remove only proven boundary duplicates", async () => {

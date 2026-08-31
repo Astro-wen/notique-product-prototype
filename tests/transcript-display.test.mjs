@@ -158,7 +158,7 @@ test("播放位置只激活已经到达的最新段落", () => {
   assert.equal(activeTranscriptGroupKeyAt(groups, 8_000), "segment-3");
 });
 
-test("易读稿把短暂插话两侧未说完的同一说话人接成一句", () => {
+test("易读稿保留短暂插话并按英文标记明显打断", () => {
   const groups = groupReadableTranscriptSegments([
     segment({
       speaker: "Speaker 2",
@@ -183,13 +183,40 @@ test("易读稿把短暂插话两侧未说完的同一说话人接成一句", ()
       sourceIds: ["seg-3"],
     }),
   ]);
-  assert.equal(groups.length, 1);
-  assert.equal(
-    groups[0].text,
-    "Yeah, we've probably got about ten twelve thousand, I'd say, available right now. And then in the next couple of months if I need to save up a little more we could.",
-  );
-  assert.deepEqual(groups[0].sourceIds, ["seg-1", "seg-2", "seg-3"]);
-  assert.equal(groups[0].speaker, "Speaker 2");
+  assert.equal(groups.length, 3);
+  assert.equal(groups[0].text, "Yeah, we've probably got about ten twelve thousand, I'd");
+  assert.equal(groups[1].text, "Okay.");
+  assert.equal(groups[1].interruptionMarker, "(interrupt)");
+  assert.equal(groups[2].text, "say, available right now. And then in the next couple of months if I need to save up a little more we could.");
+  assert.deepEqual(groups.flatMap((group) => group.sourceIds), ["seg-1", "seg-2", "seg-3"]);
+});
+
+test("中文插话按中文标记，文本和来源保持原样", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment({ speaker: "Speaker 1", text: "我们先看预算，然后", startMs: 1_000, endMs: 4_000 }),
+    segment({ key: "segment-2", speaker: "Speaker 2", text: "我补充一下。", startMs: 3_500, endMs: 4_500, sourceIds: ["seg-2"] }),
+    segment({ key: "segment-3", speaker: "Speaker 1", text: "再确认区域。", startMs: 4_600, endMs: 6_000, sourceIds: ["seg-3"] }),
+  ]);
+  assert.equal(groups[1].interruptionMarker, "（打断）");
+  assert.equal(groups[1].text, "我补充一下。");
+  assert.deepEqual(groups[1].sourceIds, ["seg-2"]);
+});
+
+test("完整轮次后的普通回应不会误标为打断", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment({ text: "The budget is twelve thousand.", endMs: 4_000 }),
+    segment({ key: "segment-2", speaker: "Speaker 2", text: "Okay.", startMs: 4_200, endMs: 4_600, sourceIds: ["seg-2"] }),
+    segment({ key: "segment-3", text: "We can continue.", startMs: 4_800, sourceIds: ["seg-3"] }),
+  ]);
+  assert.deepEqual(groups.map((group) => group.interruptionMarker), [null, null, null]);
+});
+
+test("说话人身份未解决时不会猜测打断关系", () => {
+  const groups = groupConsecutiveSpeakerSegments([
+    segment({ speaker: "Speaker unknown", endMs: 4_000 }),
+    segment({ key: "segment-2", speaker: "Speaker 2", startMs: 3_400, sourceIds: ["seg-2"] }),
+  ]);
+  assert.deepEqual(groups.map((group) => group.interruptionMarker), [null, null]);
 });
 
 test("完整句、不同素材或非白名单插话不会被跨说话人合并", () => {

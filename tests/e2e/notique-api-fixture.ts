@@ -136,8 +136,8 @@ function audioAssetRecord(id: string, projectId: string, eventId: string) {
 
 function progressTranscriptSegments() {
   return [
-    { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_000, text: "Opening." },
-    { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 2_000, text: "Reply." },
+    { id: "speaker-seg-a", ordinal: 0, speaker: "A", start_ms: 0, end_ms: 1_500, text: "Opening." },
+    { id: "speaker-seg-b", ordinal: 1, speaker: "B", start_ms: 1_000, end_ms: 1_600, text: "Okay." },
     { id: "speaker-seg-c", ordinal: 2, speaker: "C", start_ms: 2_000, end_ms: 3_000, text: "Follow-up." },
   ];
 }
@@ -160,7 +160,9 @@ function chunkedTranscriptionRun(completed = false) {
     queued_at: new Date(Date.now() - 73_000).toISOString(),
     started_at: new Date(Date.now() - 72_000).toISOString(),
     finished_at: completed ? now : null,
-    segments: completed ? progressTranscriptSegments() : [],
+    segments_provisional: !completed,
+    stable_until_ms: completed ? undefined : 3_000,
+    segments: progressTranscriptSegments(),
     chunks: Array.from({ length: 10 }, (_, index) => ({
       id: `transcription-a-chunk-${index}`,
       index,
@@ -1155,7 +1157,7 @@ export class NotiqueApiFixture {
               text: index % 2 === 0 ? `Buyer detail ${index + 1}.` : `Agent response ${index + 1}.`,
             }))
           : this.transcriptionProgressMode && eventId === "event-a"
-          ? progressTranscriptSegments()
+          ? this.transcriptionProgressCompleted ? progressTranscriptSegments() : []
           : transcriptSegments(projectId, eventId);
         await this.fulfill(route, envelope({ segments }));
         return;

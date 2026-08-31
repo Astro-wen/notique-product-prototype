@@ -12,15 +12,17 @@ export type TranscriptDisplaySegment = {
 
 export type TranscriptDisplayGroup = TranscriptDisplaySegment & {
   segmentCount: number;
+  interruptionMarker: string | null;
 };
 
 const MAX_GROUP_GAP_MS = 3_000;
 const MAX_GROUP_DURATION_MS = 90_000;
 const MAX_GROUP_CHARACTERS = 1_500;
 const MAX_BACKCHANNEL_GAP_MS = 2_500;
-const BRIEF_BACKCHANNEL_PATTERN = /^(?:ok(?:ay)?|right|sure|m+h+m*|mm(?:-?hmm)?|uh-?huh|got it)[.!?,\s]*$/iu;
-const INCOMPLETE_TURN_PATTERN = /(?:\b(?:i['’](?:d|ll|m|ve)|we['’](?:d|ll|re|ve)|you['’](?:d|ll|re|ve)|would|could|should|to|and|or|but|if|because|that|about)|[,;:—-])\s*$/iu;
+const BRIEF_BACKCHANNEL_PATTERN = /^(?:(?:ok(?:ay)?|right|sure|m+h+m*|mm(?:-?hmm)?|uh-?huh|got it)|(?:嗯+|啊+|哦+|对|好(?:的)?|行|是(?:的)?|明白|可以|没错))[.!?,，。！？、\s]*$/iu;
+const INCOMPLETE_TURN_PATTERN = /(?:\b(?:i['’](?:d|ll|m|ve)|we['’](?:d|ll|re|ve)|you['’](?:d|ll|re|ve)|would|could|should|to|and|or|but|if|because|that|about)|(?:然后|但是|因为|所以|如果|就是|我想|我们|还有)|[,;:，；：、—-])\s*$/iu;
 const STANDALONE_FILLER_PATTERN = /(^|[\s,(—-])(?:uh+|um+|erm+|hmm+)(?=$|[\s,.!?;:)—-])/giu;
+const CLEAR_OVERLAP_MS = 250;
 
 function speakerIdentity(speaker: string | null): string | null {
   const normalized = speaker?.trim().toLowerCase().replace(/[\s_-]+/g, " ");
@@ -68,23 +70,41 @@ function nearby(left: TranscriptDisplaySegment, right: TranscriptDisplaySegment)
   return gapMs >= -250 && gapMs <= MAX_BACKCHANNEL_GAP_MS;
 }
 
-function canBridgeBriefBackchannel(
+function languageMatchedInterruptionMarker(text: string): string {
+  if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return "（割り込み）";
+  if (/\p{Script=Hangul}/u.test(text)) return "(말 끊음)";
+  if (/\p{Script=Han}/u.test(text)) return "（打断）";
+  return "(interrupt)";
+}
+
+function isObviousInterruption(
   left: TranscriptDisplayGroup,
   interruption: TranscriptDisplayGroup,
-  right: TranscriptDisplayGroup,
+  right: TranscriptDisplayGroup | undefined,
 ): boolean {
-  // A validated readable Artifact may contain exact-raw safety fallbacks.
-  // Presentation cleanup must never hide any part of those source-preserving
-  // rows, even when they resemble a hesitation or a brief backchannel.
-  if (usesRawFallback(left) || usesRawFallback(interruption) || usesRawFallback(right)) return false;
-  if (!sameSpeaker(left, right) || sameSpeaker(left, interruption)) return false;
-  if (!left.assetVersionId || left.assetVersionId !== interruption.assetVersionId || left.assetVersionId !== right.assetVersionId) {
-    return false;
-  }
+  const leftSpeaker = speakerIdentity(left.speaker);
+  const interruptionSpeaker = speakerIdentity(interruption.speaker);
+  if (!leftSpeaker || !interruptionSpeaker || leftSpeaker === interruptionSpeaker) return false;
+  if (!left.assetVersionId || left.assetVersionId !== interruption.assetVersionId) return false;
+  const overlapMs = left.endMs != null && interruption.startMs != null
+    ? left.endMs - interruption.startMs
+    : 0;
+  if (overlapMs >= CLEAR_OVERLAP_MS) return true;
+  if (!right || !sameSpeaker(left, right) || right.assetVersionId !== left.assetVersionId) return false;
   if (!nearby(left, interruption) || !nearby(interruption, right)) return false;
   if (!BRIEF_BACKCHANNEL_PATTERN.test(interruption.text.trim())) return false;
-  if (!INCOMPLETE_TURN_PATTERN.test(left.text.trimEnd())) return false;
-  return left.text.length + right.text.length + 1 <= MAX_GROUP_CHARACTERS;
+  return INCOMPLETE_TURN_PATTERN.test(left.text.trimEnd());
+}
+
+function markObviousInterruptions(groups: TranscriptDisplayGroup[]): TranscriptDisplayGroup[] {
+  return groups.map((group, index) => {
+    const left = groups[index - 1];
+    if (!left || !isObviousInterruption(left, group, groups[index + 1])) return group;
+    return {
+      ...group,
+      interruptionMarker: languageMatchedInterruptionMarker(group.text),
+    };
+  });
 }
 
 function canMerge(
@@ -131,7 +151,7 @@ export function groupConsecutiveSpeakerSegments(
     };
     const previous = groups.at(-1);
     if (!previous || !canMerge(previous, normalized)) {
-      groups.push({ ...normalized, segmentCount: 1 });
+      groups.push({ ...normalized, segmentCount: 1, interruptionMarker: null });
       continue;
     }
     previous.key = `${previous.key}--${normalized.key}`;
@@ -142,14 +162,14 @@ export function groupConsecutiveSpeakerSegments(
     previous.needsCheck ||= normalized.needsCheck;
     previous.segmentCount += 1;
   }
-  return groups;
+  return markObviousInterruptions(groups);
 }
 
 /**
  * Readable-only presentation cleanup. The persisted Artifact and the raw
- * transcript stay untouched. A very short backchannel may be visually hidden
- * only when it interrupts an obviously unfinished turn by the same speaker;
- * all three raw source spans remain attached to the displayed paragraph.
+ * transcript stay untouched. Obvious cross-speaker interruptions remain as
+ * their own turns and receive a language-matched presentation label; no
+ * spoken content is hidden or rewritten by the interruption detector.
  */
 export function groupReadableTranscriptSegments(
   segments: TranscriptDisplaySegment[],
@@ -173,39 +193,7 @@ export function groupReadableTranscriptSegments(
       ],
     };
   });
-  const groups = groupConsecutiveSpeakerSegments(cleaned);
-  const stitched: TranscriptDisplayGroup[] = [];
-  for (let index = 0; index < groups.length; index += 1) {
-    const left = groups[index];
-    const interruption = groups[index + 1];
-    const right = groups[index + 2];
-    if (!interruption || !right || !canBridgeBriefBackchannel(left, interruption, right)) {
-      stitched.push(left);
-      continue;
-    }
-    stitched.push({
-      ...left,
-      key: `${left.key}--bridge-${interruption.key}--${right.key}`,
-      text: joinTranscriptText(left.text, right.text),
-      endMs: right.endMs ?? left.endMs,
-      sourceIds: unique([...left.sourceIds, ...interruption.sourceIds, ...right.sourceIds]),
-      edits: [
-        ...left.edits,
-        ...right.edits,
-        {
-          kind: "filler",
-          original: interruption.text,
-          replacement: "",
-          reason: "Collapsed a brief backchannel that interrupted an unfinished turn; it remains in the raw transcript.",
-          confidence: 1,
-        },
-      ],
-      needsCheck: left.needsCheck || right.needsCheck,
-      segmentCount: left.segmentCount + interruption.segmentCount + right.segmentCount,
-    });
-    index += 2;
-  }
-  return stitched;
+  return groupConsecutiveSpeakerSegments(cleaned);
 }
 
 export function activeTranscriptGroupKeyAt(

@@ -1179,10 +1179,17 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .readable-meta button, .raw-artifact .transcript-turn-meta button { border: 0; background: transparent; padding: 0; color: #7b8291; font-size: 12px; line-height: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .readable-meta button:not(:disabled):hover, .raw-artifact .transcript-turn-meta button:not(:disabled):hover { color: var(--brand-green-dark); text-decoration: underline; }
 .readable-meta em { color: #9a5b00; font-size: var(--text-xs); font-style: normal; font-weight: 700; }
+.readable-meta .transcript-interruption-marker { border-radius: var(--radius-pill); background: #fff1e5; padding: 2px 7px; color: #9a4f12; font-size: var(--text-2xs); font-style: normal; font-weight: 760; }
 .transcript-copy-button { position: relative; width: 100%; min-width: 0; min-height: 44px; border: 0; border-radius: 2px; background: #fff; padding: 9px 14px; display: block; color: var(--ink); text-align: left; box-shadow: none; }
 .transcript-copy-button > span { font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .transcript-copy-button:hover { background: #f9fbfa; box-shadow: none; }
 .transcript-copy-button:focus-visible { outline: 2px solid #8fc5ae; outline-offset: -2px; box-shadow: none; }
+.transcript-copy-button.preview-only { cursor: text; }
+.transcript-turn.preview-only .transcript-copy-button:hover { background: #fff; }
+.rolling-transcript-note { margin: 10px 14px 12px; border: 1px solid #c9ddd5; border-radius: var(--radius-sm); background: #f6fbf8; padding: 10px 12px; display: flex; align-items: center; gap: var(--space-3); color: #315f4d; }
+.rolling-transcript-note > span:last-child { min-width: 0; display: grid; gap: 2px; }
+.rolling-transcript-note strong { font-size: var(--text-xs); }
+.rolling-transcript-note small { color: var(--muted); font-size: var(--text-xs); line-height: 1.45; }
 .readable-artifact > article.needs-check > .transcript-copy-button { background: #fff8e9; }
 .readable-artifact > article.selected > .transcript-copy-button, .raw-artifact > article.selected > .transcript-copy-button { background: linear-gradient(90deg, var(--brand-green) 3px, #f3faf6 3px); box-shadow: none; }
 .readable-artifact > article.playing > .transcript-copy-button, .raw-artifact > article.playing > .transcript-copy-button { background: linear-gradient(90deg, var(--brand-green) 3px, #e6f4ed 3px); box-shadow: none; transition: background 180ms ease; }

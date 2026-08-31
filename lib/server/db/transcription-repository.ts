@@ -2,6 +2,10 @@ import { getBindings, getD1 } from "@/db";
 import {
   AUDIO_TRANSCRIPTION_MODEL_DEFAULT,
 } from "@/lib/domain/audio-transcription";
+import {
+  stableCompletedChunkPrefix,
+  stableTranscriptPreview,
+} from "@/lib/domain/audio-chunking";
 import { transcriptionRunRecord } from "@/lib/server/db/records";
 import { ApiFault } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
@@ -573,7 +577,8 @@ export async function getTranscriptionRun(
       await getD1()
         .prepare(
           `SELECT id, chunk_index, chunk_start_ms, chunk_end_ms, status,
-                  attempt_no, error_code
+                  attempt_no, error_code, audio_asset_version_id,
+                  derived_transcript_asset_version_id
              FROM transcription_runs
             WHERE parent_run_id = ? AND workspace_id = ?
             ORDER BY chunk_index`,
@@ -590,6 +595,78 @@ export async function getTranscriptionRun(
       processing_attempt_no: Number(chunk.attempt_no ?? 0),
       error_code: chunk.error_code ? String(chunk.error_code) : null,
     }));
+    if (!result.derived_transcript_asset_version_id) {
+      const stablePrefix = stableCompletedChunkPrefix<Row & { index: number; status: string }>(
+        chunkRows.map((chunk) => ({
+          ...chunk,
+          index: Number(chunk.chunk_index),
+          status: String(chunk.status),
+        })),
+      );
+      if (stablePrefix.length > 0) {
+        const versionIds = stablePrefix
+          .map((chunk) => chunk.derived_transcript_asset_version_id)
+          .filter((value): value is string => typeof value === "string" && Boolean(value));
+        const segmentRows = versionIds.length === stablePrefix.length
+          ? (await getD1()
+              .prepare(
+                `SELECT asset_version_id, ordinal, speaker, start_ms, end_ms, text_raw
+                   FROM text_segments
+                  WHERE asset_version_id IN (${versionIds.map(() => "?").join(",")})
+                    AND workspace_id = ?
+                  ORDER BY asset_version_id, ordinal`,
+              )
+              .bind(...versionIds, scope.workspaceId)
+              .all<Row>()).results ?? []
+          : [];
+        const segmentsByVersion = new Map<string, Row[]>();
+        for (const segment of segmentRows) {
+          const versionId = String(segment.asset_version_id);
+          segmentsByVersion.set(versionId, [
+            ...(segmentsByVersion.get(versionId) ?? []),
+            segment,
+          ]);
+        }
+        const prefixTranscripts = stablePrefix.flatMap((chunk) => {
+          const versionId = String(chunk.derived_transcript_asset_version_id ?? "");
+          const rows = segmentsByVersion.get(versionId) ?? [];
+          if (!versionId || rows.length === 0) return [];
+          return [{
+            index: Number(chunk.chunk_index),
+            startMs: Number(chunk.chunk_start_ms),
+            endMs: Number(chunk.chunk_end_ms),
+            assetVersionId: String(chunk.audio_asset_version_id),
+            transcript: {
+              durationSeconds: (Number(chunk.chunk_end_ms) - Number(chunk.chunk_start_ms)) / 1_000,
+              text: rows.map((segment) => String(segment.text_raw)).join(" "),
+              segments: rows.map((segment) => ({
+                speaker: String(segment.speaker ?? "Speaker"),
+                text: String(segment.text_raw),
+                startSeconds: Number(segment.start_ms) / 1_000,
+                endSeconds: Number(segment.end_ms) / 1_000,
+              })),
+            },
+          }];
+        });
+        if (prefixTranscripts.length === stablePrefix.length) {
+          const nextChunk = chunkRows.find((chunk) => Number(chunk.chunk_index) === stablePrefix.length);
+          const preview = stableTranscriptPreview(
+            prefixTranscripts,
+            nextChunk ? Number(nextChunk.chunk_start_ms) : null,
+          );
+          result.segments = preview.segments.map((segment, ordinal) => ({
+            id: `preview_${result.id}_${String(ordinal).padStart(5, "0")}`,
+            ordinal,
+            speaker: segment.speaker,
+            start_ms: Math.round(segment.startSeconds * 1_000),
+            end_ms: Math.round(segment.endSeconds * 1_000),
+            text: segment.text,
+          }));
+          result.segments_provisional = true;
+          result.stable_until_ms = preview.stableUntilMs;
+        }
+      }
+    }
   }
   if (result.derived_transcript_asset_version_id) {
     const segmentRows = (

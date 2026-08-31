@@ -445,6 +445,8 @@ export type TranscriptionRunRecord = {
   current_started_at: string | null;
   finished_at: string | null;
   segments?: TranscriptionSegmentRecord[];
+  segments_provisional?: boolean;
+  stable_until_ms?: number;
   chunks?: Array<{
     id: string;
     index: number;

@@ -221,6 +221,8 @@ export type TranscriptionRun = {
   finishedAt?: string;
   errorCode?: string;
   errorMessage?: string;
+  segmentsProvisional: boolean;
+  stableUntilMs?: number;
   segments: Array<{
     id: Id;
     ordinal: number;
@@ -593,6 +595,8 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
       pick(errorDetails, ["message"]),
       undefined as unknown as string,
     ) || undefined,
+    segmentsProvisional: pick(source, ["segments_provisional", "segmentsProvisional"]) === true,
+    stableUntilMs: asNumber(pick(source, ["stable_until_ms", "stableUntilMs"])),
     segments: segments.flatMap((item): TranscriptionRun["segments"] => {
       if (!isRecord(item)) return [];
       const id = asString(pick(item, ["id"]));

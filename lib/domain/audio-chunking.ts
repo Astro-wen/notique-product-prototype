@@ -31,6 +31,39 @@ export type ChunkTranscriptInput = AudioChunkPlanItem & {
   transcript: ValidatedDiarizedTranscript;
 };
 
+export function stableCompletedChunkPrefix<T extends { index: number; status: string }>(
+  chunksValue: T[],
+): T[] {
+  const chunks = [...chunksValue].sort((left, right) => left.index - right.index);
+  const stable: T[] = [];
+  for (const chunk of chunks) {
+    if (chunk.index !== stable.length || chunk.status !== "succeeded") break;
+    stable.push(chunk);
+  }
+  return stable;
+}
+
+export function stableTranscriptPreview(
+  chunks: ChunkTranscriptInput[],
+  nextChunkStartMs: number | null,
+): { stableUntilMs: number; segments: DiarizedTranscriptSegment[] } {
+  if (!chunks.length) throw new Error("At least one completed chunk is required for a stable preview.");
+  const merged = mergeChunkTranscripts(chunks);
+  const lastChunkEndMs = [...chunks].sort((left, right) => left.index - right.index).at(-1)!.endMs;
+  const stableUntilMs = nextChunkStartMs === null ? lastChunkEndMs : nextChunkStartMs;
+  if (stableUntilMs < 0 || stableUntilMs > lastChunkEndMs) {
+    throw new Error("The stable preview boundary must be inside the completed chunk prefix.");
+  }
+  return {
+    stableUntilMs,
+    // A turn that crosses into the next chunk's overlap is not stable yet.
+    // Withhold the complete turn instead of showing text that may later jump.
+    segments: merged.segments.filter(
+      (segment) => Math.round(segment.endSeconds * 1_000) <= stableUntilMs,
+    ),
+  };
+}
+
 function finiteNonNegative(value: number, field: string): number {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${field} must be a non-negative finite number.`);

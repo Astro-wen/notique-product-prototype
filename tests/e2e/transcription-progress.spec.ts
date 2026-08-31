@@ -32,6 +32,10 @@ test("chunked transcription shows one calm progress bar and keeps numbered speak
   await expect(transcriptMeta.getByText("Speaker 1", { exact: true })).toBeVisible();
   await expect(transcriptMeta.getByText("Speaker 2", { exact: true })).toBeVisible();
   await expect(transcriptMeta.getByText("Speaker 3", { exact: true })).toBeVisible();
+  await expect(page.getByText("逐字稿已经可以开始阅读", { exact: true })).toBeVisible();
+  await expect(page.getByText("(interrupt)", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新启动分析", exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("transcript-turn-body").first()).toHaveAttribute("aria-disabled", "true");
   await expect(page.locator(".toast")).toHaveCount(0);
 });
 
