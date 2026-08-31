@@ -2054,7 +2054,7 @@ export async function processExtractionRun(
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
-          reasoningEffort: "xhigh",
+          reasoningEffort: verifierEffort,
           maxOutputTokens,
           timeoutMs,
         });
@@ -2064,7 +2064,7 @@ export async function processExtractionRun(
           stage: "verify_escalated",
           provider: providerName,
           model: modelName,
-          reasoningEffort: "xhigh",
+          reasoningEffort: verifierEffort,
           promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
           schemaVersion: VERIFICATION_SCHEMA_VERSION,
           inputHash: escalatedInputHash,
@@ -2115,7 +2115,7 @@ export async function processExtractionRun(
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
-          reasoningEffort: "xhigh",
+          reasoningEffort: verifierEffort,
           maxOutputTokens,
           timeoutMs,
         });
@@ -2132,7 +2132,7 @@ export async function processExtractionRun(
             stage: "verify_escalated",
             provider: providerName,
             model: modelName,
-            reasoningEffort: "xhigh",
+            reasoningEffort: verifierEffort,
             promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
             schemaVersion: VERIFICATION_SCHEMA_VERSION,
           inputHash: escalatedInputHash,

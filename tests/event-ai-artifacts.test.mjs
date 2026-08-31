@@ -853,7 +853,26 @@ test("artifact backlog prefers readable work without allowing it to starve Summa
   assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
   assert.match(jobs, /input\?\.extractionRunId \? 2 : 2/);
   assert.match(jobs, /await Promise\.all\(\(rows\.results \?\? \[\]\)\.map/);
-  assert.equal((jobs.match(/allowRawFallback: true/g) ?? []).length, 3);
+  assert.equal((jobs.match(/allowRawFallback: true/g) ?? []).length, 2);
+});
+
+test("readable transcript chunks run concurrently behind one bounded coordinator", async () => {
+  const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.match(jobs, /const READABLE_CHUNK_CONCURRENCY = 4/);
+  assert.match(
+    jobs,
+    /const outcomes = await Promise\.all\(nextStoredChunks\.map\(\(chunk\) =>\s*processReadableChunkAttempt/,
+  );
+  assert.match(jobs, /\.slice\(0, READABLE_CHUNK_CONCURRENCY\)/);
+  assert.match(jobs, /parkReadableChunkPending/);
+  assert.doesNotMatch(
+    jobs.slice(
+      jobs.indexOf("async function parkReadableChunkPending"),
+      jobs.indexOf("async function releaseForNextReadableChunk"),
+    ),
+    /lease_owner = NULL/,
+    "one pending chunk must not release the shared Run while sibling chunks are still writing",
+  );
 });
 
 test("summary provider output gets a deterministic raw quote before persistence", () => {
@@ -1226,6 +1245,70 @@ test("new and retried reading artifacts use low effort while existing Runs keep 
     /reasoningEffort: String\(run\.reasoning_effort\)/,
     "dispatch must resume an old Run with its persisted effort instead of replacing it",
   );
+});
+
+test("new fact Runs use the production low-latency reasoning profile without dropping two-pass verification", async () => {
+  const [exampleEnvironment, workerConfig] = await Promise.all([
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+  ]);
+  assert.match(exampleEnvironment, /^AI_REASONING_EFFORT=low$/m);
+  assert.match(exampleEnvironment, /^AI_VERIFIER_REASONING_EFFORT=low$/m);
+  assert.match(exampleEnvironment, /^AI_TWO_PASS_PIPELINE=1$/m);
+  assert.match(workerConfig, /"AI_REASONING_EFFORT"\s*:\s*"low"/);
+  assert.match(workerConfig, /"AI_VERIFIER_REASONING_EFFORT"\s*:\s*"low"/);
+  assert.match(workerConfig, /"AI_TWO_PASS_PIPELINE"\s*:\s*"1"/);
+});
+
+test("inventory safely discards explanations attached to non-critical candidates", async () => {
+  const provider = await readFile(
+    new URL("../lib/server/ai/model-provider.ts", import.meta.url),
+    "utf8",
+  );
+  const inventoryMethod = provider.slice(
+    provider.indexOf("async inventoryClaims"),
+    provider.indexOf("async verifyClaims"),
+  );
+  assert.match(inventoryMethod, /critical === false/);
+  assert.match(inventoryMethod, /critical_reason: null/);
+  assert.ok(
+    inventoryMethod.indexOf("critical_reason: null") < inventoryMethod.indexOf("validateInventoryOutput(candidateValue)"),
+    "the harmless provider normalization must happen before strict validation",
+  );
+});
+
+test("verification safely removes dangling bookkeeping without weakening evidence validation", async () => {
+  const provider = await readFile(
+    new URL("../lib/server/ai/model-provider.ts", import.meta.url),
+    "utf8",
+  );
+  const verificationMethod = provider.slice(
+    provider.indexOf("async verifyClaims"),
+    provider.indexOf("async extractClaims"),
+  );
+  assert.match(verificationMethod, /const finalClaimKeys = new Set/);
+  assert.match(verificationMethod, /finalClaimKeys\.has\(key\)/);
+  assert.match(verificationMethod, /included && referencedKeys\.length === 0 \? "lower_priority"/);
+  assert.match(verificationMethod, /final_claim_keys: included \? referencedKeys : \[\]/);
+  assert.ok(
+    verificationMethod.indexOf("candidate_dispositions: source.candidate_dispositions.map") <
+      verificationMethod.indexOf("validateVerificationOutput(candidateValue, inventory, input)"),
+    "provider bookkeeping normalization must happen before strict evidence-aware verification",
+  );
+});
+
+test("an escalated verification keeps the frozen verifier speed profile", async () => {
+  const processor = await readFile(
+    new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url),
+    "utf8",
+  );
+  const twoPass = processor.slice(
+    processor.indexOf("if (pipelineEnabled)"),
+    processor.indexOf("if (!acceptedVerification)"),
+  );
+  const escalatedBlocks = twoPass.match(/reasoningEffort: verifierEffort/g) ?? [];
+  assert.ok(escalatedBlocks.length >= 6, "base and escalated verification must share the frozen profile");
+  assert.doesNotMatch(twoPass, /reasoningEffort: "xhigh"/);
 });
 
 test("Summary v2 provider schema and prompt request locations, never model-authored quotes", async () => {

@@ -944,6 +944,20 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       const { claims, ...rest } = decodedRecord;
       candidateValue = { ...rest, candidates: claims };
     }
+    if (candidateValue && typeof candidateValue === "object" && !Array.isArray(candidateValue)) {
+      const source = candidateValue as Record<string, unknown>;
+      if (Array.isArray(source.candidates)) {
+        candidateValue = {
+          ...source,
+          candidates: source.candidates.map((candidate) =>
+            candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
+              (candidate as Record<string, unknown>).critical === false
+              ? { ...(candidate as Record<string, unknown>), critical_reason: null }
+              : candidate
+          ),
+        };
+      }
+    }
     const validated = validateInventoryOutput(candidateValue);
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
@@ -988,7 +1002,43 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     );
     const decoded = decodeProviderNormalizedValues(result.value, this.provider === "openai");
     if (decoded.issues.length) throw new ModelOutputInvalidError(decoded.issues, result.usage);
-    const validated = validateVerificationOutput(decoded.value, inventory, input);
+    let candidateValue = decoded.value;
+    if (candidateValue && typeof candidateValue === "object" && !Array.isArray(candidateValue)) {
+      const source = candidateValue as Record<string, unknown>;
+      const finalClaimKeys = new Set(
+        Array.isArray(source.claims)
+          ? source.claims.flatMap((claim) => {
+              if (!claim || typeof claim !== "object" || Array.isArray(claim)) return [];
+              const key = (claim as Record<string, unknown>).client_claim_key;
+              return typeof key === "string" && key ? [key] : [];
+            })
+          : [],
+      );
+      if (Array.isArray(source.candidate_dispositions)) {
+        candidateValue = {
+          ...source,
+          candidate_dispositions: source.candidate_dispositions.map((disposition) => {
+            if (!disposition || typeof disposition !== "object" || Array.isArray(disposition)) {
+              return disposition;
+            }
+            const item = disposition as Record<string, unknown>;
+            const outcome = item.outcome;
+            const referencedKeys = Array.isArray(item.final_claim_keys)
+              ? [...new Set(item.final_claim_keys.filter(
+                  (key): key is string => typeof key === "string" && finalClaimKeys.has(key),
+                ))]
+              : [];
+            const included = outcome === "included" || outcome === "merged";
+            return {
+              ...item,
+              outcome: included && referencedKeys.length === 0 ? "lower_priority" : outcome,
+              final_claim_keys: included ? referencedKeys : [],
+            };
+          }),
+        };
+      }
+    }
+    const validated = validateVerificationOutput(candidateValue, inventory, input);
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }

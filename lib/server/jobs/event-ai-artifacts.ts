@@ -32,6 +32,7 @@ const CRON_LEASE_MS = 2 * 60_000;
 const ARTIFACT_PROVIDER_TIMEOUT_MS = 25_000;
 const MAX_CREATE_ATTEMPTS = 3;
 const MAX_JOB_AGE_MS = 30 * 60_000;
+const READABLE_CHUNK_CONCURRENCY = 4;
 
 class StaleArtifactModelContractError extends Error {
   readonly code = "STALE_ARTIFACT_MODEL_CONTRACT";
@@ -269,12 +270,11 @@ async function recordReadableProviderResponse(
   ]);
 }
 
-async function releaseReadablePending(
+async function parkReadableChunkPending(
   run: Row,
   owner: string,
   chunk: EventAiArtifactChunkRecord,
   responseId: string,
-  status: string,
 ): Promise<void> {
   const timestamp = now();
   const guardId = id("guard");
@@ -292,23 +292,6 @@ async function releaseReadablePending(
           SET status = 'queued', provider_request_id = ?, error_code = NULL, updated_at = ?
         WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
     ).bind(responseId, timestamp, chunk.id, run.id),
-    getD1().prepare(
-      `UPDATE event_ai_artifact_runs
-          SET status = 'queued', provider_request_id = ?, next_attempt_at = ?,
-              lease_owner = NULL, lease_expires_at = NULL, error_code = NULL,
-              error_details_json = ?, updated_at = ?
-        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
-    ).bind(
-      responseId,
-      nextPoll(timestamp),
-      JSON.stringify({
-        background_response_status: status,
-        readable_chunk_index: chunk.chunk_index,
-      }),
-      timestamp,
-      run.id,
-      owner,
-    ),
     getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
 }
@@ -318,6 +301,7 @@ async function releaseForNextReadableChunk(
   owner: string,
   completedChunks: number,
   totalChunks: number,
+  delayMs = 0,
 ): Promise<void> {
   const timestamp = now();
   await getD1().prepare(
@@ -326,7 +310,7 @@ async function releaseForNextReadableChunk(
             lease_expires_at = NULL, error_code = NULL, error_details_json = ?, updated_at = ?
       WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
   ).bind(
-    timestamp,
+    nextPoll(timestamp, delayMs),
     JSON.stringify({ readable_chunks_completed: completedChunks, readable_chunks_total: totalChunks }),
     timestamp,
     run.id,
@@ -334,7 +318,7 @@ async function releaseForNextReadableChunk(
   ).run();
 }
 
-async function failReadableChunk(
+async function parkReadableChunkFailure(
   run: Row,
   owner: string,
   chunk: EventAiArtifactChunkRecord,
@@ -367,23 +351,6 @@ async function failReadableChunk(
           SET status = ?, error_code = ?, updated_at = ?
         WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
     ).bind(terminal ? "failed" : "queued", errorCode, timestamp, chunk.id, run.id),
-    getD1().prepare(
-      `UPDATE event_ai_artifact_runs
-          SET status = ?, next_attempt_at = ?, lease_owner = NULL, lease_expires_at = NULL,
-              error_code = ?, error_details_json = ?,
-              finished_at = CASE WHEN ? THEN ? ELSE finished_at END, updated_at = ?
-        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
-    ).bind(
-      terminal ? "failed" : "queued",
-      terminal ? "9999-12-31T23:59:59.999Z" : nextPoll(timestamp, 10_000),
-      errorCode,
-      JSON.stringify({ readable_chunk_index: chunk.chunk_index, ...safeIssue(error) }).slice(0, 64 * 1024),
-      terminal ? 1 : 0,
-      timestamp,
-      timestamp,
-      run.id,
-      owner,
-    ),
     getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return terminal ? "failed" : "pending";
@@ -435,38 +402,45 @@ function minimalContext(input: Awaited<ReturnType<typeof sourceSegmentsForArtifa
   };
 }
 
-async function processReadableTranscriptRun(
+async function finalizeReadableTranscript(
   run: Row,
   owner: string,
   source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  chunks: EventAiArtifactChunkRecord[],
+): Promise<boolean> {
+  if (!chunks.length || chunks.some((chunk) => chunk.status !== "succeeded")) return false;
+  const outputs = chunks.map((chunk) => JSON.parse(chunk.validated_output_json ?? "null"));
+  const merged = mergeReadableTranscriptChunks(String(run.event_id), outputs);
+  const validated = validateReadableTranscriptOutput(merged, {
+    eventId: String(run.event_id),
+    segments: source.segments,
+  }, { allowRawFallback: true });
+  if (!validated.output) {
+    throw new ModelOutputInvalidError(validated.issues, aggregateChunkUsage(chunks));
+  }
+  await persistReadableTranscriptArtifact(run, owner, validated.output, aggregateChunkUsage(chunks));
+  return true;
+}
+
+async function processReadableChunkAttempt(
+  run: Row,
+  owner: string,
+  source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  sourceChunks: ReturnType<typeof chunkReadableTranscriptSource>,
   provider: ReturnType<typeof createModelProvider>,
+  storedChunk: EventAiArtifactChunkRecord,
 ): Promise<"succeeded" | "pending" | "failed"> {
-  const sourceChunks = chunkReadableTranscriptSource(source.segments);
-  const storedChunks = await ensureReadableTranscriptChunks(run, sourceChunks);
-  const nextStoredChunk = storedChunks.find((chunk) => chunk.status !== "succeeded");
-  if (!nextStoredChunk) {
-    const outputs = storedChunks.map((chunk) => JSON.parse(chunk.validated_output_json ?? "null"));
-    const merged = mergeReadableTranscriptChunks(String(run.event_id), outputs);
-    const validated = validateReadableTranscriptOutput(merged, {
-      eventId: String(run.event_id),
-      segments: source.segments,
-    }, { allowRawFallback: true });
-    if (!validated.output) {
-      await failRun(run, owner, new ModelOutputInvalidError(validated.issues, aggregateChunkUsage(storedChunks)));
-      return "failed";
-    }
-    await persistReadableTranscriptArtifact(run, owner, validated.output, aggregateChunkUsage(storedChunks));
-    return "succeeded";
-  }
-  if (nextStoredChunk.status === "failed") {
-    await failRun(run, owner, new Error(nextStoredChunk.error_code ?? "READABLE_TRANSCRIPT_CHUNK_FAILED"));
-    return "failed";
-  }
-  const chunk = await leaseReadableChunk(run, owner, nextStoredChunk);
+  const chunk = await leaseReadableChunk(run, owner, storedChunk);
   if (!chunk) return "pending";
   const sourceChunk = sourceChunks[chunk.chunk_index];
   if (!sourceChunk) {
-    return failReadableChunk(run, owner, chunk, new Error("READABLE_TRANSCRIPT_CHUNK_MISSING"), false);
+    return parkReadableChunkFailure(
+      run,
+      owner,
+      chunk,
+      new Error("READABLE_TRANSCRIPT_CHUNK_MISSING"),
+      false,
+    );
   }
   const context = minimalContext({ ...source, segments: sourceChunk.segments });
   try {
@@ -482,45 +456,54 @@ async function processReadableTranscriptRun(
     }, { allowRawFallback: true });
     if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
     await persistReadableTranscriptChunk(run, owner, chunk.id, validated.output, result.usage);
-    const refreshed = await listReadableTranscriptChunks(String(run.id));
-    if (refreshed.every((item) => item.status === "succeeded")) {
-      const outputs = refreshed.map((item) => JSON.parse(item.validated_output_json ?? "null"));
-      const merged = mergeReadableTranscriptChunks(String(run.event_id), outputs);
-      const finalValidation = validateReadableTranscriptOutput(merged, {
-        eventId: String(run.event_id),
-        segments: source.segments,
-      }, { allowRawFallback: true });
-      if (!finalValidation.output) {
-        throw new ModelOutputInvalidError(finalValidation.issues, aggregateChunkUsage(refreshed));
-      }
-      await persistReadableTranscriptArtifact(
-        run,
-        owner,
-        finalValidation.output,
-        aggregateChunkUsage(refreshed),
-      );
-      return "succeeded";
-    }
-    await releaseForNextReadableChunk(
-      run,
-      owner,
-      refreshed.filter((item) => item.status === "succeeded").length,
-      refreshed.length,
-    );
-    return "pending";
+    return "succeeded";
   } catch (error) {
     if (error instanceof ModelBackgroundPendingError) {
-      await releaseReadablePending(run, owner, chunk, error.providerResponseId, error.providerStatus);
+      await parkReadableChunkPending(run, owner, chunk, error.providerResponseId);
       return "pending";
     }
     const currentChunk = (await listReadableTranscriptChunks(String(run.id)))
       .find((item) => item.id === chunk.id);
-    if (currentChunk?.status === "succeeded") {
-      await failRun(run, owner, error);
-      return "failed";
-    }
-    return failReadableChunk(run, owner, chunk, error, transient(error));
+    if (currentChunk?.status === "succeeded") return "succeeded";
+    return parkReadableChunkFailure(run, owner, chunk, error, transient(error));
   }
+}
+
+async function processReadableTranscriptRun(
+  run: Row,
+  owner: string,
+  source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  provider: ReturnType<typeof createModelProvider>,
+): Promise<"succeeded" | "pending" | "failed"> {
+  const sourceChunks = chunkReadableTranscriptSource(source.segments);
+  const storedChunks = await ensureReadableTranscriptChunks(run, sourceChunks);
+  if (storedChunks.some((chunk) => chunk.status === "failed")) {
+    const failed = storedChunks.find((chunk) => chunk.status === "failed");
+    throw new Error(failed?.error_code ?? "READABLE_TRANSCRIPT_CHUNK_FAILED");
+  }
+  if (await finalizeReadableTranscript(run, owner, source, storedChunks)) return "succeeded";
+
+  const nextStoredChunks = storedChunks
+    .filter((chunk) => chunk.status !== "succeeded")
+    .slice(0, READABLE_CHUNK_CONCURRENCY);
+  const outcomes = await Promise.all(nextStoredChunks.map((chunk) =>
+    processReadableChunkAttempt(run, owner, source, sourceChunks, provider, chunk)
+  ));
+  const refreshed = await listReadableTranscriptChunks(String(run.id));
+  if (refreshed.some((chunk) => chunk.status === "failed")) {
+    const failed = refreshed.find((chunk) => chunk.status === "failed");
+    throw new Error(failed?.error_code ?? "READABLE_TRANSCRIPT_CHUNK_FAILED");
+  }
+  if (await finalizeReadableTranscript(run, owner, source, refreshed)) return "succeeded";
+
+  await releaseForNextReadableChunk(
+    run,
+    owner,
+    refreshed.filter((chunk) => chunk.status === "succeeded").length,
+    refreshed.length,
+    outcomes.some((outcome) => outcome !== "succeeded") ? 5_000 : 0,
+  );
+  return outcomes.some((outcome) => outcome === "failed") ? "failed" : "pending";
 }
 
 async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | "pending" | "failed"> {

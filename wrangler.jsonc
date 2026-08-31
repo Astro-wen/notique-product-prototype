@@ -6,6 +6,9 @@
   "vars": {
     "APP_ENV": "production",
     "AUTH_GATEWAY": "public",
+    "AI_REASONING_EFFORT": "low",
+    "AI_VERIFIER_REASONING_EFFORT": "low",
+    "AI_TWO_PASS_PIPELINE": "1",
     "AI_DRAFT_CONTEXT": "0",
     "AI_VERIFICATION_USES_READABLE": "0"
   },
