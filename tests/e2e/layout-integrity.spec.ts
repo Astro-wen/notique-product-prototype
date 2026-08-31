@@ -63,6 +63,7 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  await expect.poll(() => page.locator(".sidebar").evaluate((node) => node.getBoundingClientRect().width)).toBeLessThanOrEqual(72);
 
   const layout = await page.evaluate(() => {
     const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();

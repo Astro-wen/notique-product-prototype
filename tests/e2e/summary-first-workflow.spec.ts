@@ -119,6 +119,10 @@ test("facts finishing preserves the open Summary and its scroll position", async
   apiFixture.completeSummary();
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
 
+  const expandSummary = page.locator(".summary-expand-button");
+  await expect(expandSummary).toHaveText("展开全部");
+  await expandSummary.click();
+  await expect(expandSummary).toHaveText("收起概要");
   const lastSummaryItem = page.getByText("A 摘要背景 24", { exact: true });
   await lastSummaryItem.scrollIntoViewIfNeeded();
   const sourceScrollY = await page.evaluate((mobile) => mobile
@@ -269,14 +273,12 @@ test("the summary and transcript are one continuous left-hand document without a
     return {
       summaryBeforeTranscript: summaryRect.top < transcriptRect.top,
       transcriptBeforeTurn: transcriptRect.top < firstTurnRect.top,
+      transcriptOffset: transcriptRect.top - documentNode.getBoundingClientRect().top,
       containsAll: documentNode.contains(summaryNode) && documentNode.contains(transcriptNode) && documentNode.contains(firstTurn),
     };
   });
-  expect(oneDocument).toEqual({
-    summaryBeforeTranscript: true,
-    transcriptBeforeTurn: true,
-    containsAll: true,
-  });
+  expect(oneDocument).toMatchObject({ summaryBeforeTranscript: true, transcriptBeforeTurn: true, containsAll: true });
+  expect(oneDocument?.transcriptOffset, "the collapsed intelligence section must leave the transcript in the first reading viewport").toBeLessThanOrEqual(520);
 });
 
 test("the transcript is a compact continuous document with stable speaker identity", async ({ page, apiFixture }, testInfo) => {
