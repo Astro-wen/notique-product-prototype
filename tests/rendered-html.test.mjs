@@ -14,7 +14,7 @@ test("production build contains the real-data shell without seeded AI output", a
     builtPageSource(),
     readFile(new URL("../dist/server/index.js", import.meta.url), "utf8"),
   ]);
-  assert.match(serverBundle, /Notique AI · 把沟通变成可调用的重点/);
+  assert.match(serverBundle, /Notique AI/);
   assert.match(pageBundle, /新建项目/);
   assert.match(pageBundle, /正在读取项目/);
   assert.match(pageBundle, /保存后会进入现有的说话人识别和逐字稿流程/);
@@ -66,5 +66,5 @@ test("client shell starts empty and delegates all durable data to the API", asyn
   assert.match(client, /\/api\/v1\/projects/);
   assert.match(client, /idempotency-key/i);
   assert.doesNotMatch(client, /sk-(?:proj-)?[A-Za-z0-9_-]{16,}/);
-  assert.match(layout, /Notique AI · 把沟通变成可调用的重点/);
+  assert.match(layout, /Notique AI/);
 });

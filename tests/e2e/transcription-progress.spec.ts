@@ -45,7 +45,7 @@ test("Raw readiness never overrides an explicit return to sources", async ({ pag
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
-  const sourcesTab = page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ });
+  const sourcesTab = page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ });
   await sourcesTab.click();
   await expect(sourcesTab).toHaveClass(/active/);
 

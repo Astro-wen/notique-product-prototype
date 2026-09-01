@@ -85,9 +85,11 @@ test("the first completed snapshot opens Raw and a refresh restores it without a
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
-  await page.locator(".meeting-tabs").getByRole("button", { name: /^待确认/ }).click();
+  // 待确认 lives only in the rail now; the reading page is already open.
   const rail = page.locator(".reader-action-rail");
   await expect(rail).toBeVisible();
+  await openOperationsOnMobile(page, testInfo);
+  await rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
   await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ })).toHaveAttribute("aria-pressed", "true");
   await expect(rail.getByRole("button", { name: "从第一条开始确认" })).toBeVisible();
   await rail.locator(".rail-pending-list").getByText("预算上限是 120 万美元", { exact: true }).click();
@@ -125,7 +127,7 @@ test("a completed Summary never closes an open direct-recording material interac
   });
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
-  const materialsTab = page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ });
+  const materialsTab = page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ });
   await materialsTab.click();
   await expect(materialsTab).toHaveClass(/active/);
   await page.getByRole("button", { name: "添加材料", exact: true }).click();
@@ -135,7 +137,7 @@ test("a completed Summary never closes an open direct-recording material interac
   apiFixture.completeSummary();
 
   await expect(page.getByRole("region", { name: "直接录音" })).toBeVisible();
-  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
+  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ })).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
   expect(apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch")).toEqual([]);
 });
@@ -639,7 +641,7 @@ test("briefly viewing sources keeps the selected point and warm transcript state
   await target.locator(".summary-point-copy").click();
   const transcriptReads = apiFixture.completedReadCount("/api/v1/events/event-a/transcript-segments");
 
-  await page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ }).click();
+  await page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ }).click();
   await page.getByRole("button", { name: /^本次重点/ }).click();
 
   await expect(page.locator(".selected-point-card")).toContainText("预算上限是 120 万美元");
@@ -717,9 +719,9 @@ test("workspace Transcript selection is routed and leaving Transcript clears the
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
 
-  await page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ }).click();
+  await page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ }).click();
   await expect(page).toHaveURL(/view=simple(?!.*readingTab)/);
-  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^来源/ })).toHaveClass(/active/);
+  await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ })).toHaveClass(/active/);
 });
 
 test("a new processing Summary Run never renders an older Run's Artifact", async ({ page, apiFixture }) => {

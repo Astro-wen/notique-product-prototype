@@ -79,9 +79,6 @@ img { max-width: 100%; }
 .sidebar-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sidebar nav button:hover { background: #eef1f5; }
 .sidebar nav button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
-.sidebar-note { margin-top: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: #f0f3f7; padding: 12px; }
-.sidebar-note strong { font-size: var(--text-sm); }
-.sidebar-note p { margin: 6px 0 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
 .mobile-header { display: none; }
 .mobile-header .brand > svg { width: 21px; height: 21px; color: var(--brand-green); }
 .icon-button svg { width: 18px; height: 18px; }
@@ -95,14 +92,12 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .sidebar-collapsed .sidebar .account { grid-template-columns: 1fr; justify-items: center; padding: 0; }
   .sidebar-collapsed .sidebar nav button { justify-content: center; padding: 0; }
   .sidebar-collapsed .sidebar-label,
-  .sidebar-collapsed .sidebar-nav-label,
-  .sidebar-collapsed .sidebar-note { display: none; }
+  .sidebar-collapsed .sidebar-nav-label { display: none; }
   .immersive-workspace .sidebar { width: 68px; padding-right: 10px; padding-left: 10px; }
   .immersive-workspace .sidebar-toggle,
   .immersive-workspace .sidebar-label,
   .immersive-workspace .sidebar .account .sidebar-label,
-  .immersive-workspace .sidebar-nav-label,
-  .immersive-workspace .sidebar-note { display: none; }
+  .immersive-workspace .sidebar-nav-label { display: none; }
   .immersive-workspace .sidebar .brand,
   .immersive-workspace .sidebar .account,
   .immersive-workspace .sidebar nav button { justify-content: center; padding-right: 0; padding-left: 0; }
@@ -907,6 +902,14 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .debug-json.small { margin: 12px 15px 0; background: #f4f5f7; color: #303640; }
 
 .glossary-panel { margin-top: 14px; padding: 16px; }
+.glossary-panel > summary { cursor: pointer; list-style: none; display: grid; gap: var(--space-1); }
+.glossary-panel > summary::-webkit-details-marker { display: none; }
+.glossary-panel > summary h2 { margin: 0; display: inline-flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-md); }
+.glossary-panel > summary h2 em { color: var(--muted); font-size: var(--text-xs); font-style: normal; }
+.glossary-panel > summary h2::after { content: "＋"; margin-left: var(--space-1); color: var(--muted); font-size: var(--text-sm); }
+.glossary-panel[open] > summary h2::after { content: "−"; }
+.glossary-panel > summary p { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+.glossary-panel[open] > summary { margin-bottom: var(--space-3); }
 .glossary-layout { display: grid; grid-template-columns: minmax(240px, 0.75fr) minmax(0, 1.25fr); gap: var(--space-4); align-items: start; }
 .glossary-form { border-radius: var(--radius-md); background: #f7f9fb; padding: 13px; display: grid; gap: var(--space-3); }
 .glossary-form .field textarea { min-height: 82px; }

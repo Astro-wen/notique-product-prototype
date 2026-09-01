@@ -172,8 +172,11 @@ test("a new artifact or transcript revision invalidates stale rail actions and p
 
 test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {
   assert.match(page, /aria-label="本次重点"/);
-  assert.match(page, /aria-label="待确认"/);
+  assert.match(page, /aria-label="材料"/);
   assert.match(page, /aria-label="整个项目"/);
+  // 待确认 lives only in the action rail. The old top-bar entry opened the
+  // same reading page and merely pre-selected the rail's own sub-tab.
+  assert.doesNotMatch(page, /aria-label="待确认"/);
   assert.doesNotMatch(page, /meeting-more-menu|meeting-more-trigger/, "the workspace nav must not hide entries behind a dropdown");
   assert.doesNotMatch(styles, /\.meeting-more-menu|\.meeting-more-trigger/);
   assert.match(page, /className="meeting-tabs-scope"/, "event scope and project scope stay visually separated");

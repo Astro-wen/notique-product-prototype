@@ -60,10 +60,13 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   ]);
   assert.match(page, /simple-meeting-rail/);
   assert.match(page, /meeting-tabs/);
-  assert.match(page, /aria-label="来源"/);
-  assert.match(page, />来源 </);
+  // 材料 names the files of this communication; the rail's 来源 names a
+  // quote's origin. One word no longer means two things on one screen, and
+  // 待确认 lives only in the rail where the list itself is.
+  assert.match(page, /aria-label="材料"/);
+  assert.match(page, />材料 </);
   assert.match(page, /aria-label="本次重点"/);
-  assert.match(page, /aria-label="待确认"/);
+  assert.doesNotMatch(page, /aria-label="待确认"/);
   assert.match(page, /aria-label="整个项目"/);
   assert.match(page, /<DirectRecorder/);
   assert.match(page, /直接录音/);

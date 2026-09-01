@@ -395,7 +395,7 @@ const secondaryResultTabs: Array<{ key: ResultTab; label: string; short: string 
   { key: "open-questions", label: "待确认问题", short: "问题" },
   { key: "risks", label: "风险与矛盾", short: "风险" },
   { key: "gap-check", label: "资料缺口", short: "缺口" },
-  { key: "next-meeting-agenda", label: "下次沟通清单", short: "清单" },
+  { key: "next-meeting-agenda", label: "待跟进", short: "跟进" },
 ];
 
 const resultTabs = [...primaryResultTabs, ...secondaryResultTabs];
@@ -1645,7 +1645,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const agendaItems = recordArray(data.agendaItems);
     const missing = Number(data.missingSlotCount ?? data.missing_slot_count ?? 0);
     if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="下次沟通速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
-    return <div className="brief-grid"><div className="brief-overview-action"><div><span className="section-kicker">下一步</span><strong>需要更多细节？</strong><p>完整报告会展开事项概况、时间线、决定、偏好、问题、风险和下次沟通清单。</p></div><button className="button secondary" onClick={() => onSelect("folder-summary")}>查看完整报告</button></div>
+    return <div className="brief-grid"><div className="brief-overview-action"><div><span className="section-kicker">下一步</span><strong>需要更多细节？</strong><p>完整报告包含事项概况、决定、偏好、问题、风险与待跟进。</p></div><button className="button secondary" onClick={() => onSelect("folder-summary")}>查看完整报告</button></div>
       <BriefGroup title="当前最重要的情况" items={stateItem ? [stateItem] : []} kind="state" empty="还没有可用记录" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="最近变化" items={deltaItems} kind="delta" empty="还没有变化" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="下次要问" items={agendaItems} kind="agenda" empty="还没有待确认事项" onOpenClaim={onOpenClaim} onSelect={onSelect} />
@@ -4915,7 +4915,6 @@ export default function Home() {
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon"><Settings2 aria-hidden="true" /></span><span className="sidebar-nav-label">高级工具</span></button>
           {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
-        <div className="sidebar-note"><strong>个人项目秘书</strong><p>导入一次沟通，自动整理重点；在同一页对照原音、手写笔记和行动。</p></div>
       </aside>
       <header className="mobile-header"><button className="brand" onClick={goSimple}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具"><MoreHorizontal aria-hidden="true" /></button></header>
       <main>
@@ -7252,9 +7251,13 @@ function SimpleTestScreen({
           </header>
 
           <nav className="meeting-tabs" aria-label="当前沟通内容">
-            <button aria-label="本次重点" aria-current={activeTab === "transcript" ? "page" : undefined} className={activeTab === "transcript" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b></button>
-            <button aria-label="来源" aria-current={activeTab === "materials" ? "page" : undefined} className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>来源 <span>{visibleAssets.length}</span></button>
-            <button aria-label="待确认" className={activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("review")}>待确认{pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            {/* 待确认 lives only in the action rail: the old top-bar entry
+                opened the same reading page and merely pre-selected the rail's
+                own sub-tab, so two controls with one name did one job. 材料
+                also stops sharing a name with the rail's 来源 (the quote's
+                origin) — the two mean different things. */}
+            <button aria-label="本次重点" aria-current={activeTab === "transcript" || activeTab === "review" ? "page" : undefined} className={activeTab === "transcript" || activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}><b>本次重点</b>{pendingCount > 0 && <span>{pendingCount}</span>}</button>
+            <button aria-label="材料" aria-current={activeTab === "materials" ? "page" : undefined} className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
             <span className="meeting-tabs-scope" aria-hidden="true" />
             <button aria-label="整个项目" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<ArrowRight aria-hidden="true" /></button>
           </nav>
@@ -7290,7 +7293,7 @@ function SimpleTestScreen({
 
           {!factsRunningInBackground && factsCanBeReviewed && activeTab === "materials" && <aside className="workflow-reading-banner ready" aria-live="polite">
             <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
-            <div><strong>事实识别已经完成</strong><p>你可以继续阅读当前摘要，重要内容已经可以核对；系统不会把你从这里跳走。</p></div>
+            <div><strong>事实识别完成</strong><p>重要内容可以开始确认。</p></div>
             <span className="workflow-reading-actions">
               {readingAid === "raw" && <button className="text-button" onClick={() => openReadingAid("raw")}>查看原始逐字稿</button>}
               <button className="button secondary" onClick={() => selectWorkspaceTab("review")}>查看待确认内容</button>
@@ -7436,16 +7439,14 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
       {project.scenarioStatus === "confirmed" && <section className="project-status-row"><div><span className="section-kicker">已确认使用场景</span><strong>{project.scenario?.label || project.scenario?.key || "已确认"}</strong></div><button className="button secondary" onClick={() => onResults("folder-summary")}>打开当前结果</button></section>}
       <div className="project-screen-grid">
         <section className="panel event-panel">
-          <div className="section-heading"><div><h2>沟通记录</h2><p>每份 Transcript 对应一次真实发生的沟通。</p></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
+          <div className="section-heading"><div><h2>沟通记录</h2></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
           {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><ChevronRight aria-hidden="true" /></button>)}</div>}
         </section>
         <aside className="project-rail">
-          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待确认` : "待确认内容"}</h2><p>AI 提取的内容先留在确认区。只有你确认的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开确认区</button></section>
-          <section className="panel action-panel"><h2>已确认结果</h2><p>事项概况、变化、决定、偏好、问题和风险都只读取已确认记录。</p><button className="button secondary full" onClick={() => onResults("folder-summary")}>查看全部结果</button></section>
+          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待确认` : "待确认内容"}</h2><p>只有确认过的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开确认区</button></section>
         </aside>
       </div>
       <GlossaryPanel projectId={project.id} />
-      <section className="result-shortcuts"><div className="section-heading"><div><h2>下次沟通准备</h2><p>从当前记录快速准备下一次沟通。</p></div></div><div>{resultTabs.slice(1).map((tab) => <button key={tab.key} onClick={() => onResults(tab.key)}><span aria-hidden="true">{resultTabIcon(tab.key)}</span><strong>{tab.label}</strong><ChevronRight aria-hidden="true" /></button>)}</div></section>
     </div>
   );
 }
@@ -7578,14 +7579,8 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section className="panel glossary-panel">
-      <div className="section-heading">
-        <div>
-          <span className="section-kicker">项目设置</span>
-          <h2>词汇表</h2>
-          <p>记录正确写法和常见变体。启用的人工词条会用于后续材料分析。</p>
-        </div>
-      </div>
+    <details className="panel glossary-panel">
+      <summary><span className="section-kicker">项目设置</span><h2>词汇表{entries.length > 0 && <em>{entries.length} 条</em>}</h2><p>人名、公司名等易写错词条，用于后续材料分析。</p></summary>
       {issue && <ErrorNotice issue={issue} onRetry={load} compact />}
       <div className="glossary-layout">
         <div className="glossary-form">
@@ -7611,7 +7606,7 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
           </article>)}
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -8150,7 +8145,7 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack,
   const content = <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} onCompleteAction={onCompleteAction} onDecideDraftLink={onDecideDraftLink} onOpenAiSuggestions={onOpenAiSuggestions} onAddAction={onAddAction} busyAction={busy} />;
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="整个项目" body="项目概览逐条标明 AI 草稿或已确认；时间线、下一步和下次沟通准备只使用已经确认的内容。" back={onBack} backLabel={backLabel} />
+      <PageHeader eyebrow={project?.name} title="整个项目" body="报告只读取已确认内容；AI 草稿逐条标明状态。" back={onBack} backLabel={backLabel} />
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待确认。它们仍在确认区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div><div className="result-nav-secondary"><strong>其他视图</strong><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div></div></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在读取${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
