@@ -5782,6 +5782,25 @@ function TranscriptArtifactsPanel({
   const filteredRawGroups = rawDisplayGroups.filter(groupMatchesFilters);
   const visibleReadableGroups = filteredReadableGroups.slice(0, visibleTranscriptGroups);
   const visibleRawGroups = filteredRawGroups.slice(0, visibleTranscriptGroups);
+  /**
+   * Chapters are a table of contents for the recording, so they follow the
+   * transcript's clock rather than the order the model happened to emit its
+   * sections in. A section whose sources cannot be located keeps its original
+   * position at the end instead of being dropped.
+   */
+  const orderedSummaryChapters = summarySections
+    .map((section, sectionIndex) => {
+      const sourceIds = recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids));
+      const startMs = rawDisplayGroups.find((group) => group.sourceIds.some((id) => sourceIds.includes(id)))?.startMs;
+      return { section, sectionIndex, startMs: typeof startMs === "number" ? startMs : null };
+    })
+    .sort((left, right) => {
+      if (left.startMs == null && right.startMs == null) return left.sectionIndex - right.sectionIndex;
+      if (left.startMs == null) return 1;
+      if (right.startMs == null) return -1;
+      return left.startMs - right.startMs || left.sectionIndex - right.sectionIndex;
+    });
+
   const speakerSummaries = [...speakerBuckets.entries()].map(([key, groups]) => {
     const speaker = displaySpeakerLabel(groups[0]?.speaker);
     const assetVersionId = groups[0]?.assetVersionId ?? null;
@@ -6320,9 +6339,9 @@ function TranscriptArtifactsPanel({
               returnFocusId: sourceTriggerId,
             };
             return <article className={`summary-reveal-line${selectedPoint?.key === pointKey ? " selected" : ""}`} style={{ animationDelay: `${Math.min(revealIndex, 12) * 85}ms` }} key={pointKey}>
-              <button id={sourceTriggerId} className="summary-point-copy" onClick={() => selectSummaryPoint(point)}><mark>{summaryText}</mark><q>{supportQuote}</q><span>在右侧查看与处理</span></button>
+              <button id={sourceTriggerId} className="summary-point-copy" onClick={() => selectSummaryPoint(point)}><mark>{summaryText}</mark><q>{supportQuote}</q><span>查看与处理</span></button>
               <div className="summary-point-actions">
-                {matchedClaim && <button className="text-button" onClick={() => selectClaimInRail(matchedClaim)}>{matchedClaim.reviewStatus === "pending" ? "在右侧确认" : "在右侧查看"}</button>}
+                {matchedClaim && <button className="text-button" onClick={() => selectClaimInRail(matchedClaim)}>{matchedClaim.reviewStatus === "pending" ? "确认这条" : "查看这条"}</button>}
                 {availableMatchedClaims.length > 1 && <details className="summary-related-claims">
                   <summary className="text-button">{availableMatchedClaims.some((claim) => claim.reviewStatus === "pending") ? "查看相关待核对内容" : "查看相关核对结果"}（{availableMatchedClaims.length}）</summary>
                   <div>{availableMatchedClaims.map((claim) => <button className="text-button" key={claim.id} onClick={() => selectClaimInRail(claim)}><span>{claim.statement}</span><StatusBadge value={claim.reviewStatus} /></button>)}</div>
@@ -6337,9 +6356,9 @@ function TranscriptArtifactsPanel({
       </div> : summaryRun?.status === "failed" ? <div className="summary-card-message failed"><h3>AI 摘要未通过安全检查</h3><span>系统拦下了引用或结构不可靠的版本。事实识别和原始逐字稿都已保留。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>单独重新生成</button></div> : provisionalTranscriptVisible ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" aria-hidden="true" /><span><strong>逐字稿正在继续补充</strong><small>全文校验后会自动生成概要；现在可以先阅读稳定片段。</small></span></div></div> : analysisRunning ? <div className="summary-card-loading" role="status"><div className="summary-loading-copy"><span className="spinner" aria-hidden="true" /><span><strong>正在整理全文概要</strong><small>{availableRawSegments.length ? "可先查看原稿" : "内容完成后自动更新"}</small></span></div></div> : analysisComplete ? <div className="summary-card-message"><strong>还没有 AI 摘要</strong><span>这次分析还没有可用的摘要版本，可以单独重新生成。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成 AI 摘要</button></div> : <div className="summary-card-message"><strong>{availableRawSegments.length ? "逐字稿已经准备好" : "还没有可阅读的内容"}</strong><span>系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试。</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void startAnalysisAndLoadArtifacts().catch(() => undefined)}>{busy === "extraction" ? "正在启动分析…" : "重新启动分析"}</button></div>}
     </section>}
 
-    {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="按类型速览">
-      <header><div><span className="section-kicker">按类型速览</span><h2>按信息类型快速回到上下文</h2></div><span>{summarySections.length} 个类型</span></header>
-      {summaryArtifact && summarySections.length ? <div>{summarySections.map((section, sectionIndex) => {
+    {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
+      <header><div><span className="section-kicker">章节速览</span><h2>按时间顺序回到原文</h2></div><span>{summarySections.length} 个章节</span></header>
+      {summaryArtifact && summarySections.length ? <div>{orderedSummaryChapters.map(({ section, sectionIndex }) => {
         const sectionKind = firstString(section, ["kind"]) || "";
         const items = recordArray(section.items);
         const sourceIds = items.flatMap((item) => stringValues(item.source_segment_ids));
@@ -6423,7 +6442,7 @@ function TranscriptArtifactsPanel({
           <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta">
             <span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span>
             <strong>{displaySpeakerLabel(group.speaker)}</strong>
-            <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button>
+            {audioAssetIdForVersion(group.assetVersionId) ? <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} onClick={() => playAt(group.startMs, group.key, "readable", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button> : <time className="transcript-turn-time">{compactTranscriptTimestamp(group.startMs)}</time>}
             {group.interruptionMarker && <em className="transcript-interruption-marker">{group.interruptionMarker}</em>}
             {group.needsCheck && <em>请核对</em>}
             {!showingProvisionalReadable && (group.edits.length > 0 || group.needsCheck) && <details className="readable-more">
@@ -6431,7 +6450,7 @@ function TranscriptArtifactsPanel({
               <div><button className="text-button" onClick={() => { setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(group.sourceIds) }); selectArtifactTab("raw"); }}>查看原文</button><button className="text-button" onClick={() => toggleReadableDiff(diffKey, group.sourceIds, group.text)}>{openDiffs.has(diffKey) ? "收起差异" : "查看差异"}</button></div>
             </details>}
           </div>
-          <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-disabled={showingProvisionalReadable || undefined} aria-pressed={selectedPoint?.key === `readable-${group.key}`} onClick={() => { if (!showingProvisionalReadable) selectTranscriptGroup(group, "readable"); }}><span>{group.text}</span><small className="visually-hidden">{showingProvisionalReadable ? "稳定片段预览" : "在右侧处理"}</small></button>
+          <button className="transcript-copy-button" data-testid="transcript-turn-body" aria-disabled={showingProvisionalReadable || undefined} aria-pressed={selectedPoint?.key === `readable-${group.key}`} onClick={() => { if (!showingProvisionalReadable) selectTranscriptGroup(group, "readable"); }}><span>{group.text}</span><small className="visually-hidden">{showingProvisionalReadable ? "稳定片段预览" : "打开处理面板"}</small></button>
           {!showingProvisionalReadable && openDiffs.has(diffKey) && <ReadableTranscriptDiff state={readableDiffs[diffKey]} edits={group.edits} needsCheck={group.needsCheck} />}
         </article>;
       })}{filteredReadableGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的段落</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredReadableGroups.length > visibleReadableGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredReadableGroups.length - visibleReadableGroups.length)} 段</button>}</> : <ArtifactFallback kind="readable_transcript" run={readableRun} busy={busy} analysisRunning={analysisRunning} analysisComplete={analysisComplete} rawAvailable={availableRawSegments.length > 0} onStartAnalysis={startAnalysisAndLoadArtifacts} onRetry={async () => {
@@ -6450,8 +6469,8 @@ function TranscriptArtifactsPanel({
         const provisional = group.assetVersionId === provisionalTranscriptVersionId;
         return <article data-testid="transcript-turn" id={`raw-group-${group.sourceIds[0]}`} tabIndex={selected ? -1 : undefined} ref={(node) => registerPlaybackNode(groupPlaybackKey, node)} className={`transcript-turn ${speakerToneClass(group)}${provisional ? " preview-only" : ""}${selected ? " selected" : ""}${playing ? " playing" : ""}`} aria-current={playing ? "true" : undefined} key={group.key}>
           {group.sourceIds.map((id) => <span className="raw-segment-anchor" id={`raw-segment-${id}`} key={id} aria-hidden="true" />)}
-          <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong><button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} disabled={!audioAssetIdForVersion(group.assetVersionId)} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button>{group.interruptionMarker && <em className="transcript-interruption-marker">{group.interruptionMarker}</em>}</div>
-          <button className={`transcript-copy-button${provisional ? " preview-only" : ""}`} data-testid="transcript-turn-body" aria-disabled={provisional || undefined} aria-pressed={selected} onClick={() => { if (!provisional) selectTranscriptGroup(group, "raw"); }}><span>{group.text}</span><small className="visually-hidden">{provisional ? "稳定片段预览" : "在右侧处理"}</small></button>
+          <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong>{audioAssetIdForVersion(group.assetVersionId) ? <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button> : <time className="transcript-turn-time">{compactTranscriptTimestamp(group.startMs)}</time>}{group.interruptionMarker && <em className="transcript-interruption-marker">{group.interruptionMarker}</em>}</div>
+          <button className={`transcript-copy-button${provisional ? " preview-only" : ""}`} data-testid="transcript-turn-body" aria-disabled={provisional || undefined} aria-pressed={selected} onClick={() => { if (!provisional) selectTranscriptGroup(group, "raw"); }}><span>{group.text}</span><small className="visually-hidden">{provisional ? "稳定片段预览" : "打开处理面板"}</small></button>
         </article>;
       })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "loading" ? <div className="reader-section-empty" role="status"><span className="spinner" aria-hidden="true" /><strong>正在读取逐字稿…</strong></div> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已经显示的摘要或其他内容不受影响。</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
     </div>}
@@ -6485,7 +6504,7 @@ function TranscriptArtifactsPanel({
             <section className="rail-source-section">
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
               {selectedSourceGroups.length ? selectedSourceGroups.map((group) => <article key={group.key}>
-                <button aria-label={transcriptPlaybackLabel(group.startMs, "播放原话")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)} disabled={!audioAssetIdForVersion(group.assetVersionId)}><Play aria-hidden="true" />{compactTranscriptTimestamp(group.startMs)}</button><strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
+                {audioAssetIdForVersion(group.assetVersionId) ? <button aria-label={transcriptPlaybackLabel(group.startMs, "播放原话")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}><Play aria-hidden="true" />{compactTranscriptTimestamp(group.startMs)}</button> : <time className="transcript-turn-time">{compactTranscriptTimestamp(group.startMs)}</time>}<strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
               </article>) : <p className="rail-muted">来源编号已保留，原句仍在完整逐字稿中。</p>}
               {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds)}>在逐字稿中定位</button>}
             </section>
@@ -6504,7 +6523,7 @@ function TranscriptArtifactsPanel({
                       className="confirm"
                       disabled={Boolean(busy) || confirmNeedsDetail || verdictsLocked}
                       aria-describedby={verdictsLocked ? "rail-verdict-lock" : confirmNeedsDetail ? `rail-review-warning-${claim.id}` : undefined}
-                      title={confirmNeedsDetail || verdictsLocked ? undefined : "已在右侧看到原话，可直接确认"}
+                      title={confirmNeedsDetail || verdictsLocked ? undefined : "原话已在本次操作面板中，可直接确认"}
                       onClick={() => onQuickVerdict(claim.id, "confirm", displayedSourceIds)}
                     ><Check aria-hidden="true" />确认</button>
                     <button disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", displayedSourceIds)}><X aria-hidden="true" />不采纳</button>
@@ -6543,7 +6562,7 @@ function TranscriptArtifactsPanel({
           {!projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
           {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
             const actionClaim = claims.find((claim) => claim.id === action.claim_id);
-            return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>在右侧查看来源</button></span></article>;
+            return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>;
           })}</div>}
         </div>}
       </aside>

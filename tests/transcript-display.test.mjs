@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readFileSync } from "node:fs";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
 const source = readFileSync(new URL("../app/transcript-display.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, {
@@ -264,4 +265,35 @@ test("原稿安全回退不会再被易读版清理或隐藏", () => {
   assert.deepEqual(groups.map((group) => group.text), ["Uh, I would", "Okay.", "say yes."]);
   assert.deepEqual(groups.flatMap((group) => group.sourceIds), ["seg-1", "seg-2", "seg-3"]);
   assert.equal(groups.some((group) => group.edits.some((edit) => edit.kind === "filler")), false);
+});
+
+test("chapter overview follows the recording clock, not the model's section order", () => {
+  // 章节速览 is a table of contents for the recording: the reader picks a time
+  // and lands there. The model emits its sections grouped by kind, so rendering
+  // that order verbatim printed timestamps out of sequence (0:00, 0:15, 1:43,
+  // 1:20) and made them useless for navigation.
+  const chapters = declarationSource("orderedSummaryChapters");
+  assert.match(chapters, /rawDisplayGroups\.find/, "each chapter still resolves a real transcript start");
+  assert.match(chapters, /left\.startMs - right\.startMs/, "chapters sort by transcript time");
+  assert.match(chapters, /left\.startMs == null\) return 1/, "a chapter without a locatable start sinks to the end");
+  assert.match(chapters, /left\.sectionIndex - right\.sectionIndex/, "ties keep a stable order");
+
+  assert.match(uiSource, /orderedSummaryChapters\.map\(\(\{ section, sectionIndex \}\)/, "the panel renders the ordered list");
+  assert.doesNotMatch(uiSource, /按类型速览/, "the panel is a chapter list, not a type list");
+});
+
+test("a timestamp is a seek control only when a recording backs it", () => {
+  // The e2e fixture never links an audio asset to a transcript version, so this
+  // rule is asserted here rather than with a test that cannot reach the case.
+  for (const surface of ["readable", "raw"]) {
+    const marker = `playAt(group.startMs, group.key, "${surface}", group.assetVersionId)`;
+    assert.ok(uiSource.includes(marker), `${surface} turns still seek the recording`);
+  }
+  // Every seek button is guarded by a resolved audio asset, and the fallback is
+  // a plain timestamp rather than a control that can never do anything.
+  const guarded = [...uiSource.matchAll(/audioAssetIdForVersion\(group\.assetVersionId\) \? <button/g)];
+  assert.equal(guarded.length, 3, "all three timestamp sites are guarded");
+  const fallbacks = [...uiSource.matchAll(/<time className="transcript-turn-time">/g)];
+  assert.equal(fallbacks.length, 3, "each guarded site falls back to a plain timestamp");
+  assert.doesNotMatch(uiSource, /disabled=\{!audioAssetIdForVersion/, "no permanently disabled play control remains");
 });

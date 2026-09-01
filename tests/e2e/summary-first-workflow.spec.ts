@@ -387,11 +387,15 @@ test("390px keeps the continuous document usable and every primary transcript co
 
   const firstTurn = page.getByTestId("transcript-turn").first();
   const body = firstTurn.getByTestId("transcript-turn-body");
-  const timestamp = firstTurn.getByRole("button", { name: /前三秒播放/ });
   const tools = page.getByRole("button", { name: "搜索和筛选逐字稿" });
   await expect(firstTurn).toBeVisible();
 
-  for (const [name, target] of [["原话", body], ["时间点", timestamp], ["搜索与筛选", tools]] as const) {
+  // This import carries no recording, so its timestamp is a label. Offering a
+  // permanently disabled play control instead only looks like a broken button.
+  await expect(firstTurn.getByRole("button", { name: /前三秒播放/ })).toHaveCount(0);
+  await expect(firstTurn.locator("time.transcript-turn-time").first()).toBeVisible();
+
+  for (const [name, target] of [["原话", body], ["搜索与筛选", tools]] as const) {
     const box = await target.boundingBox();
     expect(box, `${name} control should have layout`).not.toBeNull();
     expect(box?.height ?? 0, `${name} control should be at least 40px high`).toBeGreaterThanOrEqual(40);
@@ -554,7 +558,7 @@ test("chapter and speaker insights stay selected above the same transcript docum
   const topics = page.getByRole("button", { name: "章节速览", exact: true });
   await topics.click();
   await expect(topics).toHaveClass(/active/);
-  await expect(page.getByRole("heading", { name: "按信息类型快速回到上下文" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "按时间顺序回到原文" })).toBeVisible();
   await expect(page).toHaveURL(/readingTab=summary/);
 
   await expect(page.locator("#transcript-document")).toBeVisible();
