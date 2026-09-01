@@ -72,7 +72,10 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   assert.match(page, /直接录音/);
   assert.match(page, /上传已有录音/);
   assert.match(page, /查看本次运行详情/);
-  assert.match(page, /高级工具/);
+  // The sidebar names the surface for what it is: the project list and
+  // per-project settings, not a mystery toolbox.
+  assert.match(page, /项目管理/);
+  assert.doesNotMatch(page, /高级工具/);
   assert.match(styles, /\.simple-workspace/);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-event-select \{ display: grid !important; \}/);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-meeting-rail \{ display: none; \}/);

@@ -2351,13 +2351,13 @@ test("AI draft stays outside the ledger and human missed facts require canonical
   assert.match(repository, /review_status[\s\S]{0,300}'pending'/);
   assert.match(repository, /source[\s\S]{0,300}'human'/);
   assert.match(repository, /structural_validation_status[\s\S]{0,180}'valid'/);
+  // The standalone draft page is absorbed into the workspace; the ledger
+  // boundary is asserted through the surfaces that remain.
   for (const label of [
-    "AI 沟通信息初稿",
-    "这份初稿基本可用",
-    "AI 漏掉了重要信息",
-    "核对重要内容",
+    "从第一条开始确认",
     "本轮确认完成",
   ]) {
-    assert.match(page, new RegExp(label), `guided draft UI is missing ${label}`);
+    assert.match(page, new RegExp(label), `guided review UI is missing ${label}`);
   }
+  assert.doesNotMatch(page, /AiDraftScreen/, "the draft page must stay retired");
 });

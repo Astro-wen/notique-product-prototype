@@ -49,11 +49,15 @@ test("report evidence returns to the exact report tab", () => {
   assert.equal(isReadonlyClaimRoute(route), true);
 });
 
-test("review and event claims have deterministic fallback destinations", () => {
+test("review and absorbed-view claims fall back into one workspace", () => {
   assert.equal(fallbackBackRoute({ view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "review" }).view, "review");
-  assert.equal(backLabelForRoute({ view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "review" }), "返回审核列表");
-  assert.equal(fallbackBackRoute({ view: "claim", projectId: "p", eventId: "e", claimId: "c" }).view, "event");
-  assert.equal(fallbackBackRoute({ view: "run-debug", projectId: "p", eventId: "e", runId: "r" }).view, "event");
+  assert.equal(backLabelForRoute({ view: "claim", projectId: "p", eventId: "e", claimId: "c", origin: "review" }), "返回待确认");
+  // The event page is absorbed: everything that used to fall back to it
+  // lands on the workspace with the same communication selected.
+  assert.equal(fallbackBackRoute({ view: "claim", projectId: "p", eventId: "e", claimId: "c" }).view, "simple");
+  assert.equal(fallbackBackRoute({ view: "run-debug", projectId: "p", eventId: "e", runId: "r" }).view, "simple");
+  assert.equal(parseAppRoute("?project=p&event=e&view=event").view, "simple");
+  assert.equal(parseAppRoute("?project=p&event=e&view=draft").view, "simple");
 });
 
 test("a claim opened from the AI summary round-trips its reading source", () => {
@@ -114,11 +118,11 @@ test("all reading tabs survive a simple-route refresh and unknown values fail sa
 
 test("a Claim deep link without a persisted reading source does not pretend it came from Summary", () => {
   const route = parseAppRoute("?project=p&event=e&view=claim&claim=c");
-  assert.equal(backLabelForRoute(route), "返回本次沟通");
-  assert.equal(fallbackBackRoute(route).view, "event");
+  assert.equal(backLabelForRoute(route), "返回工作台");
+  assert.equal(fallbackBackRoute(route).view, "simple");
 
   const legacySimpleOrigin = parseAppRoute("?project=p&event=e&view=claim&claim=c&origin=simple");
-  assert.equal(backLabelForRoute(legacySimpleOrigin), "返回核心工作台");
+  assert.equal(backLabelForRoute(legacySimpleOrigin), "返回工作台");
 });
 
 test("only the core workspace is eligible for guided auto-navigation", () => {

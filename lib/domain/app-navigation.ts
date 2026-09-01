@@ -114,9 +114,18 @@ function optionalParam(params: URLSearchParams, key: string): string | undefined
   return value || undefined;
 }
 
+/**
+ * Views the workspace has absorbed. The AI-draft page duplicated the summary
+ * and the rail's pending list; the event page duplicated the workspace with
+ * less on it. Old URLs stay valid and land on the workspace with the same
+ * project and communication selected.
+ */
+const absorbedViews = new Set<AppView>(["draft", "event"]);
+
 export function normalizeAppRoute(route: AppRoute): AppRoute {
+  const requestedView = appViews.has(route.view) ? route.view : "simple";
   const next: AppRoute = {
-    view: appViews.has(route.view) ? route.view : "simple",
+    view: absorbedViews.has(requestedView) ? "simple" : requestedView,
     ...(route.projectId && route.view !== "projects" ? { projectId: route.projectId } : {}),
   };
 
@@ -202,31 +211,25 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
           ...(route.originReadingTab ? { readingTab: route.originReadingTab } : {}),
         });
       }
-      if (route.origin === "draft") return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
-      if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
-      if (route.origin === "event") return normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" });
+      if (route.origin === "draft") return normalizeAppRoute({ view: "simple", ...project, ...event });
+      if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "simple" });
+      if (route.origin === "event") return normalizeAppRoute({ view: "simple", ...project, ...event });
       return route.eventId
-        ? normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" })
+        ? normalizeAppRoute({ view: "simple", ...project, ...event })
         : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
     }
     case "run-debug":
-      return route.eventId
-        ? normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" })
-        : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
-    case "event":
-      return normalizeAppRoute({ view: "project", ...project, origin: "projects" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "project":
       return { view: "projects" };
-    case "draft":
-      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "review":
-      return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "results":
       return route.origin === "simple"
         ? normalizeAppRoute({ view: "simple", ...project, ...event })
         : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
     case "review-summary":
-      return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "projects":
       return { view: "simple" };
     default:
@@ -256,12 +259,10 @@ export function backLabelForRoute(route: AppRoute): string {
     if (destination.tab === "brief-card") return "返回会前速览";
     return "返回已确认结果";
   }
-  if (destination.view === "review") return "返回审核列表";
-  if (destination.view === "draft") return "返回 AI 初稿";
-  if (destination.view === "event") return "返回本次沟通";
+  if (destination.view === "review") return "返回待确认";
   if (destination.view === "project") return "返回项目";
   if (destination.view === "projects") return "返回项目列表";
-  return "返回核心工作台";
+  return "返回工作台";
 }
 
 export function isCoreWorkflowRoute(route: AppRoute): boolean {

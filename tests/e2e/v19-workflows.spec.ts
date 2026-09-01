@@ -192,11 +192,12 @@ test("source, pending, and action views remain one continuous Summary workflow",
 test("a direct Claim deep link falls back to its communication without a false Summary label", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=claim&claim=claim-summary-pending");
   await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
-  await expect(page.getByLabel("返回本次沟通")).toBeVisible();
+  await expect(page.getByLabel("返回工作台")).toBeVisible();
   await expect(page.getByLabel("返回 AI 摘要")).toHaveCount(0);
 
-  await page.getByLabel("返回本次沟通").click();
-  await expect(page).toHaveURL(/project=project-a.*event=event-a.*view=event/);
+  // The event page is absorbed: its communication lives in the workspace.
+  await page.getByLabel("返回工作台").click();
+  await expect(page).toHaveURL(/project=project-a.*event=event-a.*view=simple/);
 });
 
 test("Timeline opens a verified Claim in read-only mode and returns to Timeline", async ({ page }) => {

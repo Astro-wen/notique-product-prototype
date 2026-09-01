@@ -124,7 +124,7 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
   assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds\)/);
   assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
   assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
-  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\)\)/);
+  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked\)/);
   assert.match(page, /className="rail-action-composer"/);
   assert.match(page, /已关联最相关的 8 段原话/);
   assert.match(page, /function selectTranscriptGroup/);

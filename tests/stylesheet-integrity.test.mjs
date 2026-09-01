@@ -80,7 +80,6 @@ test("every statically named class is declared in the stylesheet", async () => {
   // Pre-existing dead class names, kept as a list so new ones fail here. Each
   // is a no-op modifier beside a class that does carry the styling.
   const KNOWN_UNSTYLED = [
-    "claim-type",
     "debug-output",
     "event-panel",
     "form-note",

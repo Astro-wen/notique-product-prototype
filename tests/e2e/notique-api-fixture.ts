@@ -887,6 +887,16 @@ export class NotiqueApiFixture {
       return;
     }
 
+    const attestationMatch = path.match(/^\/api\/v1\/claims\/([^/]+)\/evidence-review-attestations$/);
+    if (method === "POST" && attestationMatch) {
+      const claimId = decodeURIComponent(attestationMatch[1]);
+      const stored = this.manualClaims.get(claimId);
+      await this.fulfill(route, envelope({
+        claim: stored ?? claimRecord(claimId, "预算上限是 120 万美元", "budget", "pending", "seg-summary-target"),
+      }));
+      return;
+    }
+
     const claimVerdictMatch = path.match(/^\/api\/v1\/claims\/([^/]+)\/verdicts$/);
     if (method === "POST" && claimVerdictMatch) {
       const claimId = decodeURIComponent(claimVerdictMatch[1]);

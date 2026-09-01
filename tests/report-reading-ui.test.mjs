@@ -8,12 +8,12 @@ import { summarySectionLabel, typeLabel } from "../lib/domain/labels.ts";
 const page = uiSource;
 const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-test("AI draft is a chronological, evidence-linked view of existing Agent B claims", () => {
-  assert.match(page, /buildAiDraftSummary\(runClaims\)/);
-  assert.match(page, /left\.timestampStart - right\.timestampStart/);
-  assert.match(page, /onOpenClaim\(item\.claimId\)/);
-  assert.match(page, /item\.quote/);
-  assert.match(page, /void openClaim\(id, "draft"\)/);
+test("the AI draft is read in the workspace, not on a page of its own", () => {
+  // The draft page duplicated the summary and the rail's pending list; its
+  // route now lands on the workspace with the same communication selected.
+  assert.doesNotMatch(page, /AiDraftScreen/);
+  assert.doesNotMatch(page, /screen === "draft"/);
+  assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: current\.event\.id, tab: "summary" \}\)/);
 });
 
 test("evidence cards use the scoped context endpoint and exact quote highlighting", () => {

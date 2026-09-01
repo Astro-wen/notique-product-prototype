@@ -525,6 +525,37 @@ test("an incompletely displayed source cannot be quick-confirmed", async ({ page
   expect(apiFixture.writes.some(({ path }) => path.includes("/verdicts"))).toBe(false);
 });
 
+test("a human-authored action is confirmed in one gesture once analysis is done", async ({ page, apiFixture }) => {
+  apiFixture.allowMutation("POST", "/api/v1/events/event-a/manual-claims");
+  apiFixture.allowMutation("POST", "/api/v1/claims/claim-manual-action/evidence-review-attestations");
+  apiFixture.allowMutation("POST", "/api/v1/claims/claim-manual-action/verdicts");
+  apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await expandSummaryIfCollapsed(page);
+
+  await page.locator(".summary-sentences article").filter({ hasText: "预算上限是 120 万美元" }).locator(".summary-point-copy").click();
+  await page.locator(".reader-action-rail").getByRole("button", { name: "从这条重点建立行动" }).click();
+  const composer = page.locator(".reader-action-rail .rail-action-composer");
+  // The reader wrote the statement and the quotes sit beside the box, so the
+  // second trip through 待确认 is gone; the button says what it does.
+  await expect(composer).toContainText("会直接进入正式记录");
+  await composer.getByRole("textbox", { name: "要完成什么" }).fill("周五前把预算上限确认给贷款方");
+  await composer.getByRole("button", { name: "确认并加入行动" }).click();
+
+  await expect
+    .poll(() => apiFixture.writes.filter(({ path }) => path.includes("manual-claims") || path.includes("attestations") || path.includes("verdicts")).map(({ path }) => path.split("/api/v1/")[1]))
+    .toEqual([
+      "events/event-a/manual-claims",
+      "claims/claim-manual-action/evidence-review-attestations",
+      "claims/claim-manual-action/verdicts",
+    ]);
+  const verdict = apiFixture.writes.find(({ path }) => path.includes("verdicts"));
+  expect(verdict?.body).toMatchObject({ action: "confirm" });
+});
+
 test("a Summary fact seeds source context but requires a real action and stays in the workspace", async ({ page, apiFixture }) => {
   apiFixture.allowMutation("POST", "/api/v1/events/event-a/manual-claims");
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");

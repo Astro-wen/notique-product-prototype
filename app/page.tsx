@@ -81,7 +81,7 @@ import {
   shouldAutoFocusReadingAid,
   type ReadingAidTarget,
 } from "@/lib/domain/summary-first-workflow";
-import { buildAiDraftSummary, sortClaimsForReview } from "@/lib/domain/ai-draft";
+import { sortClaimsForReview } from "@/lib/domain/ai-draft";
 import { highlightExactPhrase } from "@/lib/domain/text-highlight";
 import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
@@ -118,7 +118,6 @@ import {
 } from "@/lib/domain/app-navigation";
 import {
   ApiClientError,
-  AiDraftAssessment,
   ApiIssue,
   Claim,
   ClaimEditSubmission,
@@ -1795,7 +1794,6 @@ export default function Home() {
   const assetUploadAbortRef = useRef<AbortController | null>(null);
   const assetUploadOperationRef = useRef<symbol | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
-  const [draftAssessment, setDraftAssessment] = useState<AiDraftAssessment | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
   const [missingClaimDefaultType, setMissingClaimDefaultType] = useState<OccurrenceNewClaim["type"]>("other");
   const [missingClaimSeed, setMissingClaimSeed] = useState<MissingClaimSeed | null>(null);
@@ -2427,6 +2425,14 @@ export default function Home() {
     eventId: string,
     historyMode: "push" | "replace" | "none" = "push",
   ) => {
+    // The event page is absorbed into the workspace: opening a communication
+    // means opening the workspace on it, with the full workflow snapshot
+    // rather than the event record alone.
+    const owningProjectId = project?.id || routeRef.current.projectId;
+    if (owningProjectId) {
+      await loadSimpleProject(owningProjectId, eventId, historyMode);
+      return;
+    }
     invalidateEventSelectionRequests();
     const token = requestEpochs.current.event + 1;
     requestEpochs.current.event = token;
@@ -2464,7 +2470,7 @@ export default function Home() {
       setEventIssue(toIssue(error));
       setEventState("error");
     }
-  }, [invalidateEventSelectionRequests, loadClaimsForRun, loadTranscriptionForEvent, navigateRoute, project?.id]);
+  }, [invalidateEventSelectionRequests, loadClaimsForRun, loadSimpleProject, loadTranscriptionForEvent, navigateRoute, project?.id]);
 
   const queuedExtractionRunId = run?.id;
   const queuedExtractionRunStatus = run?.status;
@@ -3237,29 +3243,6 @@ export default function Home() {
     setReviewSummaryDestination(null);
   }
 
-  async function enterAiDraft() {
-    const snapshot = await loadReviewQueue("draft");
-    if (!snapshot) return;
-    const owner: RequestOwner = {
-      projectId: snapshot.project.id,
-      projectEpoch: requestEpochs.current.project,
-    };
-    const currentRunId = projectWorkflow.currentRunId
-      || event?.latestRun?.id
-      || event?.latestRunId
-      || run?.id;
-    if (currentRunId) {
-      try {
-        const assessment = await api.getAiDraftAssessment(currentRunId);
-        if (isCurrentRequestOwner(owner)) setDraftAssessment(assessment);
-      } catch (error) {
-        if (isCurrentRequestOwner(owner)) setClaimsIssue(toIssue(error));
-      }
-    } else if (isCurrentRequestOwner(owner)) {
-      setDraftAssessment(null);
-    }
-  }
-
   async function enterContinuousReview() {
     const snapshot = await loadReviewQueue("review");
     if (!snapshot) return;
@@ -3273,35 +3256,6 @@ export default function Home() {
       return;
     }
     await finishGuidedReview();
-  }
-
-  async function continueFromDraftWithoutReview() {
-    if (!project) return;
-    const projectId = project.id;
-    const owner: RequestOwner = {
-      projectId,
-      projectEpoch: requestEpochs.current.project,
-      eventId: routeRef.current.eventId,
-      eventEpoch: requestEpochs.current.event,
-    };
-    const snapshot = await inspectProjectWorkflow(projectId, loadFreshWorkflowSnapshot);
-    if (!isCurrentRequestOwner(owner)) return;
-    setProject(snapshot.project);
-    setEvents(snapshot.events);
-    setProjectWorkflow(snapshot.plan);
-    setEventWorkflowSummaries(snapshot.eventSummaries);
-    if (snapshot.plan.phase === "ready" && snapshot.plan.currentEventId) {
-      const nextEvent = snapshot.events.find((item) => item.id === snapshot.plan.currentEventId);
-      armAutoAnalysis(snapshot.plan.currentEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
-      await loadSimpleProject(projectId, snapshot.plan.currentEventId, "replace");
-      flash("下一次沟通已准备好，正在自动开始分析");
-      return;
-    }
-    if (snapshot.plan.phase === "draft_ready" || snapshot.plan.phase === "partially_reviewed") {
-      await loadView("client-progress", projectId, "replace");
-      return;
-    }
-    await loadSimpleProject(projectId, event?.id, "replace");
   }
 
   guidedTransitionAction.current = (phase) => {
@@ -4276,7 +4230,14 @@ export default function Home() {
         return;
       }
       if (snapshot.plan.phase === "draft_ready" || snapshot.plan.phase === "partially_reviewed") {
-        await enterAiDraft();
+        // The draft is read in the workspace: the summary is the draft, and
+        // the rail lists what still needs a decision.
+        if (current) {
+          await loadSimpleProject(projectId, current.event.id);
+          setTranscriptFocusRequest({ id: Date.now(), eventId: current.event.id, tab: "summary" });
+        } else {
+          await loadSimpleProject(projectId);
+        }
         return;
       }
       if (snapshot.plan.phase === "waiting_scenario") {
@@ -4625,45 +4586,14 @@ export default function Home() {
     void loadProjects();
   }
 
-  function currentDraftRunId(): string | null {
-    return projectWorkflow.currentRunId
-      || event?.latestRun?.id
-      || event?.latestRunId
-      || run?.id
-      || null;
-  }
-
-  async function recordCurrentDraftAssessment(
-    assessment: AiDraftAssessment["assessment"],
-  ): Promise<void> {
-    const runId = currentDraftRunId();
-    if (!runId) return;
-    setBusyAction("draft-assessment");
-    try {
-      const fingerprint = `draft-assessment:${runId}:${assessment}`;
-      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(fingerprint, idempotencyKey);
-      const saved = await api.recordAiDraftAssessment(runId, assessment, idempotencyKey);
-      mutationKeys.current.delete(fingerprint);
-      setDraftAssessment(saved);
-      if (assessment === "basically_usable") {
-        flash("已记录：AI 初稿基本可用。它仍不会自动进入正式报告");
-      }
-    } catch (error) {
-      setClaimsIssue(toIssue(error));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function createMissingClaim(input: {
     eventId: string;
     statement: string;
     type: string;
     segmentIds: string[];
-  }, stayInWorkspaceOverride?: boolean): Promise<void> {
+  }, stayInWorkspaceOverride?: boolean): Promise<Claim | null> {
     const targetEventId = input.eventId;
-    if (!targetEventId) return;
+    if (!targetEventId) return null;
     const stayInWorkspace = stayInWorkspaceOverride ?? Boolean(
       missingClaimSeed && missingClaimSeed.eventId === targetEventId,
     );
@@ -4710,6 +4640,7 @@ export default function Home() {
       flash(stayInWorkspace
         ? "行动已加入待确认；你可以继续查看本次重点"
         : "漏项已加入待核对队列；确认前不会进入正式报告");
+      return created;
     } catch (error) {
       setClaimsIssue(toIssue(error));
       throw error;
@@ -4718,9 +4649,44 @@ export default function Home() {
     }
   }
 
-  async function startContinuousReviewFromDraft() {
-    if (!draftAssessment) await recordCurrentDraftAssessment("needs_review");
-    await enterContinuousReview();
+  /**
+   * The inline action composer is human-authored end to end: the reader picked
+   * the point, the supporting quotes sit beside the textarea, and the words
+   * are their own. Asking them to reopen 待确认 to approve their own writing
+   * was the double confirmation, so one gesture now records all three ledger
+   * steps — create, attest that the on-screen evidence was reviewed, confirm.
+   * Every step is written under the same actor; nothing skips the ledger.
+   */
+  async function createConfirmedAction(eventId: string, statement: string, segmentIds: string[]): Promise<void> {
+    const created = await createMissingClaim(
+      { eventId, statement, type: "next_action", segmentIds },
+      true,
+    );
+    if (!created) return;
+    setBusyAction("manual-claim");
+    try {
+      const attestKey = mutationKeys.current.get(`attest:${created.versionId}`) || crypto.randomUUID();
+      mutationKeys.current.set(`attest:${created.versionId}`, attestKey);
+      await api.attestEvidenceReview(created, attestKey);
+      const verdictKey = mutationKeys.current.get(`confirm:${created.versionId}`) || crypto.randomUUID();
+      mutationKeys.current.set(`confirm:${created.versionId}`, verdictKey);
+      const confirmed = await api.saveVerdict(created, "confirm", { idempotencyKey: verdictKey, retainRelationIds: [] });
+      mutationKeys.current.delete(`attest:${created.versionId}`);
+      mutationKeys.current.delete(`confirm:${created.versionId}`);
+      setClaims((items) => sortClaimsForReview(items.map((item) => (item.id === confirmed.id ? confirmed : item))));
+      if (project) {
+        void invalidateProjectReadModels(project.id);
+        void queryClient.invalidateQueries({ queryKey: projectActionsQuery(project.id).queryKey });
+      }
+      flash("行动已确认，进入正式记录");
+    } catch (error) {
+      // The claim exists and stays pending — the reader loses nothing; the
+      // rail's 待确认 keeps the normal path open.
+      setClaimsIssue(toIssue(error));
+      flash("行动已保存到待确认，但自动确认没有完成，可在待确认中处理");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function confirmCurrentScenario(scenario: string, custom?: string) {
@@ -4740,7 +4706,7 @@ export default function Home() {
         if (targetEventId) {
           setTranscriptFocusRequest({ id: Date.now(), eventId: targetEventId, tab: "summary" });
         } else {
-          await enterAiDraft();
+          await loadSimpleProject(project.id);
         }
       } else await loadProject(project.id);
     } catch (error) {
@@ -4918,11 +4884,11 @@ export default function Home() {
         <div className="account"><span className="avatar"><Users aria-hidden="true" /></span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
         <nav aria-label="主要导航">
           <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon"><LayoutDashboard aria-hidden="true" /></span><span className="sidebar-nav-label">项目工作区</span></button>
-          <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="高级工具" title={sidebarCollapsed ? "高级工具" : undefined}><span className="sidebar-nav-icon"><Settings2 aria-hidden="true" /></span><span className="sidebar-nav-label">高级工具</span></button>
+          <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="项目管理" title={sidebarCollapsed ? "项目管理" : undefined}><span className="sidebar-nav-icon"><Settings2 aria-hidden="true" /></span><span className="sidebar-nav-label">项目管理</span></button>
           {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
       </aside>
-      <header className="mobile-header"><button className="brand" onClick={goSimple}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="高级工具"><MoreHorizontal aria-hidden="true" /></button></header>
+      <header className="mobile-header"><button className="brand" onClick={goSimple}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="项目管理"><MoreHorizontal aria-hidden="true" /></button></header>
       <main>
         <aside className="public-workspace-notice" aria-label="公开共享测试空间提示">
           <strong>公开演示空间</strong>
@@ -4962,14 +4928,9 @@ export default function Home() {
           transcriptionRun={transcriptionRun}
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
-          onOpenFullReview={() => void loadReviewQueue("review")}
+          onOpenFullReview={() => void enterContinuousReview()}
           onQuickVerdict={(claimId, action, sourceIds) => void quickVerdictFromWorkspace(claimId, action, sourceIds)}
-          onCreateActionInline={(eventId, statement, segmentIds) => createMissingClaim({
-            eventId,
-            statement,
-            type: "next_action",
-            segmentIds,
-          }, true)}
+          onCreateActionInline={(eventId, statement, segmentIds, verdictsLocked) => verdictsLocked ? createMissingClaim({ eventId, statement, type: "next_action", segmentIds }, true).then(() => undefined) : createConfirmedAction(eventId, statement, segmentIds)}
           onCompleteAction={(claimId) => void completeAction(claimId, true)}
           onRetryArtifact={retryEventAiArtifact}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
@@ -5007,7 +4968,7 @@ export default function Home() {
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
         />}
         {screen === "projects" && <ProjectsScreen state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
-        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void loadReviewQueue()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
+        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void enterContinuousReview()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
         {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} assetUploadProgress={assetUploadProgress?.eventId === event?.id ? assetUploadProgress : null} onCancelUpload={() => assetUploadAbortRef.current?.abort()} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement} onStart={async () => {
           if (event) await startExtractionForEvent(event);
         }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id, "event")} onAttach={async (input) => {
@@ -5145,22 +5106,6 @@ export default function Home() {
             setBusyAction(null);
           }
         }} onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)} onRetryRunStatus={() => void retryRunStatus()} busy={busyAction} />}
-        {screen === "draft" && <AiDraftScreen
-          event={events.find((item) => item.id === projectWorkflow.currentEventId) ?? event}
-          runId={currentDraftRunId()}
-          claims={claims}
-          occurrenceCandidates={occurrenceCandidates}
-          assessment={draftAssessment}
-          state={claimsState}
-          issue={claimsIssue}
-          busy={busyAction}
-          onBack={navigateBack}
-          onOpenClaim={(id) => void openClaim(id, "draft")}
-          onAssessUsable={() => void recordCurrentDraftAssessment("basically_usable")}
-          onStartReview={() => void startContinuousReviewFromDraft()}
-          onContinueLater={() => void continueFromDraftWithoutReview()}
-          onAddMissing={() => { setMissingClaimDefaultType("other"); setMissingClaimSeed(null); setShowMissingClaim(true); }}
-        />}
         {screen === "review" && <ReviewScreen state={claimsState} issue={claimsIssue} claims={claims} occurrenceCandidates={occurrenceCandidates} reviewSession={reviewSession} reviewClockNow={reviewClockNow} onBack={navigateBack} onRetry={() => void loadReviewQueue("review", undefined, "replace")} onOpen={(id) => void openClaim(id, "review")} onOccurrenceVerdict={(candidate, action) => void runOccurrenceVerdict(candidate, action)} onOccurrenceConvert={(candidate, newClaims) => void runOccurrenceConversion(candidate, newClaims)} busy={busyAction} />}
         {screen === "claim" && <ClaimScreen key={`${selectedClaim?.id ?? "none"}-${selectedClaim?.versionId ?? "none"}`} projectId={project?.id ?? null} claim={selectedClaim} mode={claimRouteReadonly ? "readonly" : "review"} backLabel={backLabelForRoute(route)} reviewClaims={claimRouteReadonly ? [] : claims} pendingOccurrenceCount={claimRouteReadonly ? 0 : occurrenceCandidates.filter((item) => item.status === "pending").length} evidence={evidence} evidenceState={evidenceState} issue={claimsIssue} busy={busyAction} verdictLocked={selectedClaimVerdictLocked} onBack={navigateBack} onOpenReviewClaim={(id) => void openClaim(id, "review", undefined, "replace")} onVerdict={(action, reason, edit, retainRelationIds) => void runVerdict(action, reason, edit, retainRelationIds)} onWithdraw={(reason) => void withdrawClaim(reason)} onCreateRelation={runManualRelation} />}
         {screen === "review-summary" && <ReviewCompletionScreen
@@ -5169,7 +5114,7 @@ export default function Home() {
           destination={reviewSummaryDestination}
           onContinue={() => void continueAfterReviewSummary()}
         />}
-        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onBack={navigateBack} backLabel={backLabelForRoute(route)} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setMissingClaimSeed(null); setShowMissingClaim(true); }} />}
+        {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onWorkspaceTab={() => { const pid = project?.id || routeRef.current.projectId; if (pid) void loadSimpleProject(pid, event?.id || routeRef.current.eventId); }} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setMissingClaimSeed(null); setShowMissingClaim(true); }} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={navigateBack} onRetry={() => run && void openRunDebug(run.id, "replace")} />}
       </main>
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
@@ -5194,7 +5139,7 @@ export default function Home() {
         initialSegmentIds={missingClaimSeed?.segmentIds}
         busy={busyAction === "manual-claim"}
         onClose={() => { setShowMissingClaim(false); setMissingClaimSeed(null); }}
-        onCreate={createMissingClaim}
+        onCreate={async (input) => { await createMissingClaim(input); }}
       />}
       {showNewEvent && project && <NewEventModal onClose={() => setShowNewEvent(false)} onCreate={async (input) => {
         setBusyAction("new-event");
@@ -5266,7 +5211,7 @@ type SimpleTestScreenProps = {
   onOpenClaim: (id: string) => void;
   onOpenFullReview: () => void;
   onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
-  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
+  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
@@ -5373,7 +5318,7 @@ function TranscriptArtifactsPanel({
   onOpenClaim: (id: string) => void;
   onOpenFullReview: () => void;
   onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
-  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[]) => Promise<void>;
+  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onAddPhoto: () => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
@@ -6150,7 +6095,7 @@ function TranscriptArtifactsPanel({
     if (!actionComposerIsCurrent || !selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
     setActionComposerIssue(null);
     try {
-      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8));
+      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8), verdictsLocked);
       setActionComposerOpen(false);
       setActionComposerRevision(null);
       setActionStatement("");
@@ -6166,9 +6111,9 @@ function TranscriptArtifactsPanel({
       void submitInlineAction();
     }}>
       <label><span>要完成什么</span><textarea autoFocus value={actionStatement} onChange={(change) => setActionStatement(change.target.value)} placeholder="例如：负责人周五前发送三份候选方案。" /></label>
-      <small>{selectedPoint.sourceIds.length > 8 ? `已关联最相关的 8 段原话（本重点共 ${selectedPoint.sourceIds.length} 段）` : `已关联 ${selectedPoint.sourceIds.length} 段原话`}；保存后进入待确认，不会直接写入可信存档。</small>
+      <small>{selectedPoint.sourceIds.length > 8 ? `已关联最相关的 8 段原话（本重点共 ${selectedPoint.sourceIds.length} 段）` : `已关联 ${selectedPoint.sourceIds.length} 段原话`}；{verdictsLocked ? "分析完成后可在待确认中确认。" : "这是你亲自写下的行动，会直接进入正式记录。"}</small>
       {actionComposerIssue && <p role="alert">{actionComposerIssue}</p>}
-      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={() => { setActionComposerOpen(false); setActionComposerRevision(null); setActionComposerIssue(null); }}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : "加入待确认"}</button></div>
+      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={() => { setActionComposerOpen(false); setActionComposerRevision(null); setActionComposerIssue(null); }}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : verdictsLocked ? "加入待确认" : "确认并加入行动"}</button></div>
     </form>;
   }
 
@@ -7863,46 +7808,6 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
   );
 }
 
-const aiDraftSectionLabels = {
-  decisions: "决定与要求",
-  money_dates_owners: "金额、日期与负责人",
-  preferences: "偏好与材料",
-  open_questions: "仍待确认",
-  risks: "风险与补证据",
-  other: "其他重要事实",
-} as const;
-
-function AiDraftScreen({ event, runId, claims, occurrenceCandidates, assessment, state, issue, busy, onBack, onOpenClaim, onAssessUsable, onStartReview, onContinueLater, onAddMissing }: { event: Event | null; runId: string | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; assessment: AiDraftAssessment | null; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; onOpenClaim: (id: string) => void; onAssessUsable: () => void; onStartReview: () => void; onContinueLater: () => void; onAddMissing: () => void }) {
-  const runClaims = claims.some((claim) => claim.runId === runId)
-    ? claims.filter((claim) => claim.runId === runId)
-    : claims.filter((claim) => claim.reviewStatus === "pending");
-  const runOccurrences = occurrenceCandidates.filter((candidate) => !runId || candidate.extraction_run_id === runId);
-  const claimById = new Map(runClaims.map((claim) => [claim.id, claim]));
-  const summaryItems = [...buildAiDraftSummary(runClaims)].sort((left, right) => {
-    if (left.timestampStart !== null && right.timestampStart !== null) return left.timestampStart - right.timestampStart;
-    if (left.timestampStart !== null) return -1;
-    if (right.timestampStart !== null) return 1;
-    return left.claimId.localeCompare(right.claimId);
-  });
-  const proposedRelationCount = runClaims.reduce((total, claim) => total + claim.relationsForReview.filter((relation) => relation.status === "proposed").length, 0);
-  return (
-    <div className="page ai-draft-page">
-      <PageHeader eyebrow={event?.title || "本次沟通"} title="AI 沟通信息初稿" body="按对话发生顺序先看 AI 抓到的重点。点击任意一条即可回到原句确认；初稿不会自动进入正式报告。" back={onBack} backLabel="返回核心工作台" actions={<span className="status-badge pending">待确认</span>} />
-      {issue && <ErrorNotice issue={issue} compact />}
-      {state === "loading" ? <LoadingBlock label="正在整理已经生成的 AI 初稿…" /> : <>
-        <section className="draft-overview panel"><div><span className="section-kicker">AI 先做了什么</span><h2>{runClaims.length + runOccurrences.length} 条候选信息</h2><p>{runClaims.length} 条新事实 · {runOccurrences.length} 条再次出现 · {proposedRelationCount} 条关系判断</p></div><div className="draft-guardrail"><strong>这还是草稿</strong><p>你可以立即阅读、复制或稍后确认。草稿最多帮助后续 AI 发现可能的连续信息；只有人工确认内容才能进入时间线、下次沟通准备和可信报告。</p></div></section>
-        {summaryItems.length > 0 && <section className="panel draft-summary"><header><div><span className="section-kicker">本次沟通重点</span><h2>沿着原对话快速核对</h2></div><span>{summaryItems.length} 条</span></header><ol>{summaryItems.map((item, index) => {
-          const claim = claimById.get(item.claimId);
-          return <li key={item.claimId} className={claim?.source === "human" ? "human-added" : ""}><button onClick={() => onOpenClaim(item.claimId)}><span className="draft-summary-order">{index + 1}</span><span className="draft-summary-body"><span className="draft-summary-meta"><b>{aiDraftSectionLabels[item.section]}</b>{item.timestampStart !== null && <time>{formatTimestamp(item.timestampStart / 1000)}</time>}{item.speaker && <em>{displaySpeakerLabel(item.speaker)}</em>}<StatusBadge value={item.reviewStatus} /></span><strong>{item.statement}</strong>{item.quote && <blockquote>“{item.quote}”</blockquote>}<span className="draft-summary-flags">{claim?.needsAdditionalEvidence && <i>需补证据</i>}{claim?.relationsForReview.some((relation) => relation.status === "proposed") && <i>需判断关系</i>}<u>查看原文并确认含义 <ChevronRight aria-hidden="true" /></u></span></span></button></li>;
-        })}</ol></section>}
-        {runOccurrences.length > 0 && <section className="panel draft-section draft-occurrences"><header><h2>再次出现的旧信息</h2><span>{runOccurrences.length}</span></header><div>{runOccurrences.map((candidate) => <article key={candidate.id}><span className="claim-type">再次提到</span><p>{candidate.proposed_statement || candidate.target_statement}</p><small>核对时可以判断：只是再次出现、本次有新变化，或不采纳。</small></article>)}</div></section>}
-        {runClaims.length + runOccurrences.length === 0 && <EmptyState title="AI 没有留下可核对内容" body="请先检查材料是否完整；不要把空结果当成分析完成。" />}
-        <section className="draft-actions panel"><div><h2>按重要程度决定要不要现在核对</h2><p>金额、期限、责任人、矛盾和低置信内容建议优先核对；其余内容可以稍后继续。</p>{assessment && <span className="assessment-recorded">已记录：{assessment.assessment === "basically_usable" ? "初稿基本可用" : "需要核对和修正"}</span>}</div><div className="draft-action-buttons"><button className="button secondary" disabled={Boolean(busy) || Boolean(assessment)} onClick={onAssessUsable}>这份初稿基本可用</button><button className="button secondary" disabled={Boolean(busy)} onClick={onAddMissing}>AI 漏掉了重要信息</button><button className="button secondary" disabled={Boolean(busy)} onClick={onContinueLater}>稍后核对，继续处理项目</button><button className="button primary" disabled={Boolean(busy) || runClaims.length + runOccurrences.length === 0} onClick={onStartReview}>核对重要内容</button></div></section>
-      </>}
-    </div>
-  );
-}
-
 function MissingClaimModal({ eventId, initialType = "other", initialSourceText = "", initialStatement = "", initialSegmentIds = [], busy, onClose, onCreate }: { eventId: string; initialType?: OccurrenceNewClaim["type"]; initialSourceText?: string; initialStatement?: string; initialSegmentIds?: string[]; busy: boolean; onClose: () => void; onCreate: (input: { eventId: string; statement: string; type: string; segmentIds: string[] }) => Promise<void> }) {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [state, setState] = useState<AsyncState>("loading");
@@ -8196,14 +8101,22 @@ function ClaimScreen({ projectId, claim, mode, backLabel, reviewClaims, pendingO
   );
 }
 
-function ResultsScreen({ project, events, tab, data, state, issue, busy, onBack, backLabel, onSelect, onRetry, onOpenClaim, onResolveContradiction, onCompleteAction, onDecideDraftLink, onOpenAiSuggestions, onAddAction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; onBack: () => void; backLabel: string; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; onCompleteAction: (claimId: string) => void; onDecideDraftLink: (linkId: string, action: "accept" | "reject") => void; onOpenAiSuggestions: () => void; onAddAction: () => void }) {
+function ResultsScreen({ project, events, tab, data, state, issue, busy, onWorkspaceTab, onSelect, onRetry, onOpenClaim, onResolveContradiction, onCompleteAction, onDecideDraftLink, onOpenAiSuggestions, onAddAction }: { project: Project | null; events: Event[]; tab: ResultTab; data: unknown; state: AsyncState; issue: ApiIssue | null; busy: string | null; onWorkspaceTab: (surface: "transcript" | "materials") => void; onSelect: (tab: ResultTab) => void; onRetry: () => void; onOpenClaim: (id: string) => void; onResolveContradiction: (input: ContradictionResolutionInput) => void; onCompleteAction: (claimId: string) => void; onDecideDraftLink: (linkId: string, action: "accept" | "reject") => void; onOpenAiSuggestions: () => void; onAddAction: () => void }) {
   const current = resultTabs.find((item) => item.key === tab)!;
   const pendingReviewCount = (project?.pendingClaimCount ?? 0) + (project?.pendingOccurrenceCount ?? 0);
   const showPendingReviewCount = pendingReviewCount > 0 && (tab === "folder-summary" || tab === "timeline");
   const content = <ResultContent tab={tab} data={data} events={events} onOpenClaim={onOpenClaim} onSelect={onSelect} onResolveContradiction={onResolveContradiction} onCompleteAction={onCompleteAction} onDecideDraftLink={onDecideDraftLink} onOpenAiSuggestions={onOpenAiSuggestions} onAddAction={onAddAction} busyAction={busy} />;
   return (
     <div className="page results-page">
-      <PageHeader eyebrow={project?.name} title="整个项目" body="报告只读取已确认内容；AI 草稿逐条标明状态。" back={onBack} backLabel={backLabel} />
+      {/* The same bar the workspace shows, so 整个项目 is a tab you are on,
+          not a page you left the workspace for. 本次重点 is the way back. */}
+      <nav className="meeting-tabs results-scope-tabs" aria-label="当前沟通内容">
+        <button aria-label="本次重点" onClick={() => onWorkspaceTab("transcript")}><b>本次重点</b></button>
+        <button aria-label="材料" onClick={() => onWorkspaceTab("materials")}>材料</button>
+        <span className="meeting-tabs-scope" aria-hidden="true" />
+        <button aria-label="整个项目" aria-current="page" className="meeting-tabs-project active">整个项目</button>
+      </nav>
+      <div className="results-scope-heading"><span className="section-kicker">{project?.name}</span><p>报告只读取已确认内容；AI 草稿逐条标明状态。</p></div>
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待确认。它们仍在确认区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div><div className="result-nav-secondary"><strong>其他视图</strong><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div></div></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在读取${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
