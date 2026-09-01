@@ -414,6 +414,23 @@ test("390px keeps the continuous document usable and every primary transcript co
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
+test("the transcript exports itself without touching the server", async ({ page, apiFixture }, testInfo) => {
+  test.skip(isMobile(testInfo), "desktop toolbar");
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
+  await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "导出逐字稿" }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "原文（TXT）" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/原文\.txt$/);
+  // Export is a local re-serialization of what is on screen — never a write.
+  expect(apiFixture.writes).toEqual([]);
+});
+
 test("a chapter takes the reader to that moment in the transcript", async ({ page, apiFixture }, testInfo) => {
   test.skip(isMobile(testInfo), "desktop reading column");
   apiFixture.completeSummary();

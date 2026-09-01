@@ -19,6 +19,7 @@ import {
   FileAudio,
   FileImage,
   FileText,
+  FileDown,
   FolderOpen,
   Image as ImageIcon,
   Inbox,
@@ -86,6 +87,11 @@ import { displaySpeakerLabel } from "@/lib/domain/speaker-label";
 import { buildChunkProgress } from "@/lib/domain/transcription-progress";
 import { autoAnalysisDecision } from "@/lib/domain/auto-analysis";
 import { formatTimestamp } from "@/lib/domain/display-format";
+import {
+  buildTranscriptSrt,
+  buildTranscriptText,
+  exportFilename,
+} from "@/lib/domain/transcript-export";
 import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
@@ -6199,6 +6205,40 @@ function TranscriptArtifactsPanel({
     selectSummaryPoint(point);
   }
 
+  function downloadTranscript(kind: "readable" | "raw" | "srt") {
+    // The transcript is already on screen; export re-serializes it locally.
+    const title = event.title || "逐字稿";
+    let filename: string;
+    let body: string;
+    let mime = "text/plain;charset=utf-8";
+    if (kind === "srt") {
+      filename = exportFilename(title, "字幕", "srt");
+      body = buildTranscriptSrt(availableRawSegments.map((segment) => ({
+        speaker: displaySpeakerLabel(segment.speaker),
+        startMs: segment.start_ms ?? null,
+        endMs: segment.end_ms ?? null,
+        text: segment.text,
+      })));
+      mime = "application/x-subrip;charset=utf-8";
+    } else {
+      const groups = kind === "readable" ? effectiveReadableGroups : rawDisplayGroups;
+      filename = exportFilename(title, kind === "readable" ? "易读版" : "原文", "txt");
+      body = buildTranscriptText(filename.replace(/\.txt$/, ""), groups.map((group) => ({
+        speaker: displaySpeakerLabel(group.speaker),
+        startMs: group.startMs ?? null,
+        text: group.text,
+      })));
+    }
+    const url = URL.createObjectURL(new Blob([body], { type: mime }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function locateRawSources(
     sourceIds: string[],
   ) {
@@ -6399,6 +6439,24 @@ function TranscriptArtifactsPanel({
         <button aria-pressed={readerTab === "raw"} className={readerTab === "raw" ? "active" : ""} onClick={() => selectArtifactTab("raw")}>原文 <small>{filteredRawGroups.length} 段</small></button>
         <button aria-pressed={readerTab === "readable"} className={readerTab === "readable" ? "active" : ""} onClick={() => selectArtifactTab("readable")}>易读版 <small>{filteredReadableGroups.length} 段</small>{readableRun || readableArtifact ? <StatusBadge value={readableRun?.status || "succeeded"} /> : showingProvisionalReadable ? <span>整理中</span> : <span>未生成</span>}{readablePair.legacyFallback && <span>历史版本</span>}</button>
       </nav>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
+          <button className="transcript-export-trigger" aria-label="导出逐字稿"><FileDown aria-hidden="true" /><span>导出</span></button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content className="transcript-export-menu" align="end" sideOffset={5} collisionPadding={12}>
+            <DropdownMenu.Item asChild disabled={!readableArtifact || effectiveReadableGroups.length === 0}>
+              <button disabled={!readableArtifact || effectiveReadableGroups.length === 0} onClick={() => downloadTranscript("readable")}>易读版（TXT）</button>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item asChild disabled={rawDisplayGroups.length === 0}>
+              <button disabled={rawDisplayGroups.length === 0} onClick={() => downloadTranscript("raw")}>原文（TXT）</button>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item asChild disabled={!availableRawSegments.some((segment) => segment.start_ms != null)}>
+              <button disabled={!availableRawSegments.some((segment) => segment.start_ms != null)} onClick={() => downloadTranscript("srt")}>字幕（SRT）</button>
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
       <details className="transcript-tools">
         <summary role="button" aria-label="搜索和筛选逐字稿"><Settings2 aria-hidden="true" /><span>搜索与筛选</span>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources) > 0 && <b>{Number(Boolean(normalizedSearch)) + Number(speakerFilter !== "all") + Number(onlyKeySources)}</b>}</summary>
         <div className="reader-filter-bar">
