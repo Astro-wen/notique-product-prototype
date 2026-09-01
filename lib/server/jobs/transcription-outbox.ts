@@ -37,6 +37,8 @@ export type TranscriptionSweepResult = {
   requeuedExpiredRuns: number;
   failedUndeliverableRuns: number;
   requeuedLongRunningMessages: number;
+  deadLetteredExhaustedPending: number;
+  failedChunkedParents: number;
 };
 
 const MAX_OUTBOX_ATTEMPTS = TRANSCRIPTION_MAX_ATTEMPTS;
@@ -379,7 +381,7 @@ export async function dispatchDueTranscriptionOutbox(
             AND o.next_attempt_at <= ?
             AND r.status = 'queued'
             ${targetClause}
-          ORDER BY o.next_attempt_at, o.created_at
+          ORDER BY o.attempt, o.next_attempt_at, o.created_at
           LIMIT ?`,
       )
       .bind(...bindings)
@@ -565,7 +567,10 @@ export async function sweepTranscriptionJobs(
     )
     .bind(timestamp, timestamp, MAX_OUTBOX_ATTEMPTS)
     .run();
-  const threshold = new Date(Date.parse(timestamp) - 2 * 60_000).toISOString();
+  // A run stuck in 'queued' recovers through this path once per retry cycle,
+  // so the threshold is most of each cycle's latency. 45s is still far beyond
+  // normal dispatch latency (a cron tick plus immediate kicks).
+  const threshold = new Date(Date.parse(timestamp) - 45_000).toISOString();
   const requeued = await db
     .prepare(
       `UPDATE transcription_queue_outbox
@@ -578,12 +583,32 @@ export async function sweepTranscriptionJobs(
     )
     .bind(timestamp, timestamp, threshold)
     .run();
+  // Close the zombie loop: a lease-expiry cycle ends with the outbox row in
+  // 'pending' at the attempt cap and the run back in 'queued'. The dispatcher
+  // refuses rows at the cap, and dead-lettering above only covers 'sending',
+  // so without this clause both sides sat unfinished forever while the UI
+  // showed steady progress.
+  const exhaustedPending = await db
+    .prepare(
+      `UPDATE transcription_queue_outbox
+          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = '9999-12-31T23:59:59.999Z',
+              last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+        WHERE status IN ('pending', 'failed') AND attempt >= ?
+          AND next_attempt_at < '9999-12-31T23:59:59.999Z'
+          AND EXISTS (
+            SELECT 1 FROM transcription_runs r
+             WHERE r.id = transcription_queue_outbox.run_id AND r.status = 'queued'
+          )`,
+    )
+    .bind(timestamp, MAX_OUTBOX_ATTEMPTS)
+    .run();
   const [failedRuns] = await db.batch([
     db
       .prepare(
         `UPDATE transcription_runs
-            SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
-                error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
+            SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED',
+                error_details_json = '{"reason":"provider_retry_exhausted","retryable":true}', updated_at = ?
           WHERE status = 'queued' AND id IN (
             SELECT run_id FROM transcription_queue_outbox
              WHERE status = 'failed' AND attempt >= ?
@@ -597,7 +622,7 @@ export async function sweepTranscriptionJobs(
             SET metadata_json = json_set(
               COALESCE(metadata_json, '{}'),
               '$.transcription_status', 'failed',
-              '$.transcription_error_code', 'QUEUE_DISPATCH_FAILED'
+              '$.transcription_error_code', 'TRANSCRIPTION_RETRY_EXHAUSTED'
             ), updated_at = ?
           WHERE EXISTS (
             SELECT 1 FROM transcription_runs
@@ -608,17 +633,41 @@ export async function sweepTranscriptionJobs(
                AND audio_asset_id = assets.id
                AND workspace_id = assets.workspace_id
                AND status = 'failed'
-               AND error_code = 'QUEUE_DISPATCH_FAILED'
+               AND error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED'
                AND finished_at = ?
           )`,
       )
       .bind(timestamp, timestamp),
   ]);
+  // A chunked parent whose children are all terminal with at least one
+  // failure can never finalize; fail it so the reader gets the retry button
+  // instead of a progress bar that will not move again.
+  const failedParents = await db
+    .prepare(
+      `UPDATE transcription_runs
+          SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_CHUNK_FAILED',
+              updated_at = ?
+        WHERE status = 'processing' AND orchestration_mode = 'chunked'
+          AND NOT EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status NOT IN ('succeeded', 'failed', 'cancelled')
+          )
+          AND EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status = 'failed'
+          )`,
+    )
+    .bind(timestamp, timestamp)
+    .run();
   return {
     recoveredOutbox: Number(recovered.meta.changes ?? 0),
     deadLetteredOutbox: Number(deadLettered.meta.changes ?? 0),
     requeuedExpiredRuns,
     failedUndeliverableRuns: Number(failedRuns.meta.changes ?? 0),
     requeuedLongRunningMessages: Number(requeued.meta.changes ?? 0),
+    deadLetteredExhaustedPending: Number(exhaustedPending.meta.changes ?? 0),
+    failedChunkedParents: Number(failedParents.meta.changes ?? 0),
   };
 }

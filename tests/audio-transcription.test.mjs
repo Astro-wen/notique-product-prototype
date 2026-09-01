@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
@@ -630,7 +631,7 @@ test("stale transcription workers cannot overwrite the current Run status on an 
   assert.match(deadLetter, /db\.batch\(\[/);
   assert.match(deadLetter, /\$\.transcription_status', 'failed'/);
   assert.match(deadLetter, /id = json_extract\([\s\S]*\$\.transcription_run_id/);
-  assert.match(deadLetter, /error_code = 'QUEUE_DISPATCH_FAILED'[\s\S]*finished_at = \?/);
+  assert.match(deadLetter, /error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED',[\s\S]*finished_at = \?/);
 });
 
 test("single byte Range parser supports explicit, open, and suffix ranges and rejects invalid requests", async () => {
@@ -894,4 +895,80 @@ test("polling keeps attempt state per run, surfaces timeout recovery, and expose
   assert.match(viewer, /run\.segments\.map/);
   assert.doesNotMatch(viewer, /\.slice\(/);
   assert.match(uiSource, /查看完整逐字稿/);
+});
+
+test("the sweep closes the lease-expiry zombie loop with real SQL", async () => {
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+
+  // Production state observed on 2026-09-01: five chunk runs cycled
+  // dispatch → lease expiry → requeue until their outbox rows sat in
+  // 'pending' at the attempt cap. The dispatcher refuses rows at the cap and
+  // dead-lettering only covered 'sending', so runs stayed 'queued' and the
+  // chunked parent stayed 'processing' forever while the UI showed progress.
+  const extract = (fragment) => {
+    const statements = [...outbox.matchAll(/`((?:UPDATE|SELECT)[\s\S]*?)`/g)].map((m) => m[1]);
+    const found = statements.find((sql) => sql.includes(fragment));
+    assert.ok(found, `sweep must contain SQL with: ${fragment}`);
+    return found;
+  };
+  const exhaustedPendingSql = extract("WHERE status IN ('pending', 'failed') AND attempt >= ?");
+  const failRunsSql = extract("SELECT run_id FROM transcription_queue_outbox");
+  const failParentsSql = extract("error_code = 'TRANSCRIPTION_CHUNK_FAILED',");
+  assert.match(failParentsSql, /NOT EXISTS[\s\S]*?status NOT IN \('succeeded', 'failed', 'cancelled'\)/);
+
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE transcription_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, status TEXT,
+      orchestration_mode TEXT, parent_run_id TEXT, chunk_index INTEGER,
+      audio_asset_id TEXT, error_code TEXT, error_details_json TEXT,
+      finished_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE transcription_queue_outbox (
+      id TEXT PRIMARY KEY, run_id TEXT, status TEXT, attempt INTEGER,
+      next_attempt_at TEXT, lease_owner TEXT, lease_expires_at TEXT,
+      last_error_code TEXT, updated_at TEXT
+    );
+    INSERT INTO transcription_runs VALUES
+      ('parent', 'ws', 'processing', 'chunked', NULL, NULL, 'audio-parent', 'TRANSCRIPTION_CHUNK_FAILED', NULL, NULL, ''),
+      ('chunk-0', 'ws', 'queued', 'chunk', 'parent', 0, 'a0', 'TRANSCRIPTION_TIMEOUT', NULL, NULL, ''),
+      ('chunk-1', 'ws', 'queued', 'chunk', 'parent', 1, 'a1', 'TRANSCRIPTION_TIMEOUT', NULL, NULL, ''),
+      ('chunk-5', 'ws', 'succeeded', 'chunk', 'parent', 5, 'a5', NULL, NULL, '2026-09-01T10:30:00.000Z', ''),
+      ('fresh', 'ws', 'queued', 'single', NULL, NULL, 'a9', NULL, NULL, NULL, '');
+    INSERT INTO transcription_queue_outbox VALUES
+      ('o0', 'chunk-0', 'pending', 3, '2026-09-01T10:40:00.000Z', NULL, NULL, 'TRANSCRIPTION_TIMEOUT', ''),
+      ('o1', 'chunk-1', 'pending', 3, '2026-09-01T10:40:00.000Z', NULL, NULL, 'TRANSCRIPTION_TIMEOUT', ''),
+      ('o9', 'fresh', 'pending', 0, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, '');
+  `);
+  const timestamp = "2026-09-01T10:45:00.000Z";
+
+  database.prepare(exhaustedPendingSql).run(timestamp, 3);
+  // The failed-runs clause strips its outer batch bindings to (ts, ts, max).
+  database.prepare(failRunsSql).run(timestamp, timestamp, 3);
+  database.prepare(failParentsSql).run(timestamp, timestamp);
+
+  const runStatus = (id) => ({ ...database.prepare(
+    `SELECT status, error_code FROM transcription_runs WHERE id = ?`,
+  ).get(id) });
+  const outboxStatus = (id) => ({ ...database.prepare(
+    `SELECT status, next_attempt_at FROM transcription_queue_outbox WHERE id = ?`,
+  ).get(id) });
+
+  assert.deepEqual(runStatus("chunk-0"), { status: "failed", error_code: "TRANSCRIPTION_RETRY_EXHAUSTED" });
+  assert.deepEqual(runStatus("chunk-1"), { status: "failed", error_code: "TRANSCRIPTION_RETRY_EXHAUSTED" });
+  assert.deepEqual(outboxStatus("o0"), { status: "failed", next_attempt_at: "9999-12-31T23:59:59.999Z" });
+  // The parent fails only when no child can still make progress, and keeps
+  // the retryable chunk-failure code the retry button understands.
+  assert.deepEqual(runStatus("parent"), { status: "failed", error_code: "TRANSCRIPTION_CHUNK_FAILED" });
+  // A fresh run under the attempt cap is untouched by every clause.
+  assert.deepEqual(runStatus("fresh"), { status: "queued", error_code: null });
+  assert.deepEqual(outboxStatus("o9"), { status: "pending", next_attempt_at: "2026-09-01T10:40:00.000Z" });
+
+  // Fair dispatch: retry-looping rows must not starve fresh work.
+  assert.match(outbox, /ORDER BY o\.attempt, o\.next_attempt_at, o\.created_at/);
+  // Each recovery cycle idles for the long-queued threshold, so it stays small.
+  assert.match(outbox, /Date\.parse\(timestamp\) - 45_000/);
 });

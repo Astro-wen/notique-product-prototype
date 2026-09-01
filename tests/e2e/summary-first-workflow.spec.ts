@@ -335,6 +335,7 @@ test("the transcript is a compact continuous document with stable speaker identi
       bodyX: bodyRect?.x ?? 0,
       bodyHeight: bodyRect?.height ?? 0,
       radius: Number.parseFloat(style?.borderRadius ?? "0"),
+      background: style?.backgroundColor ?? "",
       shadow: style?.boxShadow ?? "none",
       fontSize: Number.parseFloat(textStyle?.fontSize ?? "0"),
       lineHeight: Number.parseFloat(textStyle?.lineHeight ?? "0"),
@@ -343,7 +344,10 @@ test("the transcript is a compact continuous document with stable speaker identi
 
   expect(geometry[5].bottom - geometry[0].top, "six short turns should fit in a compact reading viewport").toBeLessThanOrEqual(isMobile(testInfo) ? 480 : 450);
   expect(geometry.every((turn) => turn.bodyHeight >= 44)).toBe(true);
-  expect(geometry.every((turn) => turn.radius <= 2)).toBe(true);
+  expect(geometry.every((turn) => turn.radius <= 8)).toBe(true);
+  // A turn is text on the document's own surface, not a card of its own: 240
+  // white cards on a grey canvas made every paragraph read as a button.
+  expect(geometry.every((turn) => turn.background === "rgba(0, 0, 0, 0)")).toBe(true);
   expect(geometry.every((turn) => turn.shadow === "none")).toBe(true);
   expect(geometry.every((turn) => turn.fontSize >= 14 && turn.lineHeight / turn.fontSize >= 1.45 && turn.lineHeight / turn.fontSize <= 1.75)).toBe(true);
   expect(Math.max(...geometry.map((turn) => turn.bodyX)) - Math.min(...geometry.map((turn) => turn.bodyX))).toBeLessThanOrEqual(1);

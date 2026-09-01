@@ -13,12 +13,13 @@ export function preferredReadingAid(input: {
   readableTranscriptStatus: string | null;
   extractionStatus: string | null;
 }): ReadingAidTarget | null {
-  // The source transcript is the first useful result. AI reading aids enhance
-  // it in place; they never replace or delay a transcript that is already
-  // ready for the user.
+  // While work is in flight the source transcript is the first useful result
+  // and must never be delayed. Once the readable pass has succeeded, reading
+  // starts there: on a real recording the raw text arrives without punctuation
+  // and full of fillers, and raw stays one click away as the evidence view.
+  if (input.readableTranscriptStatus === "succeeded") return "readable";
   if (input.rawAvailable === true) return "raw";
   if (input.summaryStatus === "succeeded") return "summary";
-  if (input.readableTranscriptStatus === "succeeded") return "readable";
   if (input.rawAvailable === false) return null;
   if (
     extractionComplete.has(input.extractionStatus ?? "")

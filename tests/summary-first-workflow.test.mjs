@@ -107,20 +107,22 @@ test("legacy Artifact fallback is explicit and restricted to current raw Segment
   assert.equal(wrongSource.legacyFallback, false);
 });
 
-test("Raw is primary as soon as it is available and AI reading aids stay in the background", async () => {
+test("Raw leads while work is in flight; the readable transcript leads once it succeeds", async () => {
   const { preferredReadingAid } = await loadWorkflow();
   assert.equal(preferredReadingAid({
     rawAvailable: true,
     summaryStatus: "processing",
     readableTranscriptStatus: "queued",
     extractionStatus: "processing",
-  }), "raw");
+  }), "raw", "an in-flight readable pass never delays the transcript that already exists");
+  // On a real recording raw arrives unpunctuated and full of fillers, so once
+  // the readable pass succeeds, reading starts there; raw stays one click away.
   assert.equal(preferredReadingAid({
     rawAvailable: true,
     summaryStatus: "succeeded",
     readableTranscriptStatus: "succeeded",
     extractionStatus: "succeeded",
-  }), "raw");
+  }), "readable");
   assert.equal(preferredReadingAid({
     rawAvailable: false,
     summaryStatus: "succeeded",
@@ -172,7 +174,7 @@ test("only untouched Raw readiness may auto-focus; completed AI aids never do", 
   }), false);
 });
 
-test("a later Summary completion keeps the Raw destination stable", async () => {
+test("a finished readable pass upgrades the destination without re-stealing focus", async () => {
   const { preferredReadingAid, shouldAutoFocusReadingAid } = await loadWorkflow();
   const before = preferredReadingAid({
     rawAvailable: true,
@@ -187,7 +189,8 @@ test("a later Summary completion keeps the Raw destination stable", async () => 
     extractionStatus: "processing",
   });
   assert.equal(before, "raw");
-  assert.equal(after, "raw");
+  // The destination upgrades to the readable transcript once it succeeds…
+  assert.equal(after, "readable");
   assert.equal(shouldAutoFocusReadingAid({
     target: before,
     activeWorkspaceTab: "materials",
@@ -195,6 +198,7 @@ test("a later Summary completion keeps the Raw destination stable", async () => 
     alreadyFocused: false,
     materialInteractionActive: false,
   }), true);
+  // …but a reader already focused on the transcript is not yanked again.
   assert.equal(shouldAutoFocusReadingAid({
     target: after,
     activeWorkspaceTab: "transcript",

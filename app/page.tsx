@@ -6507,7 +6507,11 @@ function TranscriptArtifactsPanel({
         {actionView === "source" && <div className="reader-action-body source-view" id="reader-action-panel">
           {selectedPoint ? <>
             <div className="source-readiness rail-source-readiness" aria-label="本次来源"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={availableRawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div>
-            <section className="selected-point-card"><small>{selectedPoint.sectionLabel}</small><h3>{selectedPoint.summaryText}</h3>{selectedPoint.supportQuote && <q>{selectedPoint.supportQuote}</q>}</section>
+            {/* The support quote reappears below inside its source segment, highlighted
+                in place. Printing it here as well made every point three near-identical
+                blocks of text, so the card keeps the statement only unless the
+                quote has no visible source to live in. */}
+            <section className="selected-point-card"><small>{selectedPoint.sectionLabel}</small><h3>{selectedPoint.summaryText}</h3>{selectedPoint.supportQuote && selectedSourceGroups.length === 0 && <q>{selectedPoint.supportQuote}</q>}</section>
             <section className="rail-source-section">
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
               {selectedSourceGroups.length ? selectedSourceGroups.map((group) => <article key={group.key}>
@@ -6541,13 +6545,15 @@ function TranscriptArtifactsPanel({
               })}
               {selectedPoint.sourceIds.length > 0 && (actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从这条重点建立行动</button>)}
             </section>
-            <section className="handwriting-check-section">
-              <header><strong>手写笔记核对</strong><span>{selectedPhotoEvidence.length ? "已关联" : photoAssets.length ? "待关联" : "可选"}</span></header>
+            {/* Without any photo the section said, at length, that photos are
+                optional. A standing explanation of an absent feature is noise;
+                one quiet button carries the whole affordance. */}
+            {photoAssets.length > 0 ? <section className="handwriting-check-section">
+              <header><strong>手写笔记核对</strong><span>{selectedPhotoEvidence.length ? "已关联" : "待关联"}</span></header>
               {selectedPhotoEvidence.map((ref) => <HandwrittenEvidencePreview evidence={ref} key={ref.id} />)}
-              {!selectedPhotoEvidence.length && photoAssets.length > 0 && <p>本次已有 {photoAssets.length} 张照片，但这条重点还没有直接引用。核对时可把两种来源并排确认。</p>}
-              {!photoAssets.length && <p>需要时可以直接补拍或选择手写笔记；它不会阻塞录音重点先出现。</p>}
+              {!selectedPhotoEvidence.length && <p>本次已有 {photoAssets.length} 张照片，但这条重点还没有直接引用。</p>}
               <button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button>
-            </section>
+            </section> : <button className="text-button rail-add-photo" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button>}
           </> : <div className="rail-empty-state"><ArrowLeft aria-hidden="true" /><strong>点左侧任意重点或原话</strong><p>这里会立即显示对应原句、播放位置、待确认记录和手写笔记，不会盖住主阅读区。</p><div className="source-readiness"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={availableRawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div><button className="button secondary full" disabled={Boolean(busy)} onClick={onAddPhoto}><Camera aria-hidden="true" />添加手写笔记</button></div>}
         </div>}
 
@@ -6713,7 +6719,16 @@ function AudioTranscriptionProgressPanel({
       : chunksFinished
         ? "正在合并时间点和说话人；完成后会自动打开逐字稿。"
         : hasChunkPlan && progress.total > 0
-          ? `已完成 ${progress.completed}/${progress.total} 段；可以离开此页，结果会自动更新。`
+          ? (() => {
+              // A chunk that has timed out and been requeued is not "in
+              // progress" in any honest sense. Say so, instead of letting a
+              // stalled bar imply steady work.
+              const retrying = (chunkedRun?.chunks ?? []).filter((chunk) =>
+                chunk.status !== "succeeded" && chunk.errorCode != null && chunk.processingAttemptNo >= 2).length;
+              return retrying > 0
+                ? `已完成 ${progress.completed}/${progress.total} 段；${retrying} 段转写超时，正在自动重试。`
+                : `已完成 ${progress.completed}/${progress.total} 段；可以离开此页，结果会自动更新。`;
+            })()
           : "正在识别说话人和时间点；完成后会自动打开逐字稿。";
 
   return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" aria-busy={!failed} data-testid="transcription-journey">
