@@ -1589,8 +1589,10 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .project-workflow-card.compact .project-workflow-action { grid-column: 2; min-height: 38px; }
   /* This is the notice that tells visitors not to upload real client data into
      a workspace every visitor shares. Clipping it to one line hid the actual
-     instruction behind an ellipsis, so it wraps instead. */
-  .public-workspace-notice { min-height: 34px; padding: 6px 10px; align-items: flex-start; flex-direction: column; gap: 2px; text-align: left; }
+     instruction behind an ellipsis, so it wraps — as one paragraph with the
+     label inline, which keeps the first transcript turn above the sheet. */
+  .public-workspace-notice { display: block; min-height: 0; padding: 5px 10px; text-align: left; line-height: 1.4; }
+  .public-workspace-notice strong { margin-right: var(--space-1); }
   .public-workspace-notice span { min-width: 0; }
   .project-workflow-copy h2 { font-size: var(--text-lg); }
   .workflow-timing > header { align-items: flex-start; flex-direction: column; }

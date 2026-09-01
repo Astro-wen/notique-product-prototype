@@ -412,6 +412,23 @@ test("390px keeps the continuous document usable and every primary transcript co
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
+test("a chapter takes the reader to that moment in the transcript", async ({ page, apiFixture }, testInfo) => {
+  test.skip(isMobile(testInfo), "desktop reading column");
+  apiFixture.completeSummary();
+  apiFixture.completeReadableTranscript();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
+  await page.getByRole("button", { name: "章节速览" }).first().click();
+  await expect(page.getByRole("heading", { name: "按时间顺序回到原文" })).toBeVisible();
+
+  // A chapter list is a table of contents: selecting an entry has to move the
+  // document, not only fill the side panel.
+  const before = await page.evaluate(() => window.scrollY);
+  await page.locator(".reader-chapters article button").first().click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before);
+  await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? "")).toMatch(/^raw-group-/);
+});
+
 test("390px keeps every Summary point inside the visible reading column", async ({ page, apiFixture }, testInfo) => {
   test.skip(!isMobile(testInfo), "390px internal overflow assertion");
   apiFixture.enableSummaryFirstFlow({ summaryStatus: "succeeded", readableStatus: "succeeded" });

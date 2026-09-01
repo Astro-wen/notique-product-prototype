@@ -6375,7 +6375,7 @@ function TranscriptArtifactsPanel({
           returnFocusId: `chapter-${sectionIndex}`,
         };
         return <article key={point.key}>
-          <button id={point.returnFocusId} onClick={() => selectSummaryPoint(point)}><time>{compactTranscriptTimestamp(sourceGroup?.startMs)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这个主题的原文已经可以直接阅读。"}</p></span><ArrowRight aria-hidden="true" /></button>
+          <button id={point.returnFocusId} onClick={() => { selectSummaryPoint(point); locateRawSources(point.sourceIds); }}><time>{compactTranscriptTimestamp(sourceGroup?.startMs)}</time><span><small>{point.sectionLabel}</small><strong>{title}</strong><p>{summaryText || "这个主题的原文已经可以直接阅读。"}</p></span><ArrowRight aria-hidden="true" /></button>
         </article>;
       })}</div> : <div className="reader-section-empty"><strong>信息正在分类</strong><p>原始逐字稿已经可以阅读，不需要等待分类完成。</p><button className="button secondary" onClick={() => selectWorkspaceSurface("transcript")}>先看逐字稿</button></div>}
     </section>}
