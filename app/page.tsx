@@ -5975,10 +5975,15 @@ function TranscriptArtifactsPanel({
     if (state === "loading" || state === "idle") return;
     const hasSummary = Boolean(summaryArtifact);
     const hasReadable = Boolean(readableArtifact);
-    const fallbackTab: TranscriptArtifactTab = availableRawSegments.length > 0
-      ? "raw"
-      : hasReadable
-        ? "readable"
+    // Reading starts on the readable transcript. On a real recording the raw
+    // text arrives without punctuation and full of fillers — "I'm doing great
+    // Kyle thanks how are you" — so landing there first makes the reader do
+    // the cleanup in their head. Raw stays one click away and remains the
+    // evidence view that every quote resolves against.
+    const fallbackTab: TranscriptArtifactTab = hasReadable
+      ? "readable"
+      : availableRawSegments.length > 0
+        ? "raw"
         : hasSummary
           ? "summary"
           : "raw";

@@ -104,13 +104,17 @@ test("public uploads require a per-session safety acknowledgement", () => {
   assert.match(styles, /\.public-workspace-notice/);
 });
 
-test("the raw transcript opens first while explicit Summary evidence returns remain restorable", () => {
+test("the readable transcript opens first while explicit Summary evidence returns remain restorable", () => {
   assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: targetEventId, tab: "summary" \}\)/);
   assert.match(page, /openClaimFromTranscriptSummary/);
   assert.match(page, /summaryReturnContext\.current/);
   assert.match(page, /restoreScrollY: context\.scrollY/);
   assert.match(page, /useState<TranscriptArtifactTab>\("raw"\)/);
-  assert.match(page, /availableRawSegments\.length > 0\s*\? "raw"\s*:\s*hasReadable\s*\? "readable"\s*:\s*hasSummary\s*\? "summary"/);
+  // Reading opens on the readable transcript. Raw arrives from a real
+  // recording without punctuation and full of fillers, so landing there first
+  // asked the reader to clean it up mentally. Raw stays one click away and is
+  // still the evidence view every quote resolves against.
+  assert.match(page, /hasReadable\s*\? "readable"\s*:\s*availableRawSegments\.length > 0\s*\? "raw"\s*:\s*hasSummary\s*\? "summary"/);
   assert.match(page, /summaryFirstNavigationKey\(project\.id, event\.id, "raw-ready"\)/);
   assert.match(page, /if \(readingTab \|\| transcriptFocusRequest\?\.eventId === event\.id\) return/);
   assert.match(page, /canonicalRawSegmentIds = new Set\(rawSegments\.map/);
