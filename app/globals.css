@@ -1711,7 +1711,11 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .reader-insight-tabs { min-height: 36px; gap: 14px; overflow-x: auto; }
   .reader-insight-tabs > button { padding-bottom: 7px; }
   .reader-reading-pane .summary-overview-card { margin: 0; padding: 0 14px 10px; }
-  .reader-reading-pane .summary-card-content:not(.expanded) .summary-trust-note span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* This line is the product's trust boundary: locating a quote is not the
+     same as verifying its meaning. Clipping it hid the half that says what
+     confirmation actually buys, so it wraps. */
+  .reader-reading-pane .summary-card-content:not(.expanded) .summary-trust-note { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .reader-reading-pane .summary-card-content:not(.expanded) .summary-trust-note span { min-width: 0; }
   .reader-reading-pane .summary-point-copy > span { opacity: 1; transform: none; }
   .reader-section-panel { min-height: 180px; padding: 12px 14px 18px; }
   .reader-chapters article > button { grid-template-columns: 48px minmax(0, 1fr) 14px; padding: 11px; }

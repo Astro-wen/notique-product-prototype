@@ -96,3 +96,27 @@ test("every statically named class is declared in the stylesheet", async () => {
     "a class rendered by the UI has no rule in the stylesheet",
   );
 });
+
+/**
+ * Truncating a name is fine — a filename or a project title has an obvious
+ * fallback. Truncating a sentence is not: the two rules removed here hid the
+ * public-workspace safety notice and the AI trust boundary behind an ellipsis,
+ * and both are the kind of copy a reader has to finish to act correctly.
+ */
+test("explanatory copy is never clipped to a single line", () => {
+  const clipped = css
+    .split("\n")
+    .filter((line) => /text-overflow:\s*ellipsis/.test(line))
+    .map((line) => line.slice(0, line.indexOf("{")).trim());
+
+  for (const selector of clipped) {
+    assert.doesNotMatch(
+      selector,
+      /public-workspace-notice|summary-trust-note/,
+      `${selector} clips a sentence the reader needs in full`,
+    );
+  }
+  // The notice and the trust note must still exist to be readable at all.
+  assert.match(css, /\.public-workspace-notice \{/);
+  assert.match(css, /\.summary-trust-note \{/);
+});
