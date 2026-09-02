@@ -36,7 +36,12 @@ export function shouldAutoFocusReadingAid(input: {
   alreadyFocused: boolean;
   materialInteractionActive: boolean;
 }): boolean {
-  return input.target === "raw"
+  // Both transcripts are the reading surface: whichever one is currently the
+  // best available is worth opening. Restricting this to raw meant that once
+  // the readable pass became the preferred destination, a finished recording
+  // stopped opening at its content at all and landed on the file list instead.
+  // A finished summary still never steals navigation.
+  return (input.target === "raw" || input.target === "readable")
     && input.activeWorkspaceTab === "materials"
     && !input.materialInteractionActive
     && !input.userNavigated

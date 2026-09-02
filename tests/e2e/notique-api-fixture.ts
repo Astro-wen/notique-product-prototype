@@ -1108,12 +1108,21 @@ export class NotiqueApiFixture {
         }
         const eventId = decodeURIComponent(eventArtifactsMatch[1]);
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
-        const summaryStatus = projectId === "project-a" && this.summaryFirstMode
-          ? this.summaryFirstSummaryStatus
-          : "succeeded";
-        const readableStatus = projectId === "project-a" && this.summaryFirstMode
-          ? this.summaryFirstReadableStatus
-          : "succeeded";
+        // Analysis-progress mode means the reading artifacts are still being
+        // produced. This endpoint used to hand back finished ones anyway, so
+        // the fixture disagreed with its own workflow snapshot and only looked
+        // right while the reader was pinned to raw.
+        const isProjectA = projectId === "project-a";
+        const summaryStatus = isProjectA && this.analysisProgressMode
+          ? "processing"
+          : isProjectA && this.summaryFirstMode
+            ? this.summaryFirstSummaryStatus
+            : "succeeded";
+        const readableStatus = isProjectA && this.analysisProgressMode
+          ? "processing"
+          : isProjectA && this.summaryFirstMode
+            ? this.summaryFirstReadableStatus
+            : "succeeded";
         await this.fulfill(route, envelope({
           runs: [
             ...(summaryStatus ? [{

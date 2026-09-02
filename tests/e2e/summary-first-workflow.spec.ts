@@ -52,14 +52,22 @@ test("Raw opens first and a finished Summary appears above it without stealing f
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
+  // Opening the reader automatically is not a tab choice. The route records a
+  // reading surface only when the reader picks one, so a raw view shown before
+  // the readable pass exists cannot outlive it; an explicit pick is still
+  // recorded and still survives reload (see the manual-selection tests below).
+  await expect(page).toHaveURL(/view=simple(?!.*readingTab)/);
 
   apiFixture.completeSummary();
 
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
+  // Opening the reader automatically is not a tab choice. The route records a
+  // reading surface only when the reader picks one, so a raw view shown before
+  // the readable pass exists cannot outlive it; an explicit pick is still
+  // recorded and still survives reload (see the manual-selection tests below).
+  await expect(page).toHaveURL(/view=simple(?!.*readingTab)/);
   await expect(page.locator(".reader-action-rail")).toBeVisible();
   if (isMobile(testInfo)) await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
   await expect(page.getByRole("button", { name: /连续核对/ })).toHaveCount(0);
@@ -184,11 +192,14 @@ test("a readable transcript can be chosen when Summary is unavailable without re
 
   apiFixture.completeReadableTranscript();
 
-  await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
-  await page.getByRole("button", { name: /^易读版/ }).click();
+  // A finished readable pass is the reading surface even when the Summary
+  // failed — reading a real recording should not mean reading its unpunctuated
+  // source text — and 原文 stays one click away as the evidence view.
+  await expect(page.getByRole("button", { name: /^易读版/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("预算上限是 120 万美元。", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: /^易读版/ })).toHaveClass(/active/);
+  await page.getByRole("button", { name: /^原文/ }).click();
+  await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
+  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
   expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
@@ -706,7 +717,11 @@ test("an old Run without reading artifacts falls back to the original transcript
   await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
 
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
-  await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
+  // Opening the reader automatically is not a tab choice. The route records a
+  // reading surface only when the reader picks one, so a raw view shown before
+  // the readable pass exists cannot outlive it; an explicit pick is still
+  // recorded and still survives reload (see the manual-selection tests below).
+  await expect(page).toHaveURL(/view=simple(?!.*readingTab)/);
   await expect(page.locator(".raw-artifact").getByText("预算上限是 120 万美元。", { exact: false })).toBeVisible();
   expect(nonWakeWrites(apiFixture)).toEqual([]);
 });

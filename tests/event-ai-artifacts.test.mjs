@@ -1844,5 +1844,7 @@ test("reading starts from the readable transcript wherever one exists", async ()
   // 原文 is the evidence view, one click away — not the reading view. The
   // transcript under the intelligence surfaces was pinned to raw, so a reader
   // who never touched the tab bar read unpunctuated, filler-filled source text.
-  assert.match(uiSource, /const readerTab: "readable" \| "raw" = tab === "raw"\s*\?\s*"raw"\s*:\s*readableArtifact \|\| showingProvisionalReadable\s*\?\s*"readable"\s*:\s*"raw";/);
+  // Only a finished readable pass displaces raw: the rolling preview covers the
+  // stable prefix only, and must not hide a transcript that is already whole.
+  assert.match(uiSource, /const readerTab: "readable" \| "raw" = tab === "raw"\s*\?\s*"raw"\s*:\s*readableArtifact\s*\?\s*"readable"\s*:\s*"raw";/);
 });

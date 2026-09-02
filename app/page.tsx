@@ -5718,10 +5718,12 @@ function TranscriptArtifactsPanel({
   // Raw is the evidence view, one click away; it is not the reading view. The
   // transcript under the intelligence surfaces used to be raw no matter what,
   // so a reader who never touched the tab bar read a recording's unpunctuated,
-  // filler-filled source text instead of the readable pass that exists.
+  // filler-filled source text instead of the readable pass that exists. Only a
+  // finished readable pass counts: the rolling preview covers the stable
+  // prefix only, and must not displace a raw transcript that is already whole.
   const readerTab: "readable" | "raw" = tab === "raw"
     ? "raw"
-    : readableArtifact || showingProvisionalReadable
+    : readableArtifact
       ? "readable"
       : "raw";
   const insightView: Exclude<ReadingWorkspaceView, "transcript"> = workspaceView === "transcript" ? "points" : workspaceView;
@@ -6126,7 +6128,7 @@ function TranscriptArtifactsPanel({
       // it — this used to record raw in the route like an explicit choice —
       // left everyone who looked at the transcript early on the source text
       // for good, including on every later reload of that URL.
-      if (readableArtifact || showingProvisionalReadable) selectArtifactTab("readable");
+      if (readableArtifact) selectArtifactTab("readable");
       else {
         manuallySelectedTab.current = false;
         setTab("raw");
@@ -7145,7 +7147,11 @@ function SimpleTestScreen({
       if (userNavigatedFromWaiting.current) return;
       setReaderWasOpened(true);
       setActiveTab("transcript");
-      onFocusTranscriptArtifact(event.id, "raw");
+      // Opening the reader is not a tab choice. Recording raw here — the only
+      // destination before the readable pass lands — pinned the source text in
+      // the route for good; the readable pass is a real destination and can be
+      // restored on reload.
+      if (readingAid === "readable") onFocusTranscriptArtifact(event.id, "readable");
     }, 0);
     return () => window.clearTimeout(timer);
   }, [

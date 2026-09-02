@@ -119,7 +119,12 @@ test("the readable transcript opens first while explicit Summary evidence return
   assert.match(page, /if \(readingTab \|\| transcriptFocusRequest\?\.eventId === event\.id\) return/);
   assert.match(page, /canonicalRawSegmentIds = new Set\(rawSegments\.map/);
   assert.match(page, /immediateRawSegments\.filter\(\(segment\) => !canonicalRawSegmentIds\.has\(segment\.id\)\)/);
-  assert.match(page, /onFocusTranscriptArtifact\(event\.id, "raw"\)/);
+  // Auto-opening the reader records a destination only when that destination
+  // is the readable transcript. Recording raw — the only thing to show before
+  // the readable pass lands — pinned the source text in the route for good,
+  // so every later visit to that URL reopened the unpunctuated transcript.
+  assert.match(page, /if \(readingAid === "readable"\) onFocusTranscriptArtifact\(event\.id, "readable"\);/);
+  assert.doesNotMatch(page, /onFocusTranscriptArtifact\(event\.id, "raw"\)/);
   assert.doesNotMatch(page, /onFocusTranscriptArtifact\(event\.id, "summary"\)/);
 });
 

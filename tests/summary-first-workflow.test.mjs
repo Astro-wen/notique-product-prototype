@@ -159,7 +159,10 @@ test("only untouched Raw readiness may auto-focus; completed AI aids never do", 
   };
   assert.equal(shouldAutoFocusReadingAid(base), true);
   assert.equal(shouldAutoFocusReadingAid({ ...base, target: "summary" }), false);
-  assert.equal(shouldAutoFocusReadingAid({ ...base, target: "readable" }), false);
+  // The readable transcript is the reading surface too. It used to be excluded,
+  // so once it became the preferred destination a finished recording opened at
+  // the file list instead of at its own content.
+  assert.equal(shouldAutoFocusReadingAid({ ...base, target: "readable" }), true);
   assert.equal(shouldAutoFocusReadingAid({ ...base, activeWorkspaceTab: "results" }), false);
   assert.equal(shouldAutoFocusReadingAid({ ...base, userNavigated: true }), false);
   assert.equal(shouldAutoFocusReadingAid({ ...base, alreadyFocused: true }), false);
@@ -198,7 +201,9 @@ test("a finished readable pass upgrades the destination without re-stealing focu
     alreadyFocused: false,
     materialInteractionActive: false,
   }), true);
-  // …but a reader already focused on the transcript is not yanked again.
+  // …and a reader already focused on the transcript is still not yanked again:
+  // the guards that matter are the active tab and the already-focused mark,
+  // not which of the two transcripts is the better destination.
   assert.equal(shouldAutoFocusReadingAid({
     target: after,
     activeWorkspaceTab: "transcript",
@@ -256,5 +261,5 @@ test("opening the transcript does not pin 原文 as a choice", async () => {
   // the route like an explicit selection left everyone who looked early — and
   // every later reload of that URL — stuck on the source text.
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  assert.match(page, /if \(readableArtifact \|\| showingProvisionalReadable\) selectArtifactTab\("readable"\);\s*else \{\s*manuallySelectedTab\.current = false;\s*setTab\("raw"\);\s*\}/);
+  assert.match(page, /if \(readableArtifact\) selectArtifactTab\("readable"\);\s*else \{\s*manuallySelectedTab\.current = false;\s*setTab\("raw"\);\s*\}/);
 });
