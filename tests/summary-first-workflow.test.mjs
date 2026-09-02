@@ -232,3 +232,29 @@ test("Summary source overlap returns every candidate instead of silently choosin
   ), [0, 1]);
   assert.deepEqual(matchingSummarySourceIndexes([], [["seg-shared"]]), []);
 });
+
+test("the workspace rail resolves a Claim's evidence instead of shrugging at it", async () => {
+  // The Claim list payload carries evidence ids, not the refs, and the rail
+  // read claim.evidenceRefs straight from it: every AI 要求 or 事实 opened with
+  // 「录音与原话 0 段」 and told the reader its source was kept somewhere in the
+  // transcript — in a product whose whole promise is reaching the sentence a
+  // claim came from.
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page, /const claimEvidence = \(claim: \{ id: string; evidenceRefs: EvidenceRef\[\] \}\): EvidenceRef\[\] =>/);
+  assert.match(page, /claim\.evidenceRefs\.length \? claim\.evidenceRefs : railEvidence\[claim\.id\] \?\? \[\]/);
+  assert.match(page, /queryClient\.fetchQuery\(evidenceQuery\(refId\)\)/,
+    "the rail uses the same evidence cache the review screen does");
+  assert.match(page, /sourceIds: \[\.\.\.new Set\(claimEvidence\(firstPendingClaim\)\.flatMap\(\(ref\) => ref\.segmentIds\)\)\]/);
+  assert.match(page, /const sourceIds = \[\.\.\.new Set\(claimEvidence\(claim\)\.flatMap\(\(ref\) => ref\.segmentIds\)\)\];/);
+  assert.match(page, /selectedPointEvidenceLoading\s*\?\s*<p className="rail-muted" role="status">正在定位原话…<\/p>/,
+    "a Claim mid-resolution says so rather than claiming its source is gone");
+  assert.match(page, /const RAIL_EVIDENCE_LIMIT = 12;/, "the queue is bounded");
+});
+
+test("opening the transcript does not pin 原文 as a choice", async () => {
+  // Raw is all there is before the readable pass finishes. Recording that in
+  // the route like an explicit selection left everyone who looked early — and
+  // every later reload of that URL — stuck on the source text.
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page, /if \(readableArtifact \|\| showingProvisionalReadable\) selectArtifactTab\("readable"\);\s*else \{\s*manuallySelectedTab\.current = false;\s*setTab\("raw"\);\s*\}/);
+});

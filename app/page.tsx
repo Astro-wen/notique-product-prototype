@@ -611,6 +611,10 @@ function transcriptPlaybackLabel(
 }
 
 const MAX_HANDWRITING_IMAGE_EDGE = 4096;
+// How many pending Claims the workspace rail resolves evidence for up front.
+// The rail shows one at a time; this covers the visible queue without turning a
+// long review list into a burst of requests.
+const RAIL_EVIDENCE_LIMIT = 12;
 const MAX_HEIF_SOURCE_BYTES = 30 * 1024 * 1024;
 
 async function canvasJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -5786,6 +5790,41 @@ function TranscriptArtifactsPanel({
   const pendingOccurrences = occurrenceCandidates.filter((candidate) =>
     candidate.status === "pending" && candidate.event_id === event.id,
   );
+  // The Claim list payload carries evidence ids, not the refs themselves, and
+  // the rail read claim.evidenceRefs straight from it. So every AI 要求 or 事实
+  // opened with 「录音与原话 0 段」 and the message that its source was kept
+  // somewhere in the transcript — the reader could never reach the sentence a
+  // claim came from, which is the one thing this product promises. Resolve the
+  // refs the rail can show, through the same cache the review screen uses.
+  const [railEvidence, setRailEvidence] = useState<Record<string, EvidenceRef[]>>({});
+  const railEvidenceRequested = useRef(new Set<string>());
+  const claimEvidence = (claim: { id: string; evidenceRefs: EvidenceRef[] }): EvidenceRef[] =>
+    claim.evidenceRefs.length ? claim.evidenceRefs : railEvidence[claim.id] ?? [];
+  const railEvidenceTargets = pendingClaims
+    .filter((claim) => !claim.evidenceRefs.length && claim.evidenceRefIds.length)
+    .slice(0, RAIL_EVIDENCE_LIMIT);
+  const railEvidenceKey = railEvidenceTargets.map((claim) => claim.id).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    for (const claim of railEvidenceTargets) {
+      if (railEvidenceRequested.current.has(claim.id)) continue;
+      railEvidenceRequested.current.add(claim.id);
+      void Promise.all(
+        claim.evidenceRefIds.map((refId) => queryClient.fetchQuery(evidenceQuery(refId))),
+      ).then((refs) => {
+        if (cancelled) return;
+        setRailEvidence((current) => ({ ...current, [claim.id]: refs }));
+      }).catch(() => {
+        // A ref that will not load leaves the honest fallback in place; the
+        // Claim itself, and the review screen, are unaffected.
+        railEvidenceRequested.current.delete(claim.id);
+      });
+    }
+    return () => { cancelled = true; };
+    // The identity of the Claims that still need refs is the whole trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [railEvidenceKey, queryClient]);
+
   const visiblePendingReviewCount = pendingClaims.length + pendingOccurrences.length;
   const actionItems = (projectActions.data ?? []) as ProjectAction[];
   const eventActionItems = actionItems.filter((action) => action.event_id === event.id);
@@ -5844,9 +5883,9 @@ function TranscriptArtifactsPanel({
           claimId: firstPendingClaim.id,
           sectionKind: firstPendingClaim.type,
           sectionLabel: typeLabel(firstPendingClaim.type),
-          sourceIds: [...new Set(firstPendingClaim.evidenceRefs.flatMap((ref) => ref.segmentIds))],
+          sourceIds: [...new Set(claimEvidence(firstPendingClaim).flatMap((ref) => ref.segmentIds))],
           summaryText: firstPendingClaim.statement,
-          supportQuote: firstPendingClaim.evidenceRefs.find((ref) => ref.quote)?.quote || "",
+          supportQuote: claimEvidence(firstPendingClaim).find((ref) => ref.quote)?.quote || "",
           returnFocusId: `rail-pending-${firstPendingClaim.id}`,
         }
       : firstRawGroup
@@ -5862,6 +5901,18 @@ function TranscriptArtifactsPanel({
         : null;
   const selectedPoint = selectedPointOverride ?? defaultSelectedPoint;
   const selectedPointRevision = selectedPoint ? revisionForPoint(selectedPoint) : sourceSelectionRevision;
+  // A Claim whose refs are still resolving has no segment ids yet. Saying its
+  // source is "kept somewhere in the transcript" would be wrong a moment later.
+  const selectedPointEvidenceLoading = Boolean(
+    selectedPoint?.claimId
+    && selectedPoint.sourceIds.length === 0
+    && claims.some((claim) =>
+      claim.id === selectedPoint.claimId
+      && claim.evidenceRefIds.length > 0
+      && !claim.evidenceRefs.length
+      && !railEvidence[claim.id]),
+  );
+
   const actionComposerIsCurrent = actionComposerOpen && actionComposerRevision === selectedPointRevision;
   const selectedClaims = selectedPoint?.claimId
     ? claims.filter((claim) => claim.id === selectedPoint.claimId)
@@ -6070,7 +6121,16 @@ function TranscriptArtifactsPanel({
     setWorkspaceView(next);
     switchMobilePane("reading");
     if (next === "transcript") {
-      selectArtifactTab(readableArtifact ? "readable" : "raw");
+      // Opening the transcript is not a choice between 易读版 and 原文. Raw is
+      // the only thing to show before the readable pass finishes, but pinning
+      // it — this used to record raw in the route like an explicit choice —
+      // left everyone who looked at the transcript early on the source text
+      // for good, including on every later reload of that URL.
+      if (readableArtifact || showingProvisionalReadable) selectArtifactTab("readable");
+      else {
+        manuallySelectedTab.current = false;
+        setTab("raw");
+      }
       window.setTimeout(() => document.getElementById("transcript-document")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     } else {
       // Intelligence surfaces live above the same source transcript, but the
@@ -6129,7 +6189,7 @@ function TranscriptArtifactsPanel({
   }
 
   function selectClaimInRail(claim: Claim) {
-    const sourceIds = [...new Set(claim.evidenceRefs.flatMap((ref) => ref.segmentIds))];
+    const sourceIds = [...new Set(claimEvidence(claim).flatMap((ref) => ref.segmentIds))];
     const point: SelectedSummaryPoint = {
       key: `claim-${claim.id}`,
       claimId: claim.id,
@@ -6137,7 +6197,7 @@ function TranscriptArtifactsPanel({
       sectionLabel: typeLabel(claim.type),
       sourceIds,
       summaryText: claim.statement,
-      supportQuote: claim.evidenceRefs.find((ref) => ref.quote)?.quote || "",
+      supportQuote: claimEvidence(claim).find((ref) => ref.quote)?.quote || "",
       returnFocusId: `rail-pending-${claim.id}`,
     };
     setSourceSelection({ revision: sourceSelectionRevision, ids: new Set(sourceIds) });
@@ -6527,7 +6587,9 @@ function TranscriptArtifactsPanel({
               <header><strong>录音与原话</strong><span>{selectedPoint.sourceIds.length} 段</span></header>
               {selectedSourceGroups.length ? selectedSourceGroups.map((group) => <article key={group.key}>
                 {audioAssetIdForVersion(group.assetVersionId) ? <button aria-label={transcriptPlaybackLabel(group.startMs, "播放原话")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}><Play aria-hidden="true" />{compactTranscriptTimestamp(group.startMs)}</button> : <time className="transcript-turn-time">{compactTranscriptTimestamp(group.startMs)}</time>}<strong>{displaySpeakerLabel(group.speaker)}</strong><p>{highlightExactPhrase(group.text, selectedPoint.supportQuote).map((part, index) => part.highlighted ? <mark key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>)}</p>
-              </article>) : <p className="rail-muted">来源编号已保留，原句仍在完整逐字稿中。</p>}
+              </article>) : selectedPointEvidenceLoading
+                ? <p className="rail-muted" role="status">正在定位原话…</p>
+                : <p className="rail-muted">来源编号已保留，原句仍在完整逐字稿中。</p>}
               {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds)}>在逐字稿中定位</button>}
             </section>
             <section className="rail-review-section">
