@@ -890,7 +890,25 @@ function dataValue(body: unknown, keys: string[]): unknown {
   invalidContract(`The server response is missing ${keys[0]}.`);
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+type RequestOptions = RequestInit & {
+  /**
+   * Overrides the default control-plane deadline. The transcription dispatch
+   * endpoint deliberately holds its HTTP response open — sending whitespace
+   * heartbeats — while the audio provider works, because a Worker only keeps
+   * waitUntil alive for about thirty seconds after a response is sent. The
+   * blanket deadline below used to abort that stream at 25 seconds, which
+   * killed every chunk that needed longer than that and left the Run to
+   * expire its lease and retry until it ran out of attempts.
+   */
+  timeoutMs?: number;
+};
+
+const REQUEST_TIMEOUT_MS = 25_000;
+const TRANSCRIPTION_DISPATCH_TIMEOUT_MS = 10 * 60_000;
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestInit } = init;
+  init = requestInit;
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof Blob) && !(init.body instanceof ArrayBuffer) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -911,7 +929,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const timeout = controller ? globalThis.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, 25_000) : null;
+  }, timeoutMs) : null;
   try {
     const response = await fetch(path, {
       ...init,
@@ -935,6 +953,55 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (timeout != null) globalThis.clearTimeout(timeout);
     upstreamSignal?.removeEventListener("abort", forwardAbort);
   }
+}
+
+/**
+ * Starts the transcription dispatch and returns as soon as the server has
+ * accepted it, leaving the response streaming in the background.
+ *
+ * The endpoint keeps its response open — sending whitespace heartbeats — while
+ * the audio provider transcribes, because a Worker only keeps waitUntil alive
+ * for about thirty seconds after a response is sent. Reading that body through
+ * the control-plane deadline aborted the provider request at 25 seconds, so
+ * every chunk that needed longer than that died mid-flight and could only wait
+ * for its lease to expire and be tried again — for as many attempts as it had.
+ * Awaiting the body was wrong in the other direction too: it would have left
+ * "重新检查" spinning for minutes on a request whose result the page already
+ * polls for.
+ */
+const openTranscriptionDispatches = new Map<string, Promise<void>>();
+
+async function startTranscriptionDispatch(runId: Id, init: RequestInit): Promise<void> {
+  // The page wakes a chunked Run on every poll tick. That was self-limiting
+  // only because the deadline aborted the previous kick; with the stream held
+  // open for the whole transcription, one stream per Run is the limit.
+  if (openTranscriptionDispatches.has(runId)) return;
+  const controller = new AbortController();
+  const abort = globalThis.setTimeout(() => controller.abort(), TRANSCRIPTION_DISPATCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch("/api/v1/jobs/dispatch", {
+      ...init,
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    globalThis.clearTimeout(abort);
+    throw error;
+  }
+  if (!response.ok) {
+    globalThis.clearTimeout(abort);
+    const body = await response.json().catch(() => null);
+    throw new ApiClientError(issueFrom(response.status, response.headers, body));
+  }
+  // Drain in the background so the connection — and the transcription running
+  // inside it — stays open until the server closes it.
+  const streamed = response.text().then(() => undefined, () => undefined).finally(() => {
+    globalThis.clearTimeout(abort);
+    openTranscriptionDispatches.delete(runId);
+  });
+  openTranscriptionDispatches.set(runId, streamed);
 }
 
 const UPLOAD_STALL_TIMEOUT_MS = 120_000;
@@ -1593,12 +1660,14 @@ export const api = {
     kind: "extraction" | "transcription" | "artifact";
     runId: Id;
   }): Promise<void> {
-    await request<unknown>("/api/v1/jobs/dispatch", {
-      method: "POST",
-      ...(target
-        ? { body: jsonBody({ kind: target.kind, run_id: target.runId }) }
-        : {}),
-    });
+    const body = target
+      ? { body: jsonBody({ kind: target.kind, run_id: target.runId }) }
+      : {};
+    if (target?.kind === "transcription") {
+      await startTranscriptionDispatch(target.runId, body);
+      return;
+    }
+    await request<unknown>("/api/v1/jobs/dispatch", { method: "POST", ...body });
   },
 
   async getRun(runId: Id): Promise<ExtractionRun> {

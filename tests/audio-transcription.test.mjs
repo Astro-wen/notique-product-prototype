@@ -1018,3 +1018,46 @@ test("the sweep closes the lease-expiry zombie loop with real SQL", async () => 
   // Each recovery cycle idles for the long-queued threshold, so it stays small.
   assert.match(outbox, /Date\.parse\(timestamp\) - 45_000/);
 });
+
+test("the transcription kick outlives the control-plane deadline", async () => {
+  // The dispatch endpoint transcribes inside its own held-open response. The
+  // blanket 25-second deadline aborted that stream mid-provider-request, so
+  // every chunk longer than the deadline died and could only wait for its
+  // lease to expire — the tail chunk, the one short enough to finish in time,
+  // was the only chunk of a real recording that ever succeeded.
+  const client = await readFile(path.join(root, "app/api-client.ts"), "utf8");
+  assert.match(client, /const REQUEST_TIMEOUT_MS = 25_000;/);
+  assert.match(client, /const TRANSCRIPTION_DISPATCH_TIMEOUT_MS = 10 \* 60_000;/);
+  assert.match(client, /kind === "transcription"\) \{\s*await startTranscriptionDispatch\(target\.runId, body\);/,
+    "a transcription kick must not go through the control-plane deadline");
+
+  const starter = declarationSource("startTranscriptionDispatch");
+  assert.ok(starter, "the transcription kick needs its own dispatch starter");
+  assert.match(starter, /TRANSCRIPTION_DISPATCH_TIMEOUT_MS/,
+    "the stream gets the long deadline, not the control-plane one");
+  // Returning at the response headers keeps 重新检查 responsive while the
+  // body — and the transcription running behind it — keeps streaming.
+  assert.match(starter, /const streamed = response\.text\(\)/,
+    "the body drains in the background so the connection stays open");
+  assert.doesNotMatch(starter, /await response\.text\(\)/,
+    "awaiting the body would block the caller for the whole transcription");
+});
+
+test("one dispatch stream per Run, however often the page wakes it", async () => {
+  // Waking a chunked Run happens on every poll tick. That was self-limiting
+  // only because the deadline aborted the previous kick after 25 seconds; a
+  // stream that stays open for the whole transcription needs real dedupe, or
+  // a long recording accumulates one open connection per tick.
+  const client = await readFile(path.join(root, "app/api-client.ts"), "utf8");
+  const starter = declarationSource("startTranscriptionDispatch");
+  assert.match(starter, /if \(openTranscriptionDispatches\.has\(runId\)\) return;/,
+    "a Run with a live dispatch stream must not open a second one");
+  assert.match(starter, /openTranscriptionDispatches\.set\(runId, streamed\)/,
+    "the stream is registered for the life of the connection");
+  assert.match(starter, /openTranscriptionDispatches\.delete\(runId\)/,
+    "the Run becomes kickable again once its stream closes");
+  assert.match(client, /const openTranscriptionDispatches = new Map<string, Promise<void>>\(\)/);
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page, /orchestrationMode === "chunked" && latest\.status === "processing"\) \{\s*wakeChunkedTranscription/,
+    "the poll loop still wakes chunked Runs; the client is what keeps it to one stream");
+});
