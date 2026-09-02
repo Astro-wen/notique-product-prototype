@@ -260,7 +260,19 @@ function analysisProgressExtractionRun(id: string, projectId: string, eventId: s
   };
 }
 
+// Production's Claim payloads carry evidence ids and nothing else; the refs
+// come from /api/v1/evidence-refs/:id. This fixture used to embed the refs in
+// the Claim, which is why no test noticed that the reading workspace had no
+// way to resolve them and showed 「录音与原话 0 段」 for every AI claim.
+const evidenceRegistry = new Map<string, ReturnType<typeof buildEvidenceRef>>();
+
 function evidenceRef(id: string, segmentId: string, eventId = "event-a") {
+  const ref = buildEvidenceRef(id, segmentId, eventId);
+  evidenceRegistry.set(id, ref);
+  return ref;
+}
+
+function buildEvidenceRef(id: string, segmentId: string, eventId = "event-a") {
   return {
     id,
     kind: "transcript_quote",
@@ -309,7 +321,6 @@ function claimRecord(
     },
     relations_for_review: [],
     evidence_ref_ids: [evidence.id],
-    evidence_refs: [evidence],
     batch_review_attested: false,
     created_at: "2026-08-15T11:02:00.000Z",
     updated_at: now,
@@ -1243,7 +1254,6 @@ export class NotiqueApiFixture {
             "seg-timeline",
           );
           summaryClaim.evidence_ref_ids.push(extra.id);
-          summaryClaim.evidence_refs.push(extra);
         }
         const claims = runId === "run-a" ? [
           summaryClaim,
@@ -1309,7 +1319,6 @@ export class NotiqueApiFixture {
         if (this.summaryIncompleteEvidence) {
           const extra = evidenceRef("evidence-claim-summary-pending-extra", "seg-timeline");
           summaryClaim.evidence_ref_ids.push(extra.id);
-          summaryClaim.evidence_refs.push(extra);
         }
         const claim = this.manualClaims.get(claimId) ?? (claimId === "claim-summary-pending"
           ? summaryClaim
@@ -1317,6 +1326,21 @@ export class NotiqueApiFixture {
             ? claimRecord(claimId, "客户仍需确认 120 万美元是否包含装修预算", "open_question", "pending", "seg-summary-target")
             : claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline"));
         await this.fulfill(route, envelope({ current_claim: claim }));
+        return;
+      }
+
+      const evidenceMatch = path.match(/^\/api\/v1\/evidence-refs\/([^/]+)$/);
+      if (evidenceMatch) {
+        const evidenceId = decodeURIComponent(evidenceMatch[1]);
+        const ref = evidenceRegistry.get(evidenceId);
+        if (!ref) {
+          await this.fulfill(route, {
+            error: { code: "NOT_FOUND", message: `No fixture evidence ref ${evidenceId}.` },
+            request_id: requestId,
+          }, 404);
+          return;
+        }
+        await this.fulfill(route, envelope({ evidence_ref: ref }));
         return;
       }
 

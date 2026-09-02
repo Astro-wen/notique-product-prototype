@@ -263,3 +263,19 @@ test("opening the transcript does not pin 原文 as a choice", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
   assert.match(page, /if \(readableArtifact\) selectArtifactTab\("readable"\);\s*else \{\s*manuallySelectedTab\.current = false;\s*setTab\("raw"\);\s*\}/);
 });
+
+test("every workspace read of a Claim's evidence goes through the resolver", async () => {
+  // The Claim list payload carries evidence ids only. Reading refs off the
+  // Claim did not just empty the source rail: matching a Summary sentence to
+  // its Claims, photo evidence, and the gate on in-place confirmation all read
+  // the same empty array, so quick confirmation refused every Claim with
+  // "右侧还没有完整展示这条信息的全部证据".
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  const workspace = page.slice(page.indexOf("const pendingClaims = claims.filter"));
+  assert.doesNotMatch(workspace, /claim\.evidenceRefs\.flatMap/,
+    "no workspace path may read refs straight off a Claim");
+  assert.match(workspace, /claims\.map\(\(claim\) => claimEvidence\(claim\)\.flatMap\(\(ref\) => ref\.segmentIds\)\)/);
+  assert.match(workspace, /selectedClaims\.flatMap\(\(claim\) => claimEvidence\(claim\)\)/);
+  // Verified Claims matter too: a Summary sentence matches against all of them.
+  assert.match(page, /\.\.\.pendingClaims,\s*\.\.\.claims\.filter\(\(claim\) => claim\.reviewStatus !== "pending"\),/);
+});

@@ -117,11 +117,14 @@ test("cancelling during Asset init aborts the real control-plane request", async
 
 test("the reading rail supports guarded in-place decisions and source-seeded actions", () => {
   assert.match(page, /async function quickVerdictFromWorkspace/);
-  assert.match(page, /if \(!claim\.evidenceRefs\.length \|\| !visibleSourceIds\.length\) return false/);
+  // The gate reads the refs it is handed, not the Claim: a Claim from the list
+  // payload carries evidence ids only, so reading them off it made this gate
+  // see no evidence at all and refuse every in-place confirmation.
+  assert.match(page, /if \(!refs\.length \|\| !visibleSourceIds\.length\) return false/);
   assert.match(page, /ref\.kind\.includes\("transcript"\)[\s\S]{0,160}ref\.segmentIds\.every\(\(id\) => visible\.has\(id\)\)/);
   assert.match(page, /const displayedSourceIds = selectedSourceGroups\.flatMap/);
-  assert.match(page, /claimEvidenceFitsSourceRail\(claim, displayedSourceIds\)/);
-  assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds\)/);
+  assert.match(page, /claimEvidenceFitsSourceRail\(claimEvidence\(claim\), displayedSourceIds\)/);
+  assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds, claimEvidence\(claim\)\)/);
   assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
   assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
   assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked\)/);

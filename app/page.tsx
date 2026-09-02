@@ -371,10 +371,10 @@ type SelectedSummaryPoint = SummarySourceDrawerState & {
 type ReadingWorkspaceView = "points" | "chapters" | "speakers" | "transcript";
 type ReadingActionView = "source" | "pending" | "actions";
 
-function claimEvidenceFitsSourceRail(claim: Claim, visibleSourceIds: string[]): boolean {
-  if (!claim.evidenceRefs.length || !visibleSourceIds.length) return false;
+function claimEvidenceFitsSourceRail(refs: EvidenceRef[], visibleSourceIds: string[]): boolean {
+  if (!refs.length || !visibleSourceIds.length) return false;
   const visible = new Set(visibleSourceIds);
-  return claim.evidenceRefs.every((ref) =>
+  return refs.every((ref) =>
     ref.kind.includes("transcript")
     && ref.segmentIds.length > 0
     && ref.segmentIds.every((id) => visible.has(id)),
@@ -3396,7 +3396,15 @@ export default function Home() {
     }
   }
 
-  async function quickVerdictFromWorkspace(claimId: string, action: "confirm" | "reject", visibleSourceIds: string[]): Promise<void> {
+  async function quickVerdictFromWorkspace(
+    claimId: string,
+    action: "confirm" | "reject",
+    visibleSourceIds: string[],
+    // The Claim list payload has ids, not refs. Reading them off the Claim
+    // meant this gate saw no evidence at all and refused every quick
+    // confirmation; the workspace hands over the refs it resolved.
+    evidenceRefs: EvidenceRef[],
+  ): Promise<void> {
     const target = claims.find((claim) => claim.id === claimId);
     if (!target || target.reviewStatus !== "pending") return;
     if (claimVerdictIsTemporarilyLocked(target)) {
@@ -3408,7 +3416,7 @@ export default function Home() {
       return;
     }
     const proposedRelations = target.relationsForReview.filter((relation) => relation.status === "proposed");
-    if (action === "confirm" && (target.needsAdditionalEvidence || !claimEvidenceFitsSourceRail(target, visibleSourceIds))) {
+    if (action === "confirm" && (target.needsAdditionalEvidence || !claimEvidenceFitsSourceRail(evidenceRefs, visibleSourceIds))) {
       setEventIssue({
         status: 409,
         code: "EVIDENCE_REVIEW_REQUIRED",
@@ -4936,7 +4944,7 @@ export default function Home() {
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id) => void openClaimFromTranscriptSummary(id)}
           onOpenFullReview={() => void enterContinuousReview()}
-          onQuickVerdict={(claimId, action, sourceIds) => void quickVerdictFromWorkspace(claimId, action, sourceIds)}
+          onQuickVerdict={(claimId, action, sourceIds, refs) => void quickVerdictFromWorkspace(claimId, action, sourceIds, refs)}
           onCreateActionInline={(eventId, statement, segmentIds, verdictsLocked) => verdictsLocked ? createMissingClaim({ eventId, statement, type: "next_action", segmentIds }, true).then(() => undefined) : createConfirmedAction(eventId, statement, segmentIds)}
           onCompleteAction={(claimId) => void completeAction(claimId, true)}
           onRetryArtifact={retryEventAiArtifact}
@@ -5217,7 +5225,12 @@ type SimpleTestScreenProps = {
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string) => void;
   onOpenFullReview: () => void;
-  onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
+  onQuickVerdict: (
+    claimId: string,
+    action: "confirm" | "reject",
+    sourceIds: string[],
+    evidenceRefs: EvidenceRef[],
+  ) => void;
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
@@ -5324,7 +5337,12 @@ function TranscriptArtifactsPanel({
   busy: string | null;
   onOpenClaim: (id: string) => void;
   onOpenFullReview: () => void;
-  onQuickVerdict: (claimId: string, action: "confirm" | "reject", sourceIds: string[]) => void;
+  onQuickVerdict: (
+    claimId: string,
+    action: "confirm" | "reject",
+    sourceIds: string[],
+    evidenceRefs: EvidenceRef[],
+  ) => void;
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onAddPhoto: () => void;
@@ -5802,7 +5820,13 @@ function TranscriptArtifactsPanel({
   const railEvidenceRequested = useRef(new Set<string>());
   const claimEvidence = (claim: { id: string; evidenceRefs: EvidenceRef[] }): EvidenceRef[] =>
     claim.evidenceRefs.length ? claim.evidenceRefs : railEvidence[claim.id] ?? [];
-  const railEvidenceTargets = pendingClaims
+  // Not just the rail: matching a Summary sentence to its Claims, gating quick
+  // confirmation on fully visible evidence, and photo evidence all read these
+  // refs. Pending Claims come first because they are the ones a reader acts on.
+  const railEvidenceTargets = [
+    ...pendingClaims,
+    ...claims.filter((claim) => claim.reviewStatus !== "pending"),
+  ]
     .filter((claim) => !claim.evidenceRefs.length && claim.evidenceRefIds.length)
     .slice(0, RAIL_EVIDENCE_LIMIT);
   const railEvidenceKey = railEvidenceTargets.map((claim) => claim.id).join(",");
@@ -5921,14 +5945,14 @@ function TranscriptArtifactsPanel({
     : selectedPoint
       ? matchingSummarySourceIndexes(
           selectedPoint.sourceIds,
-          claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
+          claims.map((claim) => claimEvidence(claim).flatMap((ref) => ref.segmentIds)),
         ).map((index) => claims[index])
     : [];
   const selectedSourceGroups = selectedPoint
     ? rawDisplayGroups.filter((group) => group.sourceIds.some((id) => selectedPoint.sourceIds.includes(id)))
     : [];
   const displayedSourceIds = selectedSourceGroups.flatMap((group) => group.sourceIds);
-  const selectedPhotoEvidence = selectedClaims.flatMap((claim) => claim.evidenceRefs).filter((ref) => ref.kind === "photo");
+  const selectedPhotoEvidence = selectedClaims.flatMap((claim) => claimEvidence(claim)).filter((ref) => ref.kind === "photo");
   const photoAssets = event.assets.filter((asset) => asset.kind === "photo");
   const selectedPointStatus = !selectedPoint
     ? "待选择"
@@ -6380,7 +6404,7 @@ function TranscriptArtifactsPanel({
             const ids = stringValues(item.source_segment_ids);
             const matchedClaims = matchingSummarySourceIndexes(
               ids,
-              claims.map((claim) => claim.evidenceRefs.flatMap((ref) => ref.segmentIds)),
+              claims.map((claim) => claimEvidence(claim).flatMap((ref) => ref.segmentIds)),
             ).map((index) => claims[index]);
             const availableMatchedClaims = reviewReady
               ? matchedClaims
@@ -6600,8 +6624,8 @@ function TranscriptArtifactsPanel({
               {selectedClaims.map((claim) => {
                 const confirmNeedsDetail = claim.needsAdditionalEvidence
                   || claim.relationsForReview.some((relation) => relation.status === "proposed")
-                  || !claimEvidenceFitsSourceRail(claim, displayedSourceIds)
-                  || claim.evidenceRefs.flatMap((ref) => ref.segmentIds).some((id) => !rawSegmentIds.has(id));
+                  || !claimEvidenceFitsSourceRail(claimEvidence(claim), displayedSourceIds)
+                  || claimEvidence(claim).flatMap((ref) => ref.segmentIds).some((id) => !rawSegmentIds.has(id));
                 return <div className="rail-review-row" key={claim.id}>
                   <button className="rail-review-item" onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>
                   {claim.reviewStatus === "pending" && <div className="rail-quick-verdict" aria-label={`快速处理：${claim.statement}`}>
@@ -6610,9 +6634,9 @@ function TranscriptArtifactsPanel({
                       disabled={Boolean(busy) || confirmNeedsDetail || verdictsLocked}
                       aria-describedby={verdictsLocked ? "rail-verdict-lock" : confirmNeedsDetail ? `rail-review-warning-${claim.id}` : undefined}
                       title={confirmNeedsDetail || verdictsLocked ? undefined : "原话已在本次操作面板中，可直接确认"}
-                      onClick={() => onQuickVerdict(claim.id, "confirm", displayedSourceIds)}
+                      onClick={() => onQuickVerdict(claim.id, "confirm", displayedSourceIds, claimEvidence(claim))}
                     ><Check aria-hidden="true" />确认</button>
-                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", displayedSourceIds)}><X aria-hidden="true" />不采纳</button>
+                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", displayedSourceIds, claimEvidence(claim))}><X aria-hidden="true" />不采纳</button>
                     <button disabled={Boolean(busy) || verdictsLocked} onClick={() => openClaimFromSummary(claim.id)}>修改</button>
                   </div>}
                   {claim.reviewStatus === "pending" && confirmNeedsDetail && <div className="rail-review-warning" id={`rail-review-warning-${claim.id}`}><AlertTriangle aria-hidden="true" /><span>这条还需补证据或判断与旧记录的关系。</span><button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>打开详情核对</button></div>}
