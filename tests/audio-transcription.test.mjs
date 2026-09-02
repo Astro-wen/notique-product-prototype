@@ -967,6 +967,34 @@ test("the sweep closes the lease-expiry zombie loop with real SQL", async () => 
   assert.deepEqual(runStatus("fresh"), { status: "queued", error_code: null });
   assert.deepEqual(outboxStatus("o9"), { status: "pending", next_attempt_at: "2026-09-01T10:40:00.000Z" });
 
+  // Production drives transcription through the browser's targeted kicks, so
+  // the exhaustion closure must live on that path too — the sweep alone never
+  // runs when no cron fires. Execute the targeted closure SQL as well.
+  const targetedDeadLetterSql = extract("WHERE run_id = ? AND attempt >= ?");
+  const database2 = new DatabaseSync(":memory:");
+  database2.exec(`
+    CREATE TABLE transcription_queue_outbox (
+      id TEXT PRIMARY KEY, run_id TEXT, status TEXT, attempt INTEGER,
+      next_attempt_at TEXT, lease_owner TEXT, lease_expires_at TEXT,
+      last_error_code TEXT, updated_at TEXT
+    );
+    INSERT INTO transcription_queue_outbox VALUES
+      ('t0', 'chunk-z', 'pending', 3, '2026-09-01T10:40:00.000Z', NULL, NULL, 'TRANSCRIPTION_TIMEOUT', ''),
+      ('t1', 'other', 'pending', 1, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, '');
+  `);
+  database2.prepare(targetedDeadLetterSql).run("2026-09-01T10:45:00.000Z", "chunk-z", 3);
+  assert.equal(
+    ({ ...database2.prepare(`SELECT status, next_attempt_at FROM transcription_queue_outbox WHERE id = 't0'`).get() }).status,
+    "failed",
+  );
+  assert.equal(
+    ({ ...database2.prepare(`SELECT status FROM transcription_queue_outbox WHERE id = 't1'`).get() }).status,
+    "pending",
+    "another run's rows stay untouched",
+  );
+  assert.match(outbox, /markRetryExhaustedRun\(target\.runId, "TRANSCRIPTION_TIMEOUT"\)/);
+  assert.match(outbox, /failExhaustedChunkParents\(timestamp\);[\s\S]{0,20}return "terminal"/);
+
   // Fair dispatch: retry-looping rows must not starve fresh work.
   assert.match(outbox, /ORDER BY o\.attempt, o\.next_attempt_at, o\.created_at/);
   // Each recovery cycle idles for the long-queued threshold, so it stays small.

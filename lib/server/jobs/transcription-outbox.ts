@@ -261,6 +261,35 @@ async function markRetryExhaustedRun(runId: string, code: string): Promise<void>
   ]);
 }
 
+/**
+ * A chunked parent whose children are all terminal with at least one failure
+ * can never finalize; fail it so the reader gets the retry button instead of
+ * a progress bar that will not move again. Shared by the periodic sweep and
+ * the targeted dispatch path, because in production the browser's targeted
+ * kicks are what actually drive transcription forward.
+ */
+async function failExhaustedChunkParents(timestamp: string): Promise<{ meta: { changes?: number } }> {
+  return getD1()
+    .prepare(
+      `UPDATE transcription_runs
+          SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_CHUNK_FAILED',
+              updated_at = ?
+        WHERE status = 'processing' AND orchestration_mode = 'chunked'
+          AND NOT EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status NOT IN ('succeeded', 'failed', 'cancelled')
+          )
+          AND EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status = 'failed'
+          )`,
+    )
+    .bind(timestamp, timestamp)
+    .run();
+}
+
 async function prepareTargetedTranscriptionOutbox(
   target: DispatchTarget,
   timestamp: string,
@@ -329,6 +358,32 @@ async function prepareTargetedTranscriptionOutbox(
     )
     .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
     .run();
+  // The reset above only touches rows under the attempt cap. A run whose
+  // rows are all at the cap has nothing left to dispatch: production drives
+  // transcription through exactly this targeted path, so without closing it
+  // here the run reports "queued" forever while nothing can ever run it.
+  const exhaustion = await first(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN attempt >= ? THEN 1 ELSE 0 END) AS capped
+       FROM transcription_queue_outbox WHERE run_id = ?`,
+    [MAX_OUTBOX_ATTEMPTS, target.runId],
+  );
+  const total = Number(exhaustion?.total ?? 0);
+  if (total > 0 && Number(exhaustion?.capped ?? 0) === total) {
+    await getD1()
+      .prepare(
+        `UPDATE transcription_queue_outbox
+            SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+                next_attempt_at = '9999-12-31T23:59:59.999Z',
+                last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+          WHERE run_id = ? AND attempt >= ?`,
+      )
+      .bind(timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
+      .run();
+    await markRetryExhaustedRun(target.runId, "TRANSCRIPTION_TIMEOUT");
+    await failExhaustedChunkParents(timestamp);
+    return "terminal";
+  }
   return "queued";
 }
 
@@ -639,28 +694,7 @@ export async function sweepTranscriptionJobs(
       )
       .bind(timestamp, timestamp),
   ]);
-  // A chunked parent whose children are all terminal with at least one
-  // failure can never finalize; fail it so the reader gets the retry button
-  // instead of a progress bar that will not move again.
-  const failedParents = await db
-    .prepare(
-      `UPDATE transcription_runs
-          SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_CHUNK_FAILED',
-              updated_at = ?
-        WHERE status = 'processing' AND orchestration_mode = 'chunked'
-          AND NOT EXISTS (
-            SELECT 1 FROM transcription_runs child
-             WHERE child.parent_run_id = transcription_runs.id
-               AND child.status NOT IN ('succeeded', 'failed', 'cancelled')
-          )
-          AND EXISTS (
-            SELECT 1 FROM transcription_runs child
-             WHERE child.parent_run_id = transcription_runs.id
-               AND child.status = 'failed'
-          )`,
-    )
-    .bind(timestamp, timestamp)
-    .run();
+  const failedParents = await failExhaustedChunkParents(timestamp);
   return {
     recoveredOutbox: Number(recovered.meta.changes ?? 0),
     deadLetteredOutbox: Number(deadLettered.meta.changes ?? 0),
