@@ -1819,3 +1819,30 @@ test("project deletion is reversible, blocks active jobs, and deletes R2 before 
   assert.match(uiSource, /输入完整项目名称确认/);
   assert.match(uiSource, /已移到回收站[\s\S]*撤销/);
 });
+
+test("an invalid model output is retried under the attempt cap, not failed on sight", async () => {
+  // Observed in production: the summary for a real recording failed schema
+  // validation on attempt 1 and succeeded on an identical retry — but the run
+  // had already been failed terminally, so the reader had to notice it and
+  // press 单独重新生成 for work the system could have redone itself.
+  const jobs = await readFile("lib/server/jobs/event-ai-artifacts.ts", "utf8");
+  assert.match(jobs, /if \(error instanceof ModelOutputInvalidError && await retryInvalidOutput\(run, owner, error\)\) \{/,
+    "an invalid run output must get a bounded retry before failRun");
+  assert.match(jobs, /Number\(run\.attempt_no\) < MAX_CREATE_ATTEMPTS/,
+    "the retry is capped by the same attempt budget as every other create");
+  // Resuming the same provider response returns the same invalid output, so
+  // the retry has to ask for a new one — and that is also what makes the
+  // lease count the attempt.
+  assert.match(jobs, /SET status = 'queued', provider_request_id = NULL/);
+  assert.match(jobs, /transient\(error\) \|\| error instanceof ModelOutputInvalidError,/,
+    "readable chunks get the same bounded retry");
+  assert.match(jobs, /const attemptsExpired = \(chunk\.provider_request_id == null \|\| invalidOutput\)/,
+    "an invalid chunk retry still counts against the cap");
+});
+
+test("reading starts from the readable transcript wherever one exists", async () => {
+  // 原文 is the evidence view, one click away — not the reading view. The
+  // transcript under the intelligence surfaces was pinned to raw, so a reader
+  // who never touched the tab bar read unpunctuated, filler-filled source text.
+  assert.match(uiSource, /const readerTab: "readable" \| "raw" = tab === "raw"\s*\?\s*"raw"\s*:\s*readableArtifact \|\| showingProvisionalReadable\s*\?\s*"readable"\s*:\s*"raw";/);
+});

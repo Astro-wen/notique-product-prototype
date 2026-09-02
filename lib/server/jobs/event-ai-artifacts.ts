@@ -150,6 +150,43 @@ async function deferTransient(run: Row, owner: string, error: unknown): Promise<
     .run();
 }
 
+/**
+ * A model response that fails schema validation is not a permanent defect of
+ * the input. On the walkthrough recording the summary failed validation on its
+ * first attempt and succeeded on an identical retry, but the run had already
+ * been failed terminally — the reader had to notice the failure and press
+ * "单独重新生成" for work the system could have redone itself.
+ *
+ * Re-polling the same provider response would return the same invalid output,
+ * so the retry drops the response id and creates a new one. Clearing it is
+ * also what makes the attempt cap apply: the lease only counts an attempt for
+ * a run that has no response to resume.
+ */
+async function retryInvalidOutput(run: Row, owner: string, error: unknown): Promise<boolean> {
+  const timestamp = now();
+  const attemptsLeft = Number(run.attempt_no) < MAX_CREATE_ATTEMPTS;
+  const withinAge = Date.parse(timestamp) - Date.parse(String(run.created_at)) < MAX_JOB_AGE_MS;
+  if (!attemptsLeft || !withinAge) return false;
+  const updated = await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'queued', provider_request_id = NULL, lease_owner = NULL,
+              lease_expires_at = NULL, next_attempt_at = ?,
+              error_code = 'ARTIFACT_RETRY_SCHEDULED', error_details_json = ?,
+              updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    )
+    .bind(
+      nextPoll(timestamp, 5_000),
+      JSON.stringify(safeIssue(error)).slice(0, 64 * 1024),
+      timestamp,
+      run.id,
+      owner,
+    )
+    .run();
+  return Number(updated.meta.changes ?? 0) === 1;
+}
+
 async function failRun(run: Row, owner: string, error: unknown): Promise<void> {
   const timestamp = now();
   const code = error instanceof ModelOutputInvalidError
@@ -327,7 +364,12 @@ async function parkReadableChunkFailure(
 ): Promise<"pending" | "failed"> {
   const timestamp = now();
   const ageExpired = Date.parse(timestamp) - Date.parse(String(run.created_at)) >= MAX_JOB_AGE_MS;
-  const attemptsExpired = chunk.provider_request_id == null && chunk.attempt_no >= MAX_CREATE_ATTEMPTS;
+  // An invalid chunk output has to be redone from a new provider response —
+  // resuming the old one returns the same invalid text — and clearing the id
+  // is also what lets the attempt cap below count this retry.
+  const invalidOutput = error instanceof ModelOutputInvalidError;
+  const attemptsExpired = (chunk.provider_request_id == null || invalidOutput)
+    && chunk.attempt_no >= MAX_CREATE_ATTEMPTS;
   const terminal = !retryable || ageExpired || attemptsExpired;
   const guardId = id("guard");
   const errorCode = terminal
@@ -348,9 +390,18 @@ async function parkReadableChunkFailure(
     ),
     getD1().prepare(
       `UPDATE event_ai_artifact_chunks
-          SET status = ?, error_code = ?, updated_at = ?
+          SET status = ?, error_code = ?,
+              provider_request_id = CASE WHEN ? THEN NULL ELSE provider_request_id END,
+              updated_at = ?
         WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
-    ).bind(terminal ? "failed" : "queued", errorCode, timestamp, chunk.id, run.id),
+    ).bind(
+      terminal ? "failed" : "queued",
+      errorCode,
+      !terminal && invalidOutput ? 1 : 0,
+      timestamp,
+      chunk.id,
+      run.id,
+    ),
     getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return terminal ? "failed" : "pending";
@@ -465,7 +516,15 @@ async function processReadableChunkAttempt(
     const currentChunk = (await listReadableTranscriptChunks(String(run.id)))
       .find((item) => item.id === chunk.id);
     if (currentChunk?.status === "succeeded") return "succeeded";
-    return parkReadableChunkFailure(run, owner, chunk, error, transient(error));
+    // A schema-invalid chunk is retryable for the same reason a whole invalid
+    // run is: the next response usually validates. The attempt cap bounds it.
+    return parkReadableChunkFailure(
+      run,
+      owner,
+      chunk,
+      error,
+      transient(error) || error instanceof ModelOutputInvalidError,
+    );
   }
 }
 
@@ -559,6 +618,9 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
     }
     if (transient(error)) {
       await deferTransient(run, owner, error);
+      return "pending";
+    }
+    if (error instanceof ModelOutputInvalidError && await retryInvalidOutput(run, owner, error)) {
       return "pending";
     }
     await failRun(run, owner, error);

@@ -5711,7 +5711,15 @@ function TranscriptArtifactsPanel({
       eventAudioAssetIds,
     });
   };
-  const readerTab: "readable" | "raw" = tab === "readable" ? "readable" : "raw";
+  // Raw is the evidence view, one click away; it is not the reading view. The
+  // transcript under the intelligence surfaces used to be raw no matter what,
+  // so a reader who never touched the tab bar read a recording's unpunctuated,
+  // filler-filled source text instead of the readable pass that exists.
+  const readerTab: "readable" | "raw" = tab === "raw"
+    ? "raw"
+    : readableArtifact || showingProvisionalReadable
+      ? "readable"
+      : "raw";
   const insightView: Exclude<ReadingWorkspaceView, "transcript"> = workspaceView === "transcript" ? "points" : workspaceView;
   const summarySourceIds = new Set(
     summarySections.flatMap((section) => recordArray(section.items).flatMap((item) => stringValues(item.source_segment_ids))),
