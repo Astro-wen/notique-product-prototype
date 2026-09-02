@@ -270,3 +270,25 @@ test("the extraction outbox closes its exhausted-pending zombie with real SQL", 
   assert.match(outbox, /const exhaustion = await first\(/);
   assert.match(outbox, /must fail instead of[\s\S]{0,40}reporting "queued" forever/);
 });
+
+test("a finished transcript starts the rest of the pipeline itself", async () => {
+  // Everything downstream hangs off an extraction Run, and the browser-side
+  // auto-start is armed in the uploader's own localStorage. A recording that
+  // finished anywhere else — after a retry, in another browser — sat at
+  // 等待自动整理 with a finished transcript and nothing reading it.
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+  assert.match(outbox, /import \{ ensureAutomaticExtractionRuns \}/);
+  assert.match(outbox, /if \(String\(run\?\.status\) !== "succeeded" \|\| !run\?\.derived_transcript_asset_id\) return;/,
+    "only a Run with a persisted transcript fans out");
+  // Both orchestration modes reach it, and it can never break dispatch.
+  const dispatchRun = outbox.slice(outbox.indexOf("export async function dispatchTranscriptionRun("));
+  assert.equal(
+    (dispatchRun.match(/await startDownstreamWhenTranscriptReady\(workspaceId, runId\);/g) ?? []).length,
+    2,
+    "single and chunked Runs both fan out",
+  );
+  assert.match(outbox, /catch \(error\) \{\s*console\.error\("transcription_downstream_start_failed"/);
+});

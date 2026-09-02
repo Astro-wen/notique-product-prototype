@@ -15,6 +15,7 @@ import {
   TRANSCRIPTION_MAX_ATTEMPTS,
   transcriptionRetryDecision,
 } from "@/lib/domain/transcription-retry";
+import { ensureAutomaticExtractionRuns } from "@/lib/server/jobs/automatic-extraction";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
 type Row = Record<string, unknown>;
@@ -568,6 +569,41 @@ export async function dispatchDueTranscriptionOutbox(
   return result;
 }
 
+/**
+ * Fans the finished transcript out to the rest of the pipeline.
+ *
+ * Everything downstream — the readable transcript, the summary, the facts —
+ * hangs off an extraction Run, and the only things that create one are a
+ * button and a Cron sweep. The browser-side auto-start is armed in the
+ * uploader's own localStorage, so a recording that finishes anywhere else —
+ * after a retry, in another browser, on another device — could sit at
+ * 等待自动整理 with a finished transcript and nothing reading it. The
+ * transcript becoming available is the real trigger, and this is where that
+ * happens, so start the same sweep the Cron would run.
+ *
+ * It is idempotent (an Event with a covering Run is skipped) and must never
+ * break dispatch: the transcript is already safely persisted by this point.
+ */
+async function startDownstreamWhenTranscriptReady(
+  workspaceId: string,
+  runId: string,
+): Promise<void> {
+  const run = await first(
+    `SELECT status, derived_transcript_asset_id FROM transcription_runs
+      WHERE id = ? AND workspace_id = ? AND parent_run_id IS NULL`,
+    [runId, workspaceId],
+  );
+  if (String(run?.status) !== "succeeded" || !run?.derived_transcript_asset_id) return;
+  try {
+    await ensureAutomaticExtractionRuns();
+  } catch (error) {
+    console.error("transcription_downstream_start_failed", {
+      run_id: runId,
+      message: error instanceof Error ? error.message : "Unexpected error",
+    });
+  }
+}
+
 export async function dispatchTranscriptionRun(
   workspaceId: string,
   runId: string,
@@ -577,7 +613,9 @@ export async function dispatchTranscriptionRun(
     [runId, workspaceId],
   );
   if (String(parent?.orchestration_mode) !== "chunked") {
-    return dispatchDueTranscriptionOutbox({ workspaceId, runId });
+    const single = await dispatchDueTranscriptionOutbox({ workspaceId, runId });
+    await startDownstreamWhenTranscriptReady(workspaceId, runId);
+    return single;
   }
   const parallelism = audioChunkParallelism(Number(parent?.chunk_count ?? 1));
   const children = (
@@ -603,6 +641,7 @@ export async function dispatchTranscriptionRun(
   // each child still saw a sibling in flight; the next kick lands here with
   // nothing to dispatch and closes the parent for good.
   await failExhaustedChunkParents(now());
+  await startDownstreamWhenTranscriptReady(workspaceId, runId);
   return dispatched.reduce<TranscriptionDispatchResult>((result, current) => ({
     claimed: result.claimed + current.claimed,
     sent: result.sent + current.sent,
