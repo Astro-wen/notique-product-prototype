@@ -269,7 +269,7 @@ async function markRetryExhaustedRun(runId: string, code: string): Promise<void>
  * kicks are what actually drive transcription forward.
  */
 async function failExhaustedChunkParents(timestamp: string): Promise<{ meta: { changes?: number } }> {
-  return getD1()
+  const failed = await getD1()
     .prepare(
       `UPDATE transcription_runs
           SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_CHUNK_FAILED',
@@ -288,6 +288,30 @@ async function failExhaustedChunkParents(timestamp: string): Promise<{ meta: { c
     )
     .bind(timestamp, timestamp)
     .run();
+  if (Number(failed.meta.changes ?? 0) > 0) {
+    // The materials list reads the asset, not the run; without this it kept
+    // saying 正在提取 for a recording whose transcription had already failed.
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'failed',
+              '$.transcription_error_code', 'TRANSCRIPTION_CHUNK_FAILED'
+            ), updated_at = ?
+          WHERE EXISTS (
+            SELECT 1 FROM transcription_runs
+             WHERE audio_asset_id = assets.id
+               AND workspace_id = assets.workspace_id
+               AND status = 'failed'
+               AND error_code = 'TRANSCRIPTION_CHUNK_FAILED'
+               AND finished_at = ?
+          )`,
+      )
+      .bind(timestamp, timestamp)
+      .run();
+  }
+  return failed;
 }
 
 async function prepareTargetedTranscriptionOutbox(
@@ -575,6 +599,10 @@ export async function dispatchTranscriptionRun(
     })),
   );
   await finalizeChunkedTranscriptionParent(runId);
+  // Concurrent per-child exhaustion can race past the parent closure when
+  // each child still saw a sibling in flight; the next kick lands here with
+  // nothing to dispatch and closes the parent for good.
+  await failExhaustedChunkParents(now());
   return dispatched.reduce<TranscriptionDispatchResult>((result, current) => ({
     claimed: result.claimed + current.claimed,
     sent: result.sent + current.sent,

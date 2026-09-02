@@ -3843,7 +3843,10 @@ export default function Home() {
           }
         }
       }
-      if (current && runInProgress.has(current.status)) {
+      // A chunked run that exhausted its retries arrives here as failed, and
+      // retrying only the failed chunks is strictly better than paying to
+      // re-transcribe the chunks that already succeeded.
+      if (current && (runInProgress.has(current.status) || (current.status === "failed" && current.orchestrationMode === "chunked" && current.chunks.some((chunk) => chunk.status === "failed")))) {
         const failedChunks = current.chunks.filter((chunk) => chunk.status === "failed");
         if (current.orchestrationMode === "chunked" && failedChunks.length > 0) {
           const retryFingerprint = `transcription-chunks-retry:${current.id}:${failedChunks.map((chunk) => chunk.index).join(",")}`;

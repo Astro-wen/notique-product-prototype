@@ -219,3 +219,54 @@ test("primary queued status stays simple while server queue cycles remain durabl
   assert.match(repository, /first_queued_at: nullableText\(row, "extraction_first_queued_at"\)/);
   assert.match(types, /extraction:[\s\S]*first_queued_at: string \| null;[\s\S]*current_started_at: string \| null;/);
 });
+
+test("the extraction outbox closes its exhausted-pending zombie with real SQL", async () => {
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/outbox.ts"),
+    "utf8",
+  );
+  // The transcription outbox shipped with this loop and production hit it: a
+  // retry cycle parks rows in 'pending' at the attempt cap while the run sits
+  // 'queued', the dispatcher refuses capped rows, and dead-lettering only
+  // covered 'sending'. The extraction outbox had the identical structure.
+  const statements = [...outbox.matchAll(/`((?:UPDATE|SELECT)[\s\S]*?)`/g)].map((m) => m[1]);
+  const deadLetterSql = statements.find((sql) =>
+    sql.includes("UPDATE queue_outbox") && sql.includes("WHERE status IN ('pending', 'failed') AND attempt >= ?"));
+  const failRunsSql = statements.find((sql) =>
+    sql.includes("UPDATE extraction_runs") && sql.includes("SELECT run_id FROM queue_outbox"));
+  assert.ok(deadLetterSql, "the sweep must dead-letter exhausted pending extraction rows");
+  assert.ok(failRunsSql, "the sweep must fail runs whose outbox rows are dead-lettered");
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, status TEXT, error_code TEXT, error_details_json TEXT,
+      finished_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE queue_outbox (
+      id TEXT PRIMARY KEY, run_id TEXT, status TEXT, attempt INTEGER,
+      next_attempt_at TEXT, lease_owner TEXT, lease_expires_at TEXT,
+      last_error_code TEXT, updated_at TEXT
+    );
+    INSERT INTO extraction_runs VALUES
+      ('zombie', 'queued', NULL, NULL, NULL, ''),
+      ('fresh', 'queued', NULL, NULL, NULL, '');
+    INSERT INTO queue_outbox VALUES
+      ('z0', 'zombie', 'pending', 3, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, ''),
+      ('f0', 'fresh', 'pending', 1, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, '');
+  `);
+  const timestamp = "2026-09-01T10:45:00.000Z";
+  database.prepare(deadLetterSql).run(timestamp, 3);
+  database.prepare(failRunsSql).run(timestamp, timestamp, 3);
+
+  const zombie = { ...database.prepare(`SELECT status, error_code FROM extraction_runs WHERE id = 'zombie'`).get() };
+  const fresh = { ...database.prepare(`SELECT status FROM extraction_runs WHERE id = 'fresh'`).get() };
+  assert.deepEqual(zombie, { status: "failed", error_code: "QUEUE_DISPATCH_FAILED" });
+  assert.deepEqual(fresh, { status: "queued" }, "a run under the attempt cap keeps dispatching");
+
+  // The targeted path — how production reaches a run — carries the same
+  // closure instead of reporting "queued" forever.
+  assert.match(outbox, /const exhaustion = await first\(/);
+  assert.match(outbox, /must fail instead of[\s\S]{0,40}reporting "queued" forever/);
+});

@@ -313,6 +313,40 @@ async function prepareTargetedExtractionOutbox(
     )
     .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
     .run();
+  // The reset above only touches rows under the attempt cap; a run whose rows
+  // are all capped has nothing left to dispatch and must fail instead of
+  // reporting "queued" forever. Production reaches runs through exactly this
+  // targeted path, so the sweep-side closure alone is not enough.
+  const exhaustion = await first(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN attempt >= ? THEN 1 ELSE 0 END) AS capped
+       FROM queue_outbox WHERE run_id = ?`,
+    [MAX_OUTBOX_ATTEMPTS, target.runId],
+  );
+  const total = Number(exhaustion?.total ?? 0);
+  if (total > 0 && Number(exhaustion?.capped ?? 0) === total) {
+    const closure = now();
+    await getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+                next_attempt_at = '9999-12-31T23:59:59.999Z',
+                last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+          WHERE run_id = ? AND attempt >= ?`,
+      )
+      .bind(closure, target.runId, MAX_OUTBOX_ATTEMPTS)
+      .run();
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
+                error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
+          WHERE id = ? AND status = 'queued'`,
+      )
+      .bind(closure, closure, target.runId)
+      .run();
+    return "terminal";
+  }
   return "queued";
 }
 
@@ -557,6 +591,25 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
         )`,
     )
     .bind(timestamp, timestamp, longQueuedThreshold)
+    .run();
+  // Same zombie the transcription outbox had: a retry cycle ends with rows in
+  // 'pending' at the attempt cap while the run sits 'queued'. The dispatcher
+  // refuses capped rows and dead-lettering above only covers 'sending', so
+  // without this clause the run showed 正在启动分析 forever.
+  await db
+    .prepare(
+      `UPDATE queue_outbox
+          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = '9999-12-31T23:59:59.999Z',
+              last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+        WHERE status IN ('pending', 'failed') AND attempt >= ?
+          AND next_attempt_at < '9999-12-31T23:59:59.999Z'
+          AND EXISTS (
+            SELECT 1 FROM extraction_runs r
+             WHERE r.id = queue_outbox.run_id AND r.status = 'queued'
+          )`,
+    )
+    .bind(timestamp, MAX_OUTBOX_ATTEMPTS)
     .run();
   const failedRuns = await db
     .prepare(

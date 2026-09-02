@@ -995,6 +995,24 @@ test("the sweep closes the lease-expiry zombie loop with real SQL", async () => 
   assert.match(outbox, /markRetryExhaustedRun\(target\.runId, "TRANSCRIPTION_TIMEOUT"\)/);
   assert.match(outbox, /failExhaustedChunkParents\(timestamp\);[\s\S]{0,20}return "terminal"/);
 
+  // The recovery chain must survive the closure it pairs with: a parent that
+  // exhausted its chunks is failed, the retry endpoint revives it, and the
+  // client offers chunk retry for failed chunked runs instead of a full,
+  // fully re-billed re-transcription.
+  const repository = await readFile(
+    path.join(root, "lib/server/db/transcription-repository.ts"),
+    "utf8",
+  );
+  assert.match(repository, /\["processing", "failed"\]\.includes\(String\(parent\.status\)\)/,
+    "retry must accept the failed parent the exhaustion closure produces");
+  assert.match(repository, /SET status = 'processing', finished_at = NULL,[\s\S]{0,260}status IN \('processing', 'failed'\)/,
+    "retry revives a failed parent");
+  assert.match(outbox, /saying 正在提取 for a recording whose transcription had already failed/,
+    "the parent closure syncs the audio asset metadata");
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page, /current\.status === "failed" && current\.orchestrationMode === "chunked"/,
+    "the client chunk-retry branch covers exhausted (failed) parents");
+
   // Fair dispatch: retry-looping rows must not starve fresh work.
   assert.match(outbox, /ORDER BY o\.attempt, o\.next_attempt_at, o\.created_at/);
   // Each recovery cycle idles for the long-queued threshold, so it stays small.

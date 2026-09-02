@@ -704,7 +704,10 @@ export async function retryFailedTranscriptionChunks(
   if (!parent) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Chunked transcription Run was not found.");
   }
-  if (String(parent.status) !== "processing") {
+  // A parent that exhausted its chunk retries is failed, and retrying failed
+  // chunks is exactly what recovers it — refusing that state left the reader
+  // with nothing but a full re-transcription of audio that mostly succeeded.
+  if (!["processing", "failed"].includes(String(parent.status))) {
     throw new ApiFault(409, "EVENT_NOT_READY", "Only an unfinished chunked transcription can retry chunks.");
   }
   const failed = await first(
@@ -735,8 +738,19 @@ export async function retryFailedTranscriptionChunks(
     ).bind(timestamp, timestamp, parentRunId, scope.workspaceId),
     db.prepare(
       `UPDATE transcription_runs
-          SET error_code = NULL, error_details_json = NULL, updated_at = ?
-        WHERE id = ? AND workspace_id = ? AND status = 'processing'`,
+          SET status = 'processing', finished_at = NULL,
+              error_code = NULL, error_details_json = NULL, updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND status IN ('processing', 'failed')`,
+    ).bind(timestamp, parentRunId, scope.workspaceId),
+    db.prepare(
+      `UPDATE assets
+          SET metadata_json = json_set(
+            COALESCE(metadata_json, '{}'),
+            '$.transcription_status', 'processing',
+            '$.transcription_error_code', NULL
+          ), updated_at = ?
+        WHERE id = (SELECT audio_asset_id FROM transcription_runs WHERE id = ?)
+          AND workspace_id = ?`,
     ).bind(timestamp, parentRunId, scope.workspaceId),
   ]);
   return getTranscriptionRun(scope, parentRunId);
