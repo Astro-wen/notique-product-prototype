@@ -885,7 +885,13 @@ export class NotiqueApiFixture {
       idempotencyKey: request.headers()["idempotency-key"] ?? null,
     };
     this.writes.push(record);
-    if (!this.allowedMutations.has(`${method} ${path}`)) {
+    // Waking the dispatcher is not a paid mutation, and every open workspace
+    // now sends one every minute because production has no working Cron
+    // trigger. Tests that must prove no paid Run was created filter these out
+    // themselves (nonWakeWrites); blocking them here would only assert that
+    // the recovery heartbeat exists.
+    const isDispatcherWake = method === "POST" && path === "/api/v1/jobs/dispatch";
+    if (!isDispatcherWake && !this.allowedMutations.has(`${method} ${path}`)) {
       this.blockedWrites.push(record);
       await route.abort("blockedbyclient");
       return;

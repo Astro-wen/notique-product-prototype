@@ -252,11 +252,15 @@ test("local-only allowlist covers Action completion and trash restore without to
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-trash");
   await expect(page.getByLabel("选择当前项目").locator("option:checked")).toContainText("Recovered Buyer");
 
-  expect(apiFixture.writes.map(({ method, path }) => `${method} ${path}`)).toEqual([
+  // Dispatcher wakes are the workspace recovery heartbeat, not content
+  // mutations: production has no working Cron trigger, so an open workspace is
+  // what recovers stalled work. What matters here is that nothing else wrote.
+  const contentWrites = apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
+  expect(contentWrites.map(({ method, path }) => `${method} ${path}`)).toEqual([
     "POST /api/v1/actions/claim-action-confirmed/complete",
     "POST /api/v1/projects/project-trash/restore",
   ]);
-  for (const write of apiFixture.writes) {
+  for (const write of contentWrites) {
     expect(write.idempotencyKey).toBeTruthy();
     expect(write.body).toEqual({});
   }

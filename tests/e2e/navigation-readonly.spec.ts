@@ -27,7 +27,13 @@ const test = base.extend<Fixtures>({
       const url = new URL(request.url());
 
       if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
-        blockedWrites.push(`${method} ${url.pathname}`);
+        // Waking the dispatcher is the workspace recovery heartbeat, not
+        // navigation: production has no working Cron trigger, so an open
+        // workspace is what recovers stalled work. It carries no body here and
+        // creates nothing; every other mutation is still forbidden.
+        if (!(method === "POST" && url.pathname === "/api/v1/jobs/dispatch")) {
+          blockedWrites.push(`${method} ${url.pathname}`);
+        }
         await route.abort("blockedbyclient");
         return;
       }

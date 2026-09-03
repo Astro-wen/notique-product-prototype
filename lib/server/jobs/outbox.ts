@@ -645,6 +645,84 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
   };
 }
 
+/**
+ * Runs a recovery stage without letting its failure silence the others.
+ *
+ * These stages used to share one Promise.all, so a single throwing statement
+ * took down every recovery behind it — including the automatic analysis that
+ * decides whether a finished transcript is ever read.
+ */
+async function stage<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    console.error("recovery_stage_failed", {
+      stage: name,
+      message: error instanceof Error ? error.message : "Unexpected error",
+    });
+    return fallback;
+  }
+}
+
+const EMPTY_SWEEP: SweepResult = {
+  recoveredOutbox: 0,
+  deadLetteredOutbox: 0,
+  failedExpiredRuns: 0,
+  failedUndeliverableRuns: 0,
+  requeuedLongRunningMessages: 0,
+};
+const EMPTY_TRANSCRIPTION_SWEEP: TranscriptionSweepResult = {
+  recoveredOutbox: 0,
+  deadLetteredOutbox: 0,
+  requeuedExpiredRuns: 0,
+  failedUndeliverableRuns: 0,
+  requeuedLongRunningMessages: 0,
+  deadLetteredExhaustedPending: 0,
+  failedChunkedParents: 0,
+};
+const EMPTY_DISPATCH: DispatchResult = { claimed: 0, sent: 0, deferred: 0, items: [] };
+const EMPTY_AUTOMATIC: AutomaticExtractionEnsureResult = {
+  scanned: 0,
+  created: 0,
+  reused: 0,
+  covered: 0,
+  deferred: 0,
+  items: [],
+};
+
+/**
+ * Everything the background recovery does except the long audio work.
+ *
+ * Production has no working Cron trigger: an extraction Run created while
+ * nothing was watching sat 'queued' and untouched for as long as it was left
+ * there, and Events whose transcripts had been ready for days had no Run at
+ * all. So the browser's own dispatch request carries this instead. It is all
+ * lease-guarded and idempotent, which is what makes it safe to run from any
+ * number of open tabs — and safe to keep running if the Cron ever does fire.
+ *
+ * Long audio transcription stays out: it takes minutes, and the page already
+ * drives it through the targeted streaming dispatch that holds a connection
+ * open for exactly that purpose.
+ */
+export async function recoverAndDispatch(): Promise<{
+  sweep: SweepResult;
+  dispatch: DispatchResult;
+  transcription_sweep: TranscriptionSweepResult;
+  automatic_extraction: AutomaticExtractionEnsureResult;
+}> {
+  const [transcription_sweep, sweep] = await Promise.all([
+    stage("transcription_sweep", sweepTranscriptionJobs, EMPTY_TRANSCRIPTION_SWEEP),
+    stage("extraction_sweep", sweepJobs, EMPTY_SWEEP),
+  ]);
+  const automatic_extraction = await stage(
+    "automatic_extraction",
+    ensureAutomaticExtractionRuns,
+    EMPTY_AUTOMATIC,
+  );
+  const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH);
+  return { sweep, dispatch, transcription_sweep, automatic_extraction };
+}
+
 export async function sweepAndDispatch(): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
@@ -652,22 +730,13 @@ export async function sweepAndDispatch(): Promise<{
   transcription_dispatch: TranscriptionDispatchResult;
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
-  const [transcription_sweep, sweep] = await Promise.all([
-    sweepTranscriptionJobs(),
-    sweepJobs(),
-  ]);
-  const automatic_extraction = await ensureAutomaticExtractionRuns();
-  const [transcription_dispatch, dispatch] = await Promise.all([
-    dispatchDueTranscriptionOutbox(),
-    dispatchDueOutbox(),
-  ]);
-  return {
-    sweep,
-    dispatch,
-    transcription_sweep,
-    transcription_dispatch,
-    automatic_extraction,
-  };
+  const recovered = await recoverAndDispatch();
+  const transcription_dispatch = await stage(
+    "transcription_dispatch",
+    () => dispatchDueTranscriptionOutbox(),
+    { claimed: 0, sent: 0, deferred: 0, items: [] } as TranscriptionDispatchResult,
+  );
+  return { ...recovered, transcription_dispatch };
 }
 
 export async function dispatchAllDueOutbox(): Promise<{

@@ -292,3 +292,36 @@ test("a finished transcript starts the rest of the pipeline itself", async () =>
   );
   assert.match(outbox, /catch \(error\) \{\s*console\.error\("transcription_downstream_start_failed"/);
 });
+
+test("an open workspace runs the recovery the Cron trigger does not", async () => {
+  // Established against production: an extraction Run created while nothing
+  // watched stayed 'queued' with its updated_at untouched for minutes, and
+  // four Events whose transcripts had been ready for days had no Run at all.
+  // Everything the design delegated to the one-minute Cron therefore never
+  // happened, so the browser's own dispatch request carries it.
+  const outbox = await readFile(path.join(root, "lib/server/jobs/outbox.ts"), "utf8");
+  const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+
+  assert.match(outbox, /export async function recoverAndDispatch\(\)/);
+  // Long audio stays out of the heartbeat: it takes minutes and the page
+  // already drives it through the targeted streaming dispatch.
+  const recover = outbox.slice(
+    outbox.indexOf("export async function recoverAndDispatch()"),
+    outbox.indexOf("export async function sweepAndDispatch()"),
+  );
+  assert.doesNotMatch(recover, /dispatchDueTranscriptionOutbox/);
+  assert.match(recover, /stage\(\s*"automatic_extraction"/);
+  assert.match(recover, /stage\("extraction_dispatch"/);
+
+  // One throwing stage used to take down every recovery behind it, including
+  // the automatic analysis that decides whether a transcript is ever read.
+  assert.match(outbox, /async function stage<T>\(name: string, run: \(\) => Promise<T>, fallback: T\): Promise<T>/);
+  assert.match(outbox, /console\.error\("recovery_stage_failed"/);
+
+  assert.match(worker, /ctx\.waitUntil\(Promise\.allSettled\(\[\s*recoverAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*\]\)/);
+  assert.match(page, /const RECOVERY_HEARTBEAT_MS = 60_000;/);
+  assert.match(page, /window\.setInterval\(beat, RECOVERY_HEARTBEAT_MS\)/);
+  assert.match(page, /if \(stopped \|\| document\.visibilityState === "hidden"\) return;/,
+    "a hidden tab must not keep paying for recovery");
+});

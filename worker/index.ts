@@ -2,8 +2,8 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import {
-  dispatchDueOutbox,
   dispatchExtractionRun,
+  recoverAndDispatch,
   sweepAndDispatch,
 } from "@/lib/server/jobs/outbox";
 import {
@@ -192,11 +192,28 @@ const worker = {
       try {
         const input = await dispatchInput(request);
         if (!input) {
-          // Compatibility for older clients. New callers always provide a
-          // target so one user's click cannot be delayed by an unrelated job.
-          // Only Responses background polling is safe in an HTTP waitUntil;
-          // long audio transcription is owned by the one-minute Cron trigger.
-          ctx.waitUntil(dispatchDueOutbox());
+          // An untargeted kick is the workspace's recovery heartbeat. It used
+          // to dispatch the extraction outbox and nothing else, because the
+          // rest was "owned by the one-minute Cron trigger" — which does not
+          // fire here: an extraction Run created while nothing watched stayed
+          // 'queued' and untouched indefinitely, and Events whose transcripts
+          // had been ready for days had no Run at all. Every stage is
+          // lease-guarded and idempotent, so any number of open tabs can run
+          // it, and the Cron may still run it too. Long audio stays out: the
+          // page drives that through the targeted streaming dispatch.
+          ctx.waitUntil(Promise.allSettled([
+            recoverAndDispatch(),
+            sweepAndDispatchEventAiArtifacts(),
+          ]).then((results) => {
+            for (const result of results) {
+              if (result.status === "rejected") {
+                console.error("recovery_heartbeat_failed", {
+                  request_id: requestId,
+                  message: result.reason instanceof Error ? result.reason.message : "Unexpected error",
+                });
+              }
+            }
+          }));
           return dispatchResponse({ accepted: true, kind: "all" }, requestId, 202);
         }
         const workspaceId = env.INTERNAL_WORKSPACE_ID || "ws_internal";

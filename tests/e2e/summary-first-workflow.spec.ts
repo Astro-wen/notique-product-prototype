@@ -16,6 +16,10 @@ const test = base.extend<Fixtures>({
     await fixture.install(page);
     await provide(fixture);
     for (const wake of fixture.writes.filter(({ path }) => path === "/api/v1/jobs/dispatch")) {
+      // An untargeted wake is the workspace recovery heartbeat: it carries what
+      // the absent Cron trigger was supposed to do. Every other wake must still
+      // name a Run this page owns.
+      if (wake.body === null) continue;
       expect(wake.body).toMatchObject({ kind: expect.stringMatching(/^(artifact|extraction)$/) });
       expect(wake.body).toMatchObject({ run_id: expect.stringMatching(/^(artifact-run-|run-a$)/) });
     }
@@ -77,6 +81,7 @@ test("Raw opens first and a finished Summary appears above it without stealing f
   expect(nonWakeWrites(apiFixture), "Raw-first navigation must not create or retry any paid Run").toEqual([]);
   for (const wake of apiFixture.writes) {
     expect(wake.path).toBe("/api/v1/jobs/dispatch");
+    if (wake.body === null) continue;
     expect(wake.body).toMatchObject({
       kind: expect.stringMatching(/^(?:artifact|extraction)$/),
       run_id: expect.stringMatching(/^(?:artifact-run-|run-)/),
@@ -437,13 +442,16 @@ test("the transcript exports itself without touching the server", async ({ page,
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=raw");
   await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
 
+  // Measured across the export itself: the workspace recovery heartbeat runs on
+  // its own schedule and would otherwise be counted as if exporting caused it.
+  const writesBeforeExport = apiFixture.writes.length;
   await page.getByRole("button", { name: "导出逐字稿" }).click();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "原文（TXT）" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/原文\.txt$/);
   // Export is a local re-serialization of what is on screen — never a write.
-  expect(apiFixture.writes).toEqual([]);
+  expect(apiFixture.writes.slice(writesBeforeExport)).toEqual([]);
 });
 
 test("a chapter takes the reader to that moment in the transcript", async ({ page, apiFixture }, testInfo) => {

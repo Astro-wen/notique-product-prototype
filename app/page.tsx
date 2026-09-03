@@ -615,6 +615,8 @@ const MAX_HANDWRITING_IMAGE_EDGE = 4096;
 // The rail shows one at a time; this covers the visible queue without turning a
 // long review list into a burst of requests.
 const RAIL_EVIDENCE_LIMIT = 12;
+// How often an open workspace runs the recovery the Cron trigger does not.
+const RECOVERY_HEARTBEAT_MS = 60_000;
 const MAX_HEIF_SOURCE_BYTES = 30 * 1024 * 1024;
 
 async function canvasJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -2373,6 +2375,29 @@ export default function Home() {
     run?.status,
     screen,
   ]);
+
+  // Production has no working Cron trigger — an extraction Run created while
+  // nothing was watching stayed 'queued' and untouched for as long as it was
+  // left there, and Events whose transcripts had been ready for days had no
+  // Run at all. So an open workspace is what recovers stalled work: expired
+  // leases, dead-lettered messages, and finished transcripts with nothing
+  // reading them. The server side is lease-guarded and idempotent, so several
+  // open tabs cost a few queries each and nothing is done twice.
+  useEffect(() => {
+    let stopped = false;
+    const beat = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      void api.kickDispatcher().catch(() => undefined);
+    };
+    beat();
+    const timer = window.setInterval(beat, RECOVERY_HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", beat);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", beat);
+    };
+  }, []);
 
   useEffect(() => {
     if (
