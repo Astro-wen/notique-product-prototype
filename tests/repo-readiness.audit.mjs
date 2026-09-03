@@ -1359,6 +1359,32 @@ test("first-event extraction owns one persisted scenario assessment lease", asyn
   );
 });
 
+test("the budget a Run is accepted under is the budget it is processed under", async () => {
+  // A Run for two recordings was accepted (202), told the reader analysis had
+  // started, and was then killed by RUN_BUDGET_EXCEEDED at processing. The
+  // creation estimate counted normalized text only, while the processor
+  // enforces the limit against the serialized ContextPack — where every
+  // segment carries its raw text as well, plus ids, ordinal, speaker and both
+  // timestamps. It underestimated by more than half.
+  const core = await read("lib/server/db/core-repository.ts");
+  const processor = await read("lib/server/jobs/extraction-processor.ts");
+  const creation = core.slice(
+    core.indexOf("export async function createExtractionRun"),
+    core.indexOf("export async function getExtractionRun"),
+  );
+
+  assert.match(creation, /length\(text_normalized\) AS character_count,\s*length\(text_raw\) AS raw_character_count/,
+    "the estimate must see both texts the pack will carry");
+  assert.match(creation, /Number\(row\.raw_character_count \?\? 0\)\s*\+\s*SEGMENT_CONTEXT_ENVELOPE_CHARACTERS/);
+  assert.match(core, /const SEGMENT_CONTEXT_ENVELOPE_CHARACTERS = 280;/);
+  // Both sides still read the same configured ceiling, and the processor keeps
+  // its own check: the pack also carries project context and prior Claims, so
+  // the early estimate is deliberately conservative rather than exact.
+  assert.match(creation, /bindings\.MAX_RUN_INPUT_TOKENS/);
+  assert.match(processor, /configuredInteger\(bindings\.MAX_RUN_INPUT_TOKENS, 120_000\)/);
+  assert.match(processor, /throw new ProcessingFault\("RUN_BUDGET_EXCEEDED"/);
+});
+
 test("workspace run concurrency is enforced before queueing without a daily model ceiling", async () => {
   const schema = await read("db/schema.ts");
   const core = await read("lib/server/db/core-repository.ts");

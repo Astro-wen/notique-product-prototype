@@ -162,6 +162,21 @@ const EVENT_WITH_REVIEW_COUNTS_SELECT = `
 // wider server lease so a healthy slow upload cannot be reaped, while ensuring
 // a client that disappears before /abort can never block an Event forever.
 const STALE_ASSET_UPLOAD_TTL_MS = 15 * 60_000;
+/**
+ * What one transcript segment costs in the serialized ContextPack, beyond its
+ * text: the segment, asset-version and event ids, the ordinal, speaker and
+ * both timestamps, plus JSON punctuation.
+ *
+ * The processor enforces MAX_RUN_INPUT_TOKENS against the serialized pack,
+ * where each segment also carries its raw text *and* its normalized text.
+ * Estimating from normalized text alone therefore underestimated by more than
+ * half, so a Run near the limit was accepted, told the reader analysis had
+ * started, and was then killed by the same limit with a bare failure instead
+ * of the message they could have acted on. This still cannot be exact — the
+ * pack also carries project context and prior Claims — so the processor keeps
+ * its own check as the backstop; this one exists to fail early and honestly.
+ */
+const SEGMENT_CONTEXT_ENVELOPE_CHARACTERS = 280;
 const STALE_ASSET_SWEEP_LIMIT = 50;
 
 function now(): string {
@@ -2297,7 +2312,8 @@ export async function createExtractionRun(
     };
   });
   const selectedSegmentRows = await all(
-    `SELECT id, length(text_normalized) AS character_count
+    `SELECT id, length(text_normalized) AS character_count,
+            length(text_raw) AS raw_character_count
        FROM text_segments
       WHERE asset_version_id IN (${assetVersionIds.map(() => "?").join(",")})
       ORDER BY asset_version_id, ordinal`,
@@ -2308,7 +2324,11 @@ export async function createExtractionRun(
     2_000 +
     Math.ceil(
       selectedSegmentRows.reduce(
-        (total, row) => total + Number(row.character_count ?? 0),
+        (total, row) =>
+          total
+          + Number(row.character_count ?? 0)
+          + Number(row.raw_character_count ?? 0)
+          + SEGMENT_CONTEXT_ENVELOPE_CHARACTERS,
         0,
       ) / 4,
     ) +
