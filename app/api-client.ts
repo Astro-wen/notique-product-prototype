@@ -1656,6 +1656,21 @@ export const api = {
     return requireId(normalizeRun(body.data.run), "extraction run");
   },
 
+  /**
+   * Runs the workspace recovery the absent Cron trigger was supposed to run.
+   *
+   * Passing the Event on screen is what lets recovery also start the analysis
+   * that Event is waiting for. Without it, recovery only finishes work someone
+   * already asked for — so an open app never commissions paid work for a
+   * project nobody opened.
+   */
+  async wakeWorkspace(eventId: Id | null): Promise<void> {
+    await request<unknown>("/api/v1/jobs/dispatch", {
+      method: "POST",
+      ...(eventId ? { body: jsonBody({ event_id: eventId }) } : {}),
+    });
+  },
+
   async kickDispatcher(target?: {
     kind: "extraction" | "transcription" | "artifact";
     runId: Id;

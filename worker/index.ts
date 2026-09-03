@@ -114,11 +114,19 @@ function streamTranscriptionDispatch(
 
 type DispatchKind = "extraction" | "transcription" | "artifact";
 
-async function dispatchInput(
-  request: Request,
-): Promise<{ kind: DispatchKind; runId: string } | null> {
+type DispatchInput =
+  | { kind: DispatchKind; runId: string }
+  /**
+   * The workspace recovery heartbeat. `eventId` is the Event on screen, and
+   * the only scope in which a browser may commission new paid analysis: an
+   * unscoped heartbeat finishes work already asked for and commissions
+   * nothing, so opening the app cannot spend money on projects nobody opened.
+   */
+  | { heartbeatEventId: string | null };
+
+async function dispatchInput(request: Request): Promise<DispatchInput> {
   const text = await request.text();
-  if (!text.trim()) return null;
+  if (!text.trim()) return { heartbeatEventId: null };
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -129,6 +137,12 @@ async function dispatchInput(
     throw new Error("BAD_REQUEST");
   }
   const body = value as Record<string, unknown>;
+  if (body.kind === undefined && body.run_id === undefined) {
+    const eventId = typeof body.event_id === "string" && body.event_id.trim() && body.event_id.length <= 128
+      ? body.event_id
+      : null;
+    return { heartbeatEventId: eventId };
+  }
   if (
     (body.kind !== "extraction" && body.kind !== "transcription" && body.kind !== "artifact") ||
     typeof body.run_id !== "string" ||
@@ -191,7 +205,7 @@ const worker = {
       }
       try {
         const input = await dispatchInput(request);
-        if (!input) {
+        if ("heartbeatEventId" in input) {
           // An untargeted kick is the workspace's recovery heartbeat. It used
           // to dispatch the extraction outbox and nothing else, because the
           // rest was "owned by the one-minute Cron trigger" — which does not
@@ -199,10 +213,15 @@ const worker = {
           // 'queued' and untouched indefinitely, and Events whose transcripts
           // had been ready for days had no Run at all. Every stage is
           // lease-guarded and idempotent, so any number of open tabs can run
-          // it, and the Cron may still run it too. Long audio stays out: the
-          // page drives that through the targeted streaming dispatch.
+          // it, and the Cron may still run it too. It finishes work someone
+          // already asked for; new analysis is commissioned only for the Event
+          // the heartbeat names, so opening the app never spends money on a
+          // project nobody opened. Long audio stays out: the page drives that
+          // through the targeted streaming dispatch.
           ctx.waitUntil(Promise.allSettled([
-            recoverAndDispatch(),
+            recoverAndDispatch(input.heartbeatEventId
+              ? { commission: { eventId: input.heartbeatEventId } }
+              : undefined),
             sweepAndDispatchEventAiArtifacts(),
           ]).then((results) => {
             for (const result of results) {

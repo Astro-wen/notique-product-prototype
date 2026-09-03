@@ -939,11 +939,21 @@ test("the durable repair creates extraction for every uncovered current source m
         ('run-warning', 'ws-a', 'event-warning-covered', 'completed_with_warnings', '[{"asset_version_id":"transcript-version-warning"}]'),
         ('run-cancelled', 'ws-a', 'event-cancelled-covered', 'cancelled', '[{"asset_version_id":"transcript-version-cancelled"}]');
     `);
-    const rows = database.prepare(candidateMatch[1]).all(25, 2, 50);
+    // The two nulls are the optional Event scope: a browser may only commission
+    // analysis for the Event on its screen, so opening the app cannot spend
+    // money on a project nobody opened. Unscoped is the Cron's whole-workspace
+    // scan.
+    const rows = database.prepare(candidateMatch[1]).all(25, null, null, 2, 50);
     assert.deepEqual(
       rows.map((row) => row.event_id).sort(),
       ["event-added", "event-new", "event-photo", "event-transcript", "event-unassessed-first"],
       "transcript/photo-only, expanded manifests, and a once-failed unassessed first Event are repaired; successful, warning, cancelled, exhausted, draft, stale-lineage, and blocked later Events are skipped",
+    );
+    const scoped = database.prepare(candidateMatch[1]).all(25, "event-new", "event-new", 2, 50);
+    assert.deepEqual(
+      scoped.map((row) => row.event_id),
+      ["event-new"],
+      "a scoped repair touches only the named Event",
     );
   } finally {
     database.close();

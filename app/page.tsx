@@ -2380,14 +2380,16 @@ export default function Home() {
   // nothing was watching stayed 'queued' and untouched for as long as it was
   // left there, and Events whose transcripts had been ready for days had no
   // Run at all. So an open workspace is what recovers stalled work: expired
-  // leases, dead-lettered messages, and finished transcripts with nothing
-  // reading them. The server side is lease-guarded and idempotent, so several
-  // open tabs cost a few queries each and nothing is done twice.
+  // leases, dead-lettered messages, and the analysis the open communication is
+  // waiting for. It carries that Event and nothing wider, so opening the app
+  // never starts paid work in a project nobody opened. The server side is
+  // lease-guarded and idempotent, so several open tabs cost a few queries each
+  // and nothing is done twice.
   useEffect(() => {
     let stopped = false;
     const beat = () => {
       if (stopped || document.visibilityState === "hidden") return;
-      void api.kickDispatcher().catch(() => undefined);
+      void api.wakeWorkspace(routeRef.current.eventId || null).catch(() => undefined);
     };
     beat();
     const timer = window.setInterval(beat, RECOVERY_HEARTBEAT_MS);

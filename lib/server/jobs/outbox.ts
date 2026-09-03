@@ -700,11 +700,20 @@ const EMPTY_AUTOMATIC: AutomaticExtractionEnsureResult = {
  * lease-guarded and idempotent, which is what makes it safe to run from any
  * number of open tabs — and safe to keep running if the Cron ever does fire.
  *
+ * The default commissions nothing. Recovery finishing work someone already
+ * asked for is free of surprises; recovery deciding on its own to analyse an
+ * Event costs money, and a browser running that across the workspace would
+ * mean opening the app spends money on projects the reader never looked at.
+ * So `commission` is explicit: the Cron may scan the workspace, a browser may
+ * only name the Event on its screen.
+ *
  * Long audio transcription stays out: it takes minutes, and the page already
  * drives it through the targeted streaming dispatch that holds a connection
  * open for exactly that purpose.
  */
-export async function recoverAndDispatch(): Promise<{
+export async function recoverAndDispatch(input?: {
+  commission?: "workspace" | { eventId: string };
+}): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
@@ -714,11 +723,19 @@ export async function recoverAndDispatch(): Promise<{
     stage("transcription_sweep", sweepTranscriptionJobs, EMPTY_TRANSCRIPTION_SWEEP),
     stage("extraction_sweep", sweepJobs, EMPTY_SWEEP),
   ]);
-  const automatic_extraction = await stage(
-    "automatic_extraction",
-    ensureAutomaticExtractionRuns,
-    EMPTY_AUTOMATIC,
-  );
+  const commission = input?.commission;
+  const automatic_extraction = commission
+    ? await stage(
+      "automatic_extraction",
+      () => ensureAutomaticExtractionRuns(
+        commission === "workspace" ? undefined : { eventId: commission.eventId },
+      ),
+      EMPTY_AUTOMATIC,
+    )
+    : EMPTY_AUTOMATIC;
+  // Dispatching is not commissioning: these Runs exist because someone already
+  // asked for them, and leaving them queued is the stall this whole mechanism
+  // exists to end.
   const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH);
   return { sweep, dispatch, transcription_sweep, automatic_extraction };
 }
@@ -730,7 +747,7 @@ export async function sweepAndDispatch(): Promise<{
   transcription_dispatch: TranscriptionDispatchResult;
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
-  const recovered = await recoverAndDispatch();
+  const recovered = await recoverAndDispatch({ commission: "workspace" });
   const transcription_dispatch = await stage(
     "transcription_dispatch",
     () => dispatchDueTranscriptionOutbox(),

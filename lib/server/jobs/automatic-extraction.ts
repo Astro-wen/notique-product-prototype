@@ -97,7 +97,19 @@ function deferredReason(error: unknown): string | null {
  * path also catches transcript/photo-only Events and material added after an
  * earlier Run, even when the originating browser is no longer open.
  */
-export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtractionEnsureResult> {
+export async function ensureAutomaticExtractionRuns(input?: {
+  /**
+   * Restricts the scan to one Event.
+   *
+   * This function commissions paid analysis, so who may call it matters. The
+   * Cron trigger runs it across the workspace because that is unattended work
+   * nobody is waiting on. A browser must not: opening the app would then spend
+   * money on Events in projects the reader never looked at. Scoped to the
+   * Event on screen, it does only what the product already promises about that
+   * recording.
+   */
+  eventId?: string;
+}): Promise<AutomaticExtractionEnsureResult> {
   const candidates = await all(
     `WITH current_sources AS (
        SELECT a.workspace_id, a.event_id, a.current_version_id,
@@ -163,6 +175,7 @@ export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtracti
      SELECT sc.workspace_id, sc.event_id
        FROM source_counts sc
       WHERE (sc.sequence_no = 1 OR sc.scenario_status = 'confirmed')
+        AND (? IS NULL OR sc.event_id = ?)
         AND NOT EXISTS (
           SELECT 1 FROM exact_runs er
            WHERE er.event_id = sc.event_id
@@ -187,6 +200,8 @@ export async function ensureAutomaticExtractionRuns(): Promise<AutomaticExtracti
       LIMIT ?`,
     [
       MAX_EXTRACTION_ASSET_VERSIONS,
+      input?.eventId ?? null,
+      input?.eventId ?? null,
       MAX_AUTOMATIC_EXTRACTION_ATTEMPTS,
       AUTOMATIC_EXTRACTION_CANDIDATE_LIMIT,
     ],
