@@ -257,6 +257,7 @@ export async function createProject(
   scope: RequestScope,
   input: {
     name: string;
+    auto_name?: boolean;
     locale: string;
     profile?: "real_estate_buyer_journey";
   },
@@ -280,8 +281,8 @@ export async function createProject(
         id, workspace_id, name, scenario_status, scenario_candidates_json,
         scenario, scenario_version, scenario_confirmed_at, scenario_confirmed_by,
         locale, ledger_version, context_version,
-        next_event_sequence, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, 0, 0, 1, ?, ?)`,
+        next_event_sequence, created_at, updated_at, name_source
+      ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, ?)`,
       ).bind(
         projectId,
         scope.workspaceId,
@@ -294,6 +295,7 @@ export async function createProject(
         input.locale,
         timestamp,
         timestamp,
+        input.auto_name ? "pending" : "manual",
       ),
       mutationReplayStatement(
         scope,
@@ -314,6 +316,36 @@ export async function createProject(
     if (recovered.response) return getProject(scope, recovered.response.projectId);
     throw error;
   }
+  return getProject(scope, projectId);
+}
+
+// Index-only metadata never changes the project's evidence or review state.
+export async function updateProjectIndex(scope: RequestScope, projectId: string,
+  input: { name: string; folder_name: string | null; base_updated_at: string }, key: string,
+): Promise<ProjectRecord> {
+  const endpoint = `projects/${projectId}/index`;
+  const replay = await findMutationReplay<{ projectId: string }>(scope, endpoint, key, input);
+  if (replay.response) return getProject(scope, projectId);
+  const current = await getProject(scope, projectId);
+  if (current.updated_at !== input.base_updated_at) throw new ApiFault(409, "PROJECT_VERSION_CONFLICT", "项目已更新，请刷新后重试。");
+  const timestamp = now();
+  const result = await getD1().batch([
+    getD1().prepare(`UPDATE projects SET name_source = CASE WHEN name <> ? THEN 'manual' ELSE name_source END, name = ?, folder_name = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND updated_at = ?`)
+      .bind(input.name, input.name, input.folder_name, timestamp, projectId, scope.workspaceId, input.base_updated_at),
+    // Only record the replay if the compare-and-swap actually succeeded.
+    getD1().prepare(`INSERT INTO mutation_replays (id, workspace_id, actor_id, endpoint_scope, idempotency_key, request_hash, response_json, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
+      .bind(id("mutation"), scope.workspaceId, scope.actorId, endpoint, key, replay.requestHash, JSON.stringify({projectId}), timestamp),
+  ]);
+  if (!result[0].meta.changes) throw new ApiFault(409, "PROJECT_VERSION_CONFLICT", "项目已更新，请刷新后重试。");
+  return getProject(scope, projectId);
+}
+
+export async function markProjectOpened(scope: RequestScope, projectId: string): Promise<ProjectRecord> {
+  await getProject(scope, projectId);
+  await getD1().prepare(`UPDATE projects SET last_opened_at = ? WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`)
+    .bind(now(), projectId, scope.workspaceId).run();
   return getProject(scope, projectId);
 }
 

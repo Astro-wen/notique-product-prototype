@@ -315,7 +315,7 @@ function claimRecord(
       id: `${id}-version-1`,
       version_no: 1,
       statement,
-      normalized_value: null,
+      normalized_value: null as Record<string, unknown> | null,
       uncertainty: null,
       source: "ai",
     },
@@ -385,6 +385,11 @@ function summaryArtifact(projectId: string, eventId: string) {
     artifact_version: 1,
     input_hash: `summary-${eventId}`,
     content: {
+      key_points: [{ question: "买家的预算是多少？", answer: targetItem.text, source_segment_ids: targetItem.source_segment_ids },
+        ...fillerItems.slice(0, 4).map((item, index) => ({ question: `沟通中补充了什么背景 ${index + 1}？`, answer: item.text, source_segment_ids: item.source_segment_ids }))],
+      speaker_summaries: [{ speaker: "Buyer", asset_version_id: "av-transcript", summary: "买家说明了预算要求，并补充了房源筛选条件，希望经纪人据此安排后续沟通。", source_segment_ids: targetItem.source_segment_ids }],
+      chapters: [{ title: "沟通背景", summary: "本次沟通介绍了购房背景。", source_segment_ids: fillerItems[0].source_segment_ids }, { title: "预算与筛选条件", summary: targetItem.text, source_segment_ids: targetItem.source_segment_ids }],
+
       sections: [{
         kind: "meeting_summary",
         title: isProjectA ? "A 项目会议重点" : "B 项目会议重点",
@@ -556,6 +561,7 @@ export class NotiqueApiFixture {
   failTranscriptReadingRequests = false;
   analysisProgressMode = false;
   compactTranscriptMode = false;
+  readerAudioMode = false;
 
   private readonly claimsGate = gate();
   private readonly snapshotGate = gate();
@@ -921,6 +927,13 @@ export class NotiqueApiFixture {
         ? (body as { action?: unknown }).action
         : null;
       const reviewStatus = action === "reject" ? "rejected" : "verified";
+      const stored = this.manualClaims.get(claimId);
+      if (stored) {
+        const updated: ReturnType<typeof claimRecord> = { ...stored, review_status: reviewStatus };
+        this.manualClaims.set(claimId, updated);
+        this.actions.push({ claim_id: claimId, claim_version_id: stored.current_version.id, statement: stored.current_version.statement, owner: stored.current_version.normalized_value?.owner as string ?? null, due_at: stored.current_version.normalized_value?.due_at as string ?? null, event_id: stored.event_id, event_title: "A 项目会议", review_status: reviewStatus, status: "confirmed", evidence_ref_ids: stored.evidence_ref_ids, completed_by_claim_id: null });
+        await this.fulfill(route, envelope({claim:updated,verdict_id:`verdict-${claimId}`})); return;
+      }
       const statement = claimId === "claim-summary-shared"
         ? "客户仍需确认 120 万美元是否包含装修预算"
         : "预算上限是 120 万美元";
@@ -935,7 +948,7 @@ export class NotiqueApiFixture {
     const manualClaimMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/manual-claims$/);
     if (method === "POST" && manualClaimMatch) {
       const payload = typeof body === "object" && body !== null
-        ? body as { statement?: unknown; type?: unknown; segment_ids?: unknown }
+        ? body as { statement?: unknown; type?: unknown; segment_ids?: unknown; owner?: string; due_at?: string }
         : {};
       const statement = typeof payload.statement === "string" ? payload.statement : "人工补充行动";
       const type = typeof payload.type === "string" ? payload.type : "next_action";
@@ -946,7 +959,7 @@ export class NotiqueApiFixture {
       const humanClaim = {
         ...claim,
         source: "human",
-        current_version: { ...claim.current_version, source: "human" },
+        current_version: { ...claim.current_version, source: "human", normalized_value: payload.owner || payload.due_at ? { owner: payload.owner, due_at: payload.due_at } : null },
       };
       this.manualClaims.set(claim.id, humanClaim);
       await this.fulfill(route, envelope({
@@ -1181,7 +1194,14 @@ export class NotiqueApiFixture {
           return;
         }
         const projectId = eventId === "event-a" ? "project-a" : "project-b";
-        const segments = this.compactTranscriptMode && eventId === "event-a"
+        const segments = this.readerAudioMode && eventId === "event-a"
+          ? [...transcriptSegments(projectId, eventId), ...Array.from({ length: 90 }, (_, index) => ({
+              id: `reader-seg-${index}`, event_id: eventId, asset_version_id: "asset-event-a-version-1",
+              ordinal: index + 40, speaker: index % 2 ? "Buyer" : "Agent",
+              start_ms: 80_000 + index * 2_000, end_ms: 81_500 + index * 2_000,
+              text: `Property discussion ${index + 1}: budget, location and the next viewing.`,
+            }))]
+          : this.compactTranscriptMode && eventId === "event-a"
           ? Array.from({ length: 8 }, (_, index) => ({
               id: `compact-seg-${index}`,
               event_id: eventId,
@@ -1233,7 +1253,11 @@ export class NotiqueApiFixture {
         }
         await this.fulfill(route, envelope({
           event,
-          assets: this.transcriptionProgressMode && eventId === "event-a"
+          assets: this.readerAudioMode && eventId === "event-a"
+            ? [assetRecord(`asset-${eventId}`, projectId, eventId), {
+                ...audioAssetRecord("audio-event-a", projectId, eventId), processing_status: "ready", metadata: {},
+              }]
+            : this.transcriptionProgressMode && eventId === "event-a"
             ? [audioAssetRecord("audio-event-a", projectId, eventId)]
             : [assetRecord(`asset-${eventId}`, projectId, eventId)],
         }));

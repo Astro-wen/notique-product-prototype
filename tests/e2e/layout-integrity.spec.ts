@@ -87,7 +87,8 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
   expect(layout.sidebarWidth).toBeLessThanOrEqual(72);
   expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
   expect(layout.railWidth).toBeGreaterThanOrEqual(340);
-  expect(layout.railWidth).toBeLessThanOrEqual(400);
+  expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeGreaterThanOrEqual(0.34);
+  expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeLessThanOrEqual(0.41);
   expect(layout.readerLeft).toBeLessThan(layout.readerRight);
   expect(layout.railLeft).toBeLessThan(layout.railRight);
   expect(layout.readerRight, "the transcript canvas must end before the operation rail begins").toBeLessThanOrEqual(layout.railLeft + 1);

@@ -30,6 +30,6 @@ test("public gateway mode is explicit and uses one fixed public actor", () => {
 
 test("public mode keeps the shared-space warning visible", () => {
   const page = read("app/page.tsx");
-  assert.match(page, /公开演示空间/);
-  assert.match(page, /请勿上传真实客户资料或其他敏感信息/);
+  assert.match(page, /演示工作区/);
+  assert.match(page, /仅使用示例或已脱敏材料，请勿上传客户隐私/);
 });

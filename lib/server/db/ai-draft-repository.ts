@@ -257,6 +257,12 @@ export async function createManualClaim(
   input: CreateManualClaimRequest,
   idempotencyKey: string,
 ): Promise<ClaimRecord> {
+  if ((input.owner || input.due_at) && input.type !== "next_action") {
+    throw new ApiFault(400, "BAD_REQUEST", "Owner and due date apply only to actions.");
+  }
+  if (input.due_at && (!/^\d{4}-\d{2}-\d{2}$/.test(input.due_at) || !Number.isFinite(Date.parse(input.due_at)) || new Date(input.due_at).toISOString().slice(0, 10) !== input.due_at)) {
+    throw new ApiFault(400, "BAD_REQUEST", "Use a valid due date in YYYY-MM-DD format.");
+  }
   const endpointScope = `events/${eventId}/manual-claims`;
   const request = {
     ...input,
@@ -387,9 +393,9 @@ export async function createManualClaim(
         `INSERT INTO claim_versions (
            id, claim_id, version_no, statement, normalized_value_json,
            uncertainty_json, source, created_by, created_at
-         ) VALUES (?, ?, 1, ?, NULL, NULL, 'human', ?, ?)`,
+         ) VALUES (?, ?, 1, ?, ?, NULL, 'human', ?, ?)`,
       )
-      .bind(versionId, claimId, input.statement, scope.actorId, timestamp),
+      .bind(versionId, claimId, input.statement, input.owner || input.due_at ? JSON.stringify({ ...(input.owner ? { owner: input.owner } : {}), ...(input.due_at ? { due_at: input.due_at } : {}) }) : null, scope.actorId, timestamp),
     ...segmentRows.map((segment) =>
       getD1()
         .prepare(

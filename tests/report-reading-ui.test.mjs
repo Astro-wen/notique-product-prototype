@@ -45,7 +45,7 @@ test("verified results render typed timeline moments and preference history", ()
   assert.match(page, /recordArray\(item\.history\)/);
 });
 
-test("results use four general project entrances and keep other views visible", () => {
+test("results use four general project entrances and keep other views accessible", () => {
   const primary = declarationSource("primaryResultTabs");
   assert.match(primary, /项目概览/);
   assert.match(primary, /时间线/);
@@ -53,7 +53,7 @@ test("results use four general project entrances and keep other views visible", 
   assert.match(primary, /下次沟通准备/);
   assert.equal((primary.match(/\{ key: "/g) ?? []).length, 4);
   assert.match(page, /className="result-nav-secondary"/);
-  assert.match(page, /其他视图/);
+  assert.match(page, /更多视图/);
   assert.doesNotMatch(page, /result-nav-more|更多报告/);
   // The first character of a label is not an icon; the label carries itself.
   assert.doesNotMatch(page, /item\.short\.slice\(0, 1\)/, "report entries must not fake an icon from a truncated label");
@@ -68,7 +68,7 @@ test("results use four general project entrances and keep other views visible", 
     "相关人员与职责",
     "关键对象与反馈",
     "未决问题与风险",
-    "下一步行动",
+    "行动相关记录",
   ]);
   for (const section of projectOverviewSections) {
     assert.ok(section.empty.trim(), `${section.key} must offer empty-state copy`);
@@ -96,25 +96,21 @@ test("meeting rail and selected header share the workflow snapshot status", () =
 });
 
 test("public uploads require a per-session safety acknowledgement", () => {
-  assert.match(page, /公开演示空间/);
-  assert.match(page, /请勿上传真实客户资料或其他敏感信息/);
+  assert.match(page, /演示工作区/);
+  assert.match(page, /请勿上传客户隐私/);
   assert.match(page, /只能使用公开、合成或已脱敏材料/);
   assert.match(page, /notique\.ui\.public-workspace-acknowledged/);
   assert.match(page, /requirePublicWorkspaceAcknowledgement/);
   assert.match(styles, /\.public-workspace-notice/);
 });
 
-test("the readable transcript opens first while explicit Summary evidence returns remain restorable", () => {
+test("the original transcript opens while explicit Summary evidence returns remain restorable", () => {
   assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: targetEventId, tab: "summary" \}\)/);
   assert.match(page, /openClaimFromTranscriptSummary/);
   assert.match(page, /summaryReturnContext\.current/);
   assert.match(page, /restoreScrollY: context\.scrollY/);
   assert.match(page, /useState<TranscriptArtifactTab>\("raw"\)/);
-  // Reading opens on the readable transcript. Raw arrives from a real
-  // recording without punctuation and full of fillers, so landing there first
-  // asked the reader to clean it up mentally. Raw stays one click away and is
-  // still the evidence view every quote resolves against.
-  assert.match(page, /hasReadable\s*\? "readable"\s*:\s*availableRawSegments\.length > 0\s*\? "raw"\s*:\s*hasSummary\s*\? "summary"/);
+  assert.match(page, /const fallbackTab: TranscriptArtifactTab = availableRawSegments.length > 0 \? "raw"/);
   assert.match(page, /summaryFirstNavigationKey\(project\.id, event\.id, "raw-ready"\)/);
   assert.match(page, /if \(readingTab \|\| transcriptFocusRequest\?\.eventId === event\.id\) return/);
   assert.match(page, /canonicalRawSegmentIds = new Set\(rawSegments\.map/);
@@ -132,7 +128,7 @@ test("summary sources stay available in the action rail and artifact polling doe
   assert.match(page, /className="reader-action-rail"/);
   assert.match(page, /selectedSourceGroups/);
   assert.match(page, /function selectTranscriptGroup/);
-  assert.match(page, /className="transcript-copy-button"/);
+  assert.match(page, /className=\{`transcript-copy-button/);
   assert.match(page, /setWorkspaceView\("transcript"\)/);
   assert.match(page, /在逐字稿中定位/);
   assert.doesNotMatch(page, /setSourceDrawer|className="source-drawer"/);
@@ -146,8 +142,8 @@ test("summary sources stay available in the action rail and artifact polling doe
 
 test("the continuous workspace preserves its local view and fails visibly at partial boundaries", () => {
   assert.match(page, /requestedWorkspaceView\.current = null/);
-  assert.match(page, /localWorkspaceView \?\? "points"/);
-  assert.match(page, /const insightView:[\s\S]{0,120}workspaceView === "transcript" \? "points" : workspaceView/);
+  assert.match(page, /localWorkspaceView \?\? "chapters"/);
+  assert.match(page, /const insightView:[\s\S]{0,120}workspaceView === "transcript" \? "chapters" : workspaceView/);
   assert.ok(
     page.indexOf('className="reader-intelligence-heading"') < page.indexOf('id="transcript-document"'),
     "the intelligent overview must precede the transcript in the same reading document",
@@ -197,7 +193,7 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(page, /从第一条开始确认/);
   assert.match(styles, /\.reader-action-rail/);
   assert.match(page, /className="reader-intelligence-heading"/);
-  assert.match(page, /insightView === "points" && <section className=\{`summary-overview-card/);
+  assert.match(page, /insightView === "points" && <section className="tingwu-keypoints"/);
   assert.match(page, /<header className="transcript-document-toolbar" id="transcript-document">/);
   assert.doesNotMatch(page, /summary-detail-entry/, "the summary must sit above the transcript instead of opening a second framed detail view");
   assert.match(page, /reviewReady && visiblePendingReviewCount > 0/);
@@ -206,24 +202,11 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(page, /reviewBlocked=\{false\}/);
 });
 
-test("a transcript without a Run explains auto-start and keeps one recovery action", () => {
-  assert.match(page, /analysisRunning \? <div className="summary-card-loading"/);
-  assert.match(page, /analysisComplete \? <div className="summary-card-message"/);
-  assert.match(page, /系统通常会自动生成重点；如果本次没有启动，可以直接重新尝试/);
-  assert.match(page, /重新启动分析/);
-  assert.doesNotMatch(page, /开始分析并生成/);
-  assert.match(page, /onStartAnalysis=\{onStartAnalysis\}/);
-  assert.match(page, /analysisRunning=\{analysisRunning\}/);
-  assert.match(page, /analysisComplete=\{analysisComplete\}/);
+test("missing reading summaries offer generation while raw remains readable", () => {
+  assert.match(page, /生成阅读总结/);
+  assert.match(page, /className="artifact-panel raw-artifact"/);
+  assert.match(page, /summaryRun\?\.status === "processing"/);
   assert.match(page, /details\.reason === "analysis_required"/);
-});
-
-test("failed reading artifacts fall back safely without exposing provider error codes", () => {
-  assert.match(page, /AI 摘要未通过安全检查/);
-  assert.match(page, /易读逐字稿未通过完整性检查/);
-  assert.match(page, /事实识别和原始逐字稿都已保留/);
-  const fallback = declarationSource("ArtifactFallback");
-  assert.doesNotMatch(fallback, /run\.error_code/);
 });
 
 test("review empty states and completed workflow cards avoid duplicate primary actions", () => {
@@ -236,7 +219,6 @@ test("summary sections are named in the reader's language, not by model enum", (
   // The model returns a machine kind next to an English title; printing the
   // kind verbatim rendered "OVERVIEW" directly above "Overview".
   assert.doesNotMatch(page, /firstString\(section, \["kind"\]\)\?\.replaceAll/);
-  assert.match(page, /summarySectionLabel\(firstString\(section, \["kind"\]\)\)/);
   for (const [kind, label] of [
     ["overview", "全文概要"],
     ["key_fact", "关键事实"],

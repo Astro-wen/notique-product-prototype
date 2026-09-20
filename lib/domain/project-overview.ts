@@ -9,7 +9,7 @@ export const projectOverviewSections: Array<{ key: ProjectOverviewSection; label
   { key: "people", label: "相关人员与职责", empty: "还没有确认相关人员或职责" },
   { key: "subjects", label: "关键对象与反馈", empty: "还没有对象或反馈记录" },
   { key: "questions", label: "未决问题与风险", empty: "目前没有未决问题或风险" },
-  { key: "actions", label: "下一步行动", empty: "目前没有下一步行动" },
+  { key: "actions", label: "行动相关记录", empty: "目前没有行动相关记录" },
 ];
 
 export function projectOverviewSectionFor(item: Record<string, unknown>): ProjectOverviewSection {

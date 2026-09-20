@@ -7,7 +7,10 @@ import {
   projectOverviewSections,
   type ProjectOverviewSection,
 } from "@/lib/domain/project-overview";
-import { ViewItem } from "./view-item";
+import { readingPriority } from "@/lib/domain/ux-priority";
+import { formatDate } from "@/lib/domain/project-label";
+import { typeLabel } from "@/lib/domain/labels";
+import { Search, ArrowUpRight, X } from "lucide-react";
 
 type OverviewFilter = ProjectOverviewSection | "all";
 
@@ -33,11 +36,12 @@ export function ProjectOverviewList({
 }) {
   const [filter, setFilter] = useState<OverviewFilter>("all");
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [query, setQuery] = useState("");
 
   const rows = useMemo(() => [
     ...trusted.map((item) => ({ item, verified: true, section: projectOverviewSectionFor(item) })),
     ...drafts.map((item) => ({ item, verified: false, section: projectOverviewSectionFor(item) })),
-  ], [drafts, trusted]);
+  ].sort((a, b) => readingPriority(a.item) - readingPriority(b.item)), [drafts, trusted]);
 
   const counts = useMemo(() => {
     const tally = new Map<ProjectOverviewSection, number>();
@@ -50,6 +54,7 @@ export function ProjectOverviewList({
 
   const visible = rows.filter((row) => (
     (!verifiedOnly || row.verified) && (filter === "all" || row.section === filter)
+    && (!query.trim() || (firstString(row.item, ["statement", "text", "title"]) || "").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   ));
   const total = rows.filter((row) => !verifiedOnly || row.verified).length;
   const verifiedTotal = rows.filter((row) => row.verified).length;
@@ -62,6 +67,10 @@ export function ProjectOverviewList({
   }
 
   return <div className="project-overview">
+    <div className="overview-toolbar">
+      <div className="overview-tally"><strong>{rows.length} 条记录</strong><span>{verifiedTotal} 已确认</span>{rows.length > verifiedTotal && <span className="overview-pending">{rows.length - verifiedTotal} 待核对</span>}</div>
+      <label className="overview-search"><Search size={16} aria-hidden="true" /><input aria-label="搜索项目记录" placeholder="搜索预算、条件、房源…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button aria-label="清除搜索" onClick={() => setQuery("")}><X size={14} /></button>}</label>
+    </div>
     <div className="project-overview-filters" role="group" aria-label="按类型筛选项目记录">
       <button
         className={filter === "all" ? "active" : ""}
@@ -85,17 +94,22 @@ export function ProjectOverviewList({
     </div>
 
     {visible.length > 0 ? <div className="project-overview-rows">
-      {visible.map((row, index) => <div
-        className={`project-overview-row${row.verified ? " verified" : " draft"}`}
-        key={firstString(row.item, ["claim_id", "claimId", "claim_version_id"]) || `${row.section}-${index}`}
-      >
-        <span className="project-overview-status">{row.verified ? "已确认" : "AI 草稿"}</span>
-        <ViewItem item={row.item} onOpenClaim={onOpenClaim} />
-      </div>)}
-    </div> : <p className="muted">
-      {verifiedOnly && activeSection
-        ? `“${activeSection.label}”下还没有人工确认的记录。`
-        : activeSection?.empty ?? "没有符合当前筛选的记录。"}
-    </p>}
+      {visible.map((row, index) => {
+        const id = firstString(row.item, ["claim_id", "claimId", "claim_version_id"]);
+        const statement = firstString(row.item, ["statement", "text", "title"]) || "未命名记录";
+        const type = firstString(row.item, ["type", "claim_type"]) || "other";
+        const date = firstString(row.item, ["occurredAt", "occurred_at", "event_date", "updated_at", "updatedAt"]);
+        const evidenceCount = Array.isArray(row.item.evidence_ref_ids) ? row.item.evidence_ref_ids.length : 0;
+        return <article className={`project-overview-row${row.verified ? " verified" : " draft"}`} key={id || `${row.section}-${index}`}>
+          <span className="overview-record-type">{typeLabel(type)}</span>
+          <div className="overview-record-body">
+            {id ? <button className="overview-record-title" onClick={() => onOpenClaim(id)}>{statement}<ArrowUpRight size={16} aria-hidden="true" /></button> : <p className="overview-record-title">{statement}</p>}
+            <div className="overview-record-meta">{evidenceCount > 0 && <span>{evidenceCount} 条原始依据</span>}{date && <time title="记录日期">{formatDate(date)}</time>}</div>
+          </div>
+          <span className="project-overview-status">{row.verified ? "已确认" : "待核对"}</span>
+        </article>;
+      })}
+    </div> : <div className="overview-empty"><Search size={24} aria-hidden="true" /><strong>{query ? "没有找到匹配的记录" : "没有符合筛选的记录"}</strong><p>{query ? "换一个关键词，或清除筛选再试。" : activeSection?.empty || "试试其他类型。"}</p><button className="text-button" onClick={() => { setQuery(""); setFilter("all"); setVerifiedOnly(false); }}>显示全部记录</button></div>}
+
   </div>;
 }

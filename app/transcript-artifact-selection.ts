@@ -17,8 +17,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function sourceSegmentIds(artifact: EventAiArtifactRecord): string[] {
   if (!isRecord(artifact.content)) return [];
   const records = artifact.kind === "summary"
-    ? (Array.isArray(artifact.content.sections) ? artifact.content.sections : [])
-      .flatMap((section) => isRecord(section) && Array.isArray(section.items) ? section.items : [])
+    ? [
+      ...(Array.isArray(artifact.content.sections) ? artifact.content.sections : [])
+        .flatMap((section) => isRecord(section) && Array.isArray(section.items) ? section.items : []),
+      ...[artifact.content.key_points, artifact.content.speaker_summaries, artifact.content.chapters]
+        .flatMap((items) => Array.isArray(items) ? items : []),
+    ]
     : Array.isArray(artifact.content.segments)
       ? artifact.content.segments
       : [];

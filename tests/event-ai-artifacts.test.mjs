@@ -1190,7 +1190,7 @@ test("artifact jobs use durable Background Responses and independent retries", a
   assert.match(worker, /dispatchEventAiArtifactsForExtraction/);
   assert.match(worker, /kind === "artifact"/);
   assert.match(repository, /createEventAiArtifactRetry/);
-  assert.match(repository, /Only a failed AI artifact can be regenerated/);
+  assert.match(repository, /Only a failed or outdated AI artifact can be regenerated/);
   assert.match(repository, /Start this event's analysis first/);
   assert.match(repository, /409,[\s\S]*"EVENT_NOT_READY"/);
   assert.match(repository, /reason: "analysis_required"/);
@@ -1324,14 +1324,14 @@ test("Summary v2 provider schema and prompt request locations, never model-autho
   assert.doesNotMatch(schemaBlock, /support_quote/);
   assert.match(provider, /Do not return support_quote/);
   assert.match(provider, /start_codepoint and exclusive end_codepoint offsets counted in Unicode code points/);
-  assert.match(provider, /validateEventSummaryProviderOutput\(result\.value/);
+  assert.match(provider, /validateEventSummaryProviderOutput\(orderedReadingOutput/);
 });
 
 test("artifact dispatch accepts only the exact frozen provider contract for each kind", async () => {
   assert.equal(eventAiArtifactContractMismatch({
     kind: "summary",
     reasoning_effort: "high",
-    prompt_version: "event-summary-prompt.v2",
+    prompt_version: "event-summary-prompt.v3.1",
     schema_version: "event-summary.v2",
   }), null);
   assert.equal(eventAiArtifactContractMismatch({
@@ -1405,10 +1405,7 @@ test("artifact retry refreshes the panel and dispatches only the requested artif
     uiSource,
     /await onRetryArtifact\(event\.id, "summary"\);\s*await load\(true\);/,
   );
-  assert.match(
-    uiSource,
-    /await onRetryArtifact\(event\.id, "readable_transcript"\);\s*await load\(true\);/,
-  );
+  assert.doesNotMatch(uiSource, /className="transcript-subtabs"/);
   assert.match(uiSource, /retryEventAiArtifact[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: artifactRun\.id \}\)/);
 });
 
@@ -1840,11 +1837,7 @@ test("an invalid model output is retried under the attempt cap, not failed on si
     "an invalid chunk retry still counts against the cap");
 });
 
-test("reading starts from the readable transcript wherever one exists", async () => {
-  // 原文 is the evidence view, one click away — not the reading view. The
-  // transcript under the intelligence surfaces was pinned to raw, so a reader
-  // who never touched the tab bar read unpunctuated, filler-filled source text.
-  // Only a finished readable pass displaces raw: the rolling preview covers the
-  // stable prefix only, and must not hide a transcript that is already whole.
-  assert.match(uiSource, /const readerTab: "readable" \| "raw" = tab === "raw"\s*\?\s*"raw"\s*:\s*readableArtifact\s*\?\s*"readable"\s*:\s*"raw";/);
+test("reading uses one original document even when a readable artifact exists", () => {
+  assert.match(uiSource, /const readerTab = "raw"/);
+  assert.doesNotMatch(uiSource, /className="artifact-panel readable-artifact"/);
 });

@@ -127,11 +127,10 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
   assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds, claimEvidence\(claim\)\)/);
   assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
   assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
-  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked\)/);
+  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked, actionOwner\.trim\(\) \|\| undefined, actionDueAt \|\| undefined\)/);
   assert.match(page, /className="rail-action-composer"/);
   assert.match(page, /已关联最相关的 8 段原话/);
   assert.match(page, /function selectTranscriptGroup/);
-  assert.match(page, /selectTranscriptGroup\(group, "readable"\)/);
   assert.match(page, /selectTranscriptGroup\(group, "raw"\)/);
   assert.match(page, /const trustedEventActionItems = eventActionItems\.filter/);
   assert.match(page, /action\.status === "confirmed" \|\| action\.status === "completed"/);
@@ -163,10 +162,9 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.match(page, /from "lucide-react"/);
   assert.match(page, /className="brand-mark"><NotebookPen/);
   assert.match(page, /<LayoutDashboard aria-hidden="true" \/>/);
-  assert.match(page, /className="reader-intelligence-mark" aria-hidden="true"><Sparkles \/>/);
   assert.match(page, /<Pause aria-hidden="true" \/> : <Play aria-hidden="true" \/>/);
   assert.match(page, /<FileImage \/><\/span><span><strong>选择手写笔记照片/);
-  assert.match(page, /className="speaker-avatar" aria-hidden="true"><AudioLines \/>/);
+  assert.match(page, /className="speaker-avatar" aria-hidden="true"><Users \/>/);
   assert.doesNotMatch(page, /speaker\.speaker\.slice\(0,\s*1\)/);
   assert.doesNotMatch(page, /className="brand-mark">⌁/);
   assert.doesNotMatch(page, /className="material-action-icon">[T↑▧]/);

@@ -140,6 +140,9 @@ export type ScenarioCandidate = {
 };
 
 export type Project = {
+  folderName?: string;
+  lastOpenedAt?: string;
+  nameSource?: string;
   id: Id;
   name: string;
   description?: string;
@@ -243,6 +246,7 @@ export type TranscriptionRun = {
 };
 
 export type ExtractionRun = {
+  omittedStatements?: string[];
   id: Id;
   eventId?: Id;
   idempotencyKey?: string;
@@ -461,6 +465,9 @@ export function normalizeProject(value: unknown): Project {
   return {
     id: asString(pick(source, ["id", "project_id", "projectId"])),
     name: asString(pick(source, ["name", "title"]), "Untitled project"),
+    folderName: asString(source.folder_name) || undefined,
+    lastOpenedAt: asString(source.last_opened_at) || undefined,
+    nameSource: asString(source.name_source) || undefined,
     description: asString(pick(source, ["description"]), undefined as unknown as string) || undefined,
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     updatedAt: asString(pick(source, ["updated_at", "updatedAt"]), undefined as unknown as string) || undefined,
@@ -659,6 +666,7 @@ export function normalizeRun(value: unknown): ExtractionRun {
     inputAssetVersionIds: (pick<unknown[]>(source, ["input_asset_version_ids", "inputAssetVersionIds"], []) ?? [])
       .filter((item): item is string => typeof item === "string" && Boolean(item)),
     status: asString(pick(source, ["status"]), "unknown").toLowerCase(),
+    omittedStatements: (pick<unknown[]>(source, ["omitted_statements"], []) ?? []).filter((item): item is string => typeof item === "string"),
     warningCount: asNumber(pick(source, ["warning_count", "warningCount"])),
     claimCount: asNumber(pick(source, ["claim_count", "claimCount"])),
     errorCode: asString(pick(source, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
@@ -1123,6 +1131,17 @@ async function renewAssetUploadLease(assetId: Id): Promise<void> {
 }
 
 export const api = {
+  async updateProjectIndex(project: Project, name: string, folderName: string, key: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(project.id)}`, {
+      method: "PUT", headers: { "idempotency-key": key },
+      body: jsonBody({ name, folder_name: folderName || null, base_updated_at: project.updatedAt }),
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+  async markProjectOpened(projectId: Id): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/opened`, {method: "POST", body: "{}"});
+    return requireId(normalizeProject(body.data.project), "project");
+  },
   async listProjects(): Promise<Project[]> {
     const body = await request<ListProjectsResponse>("/api/v1/projects", { cache: "no-store" });
     return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
@@ -1130,10 +1149,11 @@ export const api = {
 
   async createProject(input: {
     name: string;
+    autoName?: boolean;
     description?: string;
     profile?: "real_estate_buyer_journey";
   }, idempotencyKey: string): Promise<Project> {
-    const payload: CreateProjectRequest = { name: input.name, profile: input.profile };
+    const payload: CreateProjectRequest = { name: input.name, profile: input.profile, ...(input.autoName ? {auto_name: true} : {}) };
     const body = await request<CreateProjectResponse>("/api/v1/projects", { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: jsonBody(payload) });
     return requireId(normalizeProject(body.data.project), "project");
   },

@@ -83,11 +83,8 @@ test("every statically named class is declared in the stylesheet", async () => {
     "debug-output",
     "event-panel",
     "form-note",
-    "list-page",
     "neutral",
-    "results-page",
     "source-panel",
-    "summary-related-claims",
   ];
   assert.deepEqual(
     [...missing].sort(),

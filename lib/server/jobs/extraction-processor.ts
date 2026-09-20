@@ -1,3 +1,5 @@
+import { classifyActionStatement } from "@/lib/domain/action-classification";
+import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { buildContextPack, type ContextPack, type ContextPackAsset } from "@/lib/domain/context-pack";
 import {
@@ -14,7 +16,7 @@ import {
 } from "@/lib/domain/model-config";
 import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
 import {
-  canonicalizeTranscriptEvidence,
+  recoverTranscriptEvidence,
   validateDocumentPage,
   validatePhotoBbox,
 } from "@/lib/domain/evidence";
@@ -1037,7 +1039,7 @@ function prepareEvidence(
         warnings.push({ code: "EVIDENCE_KIND_INVALID", asset_version_id: item.asset_version_id });
         continue;
       }
-      const canonical = canonicalizeTranscriptEvidence(
+      const canonical = recoverTranscriptEvidence(
         item.segment_ids,
         item.quote_hint,
         segmentById,
@@ -1143,7 +1145,8 @@ function prepareCandidates(
       .map((claim) => [claim.id, claim]),
   );
   const clientKeys = new Set<string>();
-  for (const model of output.claims) {
+  for (const candidate of output.claims) {
+    const model = { ...candidate, type: classifyActionStatement(candidate.type, candidate.statement) as typeof candidate.type };
     if (clientKeys.has(model.client_claim_key)) {
       warnings.push({ code: "DUPLICATE_CLIENT_CLAIM_KEY", client_claim_key: model.client_claim_key });
       continue;
@@ -1152,7 +1155,7 @@ function prepareCandidates(
     if (model.disposition === "duplicate") continue;
     const evidence = prepareEvidence(model.evidence, run, manifestRows, segments, warnings);
     if (!evidence.length) {
-      warnings.push({ code: "CLAIM_WITHOUT_VALID_EVIDENCE", client_claim_key: model.client_claim_key });
+      warnings.push({ code: "CLAIM_WITHOUT_VALID_EVIDENCE", client_claim_key: model.client_claim_key, statement: model.statement });
       continue;
     }
     const hasMaterialEvidence = evidence.some(
@@ -1198,11 +1201,7 @@ function prepareCandidates(
       }
       if (
         relation.type === "resolves" &&
-        target.type !== "open_question" &&
-        target.type !== "risk" &&
-        target.type !== "concern" &&
-        target.type !== "requirement" &&
-        target.version.uncertainty === null
+        !canResolveClaim({ type: target.type, ...target.version })
       ) {
         warnings.push({
           code: "RELATION_SEMANTICS_INVALID",
@@ -2210,6 +2209,7 @@ export async function processExtractionRun(
           reasons: assessment.reasons,
           unmapped_inventory_keys: assessment.unmappedInventoryKeys,
           dropped_critical_inventory_keys: assessment.droppedCriticalInventoryKeys,
+          omitted_statements: inventoryStage.output.candidates.filter((candidate) => assessment.droppedCriticalInventoryKeys.includes(candidate.inventory_key)).map((candidate) => candidate.statement),
           low_confidence_relation_claim_keys: assessment.lowConfidenceRelationClaimKeys,
         });
       }

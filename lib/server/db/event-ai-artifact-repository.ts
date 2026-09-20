@@ -515,6 +515,12 @@ export async function createEventAiArtifactRetry(
   kind: EventAiArtifactKind,
   idempotencyKey: string,
 ): Promise<EventAiArtifactRunRecord> {
+  const existing = await first(
+    `SELECT * FROM event_ai_artifact_runs
+      WHERE event_id = ? AND workspace_id = ? AND kind = ? AND idempotency_key = ?`,
+    [eventId, scope.workspaceId, kind, idempotencyKey],
+  );
+  if (existing) return runRecord(existing);
   let source = await first(
     `SELECT ar.* FROM event_ai_artifact_runs ar
        JOIN projects p ON p.id = ar.project_id
@@ -523,8 +529,10 @@ export async function createEventAiArtifactRetry(
       ORDER BY ar.created_at DESC LIMIT 1`,
     [eventId, scope.workspaceId, kind],
   );
-  if (source && String(source.status) !== "failed") {
-    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Only a failed AI artifact can be regenerated.");
+  const upgradeSummary = source && kind === "summary" && source.status === "succeeded"
+    && (source.prompt_version !== EVENT_SUMMARY_PROMPT_VERSION || source.schema_version !== EVENT_SUMMARY_SCHEMA_VERSION);
+  if (source && String(source.status) !== "failed" && !upgradeSummary) {
+    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Only a failed or outdated AI artifact can be regenerated.");
   }
   if (!source) {
     source = await first(
@@ -549,12 +557,6 @@ export async function createEventAiArtifactRetry(
   if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) {
     throw new ApiFault(409, "EVENT_NOT_READY", "This event has no raw transcript for the requested reading aid.");
   }
-  const existing = await first(
-    `SELECT * FROM event_ai_artifact_runs
-      WHERE event_id = ? AND kind = ? AND idempotency_key = ?`,
-    [eventId, kind, idempotencyKey],
-  );
-  if (existing) return runRecord(existing);
   const runId = id("earun");
   const timestamp = now();
   const promptVersion = kind === "summary" ? EVENT_SUMMARY_PROMPT_VERSION : READABLE_TRANSCRIPT_PROMPT_VERSION;
@@ -660,6 +662,10 @@ export async function persistSummaryArtifact(
       run.id,
       owner,
     ),
+    // A user-authored name always wins; only opt-in blank projects are named.
+    getD1().prepare(`UPDATE projects SET name = ?, name_source = 'ai', updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND name_source = 'pending' AND ? <> ''`)
+      .bind((output.chapters?.[0]?.title ?? '').trim().slice(0, 120), timestamp, run.project_id, run.workspace_id, (output.chapters?.[0]?.title ?? '').trim()),
     getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
 }

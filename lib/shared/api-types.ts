@@ -66,6 +66,7 @@ export type ApiErrorCode =
   | "QUEUE_NOT_CONFIGURED"
   | "QUEUE_DISPATCH_DELAYED"
   | "SCENARIO_CONFIRMATION_REQUIRED"
+  | "PROJECT_VERSION_CONFLICT"
   | "SCENARIO_VERSION_CONFLICT"
   | "CLAIM_VERSION_CONFLICT"
   | "CLAIM_STATE_CONFLICT"
@@ -96,6 +97,9 @@ export type ApiErrorResponse = {
 };
 
 export type ProjectRecord = {
+  folder_name?: string | null;
+  last_opened_at?: string | null;
+  name_source?: string;
   id: string;
   workspace_id: string;
   name: string;
@@ -320,6 +324,7 @@ export type TranscriptImportRecord = {
 };
 
 export type ExtractionRunRecord = {
+  omitted_statements?: string[];
   id: string;
   project_id: string;
   event_id: string;
@@ -514,6 +519,8 @@ export type CreateManualClaimRequest = {
     | "measurement"
     | "other";
   segment_ids: string[];
+  owner?: string;
+  due_at?: string;
 };
 
 export type AiDraftAssessmentRecord = {
@@ -662,6 +669,7 @@ export type ManualRelationTargetRecord = {
   event_title: string;
   occurred_at: string;
   has_uncertainty: boolean;
+  can_resolve?: boolean;
 };
 
 export type CreateManualRelationRequest = {
@@ -805,6 +813,7 @@ export type TimelineViewResponse = ApiSuccess<{ view: TimelineEventGroupRecord[]
 export type PreferencesViewResponse = ApiSuccess<{ view: PreferenceViewItemRecord[] }>;
 
 export type CreateProjectRequest = {
+  auto_name?: boolean;
   name: string;
   locale?: string;
   profile?: "real_estate_buyer_journey";

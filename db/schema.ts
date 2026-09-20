@@ -70,6 +70,9 @@ export const projects = sqliteTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    folderName: text("folder_name"),
+    lastOpenedAt: text("last_opened_at"),
+    nameSource: text("name_source").notNull().default("manual"),
     scenario: text("scenario"),
     scenarioStatus: text("scenario_status", {
       enum: ["unassessed", "assessing", "pending_confirmation", "confirmed"],

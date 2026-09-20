@@ -956,23 +956,17 @@ export function buildDeterministicBrief(ledger: ProjectLedger) {
   const current = currentVerifiedClaims(ledger.claims);
   const changes = buildTimeline(ledger).flatMap((event) => event.deltas).slice(-2).reverse();
   const agenda = buildNextMeetingAgenda(ledger).slice(0, 2);
-  const warning =
-    current.find((claim) => claim.type === "risk" || claim.type === "concern") ??
-    current.find(
-      (claim) =>
-        claim.type === "open_question" ||
-        claim.needsAdditionalEvidence ||
-        claim.version.uncertainty !== null,
-    ) ??
-    null;
-  const state = current.find((claim) => claim.id !== warning?.id) ?? current[0] ?? null;
-  const uniqueWarning = warning?.id === state?.id ? null : warning;
-  const slots = [state, ...changes, ...agenda, uniqueWarning];
+  const risks = buildRisks(ledger);
+  const warning = risks.claims[0] ?? null;
+  const contradiction = warning ? null : risks.contradictions[0] ?? null;
+  const state = current.find((claim) => claim.id !== warning?.id) ?? null;
+  const slots = [state, ...changes, ...agenda, warning ?? contradiction];
   return {
     stateClaimId: state?.id ?? null,
     deltaItemIds: changes.map((item) => item.id),
     agendaItemIds: agenda.map((item) => item.id),
-    riskClaimId: uniqueWarning?.id ?? null,
+    riskClaimId: warning?.id ?? null,
+    riskRelationId: contradiction?.relationId ?? null,
     missingSlotCount: slots.filter((item) => item == null).length + Math.max(0, 2 - changes.length) + Math.max(0, 2 - agenda.length),
     source: "deterministic_fallback" as const,
   };

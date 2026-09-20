@@ -342,7 +342,7 @@ test("verifier rejects missing, duplicate, unknown, and invalid final mappings",
   assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
 });
 
-test("verifier reuses the existing claim contract and enforces the 10-claim bound", () => {
+test("verifier reuses the existing claim contract and enforces the configured claim safety bound", () => {
   const claims = Array.from({ length: TWO_STAGE_EXTRACTION_LIMITS.finalClaims + 1 }, (_, index) =>
     finalClaim({ client_claim_key: `claim-${index}` }));
   const result = validateVerificationOutput(verification({ claims }), inventory());

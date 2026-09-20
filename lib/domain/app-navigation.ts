@@ -243,12 +243,12 @@ export function backLabelForRoute(route: AppRoute): string {
     route.view === "claim"
     && route.origin === "simple"
     && route.originReadingTab === "summary"
-  ) return "返回 AI 摘要";
+  ) return "返回沟通记录";
   if (
     route.view === "claim"
     && route.origin === "simple"
     && route.originReadingTab === "readable"
-  ) return "返回易读逐字稿";
+  ) return "返回沟通记录";
   if (
     route.view === "claim"
     && route.origin === "simple"

@@ -1,6 +1,6 @@
 import type { TranscriptSegment } from "./types";
 
-export const EVENT_SUMMARY_PROMPT_VERSION = "event-summary-prompt.v2" as const;
+export const EVENT_SUMMARY_PROMPT_VERSION = "event-summary-prompt.v3.1" as const;
 export const EVENT_SUMMARY_SCHEMA_VERSION = "event-summary.v2" as const;
 export const READABLE_TRANSCRIPT_PROMPT_VERSION = "readable-transcript-prompt.v2" as const;
 export const READABLE_TRANSCRIPT_SCHEMA_VERSION = "readable-transcript.v1" as const;
@@ -43,7 +43,15 @@ export type EventSummaryItem = {
  */
 export type EventSummaryProviderItem = Omit<EventSummaryItem, "support_quote" | "support_status">;
 
-export type EventSummaryProviderOutput = {
+// Additive reading views: old v2 artifacts remain readable. New prompt runs
+// always produce these views; all references are checked against raw segments.
+export type EventReadingViews = {
+  key_points?: Array<{ question: string; answer: string; source_segment_ids: string[] }>;
+  speaker_summaries?: Array<{ speaker: string | null; asset_version_id: string; summary: string; source_segment_ids: string[] }>;
+  chapters?: Array<{ title: string; summary: string; source_segment_ids: string[] }>;
+};
+
+export type EventSummaryProviderOutput = EventReadingViews & {
   schema_version: typeof EVENT_SUMMARY_SCHEMA_VERSION;
   event_id: string;
   sections: Array<{
@@ -88,7 +96,7 @@ export function eventAiArtifactContractMismatch(
   };
 }
 
-export type EventSummaryOutput = {
+export type EventSummaryOutput = EventReadingViews & {
   schema_version: typeof EVENT_SUMMARY_SCHEMA_VERSION;
   event_id: string;
   sections: Array<{
@@ -445,6 +453,23 @@ export function validateEventSummaryProviderOutput(
   return validateEventSummary(value, input, "provider");
 }
 
+/** Canonicalize citation metadata only; never rewrite summaries or drop references. */
+export function orderReadingViewSources(value: unknown, segments: TranscriptSegment[]): unknown {
+  if (!record(value)) return value;
+  const positions = new Map(segments.map((segment, index) => [segment.id, index]));
+  const output = { ...value };
+  for (const key of ["key_points", "speaker_summaries", "chapters"]) {
+    if (!Array.isArray(value[key])) continue;
+    output[key] = value[key].map((entry: unknown) => {
+      if (!record(entry) || !Array.isArray(entry.source_segment_ids)) return entry;
+      const ids = entry.source_segment_ids;
+      if (!ids.every((id) => typeof id === "string" && positions.has(id))) return entry;
+      return { ...entry, source_segment_ids: [...ids].sort((a, b) => positions.get(a)! - positions.get(b)!) };
+    });
+  }
+  return output;
+}
+
 function validateEventSummary(
   value: unknown,
   input: { eventId: string; segments: TranscriptSegment[] },
@@ -452,7 +477,7 @@ function validateEventSummary(
 ): ArtifactValidation<EventSummaryOutput> {
   const issues: ArtifactContractIssue[] = [];
   if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
-  exactKeys(value, ["schema_version", "event_id", "sections"], "$", issues);
+  exactKeys(value, ["schema_version", "event_id", "sections", ...["key_points", "speaker_summaries", "chapters"].filter((key) => key in value)], "$", issues);
   if (value.schema_version !== EVENT_SUMMARY_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: `Expected ${EVENT_SUMMARY_SCHEMA_VERSION}.` });
   }
@@ -672,10 +697,51 @@ function validateEventSummary(
   if (summaryItemCount > 40) {
     issues.push({ path: "$.sections", message: "A concise summary may contain at most 40 supported items." });
   }
+  const readingViews: EventReadingViews = {};
+  for (const kind of ["key_points", "speaker_summaries", "chapters"] as const) {
+    if (!(kind in value)) continue;
+    const entries = value[kind];
+    if (!Array.isArray(entries) || entries.length > 24) {
+      issues.push({ path: `$.${kind}`, message: "Expected at most 24 reading entries." });
+      continue;
+    }
+    const seenSpeakers = new Set<string>();
+    let lastChapterPosition = -1;
+    const validated = entries.flatMap((entry, index) => {
+      const path = `$.${kind}[${index}]`;
+      if (!record(entry)) { issues.push({ path, message: "Expected an object." }); return []; }
+      const fields = kind === "key_points" ? ["question", "answer"] : kind === "chapters" ? ["title", "summary"] : ["speaker", "asset_version_id", "summary"];
+      exactKeys(entry, [...fields, "source_segment_ids"], path, issues);
+      const ids = segmentIds(entry.source_segment_ids, `${path}.source_segment_ids`, issues);
+      const sources = ids.map((id) => rawById.get(id));
+      if (sources.some((source) => !source)) issues.push({ path, message: "Unknown reading source segment." });
+      if (sources.some((source) => source && source.assetVersionId !== sources[0]?.assetVersionId)) issues.push({ path, message: "Reading entry must stay within one Asset Version." });
+      if (ids.some((id, i) => i > 0 && (rawPosition.get(id) ?? -1) <= (rawPosition.get(ids[i - 1]) ?? -1))) issues.push({ path, message: "Reading sources must be in raw order." });
+      const item: Record<string, unknown> = { source_segment_ids: ids };
+      for (const field of fields) {
+        if (field === "speaker" && entry[field] === null) item[field] = null;
+        else item[field] = stringValue(entry[field], `${path}.${field}`, issues, field === "summary" || field === "answer" ? 4000 : 300);
+      }
+      if (kind === "speaker_summaries") {
+        const key = `${item.asset_version_id}:${item.speaker}`;
+        if (seenSpeakers.has(key)) issues.push({ path, message: "Duplicate speaker summary." });
+        seenSpeakers.add(key);
+        if (sources.some((source) => source && (source.speaker !== item.speaker || source.assetVersionId !== item.asset_version_id))) issues.push({ path, message: "Speaker summary must cite only this speaker's own raw speech and Asset Version." });
+      }
+      if (kind === "chapters") {
+        const position = rawPosition.get(ids[0]) ?? -1;
+        if (position <= lastChapterPosition) issues.push({ path, message: "Chapters must follow transcript order with distinct starts." });
+        lastChapterPosition = position;
+      }
+      return [item];
+    });
+    Object.assign(readingViews, { [kind]: validated });
+  }
   const output: EventSummaryOutput = {
     schema_version: EVENT_SUMMARY_SCHEMA_VERSION,
     event_id: input.eventId,
     sections,
+    ...readingViews,
   };
   return { valid: issues.length === 0, issues, output: issues.length ? null : output };
 }

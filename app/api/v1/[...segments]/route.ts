@@ -4,6 +4,8 @@ import {
   createEvent,
   createExtractionRun,
   createProject,
+  updateProjectIndex,
+  markProjectOpened,
   createTranscriptImport,
   debugRun,
   finalizeAsset,
@@ -540,6 +542,8 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       statement: requiredString(body.statement, "statement", { max: 10_000 }),
       type: enumValue(body.type, "type", CLAIM_TYPES),
       segment_ids: stringArray(body.segment_ids, "segment_ids", { min: 1, max: 8 }),
+      ...(body.owner != null ? { owner: requiredString(body.owner, "owner", { max: 200 }) } : {}),
+      ...(body.due_at != null ? { due_at: requiredString(body.due_at, "due_at", { max: 10 }) } : {}),
     };
     const claim = await createManualClaim(
       scope,
@@ -606,10 +610,15 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
     );
     return ok({ relation }, id, 201);
   }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "opened") {
+    await jsonObject(request);
+    return ok({ project: await markProjectOpened(scope, segments[1]) }, id);
+  }
   if (segments.length === 1 && segments[0] === "projects") {
     const body = await jsonObject(request);
     const project = await createProject(scope, {
       name: requiredString(body.name, "name", { max: 200 }),
+      auto_name: body.auto_name === undefined ? false : booleanValue(body.auto_name, "auto_name"),
       profile: body.profile === undefined
         ? undefined
         : enumValue(body.profile, "profile", ["real_estate_buyer_journey"] as const),
@@ -1007,6 +1016,14 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
 async function putHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  if (segments.length === 2 && segments[0] === "projects") {
+    const body = await jsonObject(request);
+    return ok({ project: await updateProjectIndex(scope, segments[1], {
+      name: requiredString(body.name, "name", { max: 200 }),
+      folder_name: body.folder_name == null || body.folder_name === "" ? null : requiredString(body.folder_name, "folder_name", { max: 80 }),
+      base_updated_at: requiredString(body.base_updated_at, "base_updated_at", { max: 40 }),
+    }, idempotencyKey(request)) }, id);
+  }
   if (segments.length === 2 && segments[0] === "glossary") {
     const body = await jsonObject(request);
     const glossaryEntry = await updateGlossaryEntry(

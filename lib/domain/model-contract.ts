@@ -1,11 +1,12 @@
+import { canResolveClaim } from "./relation-policy.ts";
 import type { ClaimType, EvidenceRole } from "./types";
 import type { ContextPack } from "./context-pack";
 
 export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v3" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
 
 export const MODEL_CONTRACT_LIMITS = {
-  claims: 10,
+  claims: 24,
   evidencePerClaim: 20,
   relationsPerClaim: 20,
   segmentIdsPerEvidence: 20,
@@ -373,11 +374,7 @@ function validateRelationsAgainstContext(
       }
       if (
         relationType === "resolves" &&
-        target.type !== "open_question" &&
-        target.type !== "risk" &&
-        target.type !== "concern" &&
-        target.type !== "requirement" &&
-        target.uncertainty === null
+        !canResolveClaim(target)
       ) {
         issues.push({
           path: `${path}.type`,

@@ -285,13 +285,14 @@ test("buyer journey APIs keep draft links separate from formal relations and act
   // The draft page and its 稍后核对 exit are absorbed by the workspace, where
   // pending drafts wait in the rail without blocking the next communication.
   assert.match(page, /从第一条开始确认/);
-  assert.equal((page.match(/api\.createProject\(\{ name \},/g) ?? []).length, 2);
+  assert.match(page, /api\.createProject\(\{ name, autoName: true \},/);
+  assert.match(page, /api\.createProject\(\{ name: name \|\| "未命名项目", autoName: !name \},/);
   assert.doesNotMatch(page, /api\.createProject\(\{ name, profile: "real_estate_buyer_journey"/);
   assert.match(page, /两边确认后可接受/);
   // Draft and verified records now share one list and are told apart per row,
   // so the distinction is asserted where it is actually rendered.
-  assert.match(uiSource, /已确认内容可信，AI 草稿仅供参考/);
-  assert.match(uiSource, /row\.verified \? "已确认" : "AI 草稿"/);
+  assert.match(uiSource, /已确认表示核对过原文/);
+  assert.match(uiSource, /row\.verified \? "已确认" : "待核对"/);
   assert.match(uiSource, /只看已确认/);
   assert.match(provider, /Use type next_action only for a concrete future action/);
 });

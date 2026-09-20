@@ -1638,8 +1638,8 @@ test("provider schema and server validator share bounded output limits", async (
   assert.doesNotMatch(provider, /strict:\s*false|\boneOf\s*:|maxProperties\s*:/i);
   assert.match(
     provider,
-    /return no more than 10[\s\S]{0,260}Never combine propositions merely to fit the limit/i,
-    "the prompt must rank at most ten material propositions without combining them to fit the cap",
+    /preserve up to 24[\s\S]{0,260}Never combine propositions merely to fit the limit/i,
+    "the prompt must retain material propositions within the safety bound without combining them to fit the cap",
   );
   assert.match(
     provider,
@@ -2341,7 +2341,7 @@ test("manual Claim relations are scoped, atomic, idempotent, and visible after c
   );
   assert.match(
     repository,
-    /input\.type === ["']resolves["'][\s\S]{0,300}\["open_question", "risk", "concern", "requirement"\]/,
+    /input\.type === ["']resolves["'][\s\S]{0,300}canResolveClaim/,
     "resolve must only close a genuine open or uncertain record",
   );
   assert.match(repository, /findMutationReplay[\s\S]{0,500}endpointScope[\s\S]{0,500}idempotencyKey/);

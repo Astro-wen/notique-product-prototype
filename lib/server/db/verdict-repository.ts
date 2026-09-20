@@ -1,3 +1,4 @@
+import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { getD1 } from "@/db";
 import { validatePhotoBbox } from "@/lib/domain/evidence";
 import {
@@ -11,7 +12,7 @@ import {
   planRelationCarryForward,
   validateExplicitClaimEditProjection,
 } from "@/lib/domain/claim-state";
-import { ApiFault } from "@/lib/server/http/api";
+import { ApiFault, parseJson } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import { claimRecord } from "@/lib/server/db/records";
 import {
@@ -1900,7 +1901,7 @@ export async function listManualRelationTargets(
   const rows = await all(
     `SELECT c.id AS claim_id, c.current_version_id AS claim_version_id,
             c.type, cv.statement, c.event_id, e.title AS event_title,
-            e.occurred_at, cv.uncertainty_json
+            e.occurred_at, cv.uncertainty_json, cv.normalized_value_json
        FROM claims c
        JOIN claim_versions cv ON cv.id = c.current_version_id
        JOIN events e ON e.id = c.event_id
@@ -1918,6 +1919,11 @@ export async function listManualRelationTargets(
     event_title: String(row.event_title),
     occurred_at: String(row.occurred_at),
     has_uncertainty: row.uncertainty_json !== null && row.uncertainty_json !== undefined,
+    can_resolve: canResolveClaim({
+      type: String(row.type), statement: String(row.statement),
+      normalizedValue: parseJson<Record<string, unknown> | null>(row.normalized_value_json == null ? null : String(row.normalized_value_json), null),
+      uncertainty: parseJson(row.uncertainty_json == null ? null : String(row.uncertainty_json), null),
+    }),
   }));
 }
 
@@ -1970,8 +1976,12 @@ export async function createManualRelation(
   }
   if (
     input.type === "resolves" &&
-    !["open_question", "risk", "concern", "requirement"].includes(String(target.type)) &&
-    target.uncertainty_json == null
+    !canResolveClaim({
+      type: String(target.type),
+      statement: String(target.statement),
+      normalizedValue: parseJson<Record<string, unknown> | null>(target.normalized_value_json == null ? null : String(target.normalized_value_json), null),
+      uncertainty: parseJson(target.uncertainty_json == null ? null : String(target.uncertainty_json), null),
+    })
   ) {
     throw new ApiFault(
       422,

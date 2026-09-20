@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -33,7 +32,6 @@ const {
   risksForReadableChange,
 } = readableDiffModule.exports;
 
-const helperSource = await readFile(new URL("../app/readable-transcript-diff.ts", import.meta.url), "utf8");
 
 test("combines only explicitly mapped raw Segments in the readable paragraph order", () => {
   const mapped = mappedRawParagraph(["raw-2", "raw-1", "missing"], [
@@ -73,13 +71,10 @@ test("large paragraphs fail closed before running an unbounded browser diff", as
   assert.deepEqual(result, { status: "fallback", reason: "too_long" });
 });
 
-test("UI lazy-loads jsdiff only after expansion and falls back to model edit records", () => {
-  assert.match(helperSource, /const \{ diffWords \} = await import\(["']diff["']\)/);
-  assert.match(helperSource, /maxEditLength:\s*READABLE_PARAGRAPH_DIFF_LIMITS\.maxEditLength/);
-  assert.match(helperSource, /timeout:\s*READABLE_PARAGRAPH_DIFF_LIMITS\.timeoutMs/);
-  assert.match(uiSource, /mappedRawParagraph\(sourceIds, availableRawSegments\)/);
-  assert.match(uiSource, /toggleReadableDiff\(diffKey, group\.sourceIds, group\.text\)/);
-  assert.match(uiSource, /<summary aria-label=["']查看整理详情["']><MoreHorizontal aria-hidden=["']true["'] \/><\/summary>/);
-  assert.match(uiSource, /state\.status === ["']fallback["'][\s\S]*?readable-edit-list/);
-  assert.doesNotMatch(uiSource, /edits\.length\s*>\s*0\s*&&\s*<button[^>]*>[^<]*(?:查看差异|对比原稿)/);
+test("the reader opens the original transcript without a readable-diff interaction", () => {
+  assert.match(uiSource, /const readerTab = "raw" as "raw" \| "readable"/);
+  assert.match(uiSource, /className="artifact-panel raw-artifact"/);
+  assert.match(uiSource, /selectTranscriptGroup\(group, "raw"\)/);
+  assert.doesNotMatch(uiSource, /toggleReadableDiff/);
+  assert.doesNotMatch(uiSource, /className="readable-edit-list"/);
 });

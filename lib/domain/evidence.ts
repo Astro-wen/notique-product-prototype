@@ -123,7 +123,7 @@ export function normalizeWithSourceMap(raw: string): NormalizedWithMap {
       pendingSpaceIndex = null;
     }
 
-    const normalized = char.normalize("NFKC");
+    const normalized = char.normalize("NFKC").toLowerCase();
     for (const outputChar of normalized) {
       value += outputChar;
       sourceIndexes.push(index);
@@ -360,6 +360,30 @@ export function canonicalizeTranscriptEvidence(
     })),
     matchMode,
   };
+}
+
+/** Repair model citation coordinates only. Preserve every intervening source
+ * segment and re-run the same exact/normalized quote checks. Never fuzzy-match
+ * statements, search another asset, or bridge an unbounded span. */
+export function recoverTranscriptEvidence(
+  segmentIds: string[],
+  quoteHint: string,
+  segmentById: ReadonlyMap<string, TranscriptSegment>,
+  options: CanonicalizeOptions,
+): CanonicalTranscriptEvidence | InvalidEvidence {
+  const initial = canonicalizeTranscriptEvidence(segmentIds, quoteHint, segmentById, options);
+  if (initial.valid || initial.code !== "EVIDENCE_SEGMENT_ORDER_INVALID") return initial;
+  const selected = segmentIds.map((id) => segmentById.get(id)!);
+  const lower = Math.min(...selected.map((segment) => segment.ordinal));
+  const upper = Math.max(...selected.map((segment) => segment.ordinal));
+  if (upper - lower >= 20) return initial;
+  const source = selected[0];
+  const contiguous = [...segmentById.values()].filter((segment) =>
+    segment.assetVersionId === source.assetVersionId && segment.eventId === options.expectedEventId
+    && segment.ordinal >= lower && segment.ordinal <= upper)
+    .sort((a, b) => a.ordinal - b.ordinal);
+  if (contiguous.length !== upper - lower + 1) return initial;
+  return canonicalizeTranscriptEvidence(contiguous.map((segment) => segment.id), quoteHint, segmentById, options);
 }
 
 export function validatePhotoBbox(value: unknown): value is [number, number, number, number] {

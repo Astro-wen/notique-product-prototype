@@ -13,13 +13,14 @@ export function ViewItem({ item, onOpenClaim }: { item: Record<string, unknown>;
   const selected = stringValue(item.selectedOption ?? item.selected_option);
   const reason = stringValue(item.reason);
   const openDays = typeof (item.openDays ?? item.open_days) === "number" ? Number(item.openDays ?? item.open_days) : undefined;
-  const repeatCount = typeof (item.repeatCount ?? item.repeat_count) === "number" ? Number(item.repeatCount ?? item.repeat_count) : undefined;
+  const repeatValue = Number(item.repeatCount ?? item.repeat_count ?? 0);
+  const repeatCount = repeatValue > 0 ? repeatValue : undefined;
   const evidenceIds = Array.isArray(item.evidence_ref_ids) ? item.evidence_ref_ids.map(stringValue).filter(Boolean) : [];
   return (
     <article className="view-card">
       <div className="view-card-top">
         <div>{type && <span className="eyebrow">{typeLabel(type)}</span>}<h3>{title}</h3></div>
-        {date && <time>{formatDate(date)}</time>}
+        {date && <time title="记录日期">记录于 {formatDate(date)}</time>}
       </div>
       {description && description !== title && <p>{description}</p>}
       {selected && <p><b>已选择：</b>{selected}</p>}

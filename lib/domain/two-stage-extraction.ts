@@ -12,7 +12,7 @@ import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtract
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 
-export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9" as const;
+export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
 export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
 

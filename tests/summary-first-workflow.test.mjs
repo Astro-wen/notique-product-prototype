@@ -256,12 +256,10 @@ test("the workspace rail resolves a Claim's evidence instead of shrugging at it"
   assert.match(page, /const RAIL_EVIDENCE_LIMIT = 12;/, "the queue is bounded");
 });
 
-test("opening the transcript does not pin 原文 as a choice", async () => {
-  // Raw is all there is before the readable pass finishes. Recording that in
-  // the route like an explicit selection left everyone who looked early — and
-  // every later reload of that URL — stuck on the source text.
+test("opening the transcript always uses the original source", async () => {
   const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  assert.match(page, /if \(readableArtifact\) selectArtifactTab\("readable"\);\s*else \{\s*manuallySelectedTab\.current = false;\s*setTab\("raw"\);\s*\}/);
+  assert.match(page, /const readerTab = "raw" as "raw" \| "readable"/);
+  assert.match(page, /setTab\(requestedTab === "readable" \? "raw" : requestedTab\)/);
 });
 
 test("every workspace read of a Claim's evidence goes through the resolver", async () => {
