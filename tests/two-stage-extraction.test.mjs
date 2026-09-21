@@ -534,3 +534,52 @@ test("a clean escalation replaces a base output that drops a critical fact", () 
   assert.equal(selected.output, improved);
   assert.equal(selected.assessment.required, false);
 });
+
+test("the exact contract violations that failed production run b489c777 now validate", () => {
+  // 线上 2026-09-21 20:11 那次 verify 一次性中了四类：两条给了结构化不确定性
+  // 却把标志位留成 false、一条重复处置、一个候选漏了处置。四类都是填表错误，
+  // 不是判断错误，所以修复而不是整份丢掉再花一次钱重跑。
+  const source = inventory([
+    candidate(),
+    candidate({ inventory_key: "inv-2", critical: false, critical_reason: null }),
+  ]);
+  const uncertainty = { reason: "两个金额对不上。", alternatives: ["120 万", "150 万"], question: "以哪个为准？" };
+  const result = validateVerificationOutput(verification({
+    claims: [
+      finalClaim({ needs_additional_evidence: false, uncertainty }),
+      finalClaim({ client_claim_key: "claim-2", needs_additional_evidence: false, uncertainty }),
+    ],
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "First." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+    ],
+  }), source);
+
+  assert.equal(result.valid, true);
+  assert.equal(result.output.claims[0].needs_additional_evidence, true);
+  assert.equal(result.output.claims[1].needs_additional_evidence, true);
+  assert.equal(result.output.candidate_dispositions.length, 1);
+  // 两处标志位、一处去重，外加一条「有候选未处置」的备注，都回传给上层
+  // 记成警告，不静默吞掉。
+  assert.equal(result.repairs.filter((note) => note.includes("set needs_additional_evidence")).length, 2);
+  assert.equal(result.repairs.filter((note) => note.includes("duplicate disposition")).length, 1);
+  assert.ok(result.repairs.some((note) => note.includes("unmapped")));
+  // inv-2 没有处置，不再是契约违规，而是交给升级判断的语义信号。
+  const assessment = assessVerificationEscalation(source, result.output);
+  assert.ok(assessment.reasons.includes("inventory_candidate_unmapped"));
+  assert.deepEqual(assessment.unmappedInventoryKeys, ["inv-2"]);
+  assert.equal(assessment.reasons.includes("verification_contract_invalid"), false);
+});
+
+test("a disposition pointing at a claim that does not exist is still rejected", () => {
+  // 线上 run 63de4f56 的升级阶段出现过 7 条。这条不修：把引用悄悄删掉会让
+  // 一个候选标着 included 却指向空，处置语义就坏了。拒绝它，由基础 verify
+  // 成功时的回落来兜底。
+  const result = validateVerificationOutput(verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-does-not-exist"], reason: "Dangling." },
+    ],
+  }), inventory());
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
+});
