@@ -1,5 +1,6 @@
 export type AppView =
   | "simple"
+  | "how-it-works"
   | "projects"
   | "project"
   | "event"
@@ -72,6 +73,7 @@ export const defaultAppRoute: AppRoute = { view: "simple" };
 
 const appViews = new Set<AppView>([
   "simple",
+  "how-it-works",
   "projects",
   "project",
   "event",

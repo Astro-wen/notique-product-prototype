@@ -45,7 +45,8 @@ test("remembered selection falls back safely when an id is stale", () => {
 });
 
 test("the page connects guided navigation without weakening review gates", () => {
-  assert.match(uiSource, /recentProjectStorageKey = "notique\.ui\.recent-project-id"/);
+  // 首页不再替用户开一个项目，所以不再记「上次打开的是哪个项目」。
+  assert.doesNotMatch(uiSource, /recentProjectStorageKey/);
   assert.match(uiSource, /storeId\(recentEventStorageKey\(projectId\), nextEvent\.id\)/);
   assert.match(uiSource, /key=\{project\?\.id \?\? "none"\}/);
   assert.match(uiSource, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);

@@ -233,7 +233,9 @@ test("local-only allowlist covers Action completion and trash restore without to
   await expect(page.getByText("经纪人周五前发送三套符合预算的房源", { exact: true })).toBeVisible();
   await expect(page.locator(".action-card.completed")).toContainText("已完成");
 
-  await page.locator("button.brand:visible").first().click();
+  // 这一段测的是回收站恢复，不是导航。品牌名现在回首页（会清掉当前项目），
+  // 而项目菜单只在选中项目时才有，所以直接回到工作区。
+  await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page).toHaveURL(/view=simple/);
   await page.getByRole("button", { name: "项目菜单" }).click();
   await page.getByRole("menuitem", { name: "回收站", exact: true }).click();

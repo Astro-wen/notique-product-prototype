@@ -19,9 +19,6 @@ const baseRuleHeads = css
  * the legacy .simple-* ones are recorded so they cannot grow.
  */
 const KNOWN_DUPLICATE_SELECTORS = [
-  ".simple-header",
-  ".simple-header h1",
-  ".simple-header p",
   ".simple-page",
   ".simple-session",
   ".simple-session-copy",

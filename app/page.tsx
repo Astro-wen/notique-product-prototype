@@ -103,6 +103,8 @@ import { Modal } from "@/app/components/modal";
 import { TranscriptViewer } from "@/app/components/transcript-viewer";
 import { firstString, isRecord, stringValue } from "@/lib/domain/claim-fields";
 import { formatDate, projectSelectionLabel } from "@/lib/domain/project-label";
+import { LandingHero } from "@/app/components/landing-hero";
+import { HowItWorks } from "@/app/components/how-it-works";
 import {
   backLabelForRoute,
   fallbackBackRoute,
@@ -427,7 +429,6 @@ function transcriptMimeFor(filename: string, mimeType: string): string | null {
     ? normalized
     : null;
 }
-const recentProjectStorageKey = "notique.ui.recent-project-id";
 const workflowIntentStorageKey = "notique.ui.workflow-intent-project-id";
 const sidebarCollapsedStorageKey = "notique.ui.sidebar-collapsed";
 const publicWorkspaceAcknowledgementKey = "notique.ui.public-workspace-acknowledged";
@@ -2298,7 +2299,6 @@ export default function Home() {
         setProject((current) => current?.id === opened.id ? opened : current);
         setProjects((current) => current.map((item) => item.id === opened.id ? opened : item));
       }).catch(() => undefined);
-      storeId(recentProjectStorageKey, nextProject.id);
       const rememberedEventId = preferredEventId ?? readStoredId(recentEventStorageKey(projectId));
       const target = chooseRememberedSelection(nextEvents, rememberedEventId);
       if (rememberedEventId && !nextEvents.some((item) => item.id === rememberedEventId)) {
@@ -2337,7 +2337,6 @@ export default function Home() {
       if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       const issue = toIssue(error);
       if (issue.status === 404 || issue.status === 403) {
-        storeId(recentProjectStorageKey, null);
         storeId(recentEventStorageKey(projectId), null);
         if (readStoredId(workflowIntentStorageKey) === projectId) {
           storeId(workflowIntentStorageKey, null);
@@ -2351,17 +2350,11 @@ export default function Home() {
     }
   }, [invalidateProjectSelectionRequests, loadClaimsForRun, loadTranscriptionForEvent, navigateRoute]);
 
-  useEffect(() => {
-    if (screen !== "simple" || project || projectsState !== "ready" || routeRef.current.projectId) return;
-    const rememberedProjectId = readStoredId(recentProjectStorageKey);
-    const selection = chooseRememberedSelection(projects, rememberedProjectId);
-    if (!selection) return;
-    if (rememberedProjectId && selection.id !== rememberedProjectId) {
-      storeId(recentProjectStorageKey, null);
-    }
-    const timer = window.setTimeout(() => void loadSimpleProject(selection.id), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadSimpleProject, project, projects, projectsState, screen]);
+  // 这里以前会在启动时替用户选一个项目：记得住上次的就开上次那个，记不住就开
+  // 列表里的第一个。结果是首页永远看不到——有项目的人一打开就落在某个项目里，
+  // 而且那个项目常常是排在最前的示例。现在首页就是首页：拖一份材料进去会自动
+  // 建项目并跳进工作区，要接着旧项目干就从「项目管理」里挑。
+  // 项目内部记住上次看的那条记录不受影响（见 loadSimpleProject）。
 
   useEffect(() => {
     if (!project?.id) {
@@ -4008,7 +4001,6 @@ export default function Home() {
     queryClient.removeQueries({ queryKey: ["notique", "project", projectId] });
     invalidateNavigationRequests();
     projectWorkflowRefreshToken.current += 1;
-    storeId(recentProjectStorageKey, null);
     storeId(recentEventStorageKey(projectId), null);
     if (readStoredId(workflowIntentStorageKey) === projectId) {
       storeId(workflowIntentStorageKey, null);
@@ -4633,6 +4625,18 @@ export default function Home() {
     setScreen("simple");
   }
 
+  // 品牌名回首页，而不是回当前项目的工作区——后者旁边的「项目工作区」已经在做。
+  // 没有这一条，打开任何项目之后就再也回不到首页了。
+  function goHome() {
+    setSimpleFlow(true);
+    invalidateNavigationRequests();
+    navigateRoute({ view: "simple" });
+    setProject(null);
+    setEvent(null);
+    setEvents([]);
+    setSelectedClaim(null);
+  }
+
   function goProjects() {
     setSimpleFlow(false);
     invalidateNavigationRequests();
@@ -4789,6 +4793,12 @@ export default function Home() {
       void loadProjects();
       return;
     }
+    // 说明页不依赖任何项目数据，直接停在它上面。下面那条「没有项目就回首页」
+    // 的兜底会把它踢回首页。
+    if (target.view === "how-it-works") {
+      navigateRoute(target, "none");
+      return;
+    }
     if (!target.projectId) {
       navigateRoute(target.view === "simple" ? target : { view: "simple" }, "none");
       return;
@@ -4942,14 +4952,14 @@ export default function Home() {
         >
           {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
         </button>
-        <button className="brand" onClick={goSimple} aria-label="Notique AI · 项目工作区"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
+        <button className="brand" onClick={goHome} aria-label="Notique AI · 首页"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
         <nav aria-label="主要导航">
           <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon"><LayoutDashboard aria-hidden="true" /></span><span className="sidebar-nav-label">项目工作区</span></button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="项目管理" title={sidebarCollapsed ? "项目管理" : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">项目管理</span></button>
-          {project && screen !== "simple" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
+          {project && screen !== "simple" && screen !== "how-it-works" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
       </aside>
-      <header className="mobile-header"><button className="brand" onClick={goSimple}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="项目管理"><MoreHorizontal aria-hidden="true" /></button></header>
+      <header className="mobile-header"><button className="brand" onClick={goHome}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="项目管理"><MoreHorizontal aria-hidden="true" /></button></header>
       <main>
         <aside className="public-workspace-notice" aria-label="公开共享测试空间提示">
           <strong>演示工作区</strong>
@@ -5048,7 +5058,9 @@ export default function Home() {
           onNotice={flash}
           onDeleteProject={openProjectDeletePreview}
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
+          onExplain={() => navigateRoute({ view: "how-it-works" })}
         />}
+        {screen === "how-it-works" && <HowItWorks onBack={navigateBack} />}
         {screen === "projects" && <ProjectIndex onChanged={(updated) => { setProjects(items => items.map(p => p.id === updated.id ? updated : p)); setProject(current => current?.id === updated.id ? updated : current); }} onDeleted={(ids) => { setProjects(items => items.filter(p => !ids.includes(p.id))); if (project && ids.includes(project.id)) clearCurrentProjectSelection(project.id); }} onTrash={() => { setShowTrash(true); void loadTrash(); }} state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
         {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void enterContinuousReview()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
         {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} assetUploadProgress={assetUploadProgress?.eventId === event?.id ? assetUploadProgress : null} onCancelUpload={() => assetUploadAbortRef.current?.abort()} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement} onStart={async () => {
@@ -5315,6 +5327,7 @@ type SimpleTestScreenProps = {
   onNotice: (message: string) => void;
   onDeleteProject: () => void;
   onOpenTrash: () => void;
+  onExplain: () => void;
 };
 
 function restoreWindowScrollPosition(targetY: number, onDone: () => void): () => void {
@@ -6858,6 +6871,7 @@ function SimpleTestScreen({
   onNotice,
   onDeleteProject,
   onOpenTrash,
+  onExplain,
 }: SimpleTestScreenProps) {
   const [showRecorder, setShowRecorder] = useState(false);
   // True while DirectRecorder holds audio; collapsing the panel then would
@@ -7238,15 +7252,12 @@ function SimpleTestScreen({
 
   return (
     <div className="page simple-page">
-      {!project && <header className="simple-header">
-        <h1>每句话都找得到出处</h1>
-        <p>上传录音或笔记，自动整理重点</p>
-      </header>}
-
-      <section className="simple-session" aria-label="当前项目和材料">
+      {/* 首页不再放这条栏：新建项目和回收站都在「项目管理」里，下拉框在这里
+          也没有可选的东西。首页只负责收材料，收到了就跳进工作区。 */}
+      {project && <section className="simple-session" aria-label="当前项目和材料">
         <div className="simple-session-copy">
           <span className="context-mark" aria-hidden="true"><FolderOpen /></span>
-          <span><strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "还没选项目"}</strong><small>{event ? event.title : project ? "选一条记录" : "新建项目，或直接上传材料"}</small></span>
+          <span><strong>{project.name.replace(/^\[SYNTHETIC\]\s*/, "")}</strong><small>{event ? event.title : "选一条记录"}</small></span>
         </div>
         <label>
           <span>当前项目</span>
@@ -7294,7 +7305,7 @@ function SimpleTestScreen({
             </DropdownMenu.Portal>
           </div>
         </DropdownMenu.Root>
-      </section>
+      </section>}
 
       <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
       <input ref={workspaceTranscriptFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择 Transcript 文件" accept={acceptedTranscriptTypes.join(",")} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
@@ -7321,7 +7332,25 @@ function SimpleTestScreen({
         </details>
       )}
 
-      <section className="simple-workspace" aria-label="项目工作区">
+      {/* 没有项目时整页交给落地页：原来这里渲染的是一整套工作区外壳，左边那栏
+          写着「记录 0 次 / 还没有记录」，右边的标签页全都点不动。 */}
+      {!project && <LandingHero
+        busy={Boolean(busy)}
+        uploading={busy === "asset" || busy === "simple-start"}
+        recorderOpen={showRecorder}
+        accept={`${AUDIO_FILE_ACCEPT},${acceptedTranscriptTypes.join(",")},${MODEL_IMAGE_FILE_ACCEPT}`}
+        onFiles={(files) => onRequirePublicWorkspaceAcknowledgement(() => void addMaterials(files))}
+        onRecord={() => { if (showRecorder && recorderActive) { onNotice("录音还没保存"); return; } onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open)); }}
+        onPickAudio={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}
+        onPickTranscript={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceTranscriptFileRef.current?.click())}
+        onPickPhoto={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}
+        onExplain={onExplain}
+      >
+        {currentAssetUpload && <AssetUploadProgressCard progress={currentAssetUpload} onCancel={onCancelUpload} />}
+        {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} onActiveChange={setRecorderActive} />}
+      </LandingHero>}
+
+      {project && <section className="simple-workspace" aria-label="项目工作区">
         <aside className="simple-meeting-rail">
           <header><div><span className="section-kicker">记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>}</header>
           <div className="simple-meeting-list">
@@ -7472,11 +7501,10 @@ function SimpleTestScreen({
 
           {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
         </article>
-      </section>
+      </section>}
 
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
-      {!project && projectsState === "empty" && <p className="simple-footnote">还没有项目。新建一个，或者直接录音、上传材料</p>}
       {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新整理" : "先选一条记录"}</button></div>}
     </div>
   );

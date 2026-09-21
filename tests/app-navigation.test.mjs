@@ -200,3 +200,24 @@ test("a delayed event response cannot overwrite a newer event in the same projec
 
   assert.equal(visible, "event-2 review");
 });
+
+test("the how-it-works page is a real route that survives a reload", () => {
+  // 它不挂在任何项目下，所以 URL 里没有 project 也要能停住。
+  const parsed = parseAppRoute("?view=how-it-works");
+  assert.equal(parsed.view, "how-it-works");
+  assert.equal(serializeAppRoute(parsed), "?view=how-it-works");
+  // 带着项目进来也不会被拽回工作区。
+  assert.equal(parseAppRoute("?view=how-it-works&project=prj_1").view, "how-it-works");
+  // 返回落在首页。
+  assert.deepEqual(fallbackBackRoute({ view: "how-it-works" }), { view: "simple" });
+});
+
+test("restoring a project-less route keeps how-it-works instead of bouncing to the workspace", () => {
+  const restore = declarationSource("restoreAppRoute");
+  const guard = restore.indexOf("if (!target.projectId) {");
+  assert.ok(guard > 0, "兜底那一句还在");
+  // 说明页不挂在任何项目下，所以它的早返回必须排在「没有 projectId 就回首页」
+  // 那条兜底之前，否则刷新这一页会被踢回工作区。
+  const early = restore.indexOf('target.view === "how-it-works"');
+  assert.ok(early > 0 && early < guard, "how-it-works 的早返回必须排在 projectId 兜底之前");
+});

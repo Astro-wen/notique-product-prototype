@@ -57,7 +57,7 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
-  await expect(page.getByRole("heading", { name: "每句话都找得到出处" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /建立专属/ })).toBeVisible();
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);
@@ -78,7 +78,7 @@ test("desktop sidebar collapses, restores, and keeps navigation accessible", asy
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop sidebar assertion");
 
   await page.goto("/?view=simple");
-  await expect(page.getByText("还没选项目", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /建立专属/ })).toBeVisible();
   await page.waitForTimeout(300);
   const shell = page.locator(".app-shell");
   const sidebar = page.getByLabel("应用侧栏");
@@ -108,7 +108,9 @@ test("mobile uses one compact navigation shell without horizontal overflow", asy
   await page.goto("/?view=simple");
   await expect(page.locator("header.mobile-header")).toBeVisible();
   await expect(page.locator("aside.sidebar")).toBeHidden();
-  await expect(page.getByLabel("选择当前项目")).toBeVisible();
+  // 这个 fixture 没有任何项目，落地页是此时该出现的东西；项目下拉框在这种
+  // 情况下只有一条禁用占位，已经不渲染了。
+  await expect(page.getByRole("heading", { name: /建立专属/ })).toBeVisible();
 
   const hasHorizontalOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth + 1,

@@ -134,9 +134,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .narrow-page { width: min(980px, 100%); }
 
 .simple-page { width: min(980px, 100%); padding-top: 52px; }
-.simple-header { max-width: 680px; }
-.simple-header h1 { margin: 7px 0 0; font-size: clamp(28px, 4vw, 44px); line-height: 1.08; letter-spacing: -0.045em; }
-.simple-header p { margin: 13px 0 0; color: var(--muted); font-size: var(--text-md); line-height: 1.65; }
 .simple-session { margin-top: 28px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; padding: 14px; display: grid; grid-template-columns: minmax(190px, 1fr) minmax(190px, 0.8fr) minmax(190px, 0.8fr); align-items: end; gap: var(--space-3); }
 .simple-session-copy { align-self: center; display: grid; gap: var(--space-1); }
 .simple-session-copy strong { font-size: var(--text-md); }
@@ -283,7 +280,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .full-transcript time { color: var(--brand-green); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 .full-transcript strong { overflow-wrap: anywhere; font-size: var(--text-xs); }
 .full-transcript p { margin: 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; }
-.simple-footnote { margin: 14px 0 0; border-radius: var(--radius-md); background: var(--surface-muted); color: var(--muted); padding: 11px 13px; font-size: var(--text-xs); line-height: 1.55; }
 .simple-recovery { margin-top: 14px; border: 1px solid #e1bdc1; border-radius: var(--radius-md); background: var(--red-soft); padding: 11px 13px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .simple-recovery p { margin: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
 .simple-scenario-panel { margin-top: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface-muted); padding: 20px; display: grid; grid-template-columns: minmax(220px, 0.85fr) minmax(320px, 1.15fr); gap: var(--space-4) 24px; align-items: start; }
@@ -294,11 +290,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 
 /* Lightweight meeting workspace: the existing flow, rearranged around one current conversation. */
 .simple-page { width: min(1180px, 100%); padding-top: 12px; }
-.simple-header { max-width: 820px; }
-.simple-header h1 { font-size: clamp(28px, 3.3vw, 42px); }
-.simple-header p { margin-top: 10px; }
 .simple-session { margin-top: 8px; grid-template-columns: minmax(230px, 1.2fr) minmax(180px, .8fr) auto; align-items: center; border-radius: var(--radius-lg); padding: 8px 10px; box-shadow: 0 7px 22px rgba(30, 45, 40, .045); }
-.simple-header + .simple-session { margin-top: 22px; }
 .simple-event-select { display: none !important; }
 .simple-new-event-mobile { display: none; }
 .simple-session-copy { grid-template-columns: 38px minmax(0, 1fr); align-items: center; }
@@ -306,6 +298,111 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .context-mark { width: 32px; height: 32px; border-radius: var(--radius-md); background: var(--brand-green); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-md); font-weight: 850; }
 .context-mark svg { width: 19px; height: 19px; }
 .simple-new-project { min-height: 42px; white-space: nowrap; }
+/* 落地页：没有项目时的整页。它替掉的是一套空转的工作区外壳——左边一栏写着
+   「记录 0 次」，右边的标签页一个都点不动。这里只留三件事：这个产品替你建什么、
+   四种材料从哪进来、上次做到哪。 */
+.landing { width: min(880px, 100%); margin: 26px auto 0; display: grid; gap: var(--space-5); }
+.landing.is-dropping .landing-dropzone { border-color: var(--brand-green); border-style: solid; background: var(--brand-green-soft); }
+
+.landing-hero { display: grid; gap: var(--space-2); }
+.landing-top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.landing-greeting { margin: 0; min-height: 1.5em; color: var(--muted); font-size: var(--text-md); }
+.landing-explain { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.landing-hero h1 { margin: 0; display: grid; gap: 2px; font-size: clamp(26px, 3.4vw, 40px); font-weight: 800; line-height: 1.18; letter-spacing: -0.04em; }
+.landing-build { display: inline-flex; align-items: baseline; gap: .12em; flex-wrap: wrap; }
+/* 三个词叠在同一个格子里，所以行宽不随词变化，标题不会左右抽动。 */
+.landing-rotator { display: inline-grid; color: var(--brand-green); }
+.landing-rotator > span { grid-area: 1 / 1; opacity: 0; transform: translateY(.3em); transition: opacity 340ms ease, transform 340ms ease; white-space: nowrap; }
+.landing-rotator > span.is-current { opacity: 1; transform: none; }
+.landing-sub { margin: 6px 0 0; max-width: 42em; color: var(--muted); font-size: var(--text-md); line-height: 1.65; }
+
+.landing-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.landing-action { min-height: 124px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; padding: 14px; display: grid; align-content: start; gap: 6px; text-align: left; box-shadow: 0 7px 22px rgba(30, 45, 40, .045); transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease; }
+.landing-action:hover:not(:disabled) { border-color: var(--brand-green); transform: translateY(-2px); box-shadow: 0 12px 28px rgba(30, 45, 40, .09); }
+.landing-action:disabled { opacity: .55; }
+.landing-action.is-active { border-color: var(--brand-green); background: var(--brand-green-soft); }
+.landing-action strong { margin-top: 4px; font-size: var(--text-sm); }
+.landing-action small { color: var(--muted); font-size: var(--text-2xs); line-height: 1.5; }
+.landing-action-mark { width: 34px; height: 34px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; background: var(--brand-green-soft); color: var(--brand-green); }
+.landing-action-mark svg { width: 17px; height: 17px; }
+.landing-action-mark.record { background: var(--brand-green-soft); color: var(--brand-green); }
+.landing-action-mark.audio { background: var(--blue-soft); color: var(--blue); }
+.landing-action-mark.text { background: var(--surface-inset); color: var(--muted); }
+.landing-action-mark.photo { background: var(--amber-soft); color: var(--amber); }
+
+.landing-dropzone { width: 100%; min-height: 176px; border: 1px dashed var(--line-strong); border-radius: var(--radius-lg); background: #fbfcfb; padding: 22px; display: grid; justify-items: center; align-content: center; gap: 7px; text-align: center; transition: border-color 150ms ease, background 150ms ease; }
+.landing-dropzone:hover:not(:disabled) { border-color: var(--brand-green); background: var(--brand-green-soft); }
+.landing-dropzone strong { font-size: var(--text-md); }
+.landing-dropzone small { max-width: 52em; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; text-wrap: balance; }
+.landing-dropzone small + small { margin-top: -2px; color: var(--subtle); font-size: var(--text-2xs); }
+.landing-dropzone-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--brand-green-soft); color: var(--brand-green); display: inline-flex; align-items: center; justify-content: center; }
+.landing-dropzone-mark svg { width: 20px; height: 20px; }
+
+
+
+/* 「这东西怎么工作」：一张按真实实现画的流程图，加上每一步在做什么。 */
+.hiw { display: grid; gap: var(--space-5); padding-top: 12px; }
+.hiw-back { justify-self: start; display: inline-flex; align-items: center; gap: 5px; }
+.hiw-head { display: grid; gap: var(--space-3); max-width: 46em; }
+.hiw-head h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); font-weight: 800; letter-spacing: -0.035em; }
+.hiw-head p { margin: 0; color: var(--muted); font-size: var(--text-md); line-height: 1.7; }
+
+.hiw-figure { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; padding: var(--space-4); overflow-x: auto; box-shadow: 0 7px 25px rgba(29, 42, 37, .045); }
+/* 图窄到一定程度就读不出来了，所以这里横向滚动而不是继续压缩。 */
+.hiw-figure svg { width: 100%; min-width: 720px; height: auto; display: block; }
+.hiw-figure figcaption { display: none; margin-top: var(--space-3); color: var(--subtle); font-size: var(--text-2xs); }
+.hiw-band rect { fill: var(--surface-muted); stroke: none; }
+.hiw-band text { fill: var(--subtle); font-size: 12px; font-weight: 750; letter-spacing: .04em; }
+.hiw-edges { color: var(--line-strong); }
+.hiw-edges path { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.hiw-box rect { fill: #fff; stroke: var(--line-strong); stroke-width: 1; }
+.hiw-box text { text-anchor: middle; }
+.hiw-box-label { fill: var(--ink); font-size: 14px; font-weight: 800; }
+.hiw-box-sub { fill: var(--muted); font-size: 11px; }
+.hiw-box.tone-input rect { fill: var(--surface-inset); }
+.hiw-box.tone-read rect { stroke: var(--blue); }
+.hiw-box.tone-read .hiw-box-label { fill: var(--blue-dark); }
+.hiw-box.tone-fact rect { stroke: var(--amber); }
+.hiw-box.tone-fact .hiw-box-label { fill: var(--amber); }
+.hiw-box.tone-human rect { fill: var(--brand-green); stroke: var(--brand-green); }
+.hiw-box.tone-human .hiw-box-label { fill: #fff; }
+.hiw-box.tone-human .hiw-box-sub { fill: rgba(255, 255, 255, .82); }
+
+.hiw-steps { margin: 0; padding: 0; list-style: none; counter-reset: hiw; display: grid; gap: var(--space-5); }
+/* 序号用绝对定位，不占网格的列。此前它靠 grid-row: 1 / span 9 拉出一条竖列，
+   多出来的空行会在条目之间塞进七八道行间距。 */
+.hiw-steps > li { counter-increment: hiw; position: relative; padding-left: 46px; display: grid; gap: var(--space-3); }
+.hiw-steps > li::before { content: counter(hiw); position: absolute; left: 0; top: 1px; width: 30px; height: 30px; border-radius: 50%; background: var(--brand-green-soft); color: var(--brand-green); display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 850; }
+.hiw-steps h2 { margin: 3px 0 0; font-size: var(--text-lg); font-weight: 800; letter-spacing: -0.02em; }
+.hiw-steps p { margin: 0; max-width: 44em; color: var(--muted); font-size: var(--text-md); line-height: 1.75; }
+.hiw-aside { border-left: 2px solid var(--line-strong); padding-left: var(--space-3); color: var(--subtle) !important; font-size: var(--text-sm) !important; }
+
+.hiw-limits { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-muted); padding: var(--space-4) var(--space-5); display: grid; gap: var(--space-3); }
+.hiw-limits h2 { margin: 0; font-size: var(--text-md); font-weight: 800; }
+.hiw-limits ul { margin: 0; padding-left: 1.1em; display: grid; gap: var(--space-2); }
+.hiw-limits li { max-width: 46em; color: var(--muted); font-size: var(--text-sm); line-height: 1.7; }
+
+@media (max-width: 800px) {
+  .hiw-figure figcaption { display: block; }
+}
+@media (max-width: 560px) {
+  .hiw-steps > li { padding-left: 0; padding-top: 38px; }
+}
+
+@media (max-width: 800px) {
+  .landing { margin-top: 18px; gap: var(--space-4); }
+  /* 手机上四张卡两两排开，别把拖放区挤到首屏之外。 */
+  .landing-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .landing-action { min-height: 104px; }
+  .landing-dropzone { min-height: 148px; }
+}
+@media (max-width: 560px) {
+  .landing-sub { font-size: var(--text-sm); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-rotator > span { transition: none; }
+}
+
 .simple-workspace { margin-top: 10px; display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .simple-meeting-rail, .simple-current-event { border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; box-shadow: 0 7px 25px rgba(29, 42, 37, .045); overflow: hidden; }
 .simple-meeting-rail { position: sticky; top: 16px; }
@@ -1573,8 +1670,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   body { font-size: var(--text-md); }
   .page-header { padding: 14px 0; align-items: flex-start; flex-direction: column; }
   .simple-page { padding-top: 8px; }
-  .simple-header h1 { font-size: var(--text-2xl); }
-  .simple-header p { font-size: var(--text-sm); }
   .simple-steps { grid-template-columns: 1fr; }
   /* The context card used to stack five full-width rows, pushing the first
      line of actual content past 660px on a 375px screen. Two selects share a
