@@ -347,10 +347,8 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .hiw-head h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); font-weight: 800; letter-spacing: -0.035em; }
 .hiw-head p { margin: 0; color: var(--muted); font-size: var(--text-md); line-height: 1.7; }
 
-.hiw-figure { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; padding: var(--space-4); overflow-x: auto; box-shadow: 0 7px 25px rgba(29, 42, 37, .045); }
-/* 图窄到一定程度就读不出来了，所以这里横向滚动而不是继续压缩。 */
-.hiw-figure svg { width: 100%; min-width: 720px; height: auto; display: block; }
-.hiw-figure figcaption { display: none; margin-top: var(--space-3); color: var(--subtle); font-size: var(--text-2xs); }
+.hiw-figure { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; padding: var(--space-4); box-shadow: 0 7px 25px rgba(29, 42, 37, .045); }
+.hiw-figure svg { width: 100%; height: auto; display: block; }
 .hiw-band rect { fill: var(--surface-muted); stroke: none; }
 .hiw-band text { fill: var(--subtle); font-size: 12px; font-weight: 750; letter-spacing: .04em; }
 .hiw-edges { color: var(--line-strong); }
@@ -367,6 +365,10 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .hiw-box.tone-human rect { fill: var(--brand-green); stroke: var(--brand-green); }
 .hiw-box.tone-human .hiw-box-label { fill: #fff; }
 .hiw-box.tone-human .hiw-box-sub { fill: rgba(255, 255, 255, .82); }
+/* 做好了但没接进任务的节点：虚线框、字变淡，和在跑的节点一眼能分开。 */
+.hiw-box-pending rect { stroke-dasharray: 5 4; fill: #fff; }
+.hiw-box-pending .hiw-box-label { fill: var(--muted); }
+.hiw-box-pending .hiw-box-sub { fill: var(--subtle); }
 
 .hiw-steps { margin: 0; padding: 0; list-style: none; counter-reset: hiw; display: grid; gap: var(--space-5); }
 /* 序号用绝对定位，不占网格的列。此前它靠 grid-row: 1 / span 9 拉出一条竖列，
@@ -382,9 +384,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .hiw-limits ul { margin: 0; padding-left: 1.1em; display: grid; gap: var(--space-2); }
 .hiw-limits li { max-width: 46em; color: var(--muted); font-size: var(--text-sm); line-height: 1.7; }
 
-@media (max-width: 800px) {
-  .hiw-figure figcaption { display: block; }
-}
 @media (max-width: 560px) {
   .hiw-steps > li { padding-left: 0; padding-top: 38px; }
 }

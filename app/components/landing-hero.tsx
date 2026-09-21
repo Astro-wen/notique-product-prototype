@@ -119,8 +119,6 @@ export function LandingHero({
             这东西怎么工作<ArrowRight size={14} aria-hidden="true" />
           </button>
         </div>
-        {/* 轮播本身对读屏隐藏，否则每 2.6 秒就会重新播报一次；完整的那句
-            单独给读屏。 */}
         {/* 看到的是轮播中的一帧，读屏听到的是完整那一句。标题自己带 aria-label，
             所以它的可访问名字是固定的，不随轮播到哪个词而变。 */}
         <h1 aria-label={HEADLINE}>
