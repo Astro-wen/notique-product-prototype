@@ -26,7 +26,13 @@ export type TranscriptionRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled";
-export type EventAiArtifactKind = "summary" | "readable_transcript";
+export type EventAiArtifactKind =
+  | "summary"
+  | "readable_transcript"
+  | "chapters"
+  | "speakers"
+  | "key_points"
+  | "overview";
 export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type ClaimReviewStatus = "pending" | "verified" | "rejected";
 export type ClaimLifecycleStatus =

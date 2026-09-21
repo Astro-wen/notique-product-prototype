@@ -23,7 +23,12 @@ import {
   persistSummaryArtifact,
   sourceSegmentsForArtifactRun,
   type EventAiArtifactChunkRecord,
+  readingUpstreamContent,
 } from "@/lib/server/db/event-ai-artifact-repository";
+import {
+  readingArtifactDefinition,
+  readingArtifactReadiness,
+} from "@/lib/domain/reading-pipeline";
 
 type Row = Record<string, unknown>;
 
@@ -565,6 +570,35 @@ async function processReadableTranscriptRun(
   return outcomes.some((outcome) => outcome === "failed") ? "failed" : "pending";
 }
 
+/**
+ * 上游各自现在是什么状态。没有任何 Run 记录的算 missing，和终态失败一样
+ * 不再等待：那一支不会自己冒出来。
+ */
+async function readingDependencyStatuses(
+  eventId: string,
+  kinds: readonly string[],
+): Promise<Record<string, "queued" | "processing" | "succeeded" | "failed" | "missing">> {
+  if (!kinds.length) return {};
+  const result = await getD1()
+    .prepare(
+      `SELECT kind, status FROM event_ai_artifact_runs
+        WHERE event_id = ? AND kind IN (${kinds.map(() => "?").join(", ")})
+        ORDER BY created_at ASC`,
+    )
+    .bind(eventId, ...kinds)
+    .all<Row>();
+  const rows = result.results ?? [];
+  const out: Record<string, "queued" | "processing" | "succeeded" | "failed" | "missing"> = {};
+  for (const row of rows) {
+    const kind = String(row.kind);
+    const status = String(row.status) as "queued" | "processing" | "succeeded" | "failed";
+    // 同一种类若有多行，成功优先；否则取最后一条的状态。
+    if (out[kind] === "succeeded") continue;
+    out[kind] = status;
+  }
+  return out;
+}
+
 async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | "pending" | "failed"> {
   try {
     const contractMismatch = eventAiArtifactContractMismatch(run);
@@ -581,6 +615,24 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
       return processReadableTranscriptRun(run, owner, source, provider);
     }
     const context = minimalContext(source);
+    const kind = String(run.kind);
+    const isReadingView = kind === "chapters" || kind === "speakers" || kind === "key_points" || kind === "overview";
+    let upstream: Record<string, unknown[]> = {};
+    if (isReadingView) {
+      const definition = readingArtifactDefinition(kind);
+      const statuses = await readingDependencyStatuses(String(run.event_id), definition.dependsOn);
+      const readiness = readingArtifactReadiness(kind, (dependency) => statuses[dependency] ?? "missing");
+      if (readiness.state === "wait") {
+        // 上游还在跑。退回队列等下一轮，不抢跑也不白花一次调用。
+        await releaseForNextReadableChunk(run, owner, 0, 0, 15_000);
+        return "pending";
+      }
+      if (readiness.state === "abandon") {
+        await failRun(run, owner, new Error("ARTIFACT_UPSTREAM_UNAVAILABLE"));
+        return "failed";
+      }
+      upstream = await readingUpstreamContent(String(run.event_id), definition.dependsOn);
+    }
     const onProviderResponse = async (response: { id: string; status: string }) => {
       await getD1()
         .prepare(
@@ -603,7 +655,14 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
       onProviderResponse,
       promptCacheKey: `notique:${run.extraction_run_id}:event-artifacts`,
     };
-    const result = await provider.summarizeEvent(context, options);
+    const result = isReadingView
+      ? await provider.summarizeReadingView(
+        kind as "chapters" | "speakers" | "key_points" | "overview",
+        context,
+        upstream,
+        options,
+      )
+      : await provider.summarizeEvent(context, options);
     const validated = validateEventSummaryOutput(result.output, {
       eventId: String(run.event_id),
       segments: source.segments,

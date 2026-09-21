@@ -1209,9 +1209,14 @@ test("artifact jobs use durable Background Responses and independent retries", a
 });
 
 test("new and retried reading artifacts use low effort while existing Runs keep their frozen effort", async () => {
+  // 四个视图拆开各自一次调用后，每个种类都各有一档；现在都是 low。
   assert.deepEqual(EVENT_AI_ARTIFACT_REASONING_EFFORTS, {
     summary: "low",
     readable_transcript: "low",
+    chapters: "low",
+    speakers: "low",
+    key_points: "low",
+    overview: "low",
   });
   const [repository, jobs] = await Promise.all([
     readFile(new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url), "utf8"),

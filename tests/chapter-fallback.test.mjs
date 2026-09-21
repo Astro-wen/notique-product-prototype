@@ -86,7 +86,8 @@ test("the fallback only steps in when the model chapters are not coming", () => 
 
 test("the reading workspace shows fallback chapters only when the model ones are not coming, and says so", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?summaryRunStatus: summaryRun\?\.status,[\s\S]*?analysisRunning,/);
+  // 拆开之后章节看自己那条流水线的状态，不再跟着四合一的 summary Run 走。
+  assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?summaryRunStatus: viewRunStatus\(chaptersPair\),[\s\S]*?analysisRunning,/);
   assert.match(page, /useFallbackChapters \? fallbackChapters\(availableRawSegments\) : generatedChapters/);
   assert.match(page, /const chapterAnchors = displayChapters\.flatMap/);
   // 兜底章节必须标出来，不能冒充 AI 章节。

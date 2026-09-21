@@ -87,6 +87,16 @@ export interface TwoStageModelProvider extends ModelProvider {
     output: EventSummaryOutput;
     usage: ModelUsage;
   }>;
+  /** 单个阅读视图。返回的仍是完整信封形状，只有自己那个字段有内容。 */
+  summarizeReadingView(
+    kind: "chapters" | "speakers" | "key_points" | "overview",
+    input: ContextPack,
+    upstream: { chapters?: unknown[]; speaker_summaries?: unknown[]; key_points?: unknown[] },
+    options?: ModelStageRequestOptions,
+  ): Promise<{
+    output: EventSummaryOutput;
+    usage: ModelUsage;
+  }>;
   refineTranscript(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
     output: ReadableTranscriptOutput;
     usage: ModelUsage;

@@ -9,7 +9,9 @@ import {
   type EventSummaryOutput,
   type ReadableTranscriptOutput,
   type ReadableTranscriptSourceChunk,
+  EVENT_AI_ARTIFACT_CONTRACTS,
 } from "@/lib/domain/event-ai-artifacts";
+import { READING_ARTIFACT_DEFINITIONS } from "@/lib/domain/reading-pipeline";
 import type { ModelUsage } from "@/lib/domain/model-contract";
 import type { TranscriptSegment } from "@/lib/domain/types";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
@@ -398,6 +400,9 @@ export async function ensureEventAiArtifactRuns(input: {
   const manifest = parseJson<Array<{ kind?: unknown }>>(input.inputManifestJson, []);
   if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return [];
   const timestamp = now();
+  // 四合一的 summary 不再生产（历史产物仍可读）。四个视图各自一次调用、
+  // 各自一份契约，靠 reading-pipeline 里的依赖图决定先后。
+  const summaryEnabled = bindings.AI_EVENT_SUMMARY !== "0";
   const definitions: Array<{
     kind: EventAiArtifactKind;
     prompt: string;
@@ -405,24 +410,33 @@ export async function ensureEventAiArtifactRuns(input: {
     enabled: boolean;
   }> = [
     {
-      kind: "summary",
-      prompt: EVENT_SUMMARY_PROMPT_VERSION,
-      schema: EVENT_SUMMARY_SCHEMA_VERSION,
-      enabled: bindings.AI_EVENT_SUMMARY !== "0",
-    },
-    {
       kind: "readable_transcript",
       prompt: READABLE_TRANSCRIPT_PROMPT_VERSION,
       schema: READABLE_TRANSCRIPT_SCHEMA_VERSION,
       enabled: bindings.AI_READABLE_TRANSCRIPT !== "0",
     },
+    ...READING_ARTIFACT_DEFINITIONS
+      .filter((item) => item.kind !== "readable_transcript")
+      .map((item) => ({
+        kind: item.kind as EventAiArtifactKind,
+        prompt: EVENT_AI_ARTIFACT_CONTRACTS[item.kind].prompt,
+        schema: EVENT_AI_ARTIFACT_CONTRACTS[item.kind].schema,
+        enabled: summaryEnabled,
+      })),
   ];
+  const ensuredKeys: string[] = [];
   for (const definition of definitions.filter((item) => item.enabled)) {
     const runId = id("earun");
-    const idempotencyKey = `${input.extractionRunId}:${definition.kind}`;
     const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[definition.kind];
+    // 产物的身份是它的输入，不是碰巧创建它的那次抽取。此前用
+    // `${extractionRunId}:${kind}` 做幂等键，抽取一失败重试就换了 id，于是
+    // 已经成功的摘要和易读版被整个重做一遍。线上同一份逐字稿因此重复生产
+    // 了三轮，其中易读版每轮输出五万到七万 token。
+    //
+    // 改用内容指纹之后，只要材料、模型和提示词没变，重试多少次都命中
+    // 唯一索引 (event_id, kind, idempotency_key)，INSERT OR IGNORE 不再建新行。
+    // 材料变了或提示词升级了，指纹自然变，该重算的照样重算。
     const inputHash = await hashText(JSON.stringify({
-      extraction_run_id: input.extractionRunId,
       input_manifest: parseJson(input.inputManifestJson, []),
       kind: definition.kind,
       provider: input.provider,
@@ -431,6 +445,8 @@ export async function ensureEventAiArtifactRuns(input: {
       prompt: definition.prompt,
       schema: definition.schema,
     }));
+    const idempotencyKey = inputHash;
+    ensuredKeys.push(idempotencyKey);
     await getD1()
       .prepare(
         `INSERT OR IGNORE INTO event_ai_artifact_runs (
@@ -462,10 +478,14 @@ export async function ensureEventAiArtifactRuns(input: {
       )
       .run();
   }
+  if (!ensuredKeys.length) return [];
+  // 按内容指纹取回。复用的那些行挂在更早那次抽取上，用 extraction_run_id
+  // 查会漏掉它们。
   const rows = await all(
     `SELECT * FROM event_ai_artifact_runs
-      WHERE extraction_run_id = ? ORDER BY kind`,
-    [input.extractionRunId],
+      WHERE event_id = ? AND idempotency_key IN (${ensuredKeys.map(() => "?").join(", ")})
+      ORDER BY kind`,
+    [input.eventId, ...ensuredKeys],
   );
   return rows.map(runRecord);
 }
@@ -605,6 +625,40 @@ export async function createEventAiArtifactRetry(
   return runRecord((await first(`SELECT * FROM event_ai_artifact_runs WHERE id = ?`, [runId]))!);
 }
 
+/**
+ * 取同一条记录上、指定种类里已经成功的产物内容。
+ * 下游据此借鉴上游，而不是回头再读一遍原文。
+ */
+export async function readingUpstreamContent(
+  eventId: string,
+  kinds: readonly string[],
+): Promise<Record<string, unknown[]>> {
+  if (!kinds.length) return {};
+  const rows = await all(
+    `SELECT a.kind, a.content_json
+       FROM event_ai_artifacts a
+       JOIN event_ai_artifact_runs r ON r.id = a.run_id
+      WHERE a.event_id = ? AND r.status = 'succeeded'
+        AND a.kind IN (${kinds.map(() => "?").join(", ")})
+      ORDER BY a.artifact_version ASC`,
+    [eventId, ...kinds],
+  );
+  const field: Record<string, string> = {
+    chapters: "chapters",
+    speakers: "speaker_summaries",
+    key_points: "key_points",
+  };
+  const out: Record<string, unknown[]> = {};
+  for (const row of rows) {
+    const key = field[String(row.kind)];
+    if (!key) continue;
+    const content = parseJson<Record<string, unknown>>(String(row.content_json ?? "{}"), {});
+    const value = content[key];
+    if (Array.isArray(value) && value.length) out[key] = value;
+  }
+  return out;
+}
+
 export async function persistSummaryArtifact(
   run: Row,
   owner: string,
@@ -614,10 +668,12 @@ export async function persistSummaryArtifact(
   const timestamp = now();
   const artifactId = `eaa_${String(run.id).replace(/^earun_/, "")}`;
   const guardId = id("guard");
+  // 拆开之后每个阅读产物各自一个 kind，版本号也各论各的。
+  const artifactKind = String(run.kind);
   const versionRow = await first(
     `SELECT COALESCE(MAX(artifact_version), 0) + 1 AS version
-       FROM event_ai_artifacts WHERE event_id = ? AND kind = 'summary'`,
-    [run.event_id],
+       FROM event_ai_artifacts WHERE event_id = ? AND kind = ?`,
+    [run.event_id, artifactKind],
   );
   await getD1().batch([
     getD1().prepare(
@@ -631,13 +687,14 @@ export async function persistSummaryArtifact(
       `INSERT OR IGNORE INTO event_ai_artifacts (
          id, workspace_id, project_id, event_id, run_id, kind, artifact_version,
          input_hash, content_json, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'summary', ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       artifactId,
       run.workspace_id,
       run.project_id,
       run.event_id,
       run.id,
+      artifactKind,
       Number(versionRow?.version ?? 1),
       run.input_hash,
       JSON.stringify(output),

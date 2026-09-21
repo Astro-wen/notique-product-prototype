@@ -5724,18 +5724,38 @@ function TranscriptArtifactsPanel({
   const analysisRunning = Boolean(analysisRun && runInProgress.has(analysisRun.status));
   const analysisComplete = Boolean(analysisRun && runComplete.has(analysisRun.status));
   const verdictsLocked = analysisRunning;
-  const summaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const readableContent = isRecord(readableArtifact?.content) ? readableArtifact.content : null;
-  const summarySections = prioritizeSummarySections(summaryContent ? recordArray(summaryContent.sections) : []);
-  const overviewText = (summaryContent ? recordArray(summaryContent.sections) : []).filter((section) => firstString(section, ["kind"]) === "overview").flatMap((section) => recordArray(section.items).map((item) => firstString(item, ["text"]) || "")).join(" ");
-  const keyPoints = summaryContent ? recordArray(summaryContent.key_points) : [];
-  const generatedSpeakerSummaries = summaryContent ? recordArray(summaryContent.speaker_summaries) : [];
-  const generatedChapters = summaryContent ? recordArray(summaryContent.chapters) : [];
+  // 四个视图现在各自一个产物，一个失败不影响其余。每份产物的内容形状相同，
+  // 只有自己那个字段有料，所以按字段挑出来即可；旧的四合一 summary 四个
+  // 字段都填着，正好成为天然的兜底来源。
+  const readingPairFor = (kind: "chapters" | "speakers" | "key_points" | "overview") =>
+    selectTranscriptArtifactPair({ runs, artifacts, kind, rawSegmentIds });
+  const chaptersPair = readingPairFor("chapters");
+  const speakersPair = readingPairFor("speakers");
+  const keyPointsPair = readingPairFor("key_points");
+  const overviewPair = readingPairFor("overview");
+  const legacySummaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
+  const viewField = (
+    pair: { artifact?: { content?: unknown } | null },
+    field: "sections" | "chapters" | "speaker_summaries" | "key_points",
+  ) => {
+    const content = isRecord(pair.artifact?.content) ? pair.artifact.content : null;
+    const own = recordArray(content?.[field]);
+    return own.length ? own : recordArray(legacySummaryContent?.[field]);
+  };
+  // 每个视图看自己那条流水线的状态，不再一荣俱荣一损俱损。
+  const viewRunStatus = (pair: { run?: { status?: string } | null }) => pair.run?.status ?? summaryRun?.status;
+  const summarySectionsRaw = viewField(overviewPair, "sections");
+  const summarySections = prioritizeSummarySections(summarySectionsRaw);
+  const overviewText = summarySectionsRaw.filter((section) => firstString(section, ["kind"]) === "overview").flatMap((section) => recordArray(section.items).map((item) => firstString(item, ["text"]) || "")).join(" ");
+  const keyPoints = viewField(keyPointsPair, "key_points");
+  const generatedSpeakerSummaries = viewField(speakersPair, "speaker_summaries");
+  const generatedChapters = viewField(chaptersPair, "chapters");
   // 模型章节不会再来了（作业失败，或压根没排而分析也没在跑）时，按时间点和
   // 说话人轮换粗切一份目录顶上。它不编内容，只让读者有地方可点。
   const useFallbackChapters = shouldUseFallbackChapters({
     generatedCount: generatedChapters.length,
-    summaryRunStatus: summaryRun?.status,
+    summaryRunStatus: viewRunStatus(chaptersPair),
     analysisRunning,
     timedSegmentCount: availableRawSegments.filter((segment) => segment.start_ms != null).length,
   });
@@ -6492,7 +6512,7 @@ function TranscriptArtifactsPanel({
               <button className="tingwu-recall" onClick={() => locateRawSources(ids)}><span aria-hidden="true">↶</span> 回顾</button></footer>
           </div>
         </article>;
-      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : <div className="reading-view-empty"><p>{summaryRun?.status === "processing" || summaryRun?.status === "queued" ? "正在整理要点…" : summaryRun?.status === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有问答要点。"}</p><button className="text-button" disabled={Boolean(busy) || summaryRun?.status === "processing" || summaryRun?.status === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
+      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : <div className="reading-view-empty"><p>{viewRunStatus(keyPointsPair) === "processing" || viewRunStatus(keyPointsPair) === "queued" ? "正在整理要点…" : viewRunStatus(keyPointsPair) === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有问答要点。"}</p><button className="text-button" disabled={Boolean(busy) || viewRunStatus(keyPointsPair) === "processing" || viewRunStatus(keyPointsPair) === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
@@ -6507,7 +6527,7 @@ function TranscriptArtifactsPanel({
       {generatedSpeakerSummaries.length ? <><div className={speakersExpanded ? "expanded" : "collapsed"}>{generatedSpeakerSummaries.map((speaker, index) => <article key={`${firstString(speaker, ["asset_version_id"])}-${index}`}>
         <div className={`tingwu-speaker-label speaker-tone-${index % 4}`}><span className="speaker-avatar" aria-hidden="true"><Users /></span><span>{displaySpeakerLabel(speaker.speaker)}</span></div>
         <p>{firstString(speaker, ["summary"])}</p>
-      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : <div className="reading-view-empty"><p>{summaryRun?.status === "processing" || summaryRun?.status === "queued" ? "正在整理每位发言人的总结…" : summaryRun?.status === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有发言总结。"}</p><button className="text-button" disabled={Boolean(busy) || summaryRun?.status === "processing" || summaryRun?.status === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
+      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : <div className="reading-view-empty"><p>{viewRunStatus(speakersPair) === "processing" || viewRunStatus(speakersPair) === "queued" ? "正在整理每位发言人的总结…" : viewRunStatus(speakersPair) === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有发言总结。"}</p><button className="text-button" disabled={Boolean(busy) || viewRunStatus(speakersPair) === "processing" || viewRunStatus(speakersPair) === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
     </section>}
 
     </SmoothResize>

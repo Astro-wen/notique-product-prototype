@@ -205,7 +205,9 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
 test("missing reading summaries offer generation while raw remains readable", () => {
   assert.match(page, /生成阅读总结/);
   assert.match(page, /className="artifact-panel raw-artifact"/);
-  assert.match(page, /summaryRun\?\.status === "processing"/);
+  // 每个视图看自己那条流水线：要点在跑不影响发言的提示文案，反之亦然。
+  assert.match(page, /viewRunStatus\(keyPointsPair\) === "processing"/);
+  assert.match(page, /viewRunStatus\(speakersPair\) === "processing"/);
   assert.match(page, /details\.reason === "analysis_required"/);
 });
 

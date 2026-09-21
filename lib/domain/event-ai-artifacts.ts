@@ -5,11 +5,42 @@ export const EVENT_SUMMARY_SCHEMA_VERSION = "event-summary.v2" as const;
 export const READABLE_TRANSCRIPT_PROMPT_VERSION = "readable-transcript-prompt.v2" as const;
 export const READABLE_TRANSCRIPT_SCHEMA_VERSION = "readable-transcript.v1" as const;
 
-export type EventAiArtifactKind = "summary" | "readable_transcript";
+export const READING_VIEW_PROMPT_VERSION = "reading-view-prompt.v1" as const;
+export const CHAPTERS_SCHEMA_VERSION = "reading-chapters.v1" as const;
+export const SPEAKERS_SCHEMA_VERSION = "reading-speakers.v1" as const;
+export const KEY_POINTS_SCHEMA_VERSION = "reading-key-points.v1" as const;
+export const OVERVIEW_SCHEMA_VERSION = "reading-overview.v1" as const;
+
+/**
+ * summary 是旧的四合一产物，不再生产，但历史记录里有，仍要能读。
+ * 新的四个种类各自一次调用、各自一份契约，一个失败不影响其余。
+ */
+export type EventAiArtifactKind =
+  | "summary"
+  | "readable_transcript"
+  | "chapters"
+  | "speakers"
+  | "key_points"
+  | "overview";
+
 export const EVENT_AI_ARTIFACT_REASONING_EFFORTS = {
   summary: "low",
   readable_transcript: "low",
+  chapters: "low",
+  speakers: "low",
+  key_points: "low",
+  overview: "low",
 } as const satisfies Record<EventAiArtifactKind, "low">;
+
+/** 每个种类的冻结契约。派发前用它挡住版本对不上的旧 Run。 */
+export const EVENT_AI_ARTIFACT_CONTRACTS = {
+  summary: { prompt: EVENT_SUMMARY_PROMPT_VERSION, schema: EVENT_SUMMARY_SCHEMA_VERSION },
+  readable_transcript: { prompt: READABLE_TRANSCRIPT_PROMPT_VERSION, schema: READABLE_TRANSCRIPT_SCHEMA_VERSION },
+  chapters: { prompt: READING_VIEW_PROMPT_VERSION, schema: CHAPTERS_SCHEMA_VERSION },
+  speakers: { prompt: READING_VIEW_PROMPT_VERSION, schema: SPEAKERS_SCHEMA_VERSION },
+  key_points: { prompt: READING_VIEW_PROMPT_VERSION, schema: KEY_POINTS_SCHEMA_VERSION },
+  overview: { prompt: READING_VIEW_PROMPT_VERSION, schema: OVERVIEW_SCHEMA_VERSION },
+} as const satisfies Record<EventAiArtifactKind, { prompt: string; schema: string }>;
 export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type EventSummarySectionKind =
   | "overview"
@@ -81,11 +112,9 @@ export function eventAiArtifactContractMismatch(
   const kind = typeof run.kind === "string" ? run.kind : "";
   const actualPrompt = typeof run.prompt_version === "string" ? run.prompt_version : "";
   const actualSchema = typeof run.schema_version === "string" ? run.schema_version : "";
-  const expected = kind === "summary"
-    ? { prompt: EVENT_SUMMARY_PROMPT_VERSION, schema: EVENT_SUMMARY_SCHEMA_VERSION }
-    : kind === "readable_transcript"
-      ? { prompt: READABLE_TRANSCRIPT_PROMPT_VERSION, schema: READABLE_TRANSCRIPT_SCHEMA_VERSION }
-      : null;
+  const expected = kind in EVENT_AI_ARTIFACT_CONTRACTS
+    ? EVENT_AI_ARTIFACT_CONTRACTS[kind as EventAiArtifactKind]
+    : null;
   if (expected && actualPrompt === expected.prompt && actualSchema === expected.schema) return null;
   return {
     kind,
