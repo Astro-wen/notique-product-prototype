@@ -81,6 +81,20 @@ img { max-width: 100%; }
 .sidebar-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sidebar nav button:hover { background: var(--surface-muted); }
 .sidebar nav button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
+/* 项目列表占掉侧栏剩下的高度并自己滚动；侧栏本身是 fixed 的 flex 列，
+   不给 min-height: 0 的话长列表会把整栏撑出屏幕。 */
+.sidebar-projects { flex: 1 1 auto; min-height: 0; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); overflow-y: auto; display: grid; align-content: start; gap: var(--space-3); }
+.sidebar-projects-loading { margin: 0; padding: 0 10px; color: var(--subtle); font-size: var(--text-xs); }
+.sidebar-folder { display: grid; gap: 2px; }
+.sidebar-folder ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.sidebar-folder-name { margin: 0; padding: 4px 10px; display: flex; align-items: center; gap: var(--space-2); color: var(--subtle); font-size: var(--text-2xs); font-weight: 750; letter-spacing: .04em; }
+.sidebar-folder-name svg { width: 13px; height: 13px; flex: none; }
+.sidebar-folder-name span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-project { min-height: 32px; width: 100%; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0 10px 0 18px; display: flex; align-items: center; gap: var(--space-2); text-align: left; color: var(--ink); font-size: var(--text-sm); }
+.sidebar-project:hover { background: var(--surface-muted); }
+.sidebar-project.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
+.sidebar-project-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-project-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: #fff; font-size: var(--text-2xs); font-weight: 800; line-height: 18px; text-align: center; }
 .mobile-header { display: none; }
 .mobile-header .brand > svg { width: 21px; height: 21px; color: var(--brand-green); }
 .icon-button svg { width: 18px; height: 18px; }
@@ -95,6 +109,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .sidebar-collapsed .sidebar nav button { justify-content: center; padding: 0; }
   .sidebar-collapsed .sidebar-label,
   .sidebar-collapsed .sidebar-nav-label { display: none; }
+  .sidebar-collapsed .sidebar-projects { display: none; }
   /* 工作区只负责正文排版，不碰侧栏。侧栏宽窄一律由 .sidebar-collapsed
      （用户点收起按钮的结果）决定，这样从项目管理走进工作区时侧栏不会
      自己变形，收起按钮也始终可用。 */
@@ -1570,7 +1585,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
      页面一视同仁，和"工作区不再单独强制收起"不矛盾；展开的 224px 侧栏在
      这个宽度下会把正文挤到 580px 以内，阅读区放不下。 */
   .sidebar { width: 68px; padding-right: 10px; padding-left: 10px; }
-  .sidebar-toggle, .sidebar-label, .sidebar-nav-label { display: none; }
+  .sidebar-toggle, .sidebar-label, .sidebar-nav-label, .sidebar-projects { display: none; }
   .sidebar .brand, .sidebar .account, .sidebar nav button { justify-content: center; padding-right: 0; padding-left: 0; }
   main { margin-left: 68px; }
   .reader-workspace-layout { height: auto; display: block; overflow: visible; }

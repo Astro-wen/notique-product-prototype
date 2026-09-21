@@ -24,7 +24,9 @@ import {
   FileImage,
   FileText,
   FileDown,
+  Folder,
   FolderOpen,
+  Home as HomeIcon,
   Image as ImageIcon,
   Inbox,
   LayoutDashboard,
@@ -64,6 +66,7 @@ import {
   inspectAudioDurationMs,
   prepareAudioChunk,
 } from "@/app/audio-chunking";
+import { sortProjects } from "@/lib/domain/project-index";
 import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
 import {
   type ProjectWorkflowPlan,
@@ -1836,6 +1839,20 @@ export default function Home() {
   const [undoDeletedProject, setUndoDeletedProject] = useState<Project | null>(null);
   const [simpleFlow, setSimpleFlow] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 侧栏按文件夹列项目。没有文件夹的归到默认文件夹并排最前，和项目管理页的
+  // 叫法一致；文件夹内按最近打开排序，最近在用的项目离手最近。
+  const sidebarFolders = useMemo(() => {
+    const groups = new Map<string, Project[]>();
+    for (const item of sortProjects(projects, "lastOpenedAt", "desc")) {
+      const folder = item.folderName?.trim() || "默认文件夹";
+      groups.set(folder, [...(groups.get(folder) ?? []), item]);
+    }
+    return [...groups.entries()].sort(([left], [right]) => {
+      if (left === "默认文件夹") return -1;
+      if (right === "默认文件夹") return 1;
+      return left.localeCompare(right, "zh-CN");
+    });
+  }, [projects]);
   const [toast, setToast] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [projectWorkflow, setProjectWorkflow] = useState<ProjectWorkflowState>(idleProjectWorkflow);
@@ -4625,7 +4642,7 @@ export default function Home() {
     setScreen("simple");
   }
 
-  // 品牌名回首页，而不是回当前项目的工作区——后者旁边的「项目工作区」已经在做。
+  // 品牌名回首页，而不是回当前项目的工作区，后者由侧栏的首页项（goSimple）在做。
   // 没有这一条，打开任何项目之后就再也回不到首页了。
   function goHome() {
     setSimpleFlow(true);
@@ -4954,10 +4971,41 @@ export default function Home() {
         </button>
         <button className="brand" onClick={goHome} aria-label="Notique AI · 首页"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
         <nav aria-label="主要导航">
-          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon"><LayoutDashboard aria-hidden="true" /></span><span className="sidebar-nav-label">项目工作区</span></button>
+          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="首页" title={sidebarCollapsed ? "首页" : undefined}><span className="sidebar-nav-icon"><HomeIcon aria-hidden="true" /></span><span className="sidebar-nav-label">首页</span></button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="项目管理" title={sidebarCollapsed ? "项目管理" : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">项目管理</span></button>
-          {project && screen !== "simple" && screen !== "how-it-works" && <button className={screen !== "projects" ? "active" : ""} onClick={() => navigateRoute({ view: "project", projectId: project.id, origin: "projects" })} aria-label={project.name} title={sidebarCollapsed ? project.name : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">{project.name}</span></button>}
         </nav>
+        {/* 收起后只剩图标条，列表放不下，索性不渲染；801 到 980px 之间侧栏也是
+            图标条，那一段由样式表隐藏。 */}
+        {!sidebarCollapsed && (projectsState === "loading" || sidebarFolders.length > 0) && (
+          <nav className="sidebar-projects" aria-label="项目列表">
+            {projectsState === "loading" && sidebarFolders.length === 0 && <p className="sidebar-projects-loading">正在读取…</p>}
+            {sidebarFolders.map(([folder, items]) => (
+              <section key={folder} className="sidebar-folder">
+                <h2 className="sidebar-folder-name"><Folder aria-hidden="true" /><span>{folder}</span></h2>
+                <ul>
+                  {items.map((item) => {
+                    const name = item.name.replace(/^\[SYNTHETIC\]\s*/, "");
+                    const pending = item.pendingCount ?? 0;
+                    return (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          className={`sidebar-project${project?.id === item.id ? " active" : ""}`}
+                          aria-current={project?.id === item.id ? "true" : undefined}
+                          title={name}
+                          onClick={() => { setSimpleFlow(true); void loadSimpleProject(item.id); }}
+                        >
+                          <span className="sidebar-project-name">{name}</span>
+                          {pending > 0 && <span className="sidebar-project-badge" aria-label={`${pending} 条待确认`}>{pending}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </nav>
+        )}
       </aside>
       <header className="mobile-header"><button className="brand" onClick={goHome}><NotebookPen aria-hidden="true" />Notique AI</button><button className="icon-button" onClick={goProjects} aria-label="项目管理"><MoreHorizontal aria-hidden="true" /></button></header>
       <main>
