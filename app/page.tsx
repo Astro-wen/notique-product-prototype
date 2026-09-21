@@ -97,6 +97,7 @@ import {
 } from "@/lib/domain/transcript-export";
 import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
+import { MaterialShelf } from "@/app/components/material-shelf";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
@@ -4983,6 +4984,15 @@ export default function Home() {
           onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
           onNewEvent={() => { setSimpleFlow(true); if (project) setShowNewEvent(true); }}
           onAddFile={attachSimpleFile}
+          onRenameAsset={async (assetId, filename) => {
+            await api.renameAsset(assetId, filename);
+            if (project) await loadSimpleProject(project.id, event?.id, "replace");
+          }}
+          onReorderAssets={async (assetIds) => {
+            if (!event) return;
+            await api.reorderEventAssets(event.id, assetIds);
+            if (project) await loadSimpleProject(project.id, event.id, "replace");
+          }}
           onProjectWorkflowAction={() => void advanceProjectWorkflow()}
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
           onConfirmScenario={confirmCurrentScenario}
@@ -5277,6 +5287,8 @@ type SimpleTestScreenProps = {
   onStartOwn: () => void;
   onNewEvent: () => void;
   onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
+  onRenameAsset: (assetId: string, filename: string) => Promise<void>;
+  onReorderAssets: (assetIds: string[]) => Promise<void>;
   onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
   onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
@@ -6793,6 +6805,8 @@ function SimpleTestScreen({
   onStartOwn,
   onNewEvent,
   onAddFile,
+  onRenameAsset,
+  onReorderAssets,
   onProjectWorkflowAction,
   onRetryTranscription,
   onConfirmScenario,
@@ -6816,7 +6830,6 @@ function SimpleTestScreen({
   onDeleteProject,
   onOpenTrash,
 }: SimpleTestScreenProps) {
-  const [showImportChoices, setShowImportChoices] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
   // True while DirectRecorder holds audio; collapsing the panel then would
   // unmount it and destroy the recording.
@@ -6826,9 +6839,6 @@ function SimpleTestScreen({
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
-  const audioFileRef = useRef<HTMLInputElement>(null);
-  const transcriptFileRef = useRef<HTMLInputElement>(null);
-  const photoFileRef = useRef<HTMLInputElement>(null);
   const workspaceAudioFileRef = useRef<HTMLInputElement>(null);
   const workspaceTranscriptFileRef = useRef<HTMLInputElement>(null);
   const workspacePhotoFileRef = useRef<HTMLInputElement>(null);
@@ -7050,8 +7060,7 @@ function SimpleTestScreen({
     || projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed";
-  const materialInteractionActive = showImportChoices
-    || showRecorder
+  const materialInteractionActive = showRecorder
     || showProjectMenu
     || externalInteractionActive;
 
@@ -7187,6 +7196,15 @@ function SimpleTestScreen({
     const file = change.target.files?.[0];
     change.target.value = "";
     if (file) void onAddFile(file, { capture_role: "handwritten_note" });
+  }
+
+  async function addMaterials(files: File[]) {
+    // onAddFile 一次只收一份，第二份会被"上一份仍在处理中"挡回来，所以
+    // 串行上传。中途失败就停下，错误已经显示在上面，继续传只会刷屏。
+    for (const file of files) {
+      const handwritten = file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name);
+      if (!await onAddFile(file, handwritten ? { capture_role: "handwritten_note" } : {})) break;
+    }
   }
 
   return (
@@ -7364,34 +7382,29 @@ function SimpleTestScreen({
             </section>}
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
-              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份材料时会自动建记录"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? <><X aria-hidden="true" />收起</> : <><Plus aria-hidden="true" />添加来源</>}</button>}</header>
-              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在创建记录…" : "内容已收到；完成后会自动更新。"} />}
-              {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
-                <div className="simple-import-actions">
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => { if (showRecorder && recorderActive) { onNotice("录音还没保存"); return; } onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open)); }}><span className="material-action-icon record" aria-hidden="true"><Mic /></span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => audioFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><Upload /></span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span></button>
-                  <input ref={audioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => transcriptFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileText /></span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
-                  <input ref={transcriptFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择 Transcript 文件" accept={acceptedTranscriptTypes.join(",")} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileImage /></span><span><strong>选择手写笔记照片</strong><small>含 iPhone HEIC 自动转换</small></span></button>
-                  <input ref={photoFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择手写笔记照片" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
-                </div>
-                {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} onActiveChange={setRecorderActive} />}
-              </div>}
-
-              {materialPreparationActive && visibleAssets.length === 0 ? null : event && visibleAssets.length > 0 ? <div className="simple-material-list">
-                {visibleAssets.map((asset) => {
+              <header><div><h3>材料</h3><p>{event ? `录音、逐字稿和照片都归在“${event.title}”` : "放进第一份材料时会自动建记录"}</p></div></header>
+              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在创建记录…" : "内容已收到，好了会自动更新"} />}
+              <MaterialShelf
+                assets={visibleAssets}
+                busy={Boolean(busy)}
+                accept={`${AUDIO_FILE_ACCEPT},${acceptedTranscriptTypes.join(",")},${MODEL_IMAGE_FILE_ACCEPT}`}
+                onFiles={(files) => onRequirePublicWorkspaceAcknowledgement(() => void addMaterials(files))}
+                onRecord={() => { if (showRecorder && recorderActive) { onNotice("录音还没保存"); return; } onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open)); }}
+                onRename={onRenameAsset}
+                onReorder={onReorderAssets}
+                onNotice={onNotice}
+                describe={(asset) => `${formatBytes(asset.sizeBytes)}${asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}`}
+                renderStatus={(asset) => {
                   const assetRun = asset.kind === "audio" ? transcriptionRunsByAssetId[asset.id] ?? null : null;
                   const storedTranscriptionStatus = stringValue(asset.metadata.transcription_status);
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
-                  return <article key={asset.id}><span className="file-kind" aria-hidden="true">{asset.kind === "audio" ? <FileAudio /> : asset.kind === "photo" ? <ImageIcon /> : <FileText />}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
-                })}
-              </div> : <section className="capture-launchpad" aria-label="开始一条记录">
-                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">添加材料</span><h3>添加第一条记录</h3><p>录音、逐字稿或笔记照片，都可以从这里开始。</p></div></header>
-                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>录音或导入原文</strong><small>手机、录音笔或 Transcript 都可以</small></span><span><b>2</b><strong>需要时补充照片</strong><small>手写内容会放进这条记录</small></span><span><b>3</b><strong>边读边处理</strong><small>重点、原话、待确认和行动同屏</small></span></div>
-                <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}><Upload aria-hidden="true" />上传录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceTranscriptFileRef.current?.click())}><FileText aria-hidden="true" />上传 Transcript</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}><Mic aria-hidden="true" />直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}><Camera aria-hidden="true" />拍手写笔记</button></div>
-                <p className="capture-device-note">使用录音笔时，可通过 USB-C 将音频快速导入手机后上传。</p>
-              </section>}
+                  return <>
+                    <StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />
+                    {canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}
+                  </>;
+                }}
+              />
+              {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} onActiveChange={setRecorderActive} />}
             </section>
           </div>}
 
@@ -7425,7 +7438,7 @@ function SimpleTestScreen({
                 focusRequest={transcriptFocusRequest}
                 onFocusHandled={onTranscriptFocusHandled}
               />
-            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中后可以读原文、看总结、确认要点</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
+            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中后可以读原文、看总结、确认要点</p><button className="button secondary" onClick={() => setActiveTab("materials")}>去添加材料</button></div>}
           </div>}
 
           {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}

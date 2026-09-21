@@ -194,6 +194,7 @@ export type Asset = {
   status?: string;
   metadata: Record<string, unknown>;
   transform?: Record<string, unknown>;
+  sortOrder?: number;
 };
 
 export type TranscriptionRun = {
@@ -557,6 +558,7 @@ function normalizeAsset(value: unknown): Asset | null {
     transform: isRecord(pick(version, ["transform"]))
       ? pick(version, ["transform"]) as Record<string, unknown>
       : undefined,
+    sortOrder: asNumber(pick(value, ["sort_order", "sortOrder"])),
   };
 }
 
@@ -1602,6 +1604,20 @@ export const api = {
       throw new ApiClientError(issueFrom(response.status, response.headers, body));
     }
     return response.blob();
+  },
+
+  async renameAsset(assetId: Id, filename: string): Promise<Asset> {
+    const body = await request<unknown>(`/api/v1/assets/${encodeURIComponent(assetId)}`, { method: "PUT", body: jsonBody({ filename }) });
+    const result = normalizeAsset(dataValue(body, ["asset"]));
+    if (!result?.id) invalidContract("The server returned an invalid renamed asset.");
+    return result;
+  },
+
+  async reorderEventAssets(eventId: Id, assetIds: Id[]): Promise<Asset[]> {
+    const body = await request<unknown>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/order`, { method: "PUT", body: jsonBody({ asset_ids: assetIds }) });
+    const raw = dataValue(body, ["assets"]);
+    if (!Array.isArray(raw)) invalidContract("The server returned an invalid asset order.");
+    return raw.map(normalizeAsset).filter((item): item is Asset => Boolean(item));
   },
 
   async finalizeAsset(assetId: Id): Promise<Asset> {

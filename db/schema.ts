@@ -157,12 +157,15 @@ export const assets = sqliteTable(
     stagedMimeType: text("staged_mime_type"),
     stagedSizeBytes: integer("staged_size_bytes"),
     failureCode: text("failure_code"),
+    // 用户手动排定的顺序。新上传的材料留空，列表里排在已排序的之后。
+    sortOrder: integer("sort_order"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => [
     index("idx_assets_event_status").on(table.eventId, table.processingStatus),
     index("idx_assets_workspace_project").on(table.workspaceId, table.projectId),
+    index("idx_assets_event_order").on(table.eventId, table.sortOrder),
   ],
 );
 

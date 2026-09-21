@@ -788,7 +788,8 @@ test("production route, durable worker, UI, and evidence playback share the audi
   assert.match(processor, /parseDiarizedTranscriptProviderBody/);
   assert.match(outbox, /TRANSCRIPTION_MAX_ATTEMPTS/);
   assert.match(repository, /Audio must finish transcription before analysis/);
-  assert.match(uiSource, /上传已有录音/);
+  assert.match(uiSource, /<MaterialShelf/);
+  assert.match(uiSource, /accept=\{`\$\{AUDIO_FILE_ACCEPT\}/);
   assert.match(uiSource, /DirectRecorder/);
   assert.match(uiSource, /resolveSimpleImportTarget/);
   assert.match(uiSource, /audioSource/);

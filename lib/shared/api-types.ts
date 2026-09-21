@@ -67,6 +67,7 @@ export type ApiErrorCode =
   | "QUEUE_DISPATCH_DELAYED"
   | "SCENARIO_CONFIRMATION_REQUIRED"
   | "PROJECT_VERSION_CONFLICT"
+  | "ASSET_ORDER_STALE"
   | "SCENARIO_VERSION_CONFLICT"
   | "CLAIM_VERSION_CONFLICT"
   | "CLAIM_STATE_CONFLICT"
@@ -297,6 +298,7 @@ export type AssetRecord = {
   captured_at: string | null;
   metadata: Record<string, unknown>;
   version?: AssetVersionRecord | null;
+  sort_order: number | null;
   created_at: string;
   updated_at: string;
 };

@@ -20,6 +20,8 @@ const text = (row: Row, key: string): string => String(row[key] ?? "");
 const nullableText = (row: Row, key: string): string | null =>
   row[key] === null || row[key] === undefined ? null : String(row[key]);
 const integer = (row: Row, key: string): number => Number(row[key] ?? 0);
+const nullableInteger = (row: Row, key: string): number | null =>
+  row[key] === null || row[key] === undefined ? null : integer(row, key);
 
 export function projectRecord(row: Row): ProjectRecord {
   return {
@@ -100,6 +102,7 @@ export function assetRecord(row: Row): AssetRecord {
     captured_at: nullableText(row, "captured_at"),
     metadata: parseJson<Record<string, unknown>>(nullableText(row, "metadata_json"), {}),
     version: assetVersionRecord(row),
+    sort_order: nullableInteger(row, "sort_order"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   };

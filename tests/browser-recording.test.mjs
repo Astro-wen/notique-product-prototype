@@ -70,7 +70,7 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   assert.match(page, /aria-label="整个项目"/);
   assert.match(page, /<DirectRecorder/);
   assert.match(page, /直接录音/);
-  assert.match(page, /上传已有录音/);
+  assert.match(page, /<MaterialShelf/);
   assert.match(page, /查看本次运行详情/);
   // The sidebar names the surface for what it is: the project list and
   // per-project settings, not a mystery toolbox.

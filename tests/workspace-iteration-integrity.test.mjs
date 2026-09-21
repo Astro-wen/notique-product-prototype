@@ -147,13 +147,12 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
 
 test("the simple launchpad treats a Transcript as a first-class source", () => {
   assert.match(page, /workspaceTranscriptFileRef = useRef<HTMLInputElement>/);
-  assert.match(page, /<strong>上传 Transcript<\/strong>/);
+  assert.match(page, /acceptedTranscriptTypes\.join\(","\)\},\$\{MODEL_IMAGE_FILE_ACCEPT\}/);
   assert.match(page, /aria-label="选择 Transcript 文件" accept=\{acceptedTranscriptTypes\.join\(","\)\}/);
   assert.match(page, /const transcriptMime = transcriptMimeFor\(uploadFile\.name, uploadFile\.type\)/);
   assert.match(page, /transcriptMime \? "transcript"/);
   assert.doesNotMatch(page, /onAddTranscript/);
-  assert.match(page, /录音或导入原文/);
-  assert.match(page, /边读边处理/);
+  assert.match(page, /<MaterialShelf/);
 });
 
 test("core navigation and reading controls use one SVG icon system", () => {
@@ -163,7 +162,7 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.match(page, /className="brand-mark"><NotebookPen/);
   assert.match(page, /<LayoutDashboard aria-hidden="true" \/>/);
   assert.match(page, /<Pause aria-hidden="true" \/> : <Play aria-hidden="true" \/>/);
-  assert.match(page, /<FileImage \/><\/span><span><strong>选择手写笔记照片/);
+  assert.match(page, /<Camera aria-hidden="true" \/>添加手写笔记/);
   assert.match(page, /className="speaker-avatar" aria-hidden="true"><Users \/>/);
   assert.doesNotMatch(page, /speaker\.speaker\.slice\(0,\s*1\)/);
   assert.doesNotMatch(page, /className="brand-mark">⌁/);

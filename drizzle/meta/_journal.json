@@ -134,6 +134,13 @@
       "when": 1789948800000,
       "tag": "0018_project_index",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1790035200000,
+      "tag": "0019_asset_ordering",
+      "breakpoints": true
     }
   ]
 }

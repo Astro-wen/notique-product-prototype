@@ -838,7 +838,8 @@ export async function getEvent(
     `${ASSET_SELECT}
       WHERE a.event_id = ? AND a.workspace_id = ?
         AND COALESCE(a.failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
-      ORDER BY a.created_at ASC`,
+      -- 未排序的材料（刚上传的）排在已排序的之后，同组内仍按上传先后。
+      ORDER BY COALESCE(a.sort_order, 2147483647) ASC, a.created_at ASC`,
     [eventId, scope.workspaceId],
   );
   return { event: eventRecord(event), assets: rows.map(assetRecord) };
@@ -2198,6 +2199,42 @@ export async function getAsset(scope: RequestScope, assetId: string): Promise<As
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
   }
   return assetRecord(row);
+}
+
+export async function renameAsset(
+  scope: RequestScope,
+  assetId: string,
+  filename: string,
+): Promise<AssetRecord> {
+  // getAsset 本身带 workspace 过滤，找不到就是越权或不存在，两种都按 404 回。
+  await getAsset(scope, assetId);
+  await getD1()
+    .prepare(`UPDATE assets SET filename = ?, updated_at = ? WHERE id = ? AND workspace_id = ?`)
+    .bind(filename, now(), assetId, scope.workspaceId)
+    .run();
+  return getAsset(scope, assetId);
+}
+
+export async function reorderEventAssets(
+  scope: RequestScope,
+  eventId: string,
+  assetIds: string[],
+): Promise<AssetRecord[]> {
+  const { assets } = await getEvent(scope, eventId);
+  const visible = assets.map((asset) => asset.id);
+  // 只接受"整份列表的新顺序"。收到子集就拒绝，否则漏掉的材料会保留旧的
+  // sort_order，和新排定的名次混在一起，列表顺序变得无法预测。
+  const sameSet = assetIds.length === visible.length
+    && new Set(assetIds).size === assetIds.length
+    && assetIds.every((assetId) => visible.includes(assetId));
+  if (!sameSet) {
+    throw new ApiFault(409, "ASSET_ORDER_STALE", "材料列表已变化，请刷新后重试。");
+  }
+  const timestamp = now();
+  await getD1().batch(assetIds.map((assetId, index) => getD1()
+    .prepare(`UPDATE assets SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND event_id = ?`)
+    .bind(index, timestamp, assetId, scope.workspaceId, eventId)));
+  return (await getEvent(scope, eventId)).assets;
 }
 
 export async function getAssetEvidenceObject(

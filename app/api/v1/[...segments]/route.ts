@@ -11,6 +11,8 @@ import {
   finalizeAsset,
   finalizeTranscriptImport,
   getAsset,
+  renameAsset,
+  reorderEventAssets,
   getAssetEvidenceObject,
   getClaimHistory,
   getEvent,
@@ -1056,6 +1058,16 @@ async function putHandler(request: Request, segments: string[], id: string): Pro
   }
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "content") {
     return ok({ asset: await uploadAssetContent(scope, segments[1], request) }, id);
+  }
+  // 改名和排序都是"把某个值设成这样"，重复提交结果相同，所以不走
+  // mutation_replays 那套幂等重放，最后一次写入生效即可。
+  if (segments.length === 2 && segments[0] === "assets") {
+    const body = await jsonObject(request);
+    return ok({ asset: await renameAsset(scope, segments[1], requiredString(body.filename, "filename", { max: 200 })) }, id);
+  }
+  if (segments.length === 4 && segments[0] === "events" && segments[2] === "assets" && segments[3] === "order") {
+    const body = await jsonObject(request);
+    return ok({ assets: await reorderEventAssets(scope, segments[1], stringArray(body.asset_ids, "asset_ids", { min: 1, max: 200 })) }, id);
   }
   throw new ApiFault(404, "NOT_FOUND", "API route was not found.");
 }
