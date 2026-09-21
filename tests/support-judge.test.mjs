@@ -151,3 +151,40 @@ test("the hole this fills is real: nothing in the pipeline ever writes does_not_
   assert.doesNotMatch(processor, /'does_not_support'/);
   assert.doesNotMatch(verdicts, /THEN 'does_not_support'/);
 });
+
+test("no key means no judge, which is not an error path", async () => {
+  const { createJevSupportJudge } = await import("../lib/server/ai/jev-support-judge.ts");
+  // 没配密钥时返回 null，调用方据此什么都不做。系统表现与今天一致。
+  assert.equal(createJevSupportJudge({}), null);
+  assert.equal(createJevSupportJudge({ apiKey: "   " }), null);
+  assert.equal(createJevSupportJudge({ apiKey: undefined }), null);
+});
+
+test("a judge that cannot be reached returns nothing rather than throwing", async () => {
+  const { createJevSupportJudge } = await import("../lib/server/ai/jev-support-judge.ts");
+  const judge = createJevSupportJudge({
+    apiKey: "test-key",
+    // 指向一个连不上的地址，模拟服务不可用。
+    endpoint: "http://127.0.0.1:1/systemone",
+    timeoutMs: 300,
+  });
+  assert.ok(judge);
+  const answers = await judge.judge([question("evr-1"), question("evr-2")]);
+  // 整批失败只是没有判断，不是异常。这一层永远不进主链路的成功条件。
+  assert.deepEqual(answers, []);
+  assert.deepEqual(await judge.judge([]), []);
+});
+
+test("the judge is asked only about the pair in hand, never about the transcript", async () => {
+  const source = await readFile(
+    new URL("../lib/server/ai/jev-support-judge.ts", import.meta.url),
+    "utf8",
+  );
+  // state 只含陈述和那一句原话。判断方看不到的东西就不会拿来发挥。
+  assert.match(source, /state: \{\s*\n\s*statement: question\.statement,\s*\n\s*quoted_source_line: question\.quote,/);
+  assert.doesNotMatch(source, /transcript_segments|new_event/);
+  assert.match(source, /"noul"/);
+  assert.match(source, /do not use outside knowledge/);
+  // 单条失败只丢这一条。
+  assert.match(source, /catch \{[\s\S]*?return null;/);
+});
