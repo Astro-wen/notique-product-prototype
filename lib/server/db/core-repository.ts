@@ -3,6 +3,7 @@ import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
   normalizeAiTimeoutMs,
   normalizeOpenAiReasoningEffort,
+  escalatedReasoningEffort,
   normalizeVerifierReasoningEffort,
   twoPassPipelineEnabled,
 } from "@/lib/domain/model-config";
@@ -2474,6 +2475,9 @@ export async function createExtractionRun(
   const verifierReasoningEffort = normalizeVerifierReasoningEffort(
     bindings.AI_VERIFIER_REASONING_EFFORT,
   );
+  // 升级那一趟比基础 verify 高一档，并且和其他参数一起冻结在 Run 上：
+  // 冻结参数要能说清这次 Run 最多花到什么程度，不能运行时临时抬价。
+  const escalationReasoningEffort = escalatedReasoningEffort(verifierReasoningEffort);
   const imageUnits = manifest.filter((item) => item.kind === "photo").length;
   if (estimatedInputTokens > maxRunInputTokens) {
     throw new ApiFault(422, "RUN_BUDGET_EXCEEDED", "Run exceeds the configured input token limit.", {
@@ -2499,6 +2503,7 @@ export async function createExtractionRun(
       model: bindings.AI_MODEL,
       reasoning_effort: reasoningEffort,
       verifier_reasoning_effort: verifierReasoningEffort,
+      escalation_reasoning_effort: escalationReasoningEffort,
       two_pass_pipeline: pipelineEnabled,
       draft_context: draftContextEnabled,
       draft_context_manifest: draftContextManifest,
@@ -2595,6 +2600,7 @@ export async function createExtractionRun(
     timeout_ms: timeoutMs,
     reasoning_effort: reasoningEffort,
     verifier_reasoning_effort: verifierReasoningEffort,
+    escalation_reasoning_effort: escalationReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
     draft_context: draftContextEnabled,
     draft_context_manifest: draftContextManifest,

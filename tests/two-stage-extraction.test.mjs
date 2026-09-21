@@ -331,15 +331,48 @@ test("verifier rejects missing, duplicate, unknown, and invalid final mappings",
   const result = validateVerificationOutput(verification({
     candidate_dispositions: [
       { inventory_key: "inv-1", outcome: "included", final_claim_keys: [], reason: "Missing final key." },
-      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: ["missing"], reason: "Invalid mapping." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+      { inventory_key: "inv-2", outcome: "included", final_claim_keys: ["missing"], reason: "Unknown target." },
       { inventory_key: "unknown", outcome: "unsupported", final_claim_keys: [], reason: "Unknown source." },
     ],
   }), source);
   assert.equal(result.valid, false);
-  assert.ok(result.issues.some((issue) => issue.message.includes("Missing disposition for inventory key inv-2")));
-  assert.ok(result.issues.some((issue) => issue.message === "Duplicate inventory disposition."));
+  // 重复处置和漏掉处置都不再整份拒绝：前者去重，后者留给升级判断。
+  // 真正说不通的映射照样拒绝。
   assert.ok(result.issues.some((issue) => issue.message === "Unknown inventory key."));
   assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
+  assert.ok(result.issues.some((issue) => issue.message.includes("must map to exactly one final claim")));
+  assert.ok(!result.issues.some((issue) => issue.message === "Duplicate inventory disposition."));
+  assert.ok(!result.issues.some((issue) => issue.message.includes("Missing disposition for inventory key")));
+  assert.ok(result.repairs.some((note) => note.includes("duplicate disposition for inv-1")));
+});
+
+test("a duplicate disposition is deduplicated instead of failing the whole verification", () => {
+  const source = inventory();
+  const result = validateVerificationOutput(verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "First." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+    ],
+  }), source);
+  // 保留先出现的那条，整份输出仍然可用，不必重跑一次付费调用。
+  assert.equal(result.valid, true);
+  assert.equal(result.output.candidate_dispositions.length, 1);
+  assert.equal(result.output.candidate_dispositions[0].outcome, "included");
+  assert.deepEqual(result.repairs, ["dropped duplicate disposition for inv-1"]);
+});
+
+test("a structured uncertainty forces needs_additional_evidence instead of rejecting the claim", () => {
+  const claim = finalClaim({
+    needs_additional_evidence: false,
+    uncertainty: { reason: "两个金额对不上。", alternatives: ["120 万", "150 万"], question: "以哪个为准？" },
+  });
+  const result = validateVerificationOutput(verification({ claims: [claim] }), inventory());
+  // 给了不确定性却把标志位留成 false 是自相矛盾。取保守的一边：true 只会
+  // 让这条进人工核对，不会让它更容易通过。
+  assert.equal(result.valid, true);
+  assert.equal(result.output.claims[0].needs_additional_evidence, true);
+  assert.ok(result.repairs.some((note) => note.includes("set needs_additional_evidence")));
 });
 
 test("verifier reuses the existing claim contract and enforces the configured claim safety bound", () => {
@@ -365,7 +398,9 @@ test("unmapped and dropped critical inventory candidates deterministically escal
   const missing = verification({ candidate_dispositions: [] });
   const result = assessVerificationEscalation(inventory(), missing);
   assert.equal(result.required, true);
-  assert.ok(result.reasons.includes("verification_contract_invalid"));
+  // 漏掉处置是语义信号，不是契约违规。它和下面"显式丢弃"那半段行为一致：
+  // 都只报 unmapped / dropped，交给升级重核，而不是整份作废重跑。
+  assert.equal(result.reasons.includes("verification_contract_invalid"), false);
   assert.ok(result.reasons.includes("inventory_candidate_unmapped"));
   assert.ok(result.reasons.includes("critical_candidate_dropped"));
   assert.deepEqual(result.unmappedInventoryKeys, ["inv-1"]);

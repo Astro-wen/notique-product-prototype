@@ -66,6 +66,19 @@ export function normalizeVerifierReasoningEffort(
     : "high";
 }
 
+/**
+ * 升级那一趟用的推理强度：在基础 verify 之上提一档。
+ *
+ * 之前两趟同强度，所谓"升级"只是换了提示词再掷一次骰子。提一档之后，
+ * 基础那趟可以继续配成快的（latency 只在多数正常 Run 上计价），确定性
+ * 判断认定需要重核时才付更贵的一次。已经是 xhigh 就保持不变。
+ */
+export function escalatedReasoningEffort(base: OpenAiReasoningEffort): OpenAiReasoningEffort {
+  const index = OPENAI_REASONING_EFFORTS.indexOf(base);
+  if (index < 0) return "high";
+  return OPENAI_REASONING_EFFORTS[Math.min(index + 1, OPENAI_REASONING_EFFORTS.length - 1)]!;
+}
+
 export function twoPassPipelineEnabled(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized !== "0" && normalized !== "false" && normalized !== "off";

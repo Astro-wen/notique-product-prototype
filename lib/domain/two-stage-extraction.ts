@@ -133,6 +133,8 @@ export type ContractValidation<T> = {
   valid: boolean;
   issues: ModelContractIssue[];
   output: T | null;
+  /** 校验前做过的确定性修复，供上层记成警告，不静默吞掉。 */
+  repairs?: string[];
 };
 
 export type VerificationEscalationReason =
@@ -303,13 +305,67 @@ export function validateInventoryOutput(value: unknown): ContractValidation<Inve
   return { valid: issues.length === 0, issues, output: issues.length ? null : value as InventoryOutput };
 }
 
+/**
+ * 校验前的确定性修复。
+ *
+ * 线上两次 MODEL_OUTPUT_INVALID 都不是内容判断错误，是模型把表格填错了：
+ * 同一个 inventory_key 列了两遍，或者给了结构化不确定性却把
+ * needs_additional_evidence 留成 false。这类自相矛盾能机械消解，不值得
+ * 整份丢掉再花一次钱重跑。修复一律取保守的那一边，并把动作记下来。
+ *
+ * 只改这两类。内容层面的问题（漏掉候选、矛盾没解决）交给
+ * assessVerificationEscalation，那边本来就在看。
+ */
+export function repairVerificationOutput(value: unknown): { value: unknown; repairs: string[] } {
+  if (!record(value)) return { value, repairs: [] };
+  const repairs: string[] = [];
+  const repaired: Record<string, unknown> = { ...value };
+
+  if (Array.isArray(value.candidate_dispositions)) {
+    const seen = new Set<string>();
+    const kept = value.candidate_dispositions.filter((disposition) => {
+      if (!record(disposition) || typeof disposition.inventory_key !== "string") return true;
+      // 保留先出现的那条。两条不一致时不去猜哪条对；留下的结果照样
+      // 要过下面的完整校验，内容层面的问题也照样会被升级判断看到。
+      if (seen.has(disposition.inventory_key)) {
+        repairs.push(`dropped duplicate disposition for ${disposition.inventory_key}`);
+        return false;
+      }
+      seen.add(disposition.inventory_key);
+      return true;
+    });
+    if (kept.length !== value.candidate_dispositions.length) repaired.candidate_dispositions = kept;
+  }
+
+  if (Array.isArray(value.claims)) {
+    let changed = false;
+    const claims = value.claims.map((claim) => {
+      if (!record(claim)) return claim;
+      // 给了不确定性就是需要补证据，模型把标志位留成 false 属于自相矛盾。
+      // true 是保守的一边：它只会让这条进人工核对，不会让它更容易通过。
+      if (claim.uncertainty != null && claim.needs_additional_evidence !== true) {
+        changed = true;
+        const key = typeof claim.client_claim_key === "string" ? claim.client_claim_key : "claim";
+        repairs.push(`set needs_additional_evidence for ${key}`);
+        return { ...claim, needs_additional_evidence: true };
+      }
+      return claim;
+    });
+    if (changed) repaired.claims = claims;
+  }
+
+  return { value: repaired, repairs };
+}
+
 export function validateVerificationOutput(
-  value: unknown,
+  rawValue: unknown,
   inventory: InventoryOutput,
   context?: ContextPack,
 ): ContractValidation<VerificationOutput> {
   const issues: ModelContractIssue[] = [];
-  if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
+  if (!record(rawValue)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
+  const { value: repairedValue, repairs } = repairVerificationOutput(rawValue);
+  const value = repairedValue as Record<string, unknown>;
   exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review"], "$", issues);
   if (value.schema_version !== VERIFICATION_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
@@ -392,11 +448,13 @@ export function validateVerificationOutput(
     }
     });
   }
-  inventory.candidates.forEach((candidate) => {
-    if (!mappedKeys.has(candidate.inventory_key)) {
-      issues.push({ path: "$.candidate_dispositions", message: `Missing disposition for inventory key ${candidate.inventory_key}.` });
-    }
-  });
+  // 漏掉某个候选的处置不在这里硬拒绝。assessVerificationEscalation 本来就
+  // 把它算作 inventory_candidate_unmapped，关键候选还会进
+  // droppedCriticalInventoryKeys。在校验层整份丢掉，等于让升级路径永远
+  // 看不到这个信号，同一件事被两套机制处理，结果是重跑而不是重核。
+  const unmappedCandidateKeys = inventory.candidates
+    .filter((candidate) => !mappedKeys.has(candidate.inventory_key))
+    .map((candidate) => candidate.inventory_key);
 
   const availableDraftTargets = new Map(
     (context?.draft_context?.claims ?? []).map((claim) => [claim.claimId, claim]),
@@ -455,7 +513,10 @@ export function validateVerificationOutput(
     }
   }
 
-  return { valid: issues.length === 0, issues, output: issues.length ? null : value as VerificationOutput };
+  const allRepairs = unmappedCandidateKeys.length
+    ? [...repairs, `left ${unmappedCandidateKeys.length} inventory candidate(s) unmapped for the escalation assessment`]
+    : repairs;
+  return { valid: issues.length === 0, issues, output: issues.length ? null : value as VerificationOutput, repairs: allRepairs };
 }
 
 export function toFinalExtractClaimsOutput(verification: VerificationOutput): FinalExtractClaimsOutput {

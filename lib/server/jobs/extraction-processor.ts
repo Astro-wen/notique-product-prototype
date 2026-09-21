@@ -12,6 +12,7 @@ import {
 } from "@/lib/domain/asset-policy";
 import {
   EXTRACTION_RUN_LEASE_MS,
+  escalatedReasoningEffort,
   normalizeVerifierReasoningEffort,
 } from "@/lib/domain/model-config";
 import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
@@ -1887,6 +1888,15 @@ export async function processExtractionRun(
         ? frozenModelParams.verifier_reasoning_effort
         : undefined,
     );
+    // 升级此前和基础 verify 同强度，"升级"的只有提示词里的质量反馈。
+    // 算力也提一档，才对得起它的名字：基础那趟保持快，只有确定性判断
+    // 说需要重核时才付更贵的一次。强度在 Run 创建时就冻结好了，这里
+    // 只读；旧 Run 没有这个字段，按同样规则从 verifier 强度推一次。
+    const escalationEffort = normalizeVerifierReasoningEffort(
+      typeof frozenModelParams.escalation_reasoning_effort === "string"
+        ? frozenModelParams.escalation_reasoning_effort
+        : escalatedReasoningEffort(verifierEffort),
+    );
     const maxOutputTokens =
       typeof frozenModelParams.max_output_tokens === "number"
         ? frozenModelParams.max_output_tokens
@@ -2053,68 +2063,86 @@ export async function processExtractionRun(
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
-          reasoningEffort: verifierEffort,
+          reasoningEffort: escalationEffort,
           maxOutputTokens,
           timeoutMs,
         });
         const storedEscalationReasons = escalationReasons(existingEscalated);
-        const escalatedStage = await runModelStage<VerificationOutput>({
-          run: leased,
-          stage: "verify_escalated",
-          provider: providerName,
-          model: modelName,
-          reasoningEffort: verifierEffort,
-          promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
-          schemaVersion: VERIFICATION_SCHEMA_VERSION,
-          inputHash: escalatedInputHash,
-          details: { escalation_reasons: storedEscalationReasons },
-          validate: (value) => validateVerificationOutput(
-            value,
-            inventoryStage.output,
-            verificationContext,
-          ).output,
-          invoke: (stageOptions) => escalatedProvider.verifyClaims(
-            verificationContext,
-            inventoryStage.output,
-            {
-              ...stageOptions,
-              promptCacheKey: `notique:${leased.id}:two-stage`,
-              qualityFeedback: [
-                ...storedEscalationReasons,
-                "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
-              ],
-            },
-          ),
-        });
-        usages.push(escalatedStage.usage);
-        if (acceptedVerification) {
-          const selection = selectPreferredVerificationForReview(
-            inventoryStage.output,
-            acceptedVerification,
-            escalatedStage.output,
-            verificationContext,
-          );
-          acceptedVerification = selection.output;
-          assessment = selection.assessment;
-          if (selection.selected === "base") {
-            pipelineWarnings.push({
-              code: "MODEL_ESCALATION_NOT_IMPROVED",
-              fallback_stage: "verify",
-            });
+        // 这条是跨调用取回已在途升级的路径，也是背景响应下的常态路径
+        // （HTTP waitUntil 只有 30 秒，升级几乎必然要跨调用取回）。它此前
+        // 没有 try/catch，升级输出不合格就把整个 Run 拖垮，连同一次已经
+        // 成功的 verify 一起作废。降级语义在下面那条路径早就定义好了，
+        // 这里复用：base 成功时，升级失败只记警告并回落。
+        try {
+          const escalatedStage = await runModelStage<VerificationOutput>({
+            run: leased,
+            stage: "verify_escalated",
+            provider: providerName,
+            model: modelName,
+            reasoningEffort: escalationEffort,
+            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
+            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            inputHash: escalatedInputHash,
+            details: { escalation_reasons: storedEscalationReasons },
+            validate: (value) => validateVerificationOutput(
+              value,
+              inventoryStage.output,
+              verificationContext,
+            ).output,
+            invoke: (stageOptions) => escalatedProvider.verifyClaims(
+              verificationContext,
+              inventoryStage.output,
+              {
+                ...stageOptions,
+                promptCacheKey: `notique:${leased.id}:two-stage`,
+                qualityFeedback: [
+                  ...storedEscalationReasons,
+                  "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
+                ],
+              },
+            ),
+          });
+          usages.push(escalatedStage.usage);
+          if (acceptedVerification) {
+            const selection = selectPreferredVerificationForReview(
+              inventoryStage.output,
+              acceptedVerification,
+              escalatedStage.output,
+              verificationContext,
+            );
+            acceptedVerification = selection.output;
+            assessment = selection.assessment;
+            if (selection.selected === "base") {
+              pipelineWarnings.push({
+                code: "MODEL_ESCALATION_NOT_IMPROVED",
+                fallback_stage: "verify",
+              });
+            }
+          } else {
+            acceptedVerification = escalatedStage.output;
+            assessment = assessVerificationEscalation(
+              inventoryStage.output,
+              acceptedVerification,
+              verificationContext,
+            );
           }
-        } else {
-          acceptedVerification = escalatedStage.output;
-          assessment = assessVerificationEscalation(
-            inventoryStage.output,
-            acceptedVerification,
-            verificationContext,
-          );
+        } catch (error) {
+          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error.usage) usages.push(error.usage);
+          completedUsage = aggregateUsage(usages);
+          if (!acceptedVerification) throw error;
+          pipelineWarnings.push({
+            code: "MODEL_ESCALATION_OUTPUT_INVALID",
+            details: sanitizedIssue(error),
+            fallback_stage: "verify",
+          });
         }
+        completedUsage = aggregateUsage(usages);
       } else if (assessment.required && !escalationTerminalFailure) {
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
-          reasoningEffort: verifierEffort,
+          reasoningEffort: escalationEffort,
           maxOutputTokens,
           timeoutMs,
         });
@@ -2131,7 +2159,7 @@ export async function processExtractionRun(
             stage: "verify_escalated",
             provider: providerName,
             model: modelName,
-            reasoningEffort: verifierEffort,
+            reasoningEffort: escalationEffort,
             promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
             schemaVersion: VERIFICATION_SCHEMA_VERSION,
           inputHash: escalatedInputHash,
