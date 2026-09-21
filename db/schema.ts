@@ -575,7 +575,11 @@ export const eventAiArtifactRuns = sqliteTable(
     extractionRunId: text("extraction_run_id")
       .notNull()
       .references(() => extractionRuns.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["summary", "readable_transcript"] }).notNull(),
+    // summary 是旧的四合一产物，不再生产但历史行还在。列本身是纯 TEXT，
+    // 没有 CHECK 约束，所以加种类不需要迁移。
+    kind: text("kind", {
+      enum: ["summary", "readable_transcript", "chapters", "speakers", "key_points", "overview"],
+    }).notNull(),
     status: text("status", {
       enum: ["queued", "processing", "succeeded", "failed"],
     })
@@ -635,7 +639,11 @@ export const eventAiArtifacts = sqliteTable(
     runId: text("run_id")
       .notNull()
       .references(() => eventAiArtifactRuns.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["summary", "readable_transcript"] }).notNull(),
+    // summary 是旧的四合一产物，不再生产但历史行还在。列本身是纯 TEXT，
+    // 没有 CHECK 约束，所以加种类不需要迁移。
+    kind: text("kind", {
+      enum: ["summary", "readable_transcript", "chapters", "speakers", "key_points", "overview"],
+    }).notNull(),
     artifactVersion: integer("artifact_version").notNull(),
     inputHash: text("input_hash").notNull(),
     contentJson: text("content_json").notNull(),
