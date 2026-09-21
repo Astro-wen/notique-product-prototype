@@ -30,7 +30,6 @@ import {
   LayoutDashboard,
   ListChecks,
   ListTree,
-  Mic,
   MoreHorizontal,
   NotebookPen,
   PanelLeftClose,
@@ -41,7 +40,6 @@ import {
   Search,
   Settings2,
   Sparkles,
-  Upload,
   Users,
   X,
 } from "lucide-react";
@@ -8065,6 +8063,9 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
     });
     return () => cancelAnimationFrame(frame);
   }, [initialEdit, mode, embedded]);
+  // Rejection is irreversible. ClaimScreen is keyed by claim id + version, so
+  // this resets when the claim changes.
+  const [rejectArmed, setRejectArmed] = useState(false);
   if (!claim) return <div className="page narrow-page"><PageHeader title="记录" back={onBack} backLabel={backLabel} /><EmptyState title="没有找到这条记录" body="它可能已经更新，请返回来源页面重新打开。" /></div>;
   const readonly = mode === "readonly";
   const pending = claim.reviewStatus === "pending";
@@ -8076,9 +8077,6 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
     .filter((relation) => relationDecisions[relation.id] === "accept")
     .map((relation) => relation.id);
   const evidenceReady = evidenceState === "ready";
-  // Rejection is irreversible. ClaimScreen is keyed by claim id + version, so
-  // this resets when the claim changes.
-  const [rejectArmed, setRejectArmed] = useState(false);
   const reviewQueue = readonly ? [] : reviewClaims.filter((item) => item.reviewStatus === "pending");
   const reviewPosition = Math.max(0, reviewQueue.findIndex((item) => item.id === claim.id)) + 1;
   const editHasSupportingEvidence = evidence.some(

@@ -54,7 +54,7 @@ test("Raw readiness never overrides an explicit return to sources", async ({ pag
     () => apiFixture.completedReadCount("/api/v1/transcription-runs/transcription-a"),
     { timeout: 12_000 },
   ).toBeGreaterThan(1);
-  await expect(page.locator(".simple-material-list .status-badge").filter({ hasText: "处理完成" })).toBeVisible();
+  await expect(page.locator(".material-row .status-badge").filter({ hasText: "处理完成" })).toBeVisible();
   await expect(sourcesTab).toHaveClass(/active/);
   await expect(page.locator(".reading-tab-panel")).toBeHidden();
   await expect(page).not.toHaveURL(/readingTab=raw/);

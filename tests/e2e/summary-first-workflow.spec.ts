@@ -143,8 +143,8 @@ test("a completed Summary never closes an open direct-recording material interac
   const materialsTab = page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ });
   await materialsTab.click();
   await expect(materialsTab).toHaveClass(/active/);
-  await page.getByRole("button", { name: "添加材料", exact: true }).click();
-  await page.locator(".simple-import-action").filter({ hasText: "直接录音" }).click();
+  // 录音入口就在材料区里，不再藏在一个要先展开的面板后面。
+  await page.locator(".material-record").click();
   await expect(page.getByRole("region", { name: "直接录音" })).toBeVisible();
 
   apiFixture.completeSummary();
