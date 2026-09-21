@@ -1507,7 +1507,9 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .sidebar { display: none; }
   .mobile-header { position: sticky; z-index: 25; top: 0; height: 55px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.96); padding: 0 14px; display: flex; align-items: center; justify-content: space-between; }
   main { margin-left: 0; padding: 0 14px 56px; }
-  .public-workspace-notice { top: 55px; }
+  /* 提示条是 relative（见 .interface-refresh 规则），不是 sticky。留着给
+     sticky 写的 top:55px 只会把它整体下移 55px，压在项目栏上。 */
+  .public-workspace-notice { top: 0; }
   .transcript-document-toolbar { top: 93px; scroll-margin-top: 93px; }
   .reader-action-rail { right: 10px; left: 10px; width: auto; }
   .reader-audio-player { right: 0; left: 0; }
@@ -1570,16 +1572,14 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
      shows (the accessible name stays on the control), and the two actions sit
      beside each other. */
   .simple-session { grid-template-columns: minmax(0, 1fr) auto auto; padding: 7px 8px; gap: var(--space-2); align-items: center; }
-  /* The second line repeats the communication header directly underneath, so
-     only it goes; the project name has no other textual home on this screen. */
-  .simple-session-copy { grid-column: 1 / -1; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
-  .simple-session-copy small { display: none; }
-  .simple-session-copy .context-mark { width: 28px; height: 28px; font-size: var(--text-sm); }
+  /* 复制块和正下方的项目选择框显示同一个名字，整块去掉。 */
+  .simple-session-copy { display: none; }
   .simple-session label > span { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; white-space: nowrap; clip-path: inset(50%); }
   .simple-session label:first-of-type { grid-column: 1 / -1; }
   .simple-session select { min-height: 36px; }
   .simple-new-event-mobile { justify-self: end; }
-  .simple-session .project-menu-wrap { justify-self: end; }
+  /* 800px 块把菜单设成跨整行，这里收回来，让它和记录选择框、「+」同一行。 */
+  .simple-session .project-menu-wrap { grid-column: auto; justify-self: end; }
   .simple-session .project-menu-trigger { width: auto; white-space: nowrap; }
   .simple-new-project { width: 100%; }
   .simple-workspace { margin-top: 11px; }
