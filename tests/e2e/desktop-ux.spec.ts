@@ -137,7 +137,7 @@ test('inline review guards evidence, retains edits on failure, and submits the c
   });
   await editor.getByRole('button',{name:'保存并确认'}).click();
   await expect(editor.getByLabel('修改后的陈述')).toHaveValue('预算上限调整为 110 万美元');
-  await expect(page.locator('.embedded-review')).toContainText('暂时无法连接服务');
+  await expect(page.locator('.embedded-review')).toContainText('连不上服务');
   await editor.getByRole('button',{name:'保存并确认'}).click();
   await expect(editor).toHaveCount(0);
   await expect(page).toHaveURL(/view=simple/);

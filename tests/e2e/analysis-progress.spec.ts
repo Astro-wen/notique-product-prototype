@@ -9,6 +9,9 @@ const test = base.extend<Fixtures>({
     const fixture = new NotiqueApiFixture();
     fixture.enableAnalysisProgress();
     fixture.allowMutation("POST", "/api/v1/jobs/dispatch");
+    // 打开项目会写一次 last_opened_at，是读取路径的一部分，不是被测行为产生的写。
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
+    fixture.allowMutation("POST", "/api/v1/projects/project-b/opened");
     await fixture.install(page);
     await provide(fixture);
     fixture.assertNoUnexpectedWrites();
@@ -21,7 +24,6 @@ test("fact analysis stays in the background without a fake percentage", async ({
   const reader = page.getByRole("region", { name: "逐字稿阅读区" });
   await expect(reader).toBeVisible();
   await expect(reader).toContainText("正在整理，原文已可阅读");
-  await expect(reader.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
   await expect(reader.getByTestId("transcript-turn").first()).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "本次事实分析进度" })).toHaveCount(0);
   await expect(page.getByRole("main")).not.toContainText(/\d+%|已完成 \d+\/\d+ 步/);

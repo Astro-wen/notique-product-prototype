@@ -63,9 +63,10 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.locator(".reader-reading-pane")).toBeVisible();
-  await expect.poll(() => page.locator(".sidebar").evaluate((node) => node.getBoundingClientRect().width)).toBeLessThanOrEqual(72);
 
-  const layout = await page.evaluate(() => {
+  // 侧栏宽窄跟着用户自己的偏好走，工作区不再替用户收起。默认展开，
+  // 标签可见；阅读区和操作栏在展开的侧栏旁边也要放得下。
+  const measure = () => page.evaluate(() => {
     const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();
     const reader = document.querySelector(".reader-reading-pane")?.getBoundingClientRect();
     const rail = document.querySelector(".reader-action-rail")?.getBoundingClientRect();
@@ -83,16 +84,28 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
       visibleSidebarLabels,
     };
   });
+  const assertWorkspace = (layout: Awaited<ReturnType<typeof measure>>) => {
+    expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
+    expect(layout.railWidth).toBeGreaterThanOrEqual(340);
+    expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeGreaterThanOrEqual(0.34);
+    expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeLessThanOrEqual(0.41);
+    expect(layout.readerLeft).toBeLessThan(layout.readerRight);
+    expect(layout.railLeft).toBeLessThan(layout.railRight);
+    expect(layout.readerRight, "the transcript canvas must end before the operation rail begins").toBeLessThanOrEqual(layout.railLeft + 1);
+  };
 
-  expect(layout.sidebarWidth).toBeLessThanOrEqual(72);
-  expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
-  expect(layout.railWidth).toBeGreaterThanOrEqual(340);
-  expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeGreaterThanOrEqual(0.34);
-  expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeLessThanOrEqual(0.41);
-  expect(layout.readerLeft).toBeLessThan(layout.readerRight);
-  expect(layout.railLeft).toBeLessThan(layout.railRight);
-  expect(layout.readerRight, "the transcript canvas must end before the operation rail begins").toBeLessThanOrEqual(layout.railLeft + 1);
-  expect(layout.visibleSidebarLabels).toEqual([]);
+  const expanded = await measure();
+  expect(expanded.sidebarWidth).toBeGreaterThanOrEqual(200);
+  expect(expanded.visibleSidebarLabels.length).toBeGreaterThan(0);
+  assertWorkspace(expanded);
+
+  // 用户自己收起后，工作区也照着收起，并且这个选择进入工作区不会被改回去。
+  await page.getByRole("button", { name: "收起侧栏" }).click();
+  await expect.poll(() => page.locator(".sidebar").evaluate((node) => node.getBoundingClientRect().width)).toBeLessThanOrEqual(72);
+  const collapsed = await measure();
+  expect(collapsed.visibleSidebarLabels).toEqual([]);
+  assertWorkspace(collapsed);
+  expect(collapsed.readerWidth).toBeGreaterThan(expanded.readerWidth);
 });
 
 test("the compact operation bar stays aligned with the reader and leaves the transcript toolbar usable", async ({ page, apiFixture }, testInfo) => {
@@ -104,6 +117,10 @@ test("the compact operation bar stays aligned with the reader and leaves the tra
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
   await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
+  // 47f849a 之后概要区更高，734px 高的窗口里工具栏未必在首屏。这条要保证
+  // 的是"滚到工具栏时它不被底部操作条盖住"，所以先把它滚到视口中间再量。
+  await page.locator(".transcript-document-toolbar").evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(150);
 
   const geometry = await page.evaluate(() => {
     const reader = document.querySelector(".reader-reading-pane")?.getBoundingClientRect();

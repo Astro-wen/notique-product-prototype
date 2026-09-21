@@ -9,6 +9,9 @@ type Fixtures = {
 const test = base.extend<Fixtures>({
   apiFixture: [async ({ page }, provide) => {
     const fixture = new NotiqueApiFixture();
+    // 打开项目会写一次 last_opened_at，是读取路径的一部分，不是被测行为产生的写。
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
+    fixture.allowMutation("POST", "/api/v1/projects/project-b/opened");
     await fixture.install(page);
     await provide(fixture);
     fixture.assertNoUnexpectedWrites();
@@ -71,7 +74,7 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
   await expect(page.locator(".current-event-status:visible")).toHaveText("已完成");
   await page.getByRole("button", { name: /^本次重点/ }).click();
-  await page.getByRole("button", { name: /^AI 摘要/ }).click();
-  await expect(page.getByRole("heading", { name: "B 项目会议重点" })).toBeVisible();
+  await page.getByRole("button", { name: "章节速览", exact: true }).click();
+  await expect(page.locator(".tingwu-overview-copy p")).toContainText("B 摘要背景 1");
   await expect(page.getByText("预算上限是 120 万美元", { exact: true })).toHaveCount(0);
 });

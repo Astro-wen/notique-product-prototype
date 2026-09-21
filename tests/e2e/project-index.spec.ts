@@ -49,7 +49,7 @@ test('batch selects all, offers only export/delete; cancel causes no deletion; b
  const {writes}=await setup(page,true);await page.getByRole('button',{name:'批量',exact:true}).click();await page.getByLabel('全选').check();
  await expect(page.locator('.pi-tools button')).toHaveText(['导出','删除','取消批量']);
  await page.getByRole('button',{name:'删除',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();expect(writes).toEqual([]);
- await page.getByRole('button',{name:'删除',exact:true}).click();await expect(page.getByText('转写或分析任务尚未完成，暂时不能删除')).toBeVisible();
+ await page.getByRole('button',{name:'删除',exact:true}).click();await expect(page.getByText('还在处理，先不能删')).toBeVisible();
  await page.getByRole('button',{name:'移到回收站'}).click();await expect(page.getByRole('alert')).toContainText('客户 B');
  expect(writes.filter(w=>w.method==='DELETE').map(w=>w.path)).toEqual(['/api/v1/projects/project-a']);await expect(page.locator('.pi-item')).toHaveCount(1);
 });

@@ -9,6 +9,9 @@ type Fixtures = {
 const test = base.extend<Fixtures>({
   apiFixture: [async ({ page }, provide) => {
     const fixture = new NotiqueApiFixture();
+    // 打开项目会写一次 last_opened_at，是读取路径的一部分，不是被测行为产生的写。
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
+    fixture.allowMutation("POST", "/api/v1/projects/project-b/opened");
     await fixture.install(page);
     await provide(fixture);
     fixture.assertNoUnexpectedWrites();
@@ -59,7 +62,7 @@ test("trash dialog traps Tab and restores project-menu focus after Escape and cl
     return ids.map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean);
   });
   expect(description).toEqual([
-    "恢复会带回项目的全部材料、确认记录、原始依据和报告。这里不会自动按天清理。",
+    "恢复后材料、记录和报告都会回来。回收站不会自动清空",
   ]);
 
   for (let index = 0; index < 8; index += 1) {

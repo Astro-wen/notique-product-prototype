@@ -57,7 +57,7 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
-  await expect(page.getByRole("heading", { name: "把散落的沟通，变成随时能调出的重点" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "每句话都找得到出处" })).toBeVisible();
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);
@@ -78,7 +78,7 @@ test("desktop sidebar collapses, restores, and keeps navigation accessible", asy
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop sidebar assertion");
 
   await page.goto("/?view=simple");
-  await expect(page.getByText("尚未选择项目", { exact: true })).toBeVisible();
+  await expect(page.getByText("还没选项目", { exact: true })).toBeVisible();
   await page.waitForTimeout(300);
   const shell = page.locator(".app-shell");
   const sidebar = page.getByLabel("应用侧栏");

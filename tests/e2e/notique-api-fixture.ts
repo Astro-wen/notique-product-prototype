@@ -390,9 +390,21 @@ function summaryArtifact(projectId: string, eventId: string) {
       speaker_summaries: [{ speaker: "Buyer", asset_version_id: "av-transcript", summary: "买家说明了预算要求，并补充了房源筛选条件，希望经纪人据此安排后续沟通。", source_segment_ids: targetItem.source_segment_ids }],
       chapters: [{ title: "沟通背景", summary: "本次沟通介绍了购房背景。", source_segment_ids: fillerItems[0].source_segment_ids }, { title: "预算与筛选条件", summary: targetItem.text, source_segment_ids: targetItem.source_segment_ids }],
 
+      // 47f849a 之后阅读区只把 kind === "overview" 的段落当全文概要，其余
+      // 段落种类不再单独渲染。概要文本故意拼得超过 260 字，好让"展开全部
+      // 概要"按钮出现，滚动位置类的用例才有东西可滚。
       sections: [{
-        kind: "meeting_summary",
+        kind: "overview",
         title: isProjectA ? "A 项目会议重点" : "B 项目会议重点",
+        items: [{
+          item_key: "overview-1",
+          text: `本次会议围绕购房预算、房源筛选与后续安排展开。${[...fillerItems.map((item) => item.text), ...(isProjectA ? [verifiedItem.text] : []), targetItem.text].join("，")}。`,
+          support_quote: targetItem.support_quote,
+          source_segment_ids: targetItem.source_segment_ids,
+        }],
+      }, {
+        kind: "key_fact",
+        title: "关键事实",
         items: [...fillerItems, ...(isProjectA ? [verifiedItem] : []), targetItem],
       }],
     },

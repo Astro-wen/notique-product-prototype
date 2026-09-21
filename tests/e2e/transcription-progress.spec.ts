@@ -33,7 +33,7 @@ test("chunked transcription shows one calm progress bar and keeps numbered speak
   await expect(transcriptMeta.getByText("Speaker 1", { exact: true })).toBeVisible();
   await expect(transcriptMeta.getByText("Speaker 2", { exact: true })).toBeVisible();
   await expect(transcriptMeta.getByText("Speaker 3", { exact: true })).toBeVisible();
-  await expect(page.getByText("逐字稿已经可以开始阅读", { exact: true })).toBeVisible();
+  await expect(page.getByText("逐字稿可以看了", { exact: true })).toBeVisible();
   await expect(page.getByText("(interrupt)", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "重新启动分析", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("transcript-turn-body").first()).toHaveAttribute("aria-disabled", "true");
@@ -67,7 +67,7 @@ test("terminal Run segments stay readable when both follow-up reading requests f
 
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/, { timeout: 12_000 });
   await expect(page.getByTestId("transcript-turn")).toHaveCount(3);
-  await expect(page.getByText("Opening.", { exact: true })).toBeVisible();
-  await expect(page.locator(".reader-partial-error")).toContainText("已显示的内容仍可继续使用");
+  await expect(page.getByTestId("transcript-turn").filter({ hasText: "Opening." }).first()).toBeVisible();
+  await expect(page.locator(".reader-partial-error")).toContainText("有一部分没加载出来");
   await expect(page.getByText("Artifact reading is temporarily unavailable.", { exact: true })).toHaveCount(0);
 });

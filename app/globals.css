@@ -403,6 +403,9 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .material-name small { color: var(--muted); font-size: var(--text-2xs); }
 .material-rename { min-width: 0; height: 34px; font-size: var(--text-sm); }
 .material-status { display: inline-flex; align-items: center; gap: var(--space-2); }
+
+/* 兜底章节的提示行：说明这是按时间粗分的目录，不是模型章节。 */
+.chapter-fallback-note { margin: 0 0 8px; font-size: var(--text-xs); }
 .materials-empty-actions { margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); }
 .materials-empty, .tab-empty { min-height: 190px; border-top: 1px solid var(--line); padding: 28px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .materials-empty > span, .tab-empty > span { width: 42px; height: 42px; border-radius: var(--radius-lg); background: var(--brand-green-soft); color: var(--brand-green); display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-xl); }
@@ -1467,6 +1470,13 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .scenario-context-body > .button { justify-self: end; }
 
 @media (max-width: 980px) {
+  /* 801–980px 的窄桌面：不论在哪个页面，侧栏都收成图标条。这条对所有
+     页面一视同仁，和"工作区不再单独强制收起"不矛盾；展开的 224px 侧栏在
+     这个宽度下会把正文挤到 580px 以内，阅读区放不下。 */
+  .sidebar { width: 68px; padding-right: 10px; padding-left: 10px; }
+  .sidebar-toggle, .sidebar-label, .sidebar-nav-label { display: none; }
+  .sidebar .brand, .sidebar .account, .sidebar nav button { justify-content: center; padding-right: 0; padding-left: 0; }
+  main { margin-left: 68px; }
   .reader-workspace-layout { height: auto; display: block; overflow: visible; }
   .reader-reading-pane { border-right: 0; display: block; overflow: visible; }
   .reader-reading-scroll { overflow: visible; }

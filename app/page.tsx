@@ -96,6 +96,7 @@ import {
 import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { MaterialShelf } from "@/app/components/material-shelf";
+import { fallbackChapters, shouldUseFallbackChapters } from "@/lib/domain/chapter-fallback";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
@@ -5730,6 +5731,15 @@ function TranscriptArtifactsPanel({
   const keyPoints = summaryContent ? recordArray(summaryContent.key_points) : [];
   const generatedSpeakerSummaries = summaryContent ? recordArray(summaryContent.speaker_summaries) : [];
   const generatedChapters = summaryContent ? recordArray(summaryContent.chapters) : [];
+  // 模型章节不会再来了（作业失败，或压根没排而分析也没在跑）时，按时间点和
+  // 说话人轮换粗切一份目录顶上。它不编内容，只让读者有地方可点。
+  const useFallbackChapters = shouldUseFallbackChapters({
+    generatedCount: generatedChapters.length,
+    summaryRunStatus: summaryRun?.status,
+    analysisRunning,
+    timedSegmentCount: availableRawSegments.filter((segment) => segment.start_ms != null).length,
+  });
+  const displayChapters: Record<string, unknown>[] = useFallbackChapters ? fallbackChapters(availableRawSegments) : generatedChapters;
   const rawSegmentById = new Map(availableRawSegments.map((segment) => [segment.id, segment]));
   const readableDisplaySegments = (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
       key: firstString(segment, ["readable_key"]) || `readable-${index}`,
@@ -5839,7 +5849,7 @@ function TranscriptArtifactsPanel({
   const visibleRawGroups = filteredRawGroups.slice(0, visibleTranscriptGroups);
   // Reuse source-linked summary points as timeline anchors. Categories such
   // as "decisions" span the whole recording and must not masquerade as chapters.
-  const chapterAnchors = generatedChapters.flatMap((chapter, index) => {
+  const chapterAnchors = displayChapters.flatMap((chapter, index) => {
     const sourceIds = stringValues(chapter.source_segment_ids);
     const source = availableRawSegments.find((segment) => segment.id === sourceIds[0]);
     const title = firstString(chapter, ["title"]);
@@ -6487,6 +6497,7 @@ function TranscriptArtifactsPanel({
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
       {orderedSummaryChapters.length ? <>
+        {useFallbackChapters && <p className="rail-muted chapter-fallback-note">这次没整理出章节，先按时间粗分，方便定位</p>}
         <div>{(chaptersExpanded ? orderedSummaryChapters : orderedSummaryChapters.slice(0, 2)).map((chapter) => renderChapter(chapter))}</div>
         <button className="text-button chapter-expand" aria-expanded={chaptersExpanded} onClick={() => setChaptersExpanded((value) => !value)}>{chaptersExpanded ? "收起章节" : `展开全部章节（${orderedSummaryChapters.length}）`}</button>
       </> : <p className="rail-muted">章节整理好后会显示在这里，可以先阅读原文。</p>}
