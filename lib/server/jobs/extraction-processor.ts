@@ -12,7 +12,6 @@ import {
 } from "@/lib/domain/asset-policy";
 import {
   EXTRACTION_RUN_LEASE_MS,
-  escalatedReasoningEffort,
   normalizeVerifierReasoningEffort,
 } from "@/lib/domain/model-config";
 import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
@@ -1888,15 +1887,10 @@ export async function processExtractionRun(
         ? frozenModelParams.verifier_reasoning_effort
         : undefined,
     );
-    // 升级此前和基础 verify 同强度，"升级"的只有提示词里的质量反馈。
-    // 算力也提一档，才对得起它的名字：基础那趟保持快，只有确定性判断
-    // 说需要重核时才付更贵的一次。强度在 Run 创建时就冻结好了，这里
-    // 只读；旧 Run 没有这个字段，按同样规则从 verifier 强度推一次。
-    const escalationEffort = normalizeVerifierReasoningEffort(
-      typeof frozenModelParams.escalation_reasoning_effort === "string"
-        ? frozenModelParams.escalation_reasoning_effort
-        : escalatedReasoningEffort(verifierEffort),
-    );
+    // 升级目前和基础 verify 同强度，"升级"的只有提示词里的质量反馈。
+    // Run 创建时冻结了 escalation_reasoning_effort，要把算力也提上去时
+    // 读它即可；在拿到评估数据之前先不提，免得每次升级都更慢更贵。
+    const escalationEffort = verifierEffort;
     const maxOutputTokens =
       typeof frozenModelParams.max_output_tokens === "number"
         ? frozenModelParams.max_output_tokens

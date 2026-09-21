@@ -1297,7 +1297,7 @@ test("verification safely removes dangling bookkeeping without weakening evidenc
   );
 });
 
-test("escalation runs one notch above base verification, and that notch is frozen on the Run", async () => {
+test("escalation shares the base verifier effort, with the stronger notch frozen and ready", async () => {
   const [processor, repository, config] = await Promise.all([
     readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
@@ -1309,15 +1309,14 @@ test("escalation runs one notch above base verification, and that notch is froze
     processor.indexOf("if (pipelineEnabled)"),
     processor.indexOf('code: "MODEL_QUALITY_GATE_UNRESOLVED"'),
   );
-  // 基础那趟保持冻结的 verifier 强度，升级那趟高一档。升级只在确定性
-  // 判断认定需要重核时才发生，所以多数 Run 的时延不受影响。
-  assert.match(twoPass, /reasoningEffort: verifierEffort/);
+  // 现在两趟同强度：没有评估数据之前不给升级加钱加时延。
+  assert.match(processor, /const escalationEffort = verifierEffort;/);
   const escalatedStages = twoPass.match(/stage: "verify_escalated",\n\s+provider: providerName,\n\s+model: modelName,\n\s+reasoningEffort: escalationEffort,/g) ?? [];
-  assert.equal(escalatedStages.length, 2, "both the resumed and the fresh escalation path use the escalated effort");
+  assert.equal(escalatedStages.length, 2, "both escalation paths read the same effort knob");
   assert.doesNotMatch(twoPass, /reasoningEffort: "xhigh"/);
-  // 强度和其他模型参数一起冻结在 Run 上：冻结参数要能说清这次 Run 的成本上限。
+  // 更高的那一档已经随 Run 冻结好了：要提只需把 escalationEffort 换成读它，
+  // 冻结参数仍然说得清这次 Run 的成本上限。
   assert.match(repository, /escalation_reasoning_effort: escalationReasoningEffort/);
-  assert.match(processor, /frozenModelParams\.escalation_reasoning_effort/);
   assert.match(config, /export function escalatedReasoningEffort/);
 });
 
