@@ -95,19 +95,16 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .sidebar-collapsed .sidebar nav button { justify-content: center; padding: 0; }
   .sidebar-collapsed .sidebar-label,
   .sidebar-collapsed .sidebar-nav-label { display: none; }
-  .immersive-workspace .sidebar { width: 68px; padding-right: 10px; padding-left: 10px; }
-  .immersive-workspace .sidebar-toggle,
-  .immersive-workspace .sidebar-label,
-  .immersive-workspace .sidebar .account .sidebar-label,
-  .immersive-workspace .sidebar-nav-label { display: none; }
-  .immersive-workspace .sidebar .brand,
-  .immersive-workspace .sidebar .account,
-  .immersive-workspace .sidebar nav button { justify-content: center; padding-right: 0; padding-left: 0; }
-  .immersive-workspace main { margin-left: 68px; padding-right: 18px; padding-left: 18px; }
+  /* 工作区只负责正文排版，不碰侧栏。侧栏宽窄一律由 .sidebar-collapsed
+     （用户点收起按钮的结果）决定，这样从项目管理走进工作区时侧栏不会
+     自己变形，收起按钮也始终可用。 */
+  .immersive-workspace main { padding-right: 18px; padding-left: 18px; }
   .immersive-workspace .simple-page { width: min(1440px, 100%); }
   .immersive-workspace .simple-session { grid-template-columns: minmax(190px, .8fr) minmax(220px, 1fr) auto auto auto; }
   .immersive-workspace .simple-session-copy { display: none; }
-  .immersive-workspace .simple-event-select { display: grid !important; }
+  /* !important 是为了在工作区强制显示这个选择框（别处默认隐藏）。
+     排版沿用上面的单行 flex，否则它会退回两行、把整条顶回 66px。 */
+  .immersive-workspace .simple-event-select { display: flex !important; }
   .immersive-workspace .simple-new-event-mobile { display: inline-flex; }
   .immersive-workspace .simple-session { margin-top: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 7px 0 10px; box-shadow: none; }
   .immersive-workspace .simple-workspace { margin-top: 0; grid-template-columns: minmax(0, 1fr); }
@@ -115,6 +112,17 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
   .immersive-workspace .current-event-header { display: none; }
   .immersive-workspace .simple-current-event { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
   .immersive-workspace .meeting-tabs { border-top: 0; background: #fff; }
+
+  /* 顶部这条本质上是面包屑：现在在哪个项目、哪条记录。原先把「当前项目」
+     「当前记录」两个标签各摞在一个 44px 的选择框上方，单条 label 就 67px，
+     加内边距整条吃掉 92px，正文被推到 148px 以下。改成标签与选择框并排的
+     单行，整条降到约 48px；选择框按内容给宽度，不再拉满占掉半个屏幕。 */
+  .immersive-workspace .simple-session { grid-template-columns: auto auto auto auto minmax(0, 1fr); gap: var(--space-3); padding: 5px 0 7px; }
+  .immersive-workspace .simple-session > label { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .immersive-workspace .simple-session > label > span { flex: none; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
+  /* 别处有 min-height: 42px 会顶掉单独的 height，两个一起写才生效。 */
+  .immersive-workspace .simple-session > label > select { height: 36px; min-height: 36px; max-width: 232px; padding-top: 0; padding-bottom: 0; }
+  .immersive-workspace .project-menu-wrap { justify-self: end; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2168,7 +2176,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .pi-item { min-width: 0; position: relative; border: 1px solid var(--line); border-radius: 12px; background: #fff; transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease; }
 .pi-item:hover { border-color: #b7c7bb; box-shadow: 0 6px 22px #20362e08; }
 .pi-item.is-selected { border-color: var(--brand-green); background: #f8fbf6; box-shadow: 0 0 0 1px var(--brand-green); }
-.pi-grid .pi-item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: 32px 1fr auto; gap: 14px 8px; padding: 19px 21px; min-height: 247px; }
+.pi-grid .pi-item { display: grid; grid-template-columns: 1fr auto; grid-template-rows: 32px 1fr auto auto; gap: 14px 8px; padding: 19px 21px; min-height: 247px; }
 .pi-item-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .pi-grid .pi-item-top, .pi-grid .pi-item-main { grid-column: 1 / -1; }
 .pi-folder-icon { width: 23px; height: 23px; color: var(--brand-green); stroke-width: 1.65; }
@@ -2183,7 +2191,10 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .pi-event-count, .pi-date { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .pi-grid .pi-date { text-align: right; }
 .pi-item-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.pi-grid .pi-item-actions { position: absolute; bottom: 14px; right: 17px; opacity: 0; pointer-events: none; background: white; transition: opacity 150ms; }
+/* 操作区占自己的一行。此前是 position:absolute 贴在卡片右下角，hover 时
+   正好盖在同处的 .pi-date 上，日期被一块白底挡掉。留一行给它，
+   卡片高度不变（上方 1fr 行自行吸收），也不会再遮挡任何信息。 */
+.pi-grid .pi-item-actions { grid-column: 1 / -1; min-height: 30px; opacity: 0; pointer-events: none; transition: opacity 150ms ease; }
 .pi-grid .pi-item:hover .pi-item-actions, .pi-grid .pi-item:focus-within .pi-item-actions { opacity: 1; pointer-events: auto; }
 .pi-open { background: var(--brand-green-soft); color: var(--brand-green); border: 0; border-radius: 5px; padding: 5px 10px; font-size: 12px; }
 .pi-list { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 0 24px; }
