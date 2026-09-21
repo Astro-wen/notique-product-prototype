@@ -50,7 +50,7 @@ test("results use four general project entrances and keep other views accessible
   assert.match(primary, /项目概览/);
   assert.match(primary, /时间线/);
   assert.match(primary, /下一步/);
-  assert.match(primary, /下次沟通准备/);
+  assert.match(primary, /下次准备/);
   assert.equal((primary.match(/\{ key: "/g) ?? []).length, 4);
   assert.match(page, /className="result-nav-secondary"/);
   assert.match(page, /更多视图/);

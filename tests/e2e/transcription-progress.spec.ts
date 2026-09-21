@@ -21,11 +21,11 @@ test("chunked transcription shows one calm progress bar and keeps numbered speak
   const journey = page.getByTestId("transcription-journey");
   await expect(journey).toBeVisible();
   await expect(journey).toContainText("正在生成逐字稿 · 4/10 段");
-  await expect(journey).toContainText("已完成 4/10 段；可以离开此页，结果会自动更新");
+  await expect(journey).toContainText("已完成 4/10，可以先去忙别的");
   await expect(journey).not.toContainText(/并行|等待空位|后端|浏览器最多|已用/);
   await expect(journey.locator(".transcription-chunk-node, .transcription-milestones")).toHaveCount(0);
   await expect(journey.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
-  await expect(page.getByRole("button", { name: "开始处理全部沟通", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "整理全部记录", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   const transcriptMeta = page.getByTestId("transcript-turn-meta");

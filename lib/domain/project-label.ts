@@ -26,7 +26,7 @@ export function projectSelectionLabel<T extends ProjectSelectionInput>(item: T, 
   const duplicates = projects.filter((candidate) => candidate.name.trim().toLocaleLowerCase() === normalizedName);
   if (duplicates.length < 2) return displayName;
 
-  const eventCount = item.eventCount == null ? "沟通数待同步" : `${item.eventCount} 次沟通`;
+  const eventCount = item.eventCount == null ? "读取中" : `${item.eventCount} 条记录`;
   const updatedAt = item.updatedAt ? `更新 ${formatDate(item.updatedAt, true)}` : "更新时间未记录";
   const sameDetails = duplicates.filter((candidate) => (
     candidate.eventCount === item.eventCount

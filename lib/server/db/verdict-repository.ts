@@ -412,11 +412,19 @@ export async function applyClaimVerdict(
     if (new Set(input.retain_relation_ids).size !== input.retain_relation_ids.length) {
       throw new ApiFault(400, "BAD_REQUEST", "A relationship can be retained only once.");
     }
+    // Same visibility predicate as getClaim. A proposed relation the review
+    // screen never rendered must not be recorded as a user "reject".
     const proposedRelations = await all(
       `SELECT r.id
          FROM claim_relations r
+         JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
+         JOIN claims target_claim ON target_claim.id = target_version.claim_id
         WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
           AND r.status = 'proposed'
+          AND target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open')
         ORDER BY r.created_at, r.id`,
       [scope.workspaceId, input.base_version_id],
     );
@@ -438,16 +446,29 @@ export async function applyClaimVerdict(
       verdictId: id("rvdt"),
       action: retainedRelationIds.has(String(row.id)) ? "confirm" as const : "reject" as const,
     }));
-    const targetConflict = await first(
+    // Relations to a withdrawn target are retired below without a user verdict;
+    // everything else the user could not see blocks confirmation.
+    const hiddenRelation = await first(
       `SELECT r.id FROM claim_relations r
         JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
         JOIN claims target_claim ON target_claim.id = target_version.claim_id
        WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-         AND target_claim.current_version_id <> r.target_claim_version_id
+         AND target_claim.lifecycle_status <> 'withdrawn'
+         AND NOT (target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open'))
        LIMIT 1`,
       [input.base_version_id],
     );
-    if (targetConflict) throw conflict();
+    if (hiddenRelation) {
+      throw new ApiFault(
+        409,
+        "RELATION_REVIEW_INVALID",
+        "A proposed relationship points at a record that is not confirmed yet or has changed.",
+        { relation_id: String(hiddenRelation.id) },
+      );
+    }
 
     try {
       await db.batch([
@@ -468,11 +489,21 @@ export async function applyClaimVerdict(
                ON target_version.id = r.target_claim_version_id
              JOIN claims target_claim ON target_claim.id = target_version.claim_id
               WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-                AND target_claim.current_version_id <> r.target_claim_version_id
+                AND target_claim.lifecycle_status <> 'withdrawn'
+                AND NOT (target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open'))
            ) AND (
              SELECT COUNT(*) FROM claim_relations r
+              JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
+              JOIN claims target_claim ON target_claim.id = target_version.claim_id
               WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
                 AND r.status = 'proposed'
+                AND target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open')
            ) = ?
            AND ${sourceBackedActionVerdictGuardSql()}
            `,
@@ -960,10 +991,18 @@ export async function applyClaimVerdict(
         db
           .prepare(
             `UPDATE claim_relations SET status = 'inactive'
-              WHERE status = 'active'
-                AND (source_claim_version_id = ? OR target_claim_version_id = ?)`,
+              WHERE status = 'active' AND source_claim_version_id = ?`,
           )
-          .bind(input.base_version_id, input.base_version_id),
+          .bind(input.base_version_id),
+        // Incoming relations follow the claim to its new version. Inactivating
+        // them orphaned an active supersedes/resolves on the old version, and
+        // lifecycle recalculation then resurrected the superseded claim.
+        db
+          .prepare(
+            `UPDATE claim_relations SET target_claim_version_id = ?
+              WHERE target_claim_version_id = ? AND status IN ('active', 'proposed')`,
+          )
+          .bind(newVersionId, input.base_version_id),
         db
           .prepare(
             `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?

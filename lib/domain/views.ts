@@ -126,7 +126,7 @@ function readableEventSummary(claims: readonly ClaimWithVersion[]): string {
     .map((claim) => claim.version.statement.trim())
     .filter(Boolean)
     .map((statement) => /[.!?。！？]$/u.test(statement) ? statement : `${statement}。`);
-  return statements.length ? statements.join(" ") : "本次沟通暂无已确认记录。";
+  return statements.length ? statements.join(" ") : "这条记录还没有已确认要点";
 }
 
 export type TimelineDelta =

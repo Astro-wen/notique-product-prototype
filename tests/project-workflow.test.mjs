@@ -341,13 +341,13 @@ test("workflow material counts exclude generated readable transcript assets", as
 test("the project-level entry never preselects a Scenario or auto-reviews Claims", async () => {
   assert.doesNotMatch(uiSource, /useState\(project\?\.scenarioCandidates\?\.\[0\]\?\.key/);
   assert.match(uiSource, /材料就绪后自动处理/);
-  assert.match(uiSource, /下一次沟通已准备好，正在自动开始分析/);
+  assert.match(uiSource, /下一条记录已就绪，开始整理/);
   assert.match(uiSource, /loadWorkflowSnapshot\(projectId(?:, true)?\)/);
   assert.match(uiSource, /workflowSnapshotQuery\(projectId\)/);
   assert.match(uiSource, /candidateCount: summary\?\.candidate_count/);
   assert.doesNotMatch(uiSource, /api\.getRunReview\(latestRun\.id\)/);
-  assert.match(uiSource, /Claim 和再次出现记录都是 0/);
-  assert.match(uiSource, /次沟通没有材料，未纳入处理/);
+  assert.match(uiSource, /没有整理出任何要点/);
+  assert.match(uiSource, /条记录没有材料，已跳过/);
   assert.match(uiSource, /等待当前材料准备完成/);
   assert.match(uiSource, /正在处理，请稍候/);
   assert.match(uiSource, /请先确认使用场景/);

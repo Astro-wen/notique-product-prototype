@@ -18,7 +18,7 @@ export function zipFiles(files: {name: string; data: Uint8Array}[]): Uint8Array<
   let offset = 0, directorySize = 0;
   for (const file of files) {
     const name = encoder.encode(file.name), crc = crc32(file.data);
-    if (name.length > 0xffff) throw new Error("导出文件名过长，请缩短项目或沟通名称。");
+    if (name.length > 0xffff) throw new Error("文件名太长，改短项目或记录名称");
     if (file.data.length > 0xffffffff || offset > 0xffffffff || directorySize > 0xffffffff) {
       throw new Error("导出内容过大，请分批导出。");
     }

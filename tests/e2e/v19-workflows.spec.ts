@@ -40,7 +40,7 @@ test("a delayed Project A snapshot and Claims response cannot overwrite Project 
 
   await page.getByLabel("选择当前项目").selectOption("project-b");
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-b");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
 
   apiFixture.releaseProjectAClaims();
   apiFixture.releaseProjectASnapshot();
@@ -66,13 +66,13 @@ test("a completed old Run cannot refresh Project A over a newer Project B select
 
   await page.getByLabel("选择当前项目").selectOption("project-b");
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-b");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
 
   apiFixture.releaseProjectACompletionRefresh();
   await page.waitForTimeout(500);
 
   await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-b");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
   await expect(page.getByText("A 初次沟通", { exact: true })).toHaveCount(0);
 });
 
@@ -89,17 +89,17 @@ test("Run completion commits Project, Event, and terminal Run only after stagger
   await page.waitForTimeout(400);
   // The Project response must not commit a partial terminal snapshot while
   // the Event response is still outstanding.
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" }).locator("option:checked")).toHaveText("A 初次沟通");
+  await expect(page.getByRole("combobox", { name: "选择记录" }).locator("option:checked")).toHaveText("A 初次沟通");
   await expect(page.getByText("A 完成刷新后的沟通", { exact: true })).toHaveCount(0);
 
   apiFixture.releaseProjectACompletionEventRefresh();
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" }).locator("option:checked")).toHaveText("A 完成刷新后的沟通");
+  await expect(page.getByRole("combobox", { name: "选择记录" }).locator("option:checked")).toHaveText("A 完成刷新后的沟通");
   await expect(page.locator(".current-event-status:visible")).toHaveText("有内容待确认");
 });
 
 test("a Summary point opens source, verification, and action controls in the same workspace", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await page.getByRole("button", { name: /^AI 摘要/ }).click();
   await expandSummaryIfCollapsed(page);

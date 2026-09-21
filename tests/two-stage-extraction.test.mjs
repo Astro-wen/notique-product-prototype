@@ -425,7 +425,7 @@ test("quality flags are bounded and may only reference final claim keys", () => 
 test("a compound escalation cannot replace a more atomic base review queue", () => {
   const source = inventory([
     candidate(),
-    candidate({ inventory_key: "inv-2" }),
+    candidate({ inventory_key: "inv-2", critical: false, critical_reason: null, materiality: "low" }),
   ]);
   const base = verification({
     candidate_dispositions: [
@@ -448,6 +448,31 @@ test("a compound escalation cannot replace a more atomic base review queue", () 
   const selected = selectPreferredVerificationForReview(source, base, compound);
   assert.equal(selected.selected, "base");
   assert.equal(selected.output, base);
+});
+
+test("a compound candidate that preserves a critical fact beats a base that dropped it", () => {
+  const source = inventory([candidate(), candidate({ inventory_key: "inv-2" })]);
+  const base = verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "Included." },
+      { inventory_key: "inv-2", outcome: "lower_priority", final_claim_keys: [], reason: "Outside the cap." },
+    ],
+  });
+  const compound = verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "merged", final_claim_keys: ["claim-1"], reason: "Merged." },
+      { inventory_key: "inv-2", outcome: "merged", final_claim_keys: ["claim-1"], reason: "Merged." },
+    ],
+    quality_review: {
+      unresolved_conflict_keys: [],
+      compound_claim_keys: ["claim-1"],
+      reaffirmed_issue_claim_keys: [],
+    },
+  });
+
+  const selected = selectPreferredVerificationForReview(source, base, compound);
+  assert.equal(selected.selected, "candidate");
+  assert.deepEqual(selected.assessment.droppedCriticalInventoryKeys, []);
 });
 
 test("a clean escalation replaces a base output that drops a critical fact", () => {

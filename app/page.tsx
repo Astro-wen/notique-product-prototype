@@ -382,7 +382,7 @@ const primaryResultTabs: Array<{ key: ResultTab; label: string; short: string }>
   { key: "client-progress", label: "项目概览", short: "概览" },
   { key: "timeline", label: "时间线", short: "时间线" },
   { key: "actions", label: "下一步", short: "行动" },
-  { key: "brief-card", label: "下次沟通准备", short: "准备" },
+  { key: "brief-card", label: "下次准备", short: "准备" },
 ];
 
 const secondaryResultTabs: Array<{ key: ResultTab; label: string; short: string }> = [
@@ -989,7 +989,7 @@ function statusLabel(value?: string): string {
     resolved: "已解决",
     ai_suggested: "AI 建议",
     not_adopted: "不采纳",
-    unassessed: "等待判断使用场景",
+    unassessed: "待确认场景",
     assessing: "正在判断使用场景",
     pending_confirmation: "等待确认使用场景",
     confirmed: "使用场景已确认",
@@ -1009,7 +1009,7 @@ function extractionProgressLabel(run?: ExtractionRun | null): string {
 function extractionProgressBody(run?: ExtractionRun | null): string {
   if (run?.status === "queued") return "同一个任务正在等待后台领取；页面会继续检查，不会重复创建或重复收费。";
   if (run?.pipelineStage === "inventory") return "第一轮正在逐条盘点原子事实和证据，不会直接写入正式结果。";
-  if (run?.pipelineStage === "verify") return "第二轮正在检查遗漏、重复、原子性和跨沟通关系。";
+  if (run?.pipelineStage === "verify") return "第二轮正在检查遗漏和前后变化";
   if (run?.pipelineStage === "verify_escalated") return "确定性质量门发现风险，正在用更强推理重新复核。";
   return "任务已经进入后台，页面会继续读取真实状态，不会重复提交。";
 }
@@ -1049,7 +1049,7 @@ function issueMessage(issue: ApiIssue): string {
   if (issue.code === "AUDIO_TRANSCRIPTION_FAILED") return "录音已经保存，但转写没有完成。请保留 Request ID，稍后重新提交转写。";
   if (issue.code === "QUEUE_NOT_CONFIGURED") return "后台处理队列还没有配置。本次任务没有开始，也没有写入半成品。";
   if (issue.code === "DATABASE_UNAVAILABLE") return "当前无法读取数据库中的真实记录，请稍后重试。";
-  if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "第一份材料的使用场景还没有确认。确认后，后续沟通才会开始提取。";
+  if (issue.code === "SCENARIO_CONFIRMATION_REQUIRED") return "请先确认场景";
   if (issue.code === "CLAIM_VERSION_CONFLICT" || issue.code === "SCENARIO_VERSION_CONFLICT") return "这项内容已经被其他操作更新。重新读取最新版本后再继续。";
   if (issue.code === "ASSET_TOO_LARGE") {
     const details = isRecord(issue.details) ? issue.details : {};
@@ -1078,9 +1078,9 @@ function issueMessage(issue: ApiIssue): string {
   if (issue.code === "EVENT_NOT_READY") {
     const details = isRecord(issue.details) ? issue.details : {};
     if (details.reason === "analysis_required") {
-      return "原始逐字稿已经准备好。系统通常会自动生成沟通总结和事实清单；如果没有启动，可以直接重新尝试。";
+      return "逐字稿已就绪，可以重新开始整理";
     }
-    return "这次沟通还没有准备好可处理的材料。请等文件状态变为“材料已就绪”。";
+    return "材料还在准备中";
   }
   if (issue.code === "NOT_FOUND" || issue.status === 404) return "请求的内容不存在。后端接口可能尚未完成，或这条数据已经被删除。";
   if (issue.code === "NETWORK_ERROR" || issue.status === 0) return "无法连接后端服务，请确认本地服务正在运行。";
@@ -1203,7 +1203,7 @@ function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
   return <Modal title="把项目移到回收站？" description="项目不会立即永久消失，可以随时从回收站恢复。" onClose={onClose} dismissible={!busy} returnFocusSelector=".project-menu-trigger">
     <div className="delete-preview">
       <strong>{preview.project_name}</strong>
-      <dl><div><dt>沟通</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
+      <dl><div><dt>记录</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
       {!preview.can_delete && <p className="danger-note">还有 {preview.active_job_count} 个转写、分析或 AI 阅读任务正在运行。完成前不能删除。</p>}
       <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button danger" disabled={busy || !preview.can_delete} onClick={() => void onConfirm()}>{busy ? "正在移动…" : "移到回收站"}</button></div>
     </div>
@@ -1227,7 +1227,7 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
       {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
       {state === "empty" && <EmptyState title="回收站是空的" body="移入回收站的项目会显示在这里。" />}
-      {projects.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.eventCount ?? 0} 次沟通 · 删除于 {formatDate(item.deletedAt, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRestore(item, true)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentTarget(item); setConfirmation(""); }}>永久删除</button></div></article>)}
+      {projects.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.eventCount ?? 0} 条记录 · 删除于 {formatDate(item.deletedAt, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRestore(item, true)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentTarget(item); setConfirmation(""); }}>永久删除</button></div></article>)}
     </div>
     {permanentTarget && <div className="permanent-confirm">
       <h3>永久删除“{permanentTarget.name}”</h3>
@@ -1439,7 +1439,7 @@ function TimelineMoment({ moment, onOpenClaim }: { moment: Record<string, unknow
           <span className={`timeline-kind ${kind}`}>{timelineMomentLabels[kind] || kind}</span>
           {(speaker || startMs !== null) && <small>{speaker || "说话人未标注"}{startMs !== null ? ` · ${formatTimestamp(startMs / 1000)}` : ""}</small>}
         </header>
-        <h4>{firstString(moment, ["displayText", "display_text"]) || afterStatement || beforeStatement || "这次沟通留下了一条已确认变化"}</h4>
+        <h4>{firstString(moment, ["displayText", "display_text"]) || afterStatement || beforeStatement || "这条记录有一条已确认变化"}</h4>
         {beforeStatement && afterStatement && beforeStatement !== afterStatement && <div className="timeline-change"><p><span>之前</span>{beforeStatement}</p><p><span>现在</span>{afterStatement}</p></div>}
         {quote && <blockquote>“{quote}”</blockquote>}
         {claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与原始证据</button>}
@@ -1458,7 +1458,7 @@ function TimelineEventGroup({ group, index, moments, eventRecord, onOpenClaim }:
   return (
     <section className="timeline-group">
       <header>
-        <div><span className="section-kicker">第 {index + 1} 次沟通</span><h3>{firstString(event, ["title"]) || "未命名沟通"}</h3></div>
+        <div><span className="section-kicker">第 {index + 1} 条记录</span><h3>{firstString(event, ["title"]) || "未命名记录"}</h3></div>
         <time>{formatDate(firstString(event, ["occurredAt", "occurred_at"]))}</time>
       </header>
       {pendingReviewCount > 0 && <p className="pending-review-note compact">还有 {pendingReviewCount} 条待核对，尚未进入本页结果。</p>}
@@ -1581,7 +1581,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const trusted = recordArray(verified.currentClaims ?? verified.current_claims).map(claimViewItem);
     return <div className="summary-view client-progress-view">
       <section className="memory-layer"><details className="record-help"><summary>这些记录代表什么？</summary><p>已确认表示核对过原文。条件是否改变、行动是否完成，请查看时间线；待核对内容尚未进入正式报告。</p></details><ProjectOverviewList drafts={drafts} trusted={trusted} onOpenClaim={onOpenClaim} /></section>
-      {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能的跨沟通联系</span><h3>先作为提示，不会自动改变可信记忆</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
+      {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能相关的记录</span><h3>先作为提示，不会自动改变可信记忆</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
         const linkId = firstString(link, ["id"]);
         const sourceId = firstString(link, ["source_claim_id"]);
         const targetId = firstString(link, ["target_draft_claim_id"]);
@@ -1598,7 +1598,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     return <div className="action-list">{actions.map((item, index) => {
       const claimId = firstString(item, ["claim_id"]);
       const status = firstString(item, ["status"]) || "ai_suggested";
-      return <article className={`view-card action-card ${status}`} key={claimId || index}><div className="view-card-top"><div><span className="eyebrow">{status === "ai_suggested" ? "AI 建议" : status === "confirmed" ? "已确认" : status === "completed" ? "已完成" : "不采纳"}</span><h3>{firstString(item, ["statement"]) || "未命名行动"}</h3></div><StatusBadge value={status} /></div>{firstString(item, ["owner"]) && <p><b>负责人：</b>{firstString(item, ["owner"])}</p>}{firstString(item, ["due_at"]) && <p><b>期限：</b>{formatDate(firstString(item, ["due_at"]), true)}</p>}<p className="muted">来源：{firstString(item, ["event_title"]) || "一次沟通"}</p><div className="action-card-buttons">{claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与原始依据</button>}{claimId && status === "confirmed" && <button className="button primary small" disabled={busyAction === `complete-action:${claimId}`} onClick={() => onCompleteAction(claimId)}>{busyAction === `complete-action:${claimId}` ? "正在完成…" : "标记完成"}</button>}</div></article>;
+      return <article className={`view-card action-card ${status}`} key={claimId || index}><div className="view-card-top"><div><span className="eyebrow">{status === "ai_suggested" ? "AI 建议" : status === "confirmed" ? "已确认" : status === "completed" ? "已完成" : "不采纳"}</span><h3>{firstString(item, ["statement"]) || "未命名行动"}</h3></div><StatusBadge value={status} /></div>{firstString(item, ["owner"]) && <p><b>负责人：</b>{firstString(item, ["owner"])}</p>}{firstString(item, ["due_at"]) && <p><b>期限：</b>{formatDate(firstString(item, ["due_at"]), true)}</p>}<p className="muted">来源：{firstString(item, ["event_title"]) || "未命名记录"}</p><div className="action-card-buttons">{claimId && <button className="text-button" onClick={() => onOpenClaim(claimId)}>查看记录与原始依据</button>}{claimId && status === "confirmed" && <button className="button primary small" disabled={busyAction === `complete-action:${claimId}`} onClick={() => onCompleteAction(claimId)}>{busyAction === `complete-action:${claimId}` ? "正在完成…" : "标记完成"}</button>}</div></article>;
     })}</div>;
   }
   if (tab === "folder-summary" && isRecord(data)) {
@@ -1616,7 +1616,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   }
   if (tab === "timeline") {
     const groups = recordArray(data);
-    if (!groups.length) return <EmptyState title="时间线还没有内容" body={emptyReason || "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"} />;
+    if (!groups.length) return <EmptyState title="时间线还没有内容" body={emptyReason || "确认要点后，这里按记录显示新增、变化和已解决"} />;
     return <TimelineView data={data} events={events} onOpenClaim={onOpenClaim} />;
   }
   if (tab === "preferences") {
@@ -1656,7 +1656,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const deltaItems = recordArray(data.deltaItems);
     const agendaItems = recordArray(data.agendaItems);
     const missing = Number(data.missingSlotCount ?? data.missing_slot_count ?? 0);
-    if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="下次沟通速览的信息还不够" body="系统不会为了填满内容而编造记录。" />;
+    if (!stateItem && !riskItem && !deltaItems.length && !agendaItems.length) return <EmptyState title="会前简报的信息还不够" body="系统不会为了填满内容而编造记录。" />;
     return <div className="brief-grid"><div className="brief-overview-action"><div><span className="section-kicker">下一步</span><strong>需要更多细节？</strong><p>完整报告包含事项概况、决定、偏好、问题、风险与待跟进。</p></div><button className="button secondary" onClick={() => onSelect("folder-summary")}>查看完整报告</button></div>
       <BriefGroup title="当前最重要的情况" items={stateItem ? [stateItem] : []} kind="state" empty="还没有可用记录" onOpenClaim={onOpenClaim} onSelect={onSelect} />
       <BriefGroup title="最近变化" items={deltaItems} kind="delta" empty="还没有变化" onOpenClaim={onOpenClaim} onSelect={onSelect} />
@@ -1668,17 +1668,17 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   const rows = objectItems(data).map((item) => tab === "decisions" || tab === "open-questions" ? claimViewItem(item) : item);
   if (!rows.length) {
     const copy: Record<ResultTab, [string, string]> = {
-      "client-progress": ["还没有项目进展", "处理第一场沟通后，AI 草稿和可信记忆会分层显示。"],
+      "client-progress": ["还没有项目进展", "整理第一条记录后，这里会分层显示"],
       actions: ["目前没有下一步行动", "确认 AI 建议后，它会进入站内行动清单。"],
       "folder-summary": ["还没有事项概况", "先完成材料处理并确认有用的记录。"],
-      timeline: ["时间线还没有内容", "确认第一批记录后，这里会按每次沟通显示新增、变化和解决的事项。"],
+      timeline: ["时间线还没有内容", "确认要点后，这里按记录显示新增、变化和已解决"],
       decisions: ["目前没有已确认的决定", "待确认的决定不会提前出现在这里。"],
       preferences: ["目前没有已确认的偏好", "确认偏好后，这里会保留当前内容和变化过程。"],
       "open-questions": ["目前没有待确认问题", "新问题经过审核后会显示首次出现、重提次数和开放天数。"],
       risks: ["目前没有已确认的风险或未解决矛盾", "这不代表没有风险，只代表现有已确认记录中没有。"],
       "gap-check": ["还不能运行资料缺口检查", "先确认使用场景。只有已配置检查规则的场景才会生成缺口。"],
       "next-meeting-agenda": ["目前没有下次必须确认的内容", "资料缺口、开放问题和未解决矛盾会汇总到这里。"],
-      "brief-card": ["下次沟通速览的信息还不够", "系统不会为了填满六项而编造内容。"],
+      "brief-card": ["会前简报的信息还不够", "系统不会为了填满六项而编造内容。"],
     };
     return <EmptyState title={copy[tab][0]} body={emptyReason || copy[tab][1]} />;
   }
@@ -1734,7 +1734,7 @@ function briefSourceId(item: Record<string, unknown>, kind: BriefItemKind): stri
 
 function BriefGroup({ title, items, kind, empty, onOpenClaim, onSelect, warning = false }: { title: string; items: Record<string, unknown>[]; kind: BriefItemKind; empty: string; onOpenClaim: (id: string, edit?: boolean) => void; onSelect: (tab: ResultTab) => void; warning?: boolean }) {
   return <article className={`view-card brief-group ${warning ? "brief-warning" : ""}`}>
-    <span className="eyebrow">下次沟通速览</span>
+    <span className="eyebrow">会前简报</span>
     <h3>{title}</h3>
     {items.length ? <ol className="brief-item-list">{items.map((item, index) => {
       const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
@@ -2645,7 +2645,7 @@ export default function Home() {
           } else if (latest.status === "failed") {
             setEventIssue({
               code: latest.errorCode || "TRANSCRIPTION_FAILED",
-              message: "录音仍然保留在这次沟通中。请检查错误后点击“重新转写”。",
+              message: "转写失败，可以重新转写",
               status: 502,
             });
           }
@@ -3255,7 +3255,7 @@ export default function Home() {
     if (snapshot.plan.phase === "complete") {
       storeId(workflowIntentStorageKey, null);
       setWorkflowIntentProjectId(null);
-      flash("整组沟通已经核对完成，正在打开下次沟通速览");
+      flash("全部确认完成，打开会前简报");
       await loadView("brief-card", projectId, "replace");
       return;
     }
@@ -3263,7 +3263,7 @@ export default function Home() {
       const nextEvent = snapshot.events.find((item) => item.id === snapshot.plan.currentEventId);
       armAutoAnalysis(snapshot.plan.currentEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
       await loadSimpleProject(projectId, snapshot.plan.currentEventId, "replace");
-      flash("下一次沟通已准备好，正在自动开始分析");
+      flash("下一条记录已就绪，开始整理");
       return;
     }
     await loadSimpleProject(projectId, event?.id, "replace");
@@ -3274,13 +3274,13 @@ export default function Home() {
     if (reviewSummaryDestination.complete) {
       storeId(workflowIntentStorageKey, null);
       setWorkflowIntentProjectId(null);
-      flash("整组沟通已经核对完成，正在打开下次沟通速览");
+      flash("全部确认完成，打开会前简报");
       await loadView("brief-card");
     } else if (reviewSummaryDestination.nextEventId) {
       const nextEvent = events.find((item) => item.id === reviewSummaryDestination.nextEventId);
       armAutoAnalysis(reviewSummaryDestination.nextEventId, undefined, nextEvent?.latestRun?.id || nextEvent?.latestRunId);
       await loadSimpleProject(project.id, reviewSummaryDestination.nextEventId);
-      flash("下一次沟通已准备好，正在自动开始分析");
+      flash("下一条记录已就绪，开始整理");
     } else {
       await loadSimpleProject(project.id, event?.id);
     }
@@ -3321,7 +3321,7 @@ export default function Home() {
       targetSummary?.statusSummary.summaryStatus === "succeeded"
       || targetSummary?.statusSummary.readableTranscriptStatus === "succeeded"
     ) {
-      flash("整组处理已经完成；当前阅读位置已保留，可随时打开下次沟通速览");
+      flash("全部整理完成，可以打开会前简报");
       return;
     }
     storeId(workflowIntentStorageKey, null);
@@ -3371,7 +3371,7 @@ export default function Home() {
     }
     const reviewedClaimId = selectedClaim.id;
     const wasPending = selectedClaim.reviewStatus === "pending";
-    if ((action === "confirm" || action === "edit") && evidenceState !== "ready") {
+    if ((action === "confirm" || action === "edit" || action === "reject") && evidenceState !== "ready") {
       flash("证据尚未完整加载，暂时不能确认或修改这条记录");
       return;
     }
@@ -4113,7 +4113,9 @@ export default function Home() {
         await loadClaimsForRun(latest.id);
         flash("分析已经完成");
       } else {
-        await startExtractionForEvent(event);
+        // A status check must stay read-only. Re-running costs a paid model
+        // call and belongs to the explicit re-run button.
+        flash(`上次整理${statusLabel(latest.status)}，可重新整理`);
       }
     } catch (error) {
       setEventIssue(toIssue(error));
@@ -4302,13 +4304,13 @@ export default function Home() {
       }
       if (snapshot.plan.phase === "waiting_material") {
         if (current) await loadSimpleProject(projectId, current.event.id);
-        flash("前一次沟通的材料还没有准备好，暂时不会越过它处理后面的内容");
+        flash("上一条记录还在准备中");
         return;
       }
       if (snapshot.plan.phase === "complete") {
         storeId(workflowIntentStorageKey, null);
         setWorkflowIntentProjectId(null);
-        flash("全部沟通都已处理并核对完成，正在打开下次沟通速览");
+        flash("全部确认完成，打开会前简报");
         await loadView("brief-card");
         return;
       }
@@ -4340,7 +4342,7 @@ export default function Home() {
         await api.kickDispatcher({ kind: "extraction", runId: current.run.id }).catch(() => undefined);
         if (!isCurrentRequestOwner(owner)) return;
         setRunPollCycle((value) => value + 1);
-        flash(`继续等待第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通的处理结果`);
+        flash(`整理中 ${snapshot.plan.currentPosition}/${snapshot.plan.total}`);
         return;
       }
 
@@ -4353,7 +4355,7 @@ export default function Home() {
         phase: "running",
         currentRunId: nextRun.id,
       });
-      flash(`正在处理第 ${snapshot.plan.currentPosition}/${snapshot.plan.total} 次沟通`);
+      flash(`整理中 ${snapshot.plan.currentPosition}/${snapshot.plan.total}`);
     } catch (error) {
       if (!isCurrentRequestOwner(owner)) return;
       const issue = toIssue(error);
@@ -4434,7 +4436,7 @@ export default function Home() {
       await loadProjects();
       await loadSimpleProject(created.id);
       if (openTranscriptAfterCreate) setShowImport(true);
-      flash("新项目已经建立。Transcript 会成为第一条沟通，录音或照片会自动建立第一条沟通。");
+      flash("项目已创建");
       return { project: created, event: null };
     } catch (error) {
       setProjectsIssue(toIssue(error));
@@ -4490,7 +4492,7 @@ export default function Home() {
           mutationKeys.current.set(fingerprint, idempotencyKey);
           const createdEvent = await api.createEvent(
             currentProject.id,
-            { title: "第一次沟通", event_type: "meeting", occurred_at: new Date().toISOString() },
+            { title: "第一条记录", event_type: "meeting", occurred_at: new Date().toISOString() },
             idempotencyKey,
           );
           mutationKeys.current.delete(fingerprint);
@@ -4760,7 +4762,7 @@ export default function Home() {
       const updated = await api.confirmScenario(project, scenario, idempotencyKey, custom);
       mutationKeys.current.delete(fingerprint);
       setProject(updated);
-      flash("使用场景已确认，后续沟通会沿用这个设置");
+      flash("场景已确认");
       if (screen === "simple") {
         const targetEventId = projectWorkflow.currentEventId || event?.id || routeRef.current.eventId;
         if (targetEventId) {
@@ -4941,7 +4943,6 @@ export default function Home() {
           {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
         </button>
         <button className="brand" onClick={goSimple} aria-label="Notique AI · 项目工作区"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
-        <div className="account"><span className="avatar"><Users aria-hidden="true" /></span><span className="sidebar-label"><strong>Notique</strong><small>Workspace</small></span></div>
         <nav aria-label="主要导航">
           <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="项目工作区" title={sidebarCollapsed ? "项目工作区" : undefined}><span className="sidebar-nav-icon"><LayoutDashboard aria-hidden="true" /></span><span className="sidebar-nav-label">项目工作区</span></button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="项目管理" title={sidebarCollapsed ? "项目管理" : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">项目管理</span></button>
@@ -5035,6 +5036,7 @@ export default function Home() {
             || showTrash
             || showMissingClaim
             || routeRestoring.current}
+          onNotice={flash}
           onDeleteProject={openProjectDeletePreview}
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
         />}
@@ -5148,7 +5150,7 @@ export default function Home() {
                 ? `录音已保存，${transcription.chunkCount ?? transcription.chunks.length} 段正在并行转写`
                 : "录音已保存，正在生成逐字稿；完成后会自动整理重点");
             } else {
-              flash(armed ? "材料已加入这次沟通，正在准备自动分析" : "材料已加入这次沟通。这个浏览器不允许保存会话状态，请点击“重新启动分析”。");
+              flash(armed ? "材料已加入，开始整理" : "材料已加入，请点「重新开始整理」");
             }
             await loadEvent(event.id);
           } catch (error) {
@@ -5231,7 +5233,7 @@ export default function Home() {
       {showImport && project && <ImportModal project={project} onClose={() => setShowImport(false)} onImported={async (created) => {
         setShowImport(false);
         created.forEach((item) => armAutoAnalysis(item.id, undefined, item.latestRun?.id || item.latestRunId));
-        flash(`已建立 ${created.length} 次沟通，当前一条会自动开始分析`);
+        flash(`已创建 ${created.length} 条记录，开始整理`);
         if (simpleFlow) {
           await loadSimpleProject(project.id, created[0]?.id);
         } else {
@@ -5299,6 +5301,7 @@ type SimpleTestScreenProps = {
   onTranscriptFocusHandled: (requestId: number) => void;
   onRequirePublicWorkspaceAcknowledgement: (action: () => void) => void;
   externalInteractionActive: boolean;
+  onNotice: (message: string) => void;
   onDeleteProject: () => void;
   onOpenTrash: () => void;
 };
@@ -5978,7 +5981,7 @@ function TranscriptArtifactsPanel({
           sectionKind,
           sectionLabel: summarySectionLabel(sectionKind) || "重点",
           sourceIds: stringValues(firstSummaryItem.source_segment_ids),
-          summaryText: firstString(firstSummaryItem, ["text"]) || "本次沟通重点",
+          summaryText: firstString(firstSummaryItem, ["text"]) || "本次重点",
           supportQuote: firstString(firstSummaryItem, ["support_quote"]) || "",
           returnFocusId: `summary-source-${firstSummarySectionIndex}-0`,
         };
@@ -6447,7 +6450,7 @@ function TranscriptArtifactsPanel({
       onKeyDown={(event) => { if (audioPlaying && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) setFollowPlayback(false); }}
     >
     <section className="reader-overview" aria-label="智能速览">
-      <h2 className="tingwu-overview-title"><NotebookPen aria-hidden="true" />沟通概览</h2>
+      <h2 className="tingwu-overview-title"><NotebookPen aria-hidden="true" />记录概览</h2>
 
       <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewText}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : <p className="rail-muted">{analysisRunning ? "概要正在整理，原文已可阅读。" : "暂无全文概要，可以阅读下方原文。"}</p>}</section></SmoothResize>
       <header className="reader-intelligence-heading">
@@ -6662,7 +6665,7 @@ function TranscriptArtifactsPanel({
           {selectedPoint?.sourceIds.length ? actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">在左侧先点一条重点，即可带着原文创建行动。</p>}
           {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
           {projectActions.isError && <div className="rail-inline-error"><span>行动暂时没有读到，其他内容不受影响。</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
-          {!actionComposerIsCurrent && !projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这次沟通还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
+          {!actionComposerIsCurrent && !projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这条记录还没有已确认行动</strong><p>先在“待确认”处理下一步建议，确认后会自动出现在这里。</p></div>}
           {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
             const actionClaim = claims.find((claim) => claim.id === action.claim_id);
             return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${/^\d{4}-\d{2}-\d{2}$/.test(action.due_at) ? action.due_at.replaceAll("-", "/") : formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>;
@@ -6734,11 +6737,11 @@ function AudioTranscriptionProgressPanel({
           ? "正在生成逐字稿"
           : "正在准备逐字稿";
   const statusText = failed
-    ? "录音仍然安全保留，可以直接重试。"
+    ? "可以重试"
     : preparing
-      ? "录音已保存；完成后会自动打开逐字稿。"
+      ? "录音已保存，转好自动打开"
       : chunksFinished
-        ? "正在合并时间点和说话人；完成后会自动打开逐字稿。"
+        ? "快好了"
         : hasChunkPlan && progress.total > 0
           ? (() => {
               // A chunk that has timed out and been requeued is not "in
@@ -6747,10 +6750,10 @@ function AudioTranscriptionProgressPanel({
               const retrying = (chunkedRun?.chunks ?? []).filter((chunk) =>
                 chunk.status !== "succeeded" && chunk.errorCode != null && chunk.processingAttemptNo >= 2).length;
               return retrying > 0
-                ? `已完成 ${progress.completed}/${progress.total} 段；${retrying} 段转写超时，正在自动重试。`
-                : `已完成 ${progress.completed}/${progress.total} 段；可以离开此页，结果会自动更新。`;
+                ? `已完成 ${progress.completed}/${progress.total}，${retrying} 段在重试`
+                : `已完成 ${progress.completed}/${progress.total}，可以先去忙别的`;
             })()
-          : "正在识别说话人和时间点；完成后会自动打开逐字稿。";
+          : "正在识别说话人";
 
   return <section className={`transcription-journey${failed ? " failed" : ""}`} aria-live="polite" aria-busy={!failed} data-testid="transcription-journey">
     <header>
@@ -6809,11 +6812,15 @@ function SimpleTestScreen({
   onTranscriptFocusHandled,
   onRequirePublicWorkspaceAcknowledgement,
   externalInteractionActive,
+  onNotice,
   onDeleteProject,
   onOpenTrash,
 }: SimpleTestScreenProps) {
   const [showImportChoices, setShowImportChoices] = useState(false);
   const [showRecorder, setShowRecorder] = useState(false);
+  // True while DirectRecorder holds audio; collapsing the panel then would
+  // unmount it and destroy the recording.
+  const [recorderActive, setRecorderActive] = useState(false);
   const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
   const [readerWasOpened, setReaderWasOpened] = useState(false);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
@@ -6924,39 +6931,39 @@ function SimpleTestScreen({
     loading: "正在检查整组材料",
     empty: "请先导入材料",
     waiting_material: "等待当前材料准备完成",
-    ready: projectWorkflow.completed > 0 ? "下一次沟通将自动处理" : "材料就绪后自动处理",
+    ready: projectWorkflow.completed > 0 ? "下一条记录会自动整理" : "材料就绪后自动处理",
     running: "正在处理，请稍候",
     empty_output: "检查材料并重新处理",
     waiting_scenario: "请先确认使用场景",
     waiting_review: "核对这次结果",
     draft_ready: "查看 AI 草稿",
     partially_reviewed: "继续查看项目进展",
-    complete: "打开下次沟通速览",
+    complete: "打开会前简报",
     error: "重新检查并继续",
   };
   const workflowActionLabel = workflowActionLabels[projectWorkflow.phase];
   const workflowCopy: Record<ProjectWorkflowState["phase"], { title: string; body: string }> = {
     idle: {
       title: "准备整组材料",
-      body: "系统会按 Project 中现有的沟通顺序处理。",
+      body: "按记录顺序整理",
     },
     loading: {
       title: "正在检查整组材料",
-      body: "正在读取每次沟通的材料和处理状态。",
+      body: "读取中…",
     },
     empty: {
       title: "还没有可处理的材料",
       body: "先导入 Transcript、照片或录音，再从这里开始。",
     },
     waiting_material: {
-      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通还没准备好`,
-      body: "这次沟通仍在上传或转写。系统会保留顺序，不会先处理后面的内容。",
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 条记录还没准备好`,
+      body: "这条记录还在转写",
     },
     ready: {
-      title: projectWorkflow.completed > 0 ? "下一次沟通已经就绪" : "一次入口，按顺序处理整组沟通",
+      title: projectWorkflow.completed > 0 ? "下一条记录已就绪" : "按顺序整理每条记录",
       body: projectWorkflow.pendingTotal > 0
         ? `前面还有 ${projectWorkflow.pendingTotal} 条 AI 草稿未核对，但不会阻止下一次分析。进入整组流程后，系统会在材料就绪时自动继续。`
-        : "每次处理一条沟通。进入整组流程后会自动衔接分析；AI 草稿生成后可以立即阅读，核对可以现在做，也可以稍后继续。",
+        : "一次整理一条记录，整理好就能读，确认可以随时做",
     },
     running: {
       title: rawTranscriptAvailable ? "逐字稿已就绪，正在整理重点" : "正在准备本次内容",
@@ -6965,30 +6972,30 @@ function SimpleTestScreen({
         : "完成后会自动更新，不需要重复点击。",
     },
     empty_output: {
-      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通没有生成可核对的记录`,
-      body: "这次运行虽然结束了，但 Claim 和再次出现记录都是 0，不能算作完成，也不会继续处理后面的沟通。请检查材料后重新处理本次沟通。",
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 条记录没有整理出要点`,
+      body: "没有整理出任何要点，请检查材料后重新整理",
     },
     waiting_scenario: {
-      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通已处理`,
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 条记录已整理`,
       body: "先在下方确认这组材料的使用场景，再核对本次结果。",
     },
     waiting_review: {
-      title: `第 ${workflowPosition}/${projectWorkflow.total} 次沟通等你核对`,
+      title: `第 ${workflowPosition}/${projectWorkflow.total} 条记录待确认`,
       body: "你可以优先核对金额、日期、责任人、矛盾和低置信内容，也可以稍后继续。未核对草稿不会进入可信报告。",
     },
     draft_ready: {
       title: "本次分析已经完成，核对可以稍后继续",
-      body: `${projectWorkflow.pendingTotal} 条 AI 草稿等待核对。你可以先使用摘要，也可以新增下一次沟通；只有确认过的内容会进入可信报告。`,
+      body: `${projectWorkflow.pendingTotal} 条待确认，只有确认过的才会进入报告`,
     },
     partially_reviewed: {
       title: "项目进展包含 AI 草稿和可信记忆",
       body: `${projectWorkflow.pendingTotal} 条内容仍待核对。未核对草稿不会进入 Timeline、Brief 或正式报告。`,
     },
     complete: {
-      title: projectWorkflow.ignoredEmptyCount > 0 ? "所有有材料的沟通已经处理完成" : "整组沟通已经处理完成",
+      title: projectWorkflow.ignoredEmptyCount > 0 ? "全部记录已整理" : "全部记录已整理",
       body: projectWorkflow.ignoredEmptyCount > 0
-        ? `${projectWorkflow.ignoredEmptyCount} 次沟通没有材料，未纳入处理。其余沟通已经完成并经过人工核对。`
-        : "每次沟通的结果都已经经过人工核对。",
+        ? `${projectWorkflow.ignoredEmptyCount} 条记录没有材料，已跳过`
+        : "全部记录已确认",
     },
     error: {
       title: "暂时无法确认当前进度",
@@ -7034,10 +7041,10 @@ function SimpleTestScreen({
     error: "重新检查",
   };
   const workflowStepTitle = projectWorkflow.currentEventId && !workflowSelectedCurrent
-    ? "请先选择当前沟通"
+    ? "先选一条记录"
     : workflowActionLabel;
   const workflowStepBody = projectWorkflow.currentEventId && !workflowSelectedCurrent
-    ? `当前顺序应处理“${projectWorkflow.currentEventTitle || "前一次沟通"}”，这里不会越过它。`
+    ? `请先整理“${projectWorkflow.currentEventTitle || "上一条记录"}”`
     : currentWorkflowCopy.body;
   const compactWorkflowCard = projectWorkflow.phase === "empty"
     || projectWorkflow.phase === "complete"
@@ -7185,15 +7192,14 @@ function SimpleTestScreen({
   return (
     <div className="page simple-page">
       {!project && <header className="simple-header">
-        <span className="eyebrow">Notique Workspace</span>
-        <h1>每次沟通，都有据可查</h1>
-        <p>上传录音或笔记，整理重点，跟进下一步。</p>
+        <h1>每句话都找得到出处</h1>
+        <p>上传录音或笔记，自动整理重点</p>
       </header>}
 
-      <section className="simple-session" aria-label="当前项目和沟通">
+      <section className="simple-session" aria-label="当前项目和材料">
         <div className="simple-session-copy">
           <span className="context-mark" aria-hidden="true"><FolderOpen /></span>
-          <span><strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "尚未选择项目"}</strong><small>{event ? event.title : project ? "请选择一次沟通" : "可以先创建空白项目，也可以直接上传材料"}</small></span>
+          <span><strong>{project ? project.name.replace(/^\[SYNTHETIC\]\s*/, "") : "还没选项目"}</strong><small>{event ? event.title : project ? "选一条记录" : "新建项目，或直接上传材料"}</small></span>
         </div>
         <label>
           <span>当前项目</span>
@@ -7213,12 +7219,12 @@ function SimpleTestScreen({
         </label>
         {events.length > 0 && <>
           <label className="simple-event-select">
-            <span>当前沟通</span>
-            <select aria-label="选择当前沟通" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => selectEvent(change.target.value)}>
+            <span>当前记录</span>
+            <select aria-label="选择记录" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => selectEvent(change.target.value)}>
               {events.map((item) => <option key={item.id} value={item.id}>{item.id === event?.id ? event.title : item.title}</option>)}
             </select>
           </label>
-          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加一次沟通"><Plus aria-hidden="true" /></button>
+          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>
         </>}
         {event && <span className={`simple-session-status current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
         <DropdownMenu.Root open={showProjectMenu} onOpenChange={setShowProjectMenu}>
@@ -7270,7 +7276,7 @@ function SimpleTestScreen({
 
       <section className="simple-workspace" aria-label="项目工作区">
         <aside className="simple-meeting-rail">
-          <header><div><span className="section-kicker">沟通记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加一次沟通"><Plus aria-hidden="true" /></button>}</header>
+          <header><div><span className="section-kicker">记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>}</header>
           <div className="simple-meeting-list">
             {events.map((item, index) => {
               const itemSummary = eventWorkflowSummaries[item.id];
@@ -7285,17 +7291,17 @@ function SimpleTestScreen({
                 </button>
               );
             })}
-            {events.length === 0 && <p>还没有沟通记录。直接录音或上传材料时，系统会自动建立第一条。</p>}
+            {events.length === 0 && <p>还没有记录</p>}
           </div>
         </aside>
 
         <article className="simple-current-event">
           <header className="current-event-header">
-            <div><span className="section-kicker">当前沟通</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${visibleAssets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一次沟通。"}</p></div>
+            <div><span className="section-kicker">当前记录</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${visibleAssets.length} 份材料` : "直接录音或上传 Transcript，系统会自动建立项目和第一条记录。"}</p></div>
             <span className={`current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>
           </header>
 
-          <nav className="meeting-tabs" aria-label="当前沟通内容">
+          <nav className="meeting-tabs" aria-label="当前记录">
             {/* 待确认 lives only in the action rail: the old top-bar entry
                 opened the same reading page and merely pre-selected the rail's
                 own sub-tab, so two controls with one name did one job. 材料
@@ -7352,17 +7358,17 @@ function SimpleTestScreen({
           </aside>}
 
           {activeTab === "materials" && <div className="meeting-tab-panel">
-            {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整组沟通处理" aria-live="polite">
+            {showProjectWorkflowCard && <section className={`project-workflow-card ${projectWorkflow.phase}${compactWorkflowCard ? " compact" : ""}`} aria-label="整理全部记录" aria-live="polite">
               {projectWorkflow.phase === "running" ? <div className="project-workflow-copy running"><span className="processing-inline"><i className="spinner" aria-hidden="true" />正在整理重点</span><h2>{currentWorkflowCopy.title}</h2><p>{currentWorkflowCopy.body}</p></div> : <><div className="project-workflow-copy"><span className="section-kicker">整组处理 · {workflowStepStateLabels[projectWorkflow.phase]}</span><h2>{workflowStepTitle}</h2><p>{workflowStepBody}</p></div>{projectWorkflow.phase !== "empty" && <div className="project-workflow-progress"><div><span>已完成</span><strong>{projectWorkflow.completed}/{projectWorkflow.total}</strong></div><progress max={Math.max(projectWorkflow.total, 1)} value={projectWorkflow.completed} /></div>}</>}
               {workflowActionable && <button className="project-workflow-action" disabled={!workflowStepActionable || Boolean(busy)} onClick={projectWorkflow.phase === "complete" ? () => onResult("brief-card") : onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowActionLabel}</button>}
             </section>}
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
-              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份来源时，系统会自动建立沟通。"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? <><X aria-hidden="true" />收起</> : <><Plus aria-hidden="true" />添加来源</>}</button>}</header>
-              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在建立本次沟通，马上可以添加内容。" : "内容已收到；完成后会自动更新。"} />}
+              <header><div><h3>原始来源</h3><p>{event ? `录音、逐字稿和手写照片都归在“${event.title}”` : "导入第一份材料时会自动建记录"}</p></div>{visibleAssets.length > 0 && <button aria-label={showImportChoices ? "收起添加材料" : "添加材料"} className="button secondary" disabled={Boolean(busy)} onClick={() => setShowImportChoices((open) => !open)} aria-expanded={showImportChoices}>{showImportChoices ? <><X aria-hidden="true" />收起</> : <><Plus aria-hidden="true" />添加来源</>}</button>}</header>
+              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在创建记录…" : "内容已收到；完成后会自动更新。"} />}
               {showImportChoices && <div className="simple-import-panel" aria-label="添加材料">
                 <div className="simple-import-actions">
-                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open))}><span className="material-action-icon record" aria-hidden="true"><Mic /></span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
+                  <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => { if (showRecorder && recorderActive) { onNotice("录音还没保存"); return; } onRequirePublicWorkspaceAcknowledgement(() => setShowRecorder((open) => !open)); }}><span className="material-action-icon record" aria-hidden="true"><Mic /></span><span><strong>直接录音</strong><small>使用这台设备的麦克风</small></span></button>
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => audioFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><Upload /></span><span><strong>上传已有录音</strong><small>MP3、M4A、WAV、WebM</small></span></button>
                   <input ref={audioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => transcriptFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileText /></span><span><strong>上传 Transcript</strong><small>TXT、VTT、SRT 或 JSON</small></span></button>
@@ -7370,7 +7376,7 @@ function SimpleTestScreen({
                   <button className="simple-import-action" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => photoFileRef.current?.click())}><span className="material-action-icon" aria-hidden="true"><FileImage /></span><span><strong>选择手写笔记照片</strong><small>含 iPhone HEIC 自动转换</small></span></button>
                   <input ref={photoFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择手写笔记照片" accept={MODEL_IMAGE_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseHandwrittenPhoto} />
                 </div>
-                {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} />}
+                {showRecorder && <DirectRecorder disabled={Boolean(busy)} onSave={onAddFile} onClose={() => setShowRecorder(false)} onActiveChange={setRecorderActive} />}
               </div>}
 
               {materialPreparationActive && visibleAssets.length === 0 ? null : event && visibleAssets.length > 0 ? <div className="simple-material-list">
@@ -7380,9 +7386,9 @@ function SimpleTestScreen({
                   const canRetryTranscription = asset.kind === "audio" && assetRun?.status !== "succeeded" && storedTranscriptionStatus !== "succeeded";
                   return <article key={asset.id}><span className="file-kind" aria-hidden="true">{asset.kind === "audio" ? <FileAudio /> : asset.kind === "photo" ? <ImageIcon /> : <FileText />}</span><span><b>{asset.filename}</b><small>{formatBytes(asset.sizeBytes)}{asset.kind === "audio" ? " · 保存后自动生成逐字稿" : ""}</small></span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} />{canRetryTranscription && <button className="text-button" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</article>;
                 })}
-              </div> : <section className="capture-launchpad" aria-label="开始一次沟通">
-                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">添加材料</span><h3>添加第一次沟通</h3><p>录音、逐字稿或笔记照片，都可以从这里开始。</p></div></header>
-                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>录音或导入原文</strong><small>手机、录音笔或 Transcript 都可以</small></span><span><b>2</b><strong>需要时补充照片</strong><small>手写内容会和这次沟通放在一起</small></span><span><b>3</b><strong>边读边处理</strong><small>重点、原话、待确认和行动同屏</small></span></div>
+              </div> : <section className="capture-launchpad" aria-label="开始一条记录">
+                <header><span className="capture-launchpad-mark" aria-hidden="true"><NotebookPen /></span><div><span className="section-kicker">添加材料</span><h3>添加第一条记录</h3><p>录音、逐字稿或笔记照片，都可以从这里开始。</p></div></header>
+                <div className="capture-walkthrough" aria-label="使用方式"><span><b>1</b><strong>录音或导入原文</strong><small>手机、录音笔或 Transcript 都可以</small></span><span><b>2</b><strong>需要时补充照片</strong><small>手写内容会放进这条记录</small></span><span><b>3</b><strong>边读边处理</strong><small>重点、原话、待确认和行动同屏</small></span></div>
                 <div className="capture-launch-actions"><button className="button primary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceAudioFileRef.current?.click())}><Upload aria-hidden="true" />上传录音</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspaceTranscriptFileRef.current?.click())}><FileText aria-hidden="true" />上传 Transcript</button><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { setShowImportChoices(true); setShowRecorder(true); })}><Mic aria-hidden="true" />直接录音</button><button className="text-button" disabled={Boolean(busy)} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}><Camera aria-hidden="true" />拍手写笔记</button></div>
                 <p className="capture-device-note">使用录音笔时，可通过 USB-C 将音频快速导入手机后上传。</p>
               </section>}
@@ -7419,17 +7425,17 @@ function SimpleTestScreen({
                 focusRequest={transcriptFocusRequest}
                 onFocusHandled={onTranscriptFocusHandled}
               />
-            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选择一次沟通</h3><p>选择后可阅读原文、查看沟通总结并核对重点。</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
+            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中后可以读原文、看总结、确认要点</p><button className="button secondary" onClick={() => { setActiveTab("materials"); setShowImportChoices(true); }}>去添加材料</button></div>}
           </div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "选择本项目的工作场景后，即可查看跨沟通的概览。" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
         </article>
       </section>
 
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
       {!project && projectsState === "empty" && <p className="simple-footnote">还没有项目。可以点击“新建项目”，也可以直接录音或上传材料，系统会自动创建。</p>}
-      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新处理当前沟通" : "请先选择当前沟通"}</button></div>}
+      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新整理" : "先选一条记录"}</button></div>}
     </div>
   );
 }
@@ -7456,10 +7462,10 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
   const needsScenario = project.scenarioStatus === "pending_confirmation" || Boolean(project.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
   return (
     <div className="page">
-      <PageHeader eyebrow="Project" title={project.name} body={`${events.length} 次沟通 · ${statusLabel(project.scenarioStatus)}`} back={onBack} backLabel="返回项目列表" actions={<><button className="button secondary" onClick={onNewEvent}>新增沟通</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
+      <PageHeader eyebrow="项目" title={project.name} body={`${events.length} 条记录 · ${statusLabel(project.scenarioStatus)}`} back={onBack} backLabel="返回项目列表" actions={<><button className="button secondary" onClick={onNewEvent}>新增材料</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} compact />}
       {needsScenario && <section className="scenario-panel">
-        <div><span className="section-kicker">需要你确认</span><h2>这个项目属于哪一类？</h2><p>场景只在第一份材料后确认一次。后续沟通会沿用，不会重复猜。</p></div>
+        <div><span className="section-kicker">需要你确认</span><h2>这个项目属于哪一类？</h2><p>只需选一次</p></div>
         <div className="scenario-options">{project.scenarioCandidates?.map((item) => <label className={scenario === item.key ? "selected" : ""} key={item.key}><input type="radio" name="scenario" value={item.key} checked={scenario === item.key} onChange={() => setScenario(item.key)} /><span><strong>{item.label}</strong><small>{confidenceText(item.confidence)}{item.description ? ` · ${item.description}` : ""}</small></span></label>)}</div>
         <label className="field"><span>自定义类型（可选）</span><input value={custom} onChange={(event) => setCustom(event.target.value)} placeholder="例如：顾问项目跟进" /></label>
         <button className="button primary" disabled={busy || (!scenario && !custom.trim())} onClick={() => void onConfirmScenario(scenario || "custom", custom.trim() || undefined)}>{busy ? "正在保存…" : "确认使用场景"}</button>
@@ -7467,11 +7473,11 @@ function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenE
       {project.scenarioStatus === "confirmed" && <section className="project-status-row"><div><span className="section-kicker">已确认使用场景</span><strong>{project.scenario?.label || project.scenario?.key || "已确认"}</strong></div><button className="button secondary" onClick={() => onResults("folder-summary")}>打开当前结果</button></section>}
       <div className="project-screen-grid">
         <section className="panel event-panel">
-          <div className="section-heading"><div><h2>沟通记录</h2></div><button className="text-button" onClick={onImport}>批量导入 1–10 份</button></div>
-          {!events.length ? <EmptyState title="还没有沟通记录" body="可以一次导入多份 Transcript，也可以先新增一次沟通再粘贴文字或上传文件。" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><ChevronRight aria-hidden="true" /></button>)}</div>}
+          <div className="section-heading"><div><h2>记录</h2></div><button className="text-button" onClick={onImport}>批量导入</button></div>
+          {!events.length ? <EmptyState title="还没有记录" body="导入多份逐字稿，或新建一条记录" /> : <div className="event-list">{events.map((item, index) => <button key={item.id} onClick={() => onOpenEvent(item.id)}><span className="event-order">{index + 1}</span><span><strong>{item.title}</strong><small>{formatDate(item.occurredAt, true)} · {typeLabel(item.eventType)}</small></span><StatusBadge value={item.latestRun?.status || item.status} /><ChevronRight aria-hidden="true" /></button>)}</div>}
         </section>
         <aside className="project-rail">
-          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待确认` : "待确认内容"}</h2><p>只有确认过的内容会进入正式结果。</p><button className="button primary full" onClick={onReview}>打开确认区</button></section>
+          <section className="panel action-panel"><h2>{pendingReviewCount > 0 ? `还有 ${pendingReviewCount} 条待确认` : "待确认内容"}</h2><p>只有你确认过的才会进入报告</p><button className="button primary full" onClick={onReview}>打开确认区</button></section>
         </aside>
       </div>
       <GlossaryPanel projectId={project.id} />
@@ -7608,7 +7614,7 @@ function GlossaryPanel({ projectId }: { projectId: string }) {
 
   return (
     <details className="panel glossary-panel">
-      <summary><span className="section-kicker">项目设置</span><h2>词汇表{entries.length > 0 && <em>{entries.length} 条</em>}</h2><p>人名、公司名等易写错词条，用于后续材料分析。</p></summary>
+      <summary><span className="section-kicker">项目设置</span><h2>词汇表{entries.length > 0 && <em>{entries.length} 条</em>}</h2><p>人名、公司名的正确写法</p></summary>
       {issue && <ErrorNotice issue={issue} onRetry={load} compact />}
       <div className="glossary-layout">
         <div className="glossary-form">
@@ -7642,8 +7648,8 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
   const [paste, setPaste] = useState("");
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  if (state === "loading") return <div className="page"><LoadingBlock label="正在读取这次沟通…" /></div>;
-  if (state === "error" || !event) return <div className="page"><PageHeader title="沟通记录" back={onBack} backLabel="返回项目" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
+  if (state === "loading") return <div className="page"><LoadingBlock label="读取中…" /></div>;
+  if (state === "error" || !event) return <div className="page"><PageHeader title="记录" back={onBack} backLabel="返回项目" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const readyAssets = event.assets.filter(assetIsAnalyzable);
   const canStart = readyAssets.length > 0 && !runInProgress.has(run?.status ?? "");
   const audioAssets = event.assets.filter((asset) =>
@@ -7679,7 +7685,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
             return <article key={asset.id}><FileKindIcon kind={asset.kind} /><span><strong>{asset.filename}</strong><small>{typeLabel(asset.kind)} · {formatBytes(asset.sizeBytes)}</small>{asset.kind === "audio" && <audio controls preload="metadata" src={`/api/v1/assets/${encodeURIComponent(asset.id)}/evidence-view`} />}{canRetryTranscription && <button className="text-button asset-retry" disabled={Boolean(busy)} onClick={() => onRetryTranscription(asset.id)}>{assetRun && runInProgress.has(assetRun.status) ? "重新检查转写状态" : assetRun?.status === "failed" ? "重新转写" : "生成逐字稿"}</button>}</span><StatusBadge value={assetRun?.status || storedTranscriptionStatus || asset.status} /></article>;
           })}</div>}
           {transcriptionRun && <section className={`transcription-progress compact ${transcriptionRun.status === "failed" ? "failed" : ""}`}><div><FileKindIcon kind="transcript" /><span><strong>{runInProgress.has(transcriptionRun.status) ? transcriptionRun.orchestrationMode === "chunked" ? "正在分段并行生成逐字稿" : "正在生成逐字稿" : transcriptionRun.status === "succeeded" ? "带时间点逐字稿已就绪" : "录音转写失败"}</strong><small>{transcriptionRun.status === "succeeded" ? `${transcriptionRun.segmentCount ?? transcriptionRun.segments.length} 个说话片段` : transcriptionRun.orchestrationMode === "chunked" ? `已完成 ${transcriptionRun.completedChunkCount}/${transcriptionRun.chunkCount ?? transcriptionRun.chunks.length} 段` : transcriptionRun.errorCode || statusLabel(transcriptionRun.status)}</small></span></div>{transcriptionRun.segments.length > 0 && <><div className="transcript-preview">{transcriptionRun.segments.slice(0, 6).map((segment) => <p key={segment.id}><time>{formatTimestamp(segment.startMs / 1000)}</time><b>{displaySpeakerLabel(segment.speaker)}</b><span>{segment.text}</span></p>)}</div><button className="text-button transcript-open" onClick={() => setShowFullTranscript(true)}>查看完整逐字稿（{transcriptionRun.segments.length} 段）</button></>}{transcriptionRun.status === "failed" && <><p className="transcription-error-detail">{transcriptionRun.errorMessage || "本次转写结果没有通过完整性检查，录音文件仍然安全保留。"}</p><button className="button secondary" disabled={Boolean(busy)} onClick={() => onRetryTranscription(transcriptionRun.audioAssetId)}>{busy === "transcription" ? "正在重试…" : "重新转写"}</button></>}</section>}
-          <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { const blob = new Blob([paste], { type: "text/plain" }); void onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }).then(() => setPaste("")); })}>{busy === "asset" ? "正在保存…" : "加入这次沟通"}</button></div>
+          <div className="paste-box"><label htmlFor="paste-transcript">粘贴 Transcript 或补充文字</label><textarea id="paste-transcript" value={paste} onChange={(change) => setPaste(change.target.value)} placeholder="粘贴原文。没有时间点也可以使用，证据页会明确写无法定位具体时间。" /><button className="button secondary" disabled={!paste.trim() || busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => { const blob = new Blob([paste], { type: "text/plain" }); void onAttach({ kind: "text", filename: "pasted-note.txt", contentType: "text/plain", blob }).then(() => setPaste("")); })}>{busy === "asset" ? "正在保存…" : "加入"}</button></div>
         </section>
         <aside className="event-rail">
           <section className="panel extraction-card"><h2>准备提取</h2><p>{readyAssets.length ? `${readyAssets.length} 份可分析材料已就绪。` : transcriptionRun && runInProgress.has(transcriptionRun.status) ? "录音仍在生成逐字稿，完成后才能分析。" : "至少需要一份 Transcript、文字或照片。"}</p><button className="button primary full" disabled={!canStart || busy === "extraction"} onClick={onStart}>{run ? "重新提取" : "开始提取"}</button>{!run && <small>系统会提取候选记录，并附上可以核对的原始证据。</small>}</section>
@@ -7699,8 +7705,8 @@ function DebugField({ label, value, mono = false }: { label: string; value: unkn
 }
 
 function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: AsyncState; issue: ApiIssue | null; debug: RunDebug | null; onBack: () => void; onRetry: () => void }) {
-  if (state === "loading") return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回本次沟通" /><LoadingBlock label="正在读取服务器中的运行记录…" /></div>;
-  if (state === "error" || !debug) return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回本次沟通" />{issue ? <ErrorNotice issue={issue} onRetry={onRetry} /> : <EmptyState title="没有运行详情" body="服务器没有返回这次运行的数据。" />}</div>;
+  if (state === "loading") return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回记录" /><LoadingBlock label="正在读取服务器中的运行记录…" /></div>;
+  if (state === "error" || !debug) return <div className="page narrow-page"><PageHeader eyebrow="内部页" title="本次运行详情" back={onBack} backLabel="返回记录" />{issue ? <ErrorNotice issue={issue} onRetry={onRetry} /> : <EmptyState title="没有运行详情" body="服务器没有返回这次运行的数据。" />}</div>;
   const data = debug.data;
   const manifest = recordArray(data.input_manifest);
   const modelParams = isRecord(data.model_params) ? data.model_params : {};
@@ -7721,7 +7727,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
   const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
   return (
     <div className="page debug-page">
-      <PageHeader eyebrow="内部页" title="本次运行详情" body="用于核对模型、输入、验证结果和成本。这里不影响正式结果。" back={onBack} backLabel="返回本次沟通" actions={<StatusBadge value={stringValue(data.status)} />} />
+      <PageHeader eyebrow="内部页" title="本次运行详情" body="用于核对模型、输入、验证结果和成本。这里不影响正式结果。" back={onBack} backLabel="返回记录" actions={<StatusBadge value={stringValue(data.status)} />} />
       <section className="debug-request"><span>本次页面请求 ID</span><code>{debug.requestId}</code></section>
       <div className="debug-grid">
         <section className="panel debug-section"><div className="section-heading"><div><h2>模型与执行参数</h2><p>这些值从本次 Run 保存的配置读取，不使用当前环境变量补齐。</p></div></div><div className="debug-fields"><DebugField label="Provider" value={data.provider} /><DebugField label="Model" value={data.model} /><DebugField label="Reasoning effort" value={reasoningEffort ?? "未冻结"} mono /><DebugField label="最大输出 token" value={maxOutputTokens ? `${maxOutputTokens} tokens` : "未冻结"} /><DebugField label="请求超时" value={timeoutMs ? `${timeoutMs} ms` : "未冻结"} /><DebugField label="Prompt" value={data.prompt_version} mono /><DebugField label="Schema" value={data.schema_version} mono /><DebugField label="Parser" value={data.parser_version} mono /><DebugField label="Provider Request ID" value={data.provider_request_id} mono /></div>{missingFrozenParameters.length > 0 && <p className="debug-config-warning" role="alert">这次 Run 没有完整冻结执行参数：{missingFrozenParameters.join("、")}。调试时不能用当前环境配置代替这次运行的实际值。</p>}</section>
@@ -7857,7 +7863,7 @@ function MissingClaimModal({ eventId, initialType = "other", initialSourceText =
     {initialSourceText && <aside className="manual-claim-source"><span>{initialType === "next_action" ? "作为行动依据的重点" : "要核对的重点"}</span><p>{initialSourceText}</p>{initialType === "next_action" && !initialStatement && <small>这是一条事实或背景，不会直接伪装成行动。请补充具体动作；最好写清负责人和时间。</small>}</aside>}
     <label className="field"><span>搜索逐字稿</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索说话人、金额、日期或关键词" /></label>
     {state === "loading" && <LoadingBlock label="正在读取本次完整逐字稿…" />}
-    {state === "empty" && <EmptyState title="没有可选择的逐字稿" body="这次沟通需要先有 Transcript，才能建立可追溯的人工补充。" />}
+    {state === "empty" && <EmptyState title="没有可选择的逐字稿" body="需要先有逐字稿" />}
     {state === "ready" && <div className="segment-picker">{shown.map((segment) => <label key={segment.id} className={selected.has(segment.id) ? "selected" : ""}><input type="checkbox" checked={selected.has(segment.id)} disabled={!selected.has(segment.id) && selected.size >= 8} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(segment.id)) next.delete(segment.id); else next.add(segment.id); return next; })} /><time>{formatTimestamp(segment.start_ms == null ? undefined : segment.start_ms / 1000)}</time><span><b>{displaySpeakerLabel(segment.speaker)}</b>{segment.text}</span></label>)}</div>}
     <div className="manual-claim-fields"><label className="field"><span>这条信息属于</span><select value={type} onChange={(event) => setType(event.target.value as OccurrenceNewClaim["type"])}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="field"><span>{initialType === "next_action" ? "要完成什么" : "用一句话写清楚"}</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} placeholder={initialType === "next_action" ? "例如：负责人周五前发送三份候选方案。" : "例如：项目预算上限为 21,500 美元。"} /></label></div>
     <p className="muted">已选 {selected.size} 段{initialSegmentIds.length > 8 ? `；本条重点关联 ${initialSegmentIds.length} 段，已先带入前 8 段，可手动调整` : ""}。需要关联旧记录时，先确认这条补充，再在记录详情中补关系。</p>
@@ -7868,7 +7874,7 @@ function MissingClaimModal({ eventId, initialType = "other", initialSourceText =
 function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
   const outcome = session?.outcome;
   const aiInitial = (session?.initialPendingClaimCount ?? 0) + (session?.initialPendingOccurrenceCount ?? 0);
-  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮确认完成" body="下面展示 AI 草稿经过人工确认后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark" aria-hidden="true"><Check /></span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮确认。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>直接确认、修改后确认和经过确认的人工补充会进入可信存档；未采纳内容和未处理草稿不会进入报告，也不会影响下一次沟通。</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看下次沟通准备" : "准备下一次沟通"}</button></section></div>;
+  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮确认完成" body="下面展示 AI 草稿经过人工确认后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark" aria-hidden="true"><Check /></span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮确认。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>确认过的进入报告和下一条记录，不采纳的不进入</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看下次准备" : "准备下一条"}</button></section></div>;
 }
 
 function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSession, reviewClockNow, onBack, onRetry, onOpen, onOccurrenceVerdict, onOccurrenceConvert, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; reviewSession: ReviewSession | null; reviewClockNow: number; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; busy: string | null }) {
@@ -7894,7 +7900,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
       {(state === "empty" || (state === "ready" && !visible.length && !visibleOccurrences.length)) && <EmptyState title={filter === "pending" ? "目前没有待确认记录" : "这个筛选下没有记录"} body={claims.length || occurrenceCandidates.length ? "所有候选都已处理。" : "完成一次提取后，候选记录才会出现在这里。系统不会显示示例内容。"} />}
       {visible.length > 0 && <div className="review-list">{visible.map((claim) => {
         const hasProposedRelations = claim.relationsForReview.some((relation) => relation.status === "proposed");
-        return <article key={claim.id} className={`review-card${claim.source === "human" ? " human-added" : ""}`}><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源沟通"}</span><span>{claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条依据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待确认</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看依据和处理记录" : hasProposedRelations ? "打开并逐条确认内容与关系" : "打开依据并决定"}<ChevronRight aria-hidden="true" /></span></button></article>;
+        return <article key={claim.id} className={`review-card${claim.source === "human" ? " human-added" : ""}`}><button className="review-card-main" onClick={() => onOpen(claim.id)}><div className="review-card-top"><span className="eyebrow">{claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)}</span><StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} /></div><h2>{claim.statement || "这条记录没有可显示的陈述"}</h2><div className="claim-meta"><span>{claim.eventTitle || "来源记录"}</span><span>{claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}</span><span>{claim.evidenceCount ?? claim.evidenceRefIds.length} 条依据</span>{hasProposedRelations && <span>{claim.relationsForReview.filter((relation) => relation.status === "proposed").length} 条关系待确认</span>}</div><UncertaintyNotice value={claim.uncertainty} compact /><EvidenceRequirementNotice claim={claim} compact /><span className="review-evidence-link">{claim.reviewStatus !== "pending" ? "查看依据和处理记录" : hasProposedRelations ? "打开并逐条确认内容与关系" : "打开依据并决定"}<ChevronRight aria-hidden="true" /></span></button></article>;
       })}</div>}
       {visibleOccurrences.length > 0 && <section className="occurrence-review-section"><div className="section-heading"><div><span className="section-kicker">再次出现</span><h2>这次说的内容可能已经记录过</h2><p>如果只是重复旧内容，可以把新依据附到原记录。如果里面有新变化，可以拆成新的待确认记录。</p></div></div><div className="occurrence-list">{visibleOccurrences.map((candidate) => <OccurrenceReviewCard key={candidate.id} candidate={candidate} busy={busy} onOpen={onOpen} onVerdict={onOccurrenceVerdict} onConvert={onOccurrenceConvert} />)}</div></section>}
     </div>
@@ -7992,7 +7998,7 @@ function InlineClaimReview({ claimId, initialEdit, projectId, verdictLocked, onC
     return () => { current = false; };
   }, [claimId, retry]);
   async function save(action: "confirm" | "reject" | "edit", reason?: string, edit?: ClaimEditSubmission, retainRelationIds?: string[]) {
-    if (!claim || busy || verdictLocked || (action !== "reject" && state !== "ready")) return;
+    if (!claim || busy || verdictLocked || state !== "ready") return;
     setBusy(action); setIssue(null);
     const fingerprint = JSON.stringify([claim.versionId, action, reason, edit, retainRelationIds]);
     const key = keys.current.get(fingerprint) || crypto.randomUUID();
@@ -8057,6 +8063,9 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
     .filter((relation) => relationDecisions[relation.id] === "accept")
     .map((relation) => relation.id);
   const evidenceReady = evidenceState === "ready";
+  // Rejection is irreversible. ClaimScreen is keyed by claim id + version, so
+  // this resets when the claim changes.
+  const [rejectArmed, setRejectArmed] = useState(false);
   const reviewQueue = readonly ? [] : reviewClaims.filter((item) => item.reviewStatus === "pending");
   const reviewPosition = Math.max(0, reviewQueue.findIndex((item) => item.id === claim.id)) + 1;
   const editHasSupportingEvidence = evidence.some(
@@ -8125,13 +8134,13 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
   });
   return (
     <div className={`page review-detail-page${embedded ? " embedded-review" : ""}`}>
-      {!embedded && <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源沟通"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending && !readonly ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} backLabel={backLabel} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />}
+      {!embedded && <PageHeader eyebrow={claim.source === "human" ? `人工补充 · ${typeLabel(claim.type)}` : typeLabel(claim.type)} title={claim.statement || "无陈述"} body={`${claim.eventTitle || "来源记录"} · ${claim.source === "human" ? "由你补充" : confidenceText(claim.confidence)}${pending && !readonly ? ` · 第 ${reviewPosition}/${reviewQueue.length} 条` : ""}`} back={onBack} backLabel={backLabel} actions={<StatusBadge value={claim.lifecycle === "withdrawn" ? "withdrawn" : claim.reviewStatus} />} />}
       {embedded && <button className="text-button" disabled={Boolean(busy)} onClick={onBack}>返回核对详情</button>}
       {issue && <ErrorNotice issue={issue} compact />}
       <div className="claim-layout">
         {!embedded && reviewQueue.length > 0 && <aside className="review-queue-rail" aria-label="连续确认列表"><header><span className="section-kicker">连续确认</span><strong>{reviewPosition}/{reviewQueue.length}</strong><small>作出决定后自动进入下一条</small></header><div>{reviewQueue.map((item, index) => <button className={item.id === claim.id ? "active" : ""} key={item.id} disabled={Boolean(busy)} onClick={() => onOpenReviewClaim(item.id)}><span>{index + 1}</span><span><b>{typeLabel(item.type)}</b><small>{item.statement}</small></span>{item.relationsForReview.some((relation) => relation.status === "proposed") && <em>关系</em>}</button>)}</div>{pendingOccurrenceCount > 0 && <p>这些记录处理完后，还有 {pendingOccurrenceCount} 条“再次出现”内容需要决定。</p>}</aside>}
         <section className="evidence-column"><div className="section-heading"><div><h2>原始证据</h2><p>{readonly ? "下面保留这条已确认记录的原句、前后文和来源。" : "确认前，请检查原文是否真的支持这条陈述。"}</p></div></div>{evidenceState === "loading" && <LoadingBlock label="正在定位证据…" />}{evidenceState === "empty" && <EmptyState title="没有可核对的证据" body="这条候选不应被确认。请拒绝，或等待后端补全证据。" />}{evidenceState === "error" && <EmptyState title="证据未完整加载" body={`系统应完整返回 ${claim.evidenceRefIds.length} 条当前版本证据，实际收到 ${evidence.length} 条或存在请求失败。下面仅显示已经收到的材料，确认、核对声明和修改功能已停用。请返回后重新打开再试。`} />}{evidence.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</section>
-        <aside className={`verdict-panel${pending && !edit && !readonly ? " compact" : " panel detailed"}`}>{!(pending && !edit && !readonly) && <h2>{readonly ? (verified ? "已确认记录" : "未采纳记录") : edit && verified ? "修改已确认记录" : verified ? "已确认记录" : "处理记录"}</h2>}<UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读依据模式</strong><p>这条记录已经完成确认。这里仅用于查看原文，不会显示待确认列表或修改操作。</p></div>}{!readonly && pending && verdictLocked && <div className="verdict-lock-note" role="status"><AlertTriangle aria-hidden="true" /><span><strong>分析仍在整理这次沟通</strong><small>记录已经保存；分析完成后才能确认、修改或不采纳，避免当前结果因版本变化而失败。</small></span></div>}{!readonly && (pending || (verified && edit)) && <>
+        <aside className={`verdict-panel${pending && !edit && !readonly ? " compact" : " panel detailed"}`}>{!(pending && !edit && !readonly) && <h2>{readonly ? (verified ? "已确认记录" : "未采纳记录") : edit && verified ? "修改已确认记录" : verified ? "已确认记录" : "处理记录"}</h2>}<UncertaintyNotice value={claim.uncertainty} /><EvidenceRequirementNotice claim={claim} />{readonly && <div className="readonly-claim-note"><strong>只读依据模式</strong><p>这条记录已经完成确认。这里仅用于查看原文，不会显示待确认列表或修改操作。</p></div>}{!readonly && pending && verdictLocked && <div className="verdict-lock-note" role="status"><AlertTriangle aria-hidden="true" /><span><strong>正在整理这条记录</strong><small>记录已经保存；分析完成后才能确认、修改或不采纳，避免当前结果因版本变化而失败。</small></span></div>}{!readonly && (pending || (verified && edit)) && <>
           {edit ? <div className="edit-form">
             <label className="field"><span>修改后的陈述</span><textarea value={statement} onChange={(event) => setStatement(event.target.value)} /></label>
             <details className="edit-options"><summary>调整分类与附加信息</summary><label className="field"><span>记录类型</span><select value={claimType} onChange={(event) => setClaimType(event.target.value)}>{occurrenceClaimTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
@@ -8165,12 +8174,14 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
             <div className="review-quick-actions" aria-label="核对操作">
               <button className="button primary" disabled={Boolean(busy) || verdictLocked || !evidenceReady || !relationsReviewed} onClick={() => onVerdict("confirm", "", undefined, acceptedRelationIds)} aria-label="确认并加入正式结果">确认</button>
               <button className="button secondary" disabled={Boolean(busy) || verdictLocked || !evidenceReady} onClick={() => setEdit(true)} aria-label="修改后确认">修改</button>
-              <button className="button quiet danger-text" disabled={Boolean(busy) || verdictLocked} onClick={() => onVerdict("reject", "")} aria-label="不采纳这条记录">不采纳</button>
+              {rejectArmed
+                ? <button className="button quiet danger-text" disabled={Boolean(busy) || verdictLocked || !evidenceReady} onClick={() => { setRejectArmed(false); onVerdict("reject", ""); }} aria-label="确定不采纳">确定不采纳</button>
+                : <button className="button quiet danger-text" disabled={Boolean(busy) || verdictLocked || !evidenceReady} onClick={() => setRejectArmed(true)} aria-label="不采纳这条记录">不采纳</button>}
               <ReviewShortcuts
                 enabled={reviewQueue.length > 0 && !verdictLocked}
                 canConfirm={!busy && !verdictLocked && evidenceReady && relationsReviewed}
                 canEdit={!busy && !verdictLocked && evidenceReady}
-                canReject={!busy && !verdictLocked}
+                canReject={!busy && !verdictLocked && evidenceReady}
                 onConfirm={() => onVerdict("confirm", "", undefined, acceptedRelationIds)}
                 onEdit={() => setEdit(true)}
                 onReject={() => onVerdict("reject", "")}
@@ -8182,7 +8193,7 @@ function ClaimScreen({ embedded = false, initialEdit = false, projectId, claim, 
               />
             </div>
           </div>}
-        </>}{!readonly && verified && !edit && <><div className="withdraw-box"><p>这条记录现在参与事项概况和后续沟通上下文。内容需要修正时建立新版本；只有整条记录不再有效时才撤回。</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或满足了前提</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
+        </>}{!readonly && verified && !edit && <><div className="withdraw-box"><p>需要修正就改，整条作废才撤回</p><button className="button secondary full" disabled={Boolean(busy) || !evidenceReady} onClick={() => setEdit(true)}>修改已确认记录</button><label className="field"><span>撤回原因</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明为什么这条已确认记录需要退出当前结果" /></label><button className="button secondary danger-text full" disabled={busy === "withdraw" || !reason.trim()} onClick={() => onWithdraw(reason.trim())}>{busy === "withdraw" ? "正在撤回…" : "撤回已确认记录"}</button></div><div className="manual-relation-box"><strong>这条记录补充或改变了旧记录？</strong><p>当系统漏掉两条已确认记录之间的关系时，可以在这里补上。旧内容会继续保留在时间线中。</p>{activeRelations.length > 0 && <div className="active-relation-list"><span>已经生效</span>{activeRelations.map((relation) => <article key={relation.id}><b>{relationReviewLabel(relation.type)}</b><p>{relation.targetStatement}</p>{relation.reason && <small>{relation.reason}</small>}</article>)}</div>}{!relationOpen ? <button className="button secondary full" disabled={Boolean(busy) || !projectId} onClick={() => void openRelationForm()}>{activeRelations.length > 0 ? "再关联一条旧记录" : "关联旧记录"}</button> : <div className="manual-relation-form">{relationIssue && <ErrorNotice issue={relationIssue} compact />}{relationTargetsState === "loading" && <LoadingBlock label="正在读取当前记录…" />}{relationTargetsState === "error" && <button className="button secondary full" onClick={() => { setRelationTargetsState("idle"); void openRelationForm(); }}>重新读取</button>}{relationTargetsState === "empty" && <p className="muted">当前没有其他可关联的已确认记录。</p>}{(relationTargetsState === "ready" || relationTargetsState === "empty") && <><label className="field"><span>关系</span><select value={relationType} onChange={(event) => { setRelationType(event.target.value as RelationType); setRelationTargetVersionId(""); }}><option value="resolves">这条新记录解决了旧问题或满足了前提</option><option value="supersedes">这条新记录取代了旧记录</option><option value="informed_by">这条新记录参考了旧记录</option><option value="contradicts">两条记录互相冲突，仍需处理</option></select></label><label className="field"><span>旧记录</span><select value={relationTargetVersionId} onChange={(event) => setRelationTargetVersionId(event.target.value)}><option value="">请选择一条当前有效记录</option>{eligibleRelationTargets.map((target) => <option value={target.claim_version_id} key={target.claim_version_id}>{target.event_title} · {typeLabel(target.type)} · {target.statement}</option>)}</select></label>{relationType === "resolves" && eligibleRelationTargets.length === 0 && <p className="muted">当前没有可以关闭的待确认问题、风险或前置条件。</p>}<label className="field"><span>判断依据</span><textarea value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="说明为什么这两条记录存在这个关系" /></label><div className="button-row"><button className="button secondary" onClick={() => setRelationOpen(false)}>取消</button><button className="button primary" disabled={busy === "manual-relation" || !selectedRelationTarget || relationReason.trim().length < 3} onClick={() => void submitManualRelation()}>{busy === "manual-relation" ? "正在保存…" : "保存关系"}</button></div></>}</div>}</div></>}{claim.lifecycle === "withdrawn" && <p className="muted">这条记录已经退出当前结果和后续上下文，仍保留在历史时间线中。</p>}</aside>
       </div>
     </div>
   );
@@ -8197,13 +8208,13 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, onWorks
     <div className="page results-page">
       {/* The same bar the workspace shows, so 整个项目 is a tab you are on,
           not a page you left the workspace for. 本次重点 is the way back. */}
-      <nav className="meeting-tabs results-scope-tabs" aria-label="当前沟通内容">
+      <nav className="meeting-tabs results-scope-tabs" aria-label="当前记录">
         <button aria-label="本次重点" onClick={() => onWorkspaceTab("transcript")}><b>本次重点</b></button>
         <button aria-label="材料" onClick={() => onWorkspaceTab("materials")}>材料</button>
         <span className="meeting-tabs-scope" aria-hidden="true" />
         <button aria-label="整个项目" aria-current="page" className="meeting-tabs-project active">整个项目</button>
       </nav>
-      <header className="results-scope-heading"><div><span className="project-breadcrumb">项目 / 工作台</span><h1>{project?.name.replace(/^\[SYNTHETIC\]\s*/, "") || "项目工作台"}</h1><p>{events.length} 次沟通<span className="heading-dot" aria-hidden="true" />{pendingReviewCount > 0 ? `${pendingReviewCount} 条待核对` : "暂无待核对记录"}</p></div><button className="button primary" onClick={() => onWorkspaceTab("transcript")}><NotebookPen size={16} aria-hidden="true" />查看沟通</button></header>
+      <header className="results-scope-heading"><div><span className="project-breadcrumb">项目 / 工作台</span><h1>{project?.name.replace(/^\[SYNTHETIC\]\s*/, "") || "项目工作台"}</h1><p>{events.length} 条记录<span className="heading-dot" aria-hidden="true" />{pendingReviewCount > 0 ? `${pendingReviewCount} 条待核对` : "暂无待核对记录"}</p></div><button className="button primary" onClick={() => onWorkspaceTab("transcript")}><NotebookPen size={16} aria-hidden="true" />查看记录</button></header>
       {showPendingReviewCount && <p className="pending-review-note">还有 {pendingReviewCount} 条待确认。它们仍在确认区，没有进入下面的已确认结果。</p>}
       <div className="result-layout"><aside className="result-nav"><div className="result-nav-primary">{primaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div><details className="result-nav-secondary" key={tab} open={secondaryResultTabs.some((item) => item.key === tab) || undefined}><summary>更多视图<ChevronDown size={14} aria-hidden="true" /></summary><div>{secondaryResultTabs.map((item) => <button className={item.key === tab ? "active" : ""} key={item.key} onClick={() => onSelect(item.key)}><span aria-hidden="true">{resultTabIcon(item.key)}</span><strong>{item.label}</strong><ChevronRight className="result-nav-chevron" aria-hidden="true" /></button>)}</div></details></aside><section className="result-content"><div className="section-heading"><div><h2>{current.label}</h2></div>{isRecord(data) && stringValue(data.generated_at) && <small>生成于 {formatDate(stringValue(data.generated_at), true)}</small>}</div>{issue && state !== "error" && <ErrorNotice issue={issue} onRetry={onRetry} compact />}{busy === "open-claim" && <LoadingBlock label="正在读取记录…" />}{state === "loading" && <LoadingBlock label={`正在读取${current.label}…`} />}{state === "error" && issue && <ErrorNotice issue={issue} onRetry={onRetry} />}{state === "empty" && content}{state === "ready" && content}</section></div>
     </div>
@@ -8213,13 +8224,13 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, onWorks
 function NewProjectModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (name: string) => Promise<void>; busy: boolean }) {
   const [name, setName] = useState("");
   return (
-    <Modal title="新建项目" description="Notique 会持续整理同一项目中的沟通重点、已确认信息、未决问题和下一步。" onClose={onClose}>
+    <Modal title="新建项目" description="Notique 会持续整理同一个项目的重点、已确认信息、未决问题和下一步" onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { event.preventDefault(); void onCreate(name.trim()); }}>
         <label className="field">
           <span>项目名称（可选）</span>
           <input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={200} placeholder="留空，第一份材料整理后自动命名" />
         </label>
-        <p className="form-note">留空时，会采用第一份沟通中 AI 生成的章节标题。你可以随时修改名称。</p>
+        <p className="form-note">留空会用 AI 生成的标题，随时可以改</p>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={onClose}>取消</button>
           <button className="button primary" disabled={busy}>{busy ? "正在创建…" : "创建项目"}</button>
@@ -8233,7 +8244,7 @@ function NewEventModal({ onClose, onCreate, busy }: { onClose: () => void; onCre
   const [title, setTitle] = useState("");
   const [type, setType] = useState("meeting");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 16));
-  return <Modal title="新增一次沟通" description="会议、电话、现场走访或其他工作沟通，都可以作为一条独立记录。" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他工作沟通</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建沟通"}</button></div></form></Modal>;
+  return <Modal title="新增材料" description="给这次内容起个名字，比如「张先生看房」" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建"}</button></div></form></Modal>;
 }
 
 function ImportModal({ project, onClose, onImported }: { project: Project; onClose: () => void; onImported: (events: Event[]) => Promise<void> }) {
@@ -8283,11 +8294,11 @@ function ImportModal({ project, onClose, onImported }: { project: Project; onClo
         }, controller.signal);
         if (importAbortRef.current === controller) importAbortRef.current = null;
       }
-      setProgress({ label: "正在按确认顺序建立沟通记录…", cancelable: false });
+      setProgress({ label: "正在创建…", cancelable: false });
       const created = await api.finalizeTranscriptImport(session.id, rows.map((row, index) => ({ item_id: session.items[index].id, title: row.title.trim(), occurred_at: new Date(row.occurredAt).toISOString(), event_type: row.eventType })));
       activeSession.current = null;
       await onImported(created);
     } catch (error) { setIssue(toIssue(error)); setProgress(null); } finally { importAbortRef.current = null; setBusy(false); }
   }
-  return <Modal title="批量导入逐字稿" description={`为 ${project.name} 建立 1 至 10 条按时间排序的沟通记录；全部文件就绪后才会一次性创建。`} onClose={busy ? () => undefined : onClose} wide><form className="modal-form" onSubmit={(event) => void submit(event)}>{issue && <ErrorNotice issue={issue} compact />}{!rows.length ? <label className="file-drop"><input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /><span className="empty-symbol" aria-hidden="true"><Plus /></span><strong>选择 1–10 份逐字稿</strong><small>支持 TXT、VTT、SRT、常见沟通文本和结构化 JSON</small></label> : <><div className="import-summary"><strong>{rows.length} 份文件</strong><span>请确认顺序、标题和发生时间</span><label>重新选择<input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /></label></div><div className="import-rows">{rows.map((row, index) => <article key={row.key}><span className="event-order">{index + 1}</span><div className="import-row-main"><input aria-label="沟通标题" value={row.title} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, title: event.target.value } : item))} /><div><select aria-label="沟通类型" value={row.eventType} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, eventType: event.target.value as ImportRow["eventType"] } : item))}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他工作沟通</option></select><input aria-label="发生时间" type="datetime-local" value={row.occurredAt} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, occurredAt: event.target.value } : item))} /></div><small>{row.file.name} · {formatBytes(row.file.size)}</small></div><div className="order-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label="上移"><ArrowUp aria-hidden="true" /></button><button type="button" disabled={index === rows.length - 1} onClick={() => move(index, 1)} aria-label="下移"><ArrowDown aria-hidden="true" /></button></div></article>)}</div></>}{progress && <section className="import-upload-progress" role="status" aria-live="polite"><div><span className="spinner" /><span><strong>{progress.label}{progress.filename ? `：${progress.filename}` : ""}</strong>{progress.loaded != null && progress.total != null && <small>{formatBytes(progress.loaded)} / {formatBytes(progress.total)}</small>}</span></div>{progress.loaded != null && progress.total != null && <progress max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />}</section>}<div className="modal-actions">{busy && progress?.cancelable ? <button type="button" className="button secondary" onClick={() => importAbortRef.current?.abort()}><X aria-hidden="true" />取消当前上传</button> : <button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button>}<button className="button primary" disabled={!rows.length || busy || rows.some((row) => !row.title.trim() || !row.occurredAt)}>{busy ? "正在导入…" : `导入并建立 ${rows.length || ""} 次沟通`}</button></div></form></Modal>;
+  return <Modal title="批量导入逐字稿" description={`一次导入多份，按时间排序`} onClose={busy ? () => undefined : onClose} wide><form className="modal-form" onSubmit={(event) => void submit(event)}>{issue && <ErrorNotice issue={issue} compact />}{!rows.length ? <label className="file-drop"><input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /><span className="empty-symbol" aria-hidden="true"><Plus /></span><strong>选择 1–10 份逐字稿</strong><small>支持 TXT、VTT、SRT、JSON</small></label> : <><div className="import-summary"><strong>{rows.length} 份文件</strong><span>请确认顺序、标题和发生时间</span><label>重新选择<input type="file" multiple accept=".txt,.vtt,.srt,.json" onChange={chooseFiles} /></label></div><div className="import-rows">{rows.map((row, index) => <article key={row.key}><span className="event-order">{index + 1}</span><div className="import-row-main"><input aria-label="标题" value={row.title} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, title: event.target.value } : item))} /><div><select aria-label="类型" value={row.eventType} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, eventType: event.target.value as ImportRow["eventType"] } : item))}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他</option></select><input aria-label="发生时间" type="datetime-local" value={row.occurredAt} onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, occurredAt: event.target.value } : item))} /></div><small>{row.file.name} · {formatBytes(row.file.size)}</small></div><div className="order-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label="上移"><ArrowUp aria-hidden="true" /></button><button type="button" disabled={index === rows.length - 1} onClick={() => move(index, 1)} aria-label="下移"><ArrowDown aria-hidden="true" /></button></div></article>)}</div></>}{progress && <section className="import-upload-progress" role="status" aria-live="polite"><div><span className="spinner" /><span><strong>{progress.label}{progress.filename ? `：${progress.filename}` : ""}</strong>{progress.loaded != null && progress.total != null && <small>{formatBytes(progress.loaded)} / {formatBytes(progress.total)}</small>}</span></div>{progress.loaded != null && progress.total != null && <progress max={Math.max(progress.total, 1)} value={Math.min(progress.loaded, progress.total)} />}</section>}<div className="modal-actions">{busy && progress?.cancelable ? <button type="button" className="button secondary" onClick={() => importAbortRef.current?.abort()}><X aria-hidden="true" />取消当前上传</button> : <button type="button" className="button secondary" disabled={busy} onClick={onClose}>取消</button>}<button className="button primary" disabled={!rows.length || busy || rows.some((row) => !row.title.trim() || !row.occurredAt)}>{busy ? "正在导入…" : `导入 ${rows.length || ""} 条记录`}</button></div></form></Modal>;
 }

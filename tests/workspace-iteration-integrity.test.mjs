@@ -169,7 +169,7 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.doesNotMatch(page, /className="brand-mark">⌁/);
   assert.doesNotMatch(page, /className="material-action-icon">[T↑▧]/);
   assert.doesNotMatch(page, /className="file-kind">(?:AUD|IMG|PDF|TXT)/);
-  assert.doesNotMatch(page, /项目菜单 ···|aria-label="添加一次沟通">＋|aria-label="上移">↑|aria-label="下移">↓/);
+  assert.doesNotMatch(page, /项目菜单 ···|aria-label="添加记录">＋|aria-label="上移">↑|aria-label="下移">↓/);
   assert.doesNotMatch(`${page}\n${modal}\n${recorder}`, />\s*[×●▰✓]\s*</);
   assert.match(modal, /<X aria-hidden="true" \/>/);
   assert.match(recorder, /<Mic \/>/);

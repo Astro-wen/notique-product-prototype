@@ -1920,7 +1920,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
   assert.match(evidenceLoader, /isCompleteEvidenceSet\(nextClaim\.evidenceRefIds,\s*refs,\s*everyFetchSucceeded\)/);
   assert.doesNotMatch(evidenceLoader, /setEvidenceState\(refs\.length\s*\?\s*["']ready["']/,
     "a non-empty partial response must never be treated as ready");
-  assert.match(verdictHandler, /\(action\s*===\s*["']confirm["']\s*\|\|\s*action\s*===\s*["']edit["']\)[\s\S]{0,120}evidenceState\s*!==\s*["']ready["']/,
+  assert.match(verdictHandler, /\(action\s*===\s*["']confirm["']\s*\|\|\s*action\s*===\s*["']edit["'](\s*\|\|\s*action\s*===\s*["']reject["'])?\)[\s\S]{0,120}evidenceState\s*!==\s*["']ready["']/,
     "event handlers must guard confirm and edit in addition to disabled buttons");
   assert.doesNotMatch(claimScreen, /批量处理选项|evidence-review-attestation/,
     "the simplified review detail must not expose a second batch-attestation workflow");

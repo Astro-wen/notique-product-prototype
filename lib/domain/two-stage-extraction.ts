@@ -525,13 +525,16 @@ function reviewIssueVector(
   output: VerificationOutput,
   assessment: VerificationEscalation,
 ): number[] {
+  // Lexicographic priority. Coverage loss comes first: a dropped critical fact
+  // is invisible to the reviewer and unrecoverable, whereas a compound or
+  // questionable-reaffirmed claim is still on screen and editable.
   return [
+    assessment.droppedCriticalInventoryKeys.length,
+    assessment.unmappedInventoryKeys.length,
+    output.quality_review.unresolved_conflict_keys.length,
+    assessment.lowConfidenceRelationClaimKeys.length,
     output.quality_review.compound_claim_keys.length +
       output.quality_review.reaffirmed_issue_claim_keys.length,
-    assessment.unmappedInventoryKeys.length,
-    assessment.lowConfidenceRelationClaimKeys.length,
-    assessment.droppedCriticalInventoryKeys.length,
-    output.quality_review.unresolved_conflict_keys.length,
   ];
 }
 

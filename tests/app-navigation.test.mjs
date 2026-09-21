@@ -76,7 +76,7 @@ test("a claim opened from the AI summary round-trips its reading source", () => 
     eventId: "e",
     readingTab: "summary",
   });
-  assert.equal(backLabelForRoute(route), "返回沟通记录");
+  assert.equal(backLabelForRoute(route), "返回记录");
 });
 
 test("only reviewed Claims opened from Summary use read-only evidence mode", () => {

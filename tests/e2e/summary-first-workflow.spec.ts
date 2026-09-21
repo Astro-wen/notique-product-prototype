@@ -53,7 +53,7 @@ async function expandSummaryIfCollapsed(page: Page): Promise<void> {
 
 test("Raw opens first and a finished Summary appears above it without stealing focus", async ({ page, apiFixture }, testInfo) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
   await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveAttribute("aria-pressed", "true");
   // Opening the reader automatically is not a tab choice. The route records a
@@ -122,7 +122,7 @@ test("the first completed snapshot opens Raw and a refresh restores it without a
 
 test("an explicit workspace tab choice is never replaced when Summary finishes", async ({ page, apiFixture }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
   const projectScope = page.getByRole("button", { name: "整个项目", exact: true });
   await projectScope.click();
   await expect(projectScope).toHaveClass(/active/);
@@ -139,7 +139,7 @@ test("a completed Summary never closes an open direct-recording material interac
     window.sessionStorage.setItem("notique.ui.public-workspace-acknowledged", "1");
   });
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
   const materialsTab = page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ });
   await materialsTab.click();
   await expect(materialsTab).toHaveClass(/active/);
@@ -609,7 +609,7 @@ test("a Summary fact seeds source context but requires a real action and stays i
   await expect(pendingAction.getByRole("button", { name: "修改", exact: true })).toBeDisabled();
 
   await pendingAction.locator(".rail-review-item").click();
-  await expect(page.getByText("分析仍在整理这次沟通", { exact: true })).toBeVisible();
+  await expect(page.getByText("正在整理这条记录", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "确认并加入正式结果" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "修改后确认" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "不采纳这条记录" })).toBeDisabled();
@@ -722,7 +722,7 @@ test("briefly viewing sources keeps the selected point and warm transcript state
 test("an old Run without reading artifacts falls back to the original transcript", async ({ page, apiFixture }) => {
   apiFixture.enableLegacyRawFlow();
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
 
   await expect(page.getByRole("button", { name: /^原文/ })).toHaveClass(/active/);
   // Opening the reader automatically is not a tab choice. The route records a
@@ -788,7 +788,7 @@ test("a Summary deep link restores the pinned intelligence and transcript in one
 test("workspace Transcript selection is routed and leaving Transcript clears the reading tab", async ({ page, apiFixture }) => {
   apiFixture.enableLegacyRawFlow();
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
 
   await page.getByRole("button", { name: /^本次重点/ }).click();
   await expect(page).toHaveURL(/view=simple.*readingTab=raw/);
@@ -803,7 +803,7 @@ test("a new processing Summary Run never renders an older Run's Artifact", async
   apiFixture.enableNewSummaryRunWithStaleArtifact();
   apiFixture.allowMutation("POST", "/api/v1/jobs/dispatch");
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
-  await expect(page.getByRole("combobox", { name: "选择当前沟通" })).toHaveValue("event-a");
+  await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
 
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
   await expect(page.getByText("正在整理全文概要", { exact: true })).toBeVisible();

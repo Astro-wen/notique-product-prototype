@@ -117,7 +117,7 @@ test("the meeting workspace keeps one quiet progress bar and hides pipeline mech
   ]);
   assert.match(page, /data-testid="transcription-journey"/);
   assert.match(page, /正在生成逐字稿 · \$\{progress\.completed\}\/\$\{progress\.total\} 段/);
-  assert.match(page, /可以离开此页，结果会自动更新/);
+  assert.match(page, /可以先去忙别的/);
   assert.match(page, /aria-label="逐字稿生成进度"/);
   assert.match(page, /audioPreparationConcurrency\(\{/);
   assert.match(page, /\}\>\(plan, preparationConcurrency, async/);

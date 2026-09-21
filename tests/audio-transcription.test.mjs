@@ -857,7 +857,7 @@ test("simple flow supports audio-first setup and preserves a transcription start
     /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/,
     "a buyer project created from the core workspace must remain in the guided workspace",
   );
-  assert.match(uiSource, /Transcript 会成为第一条沟通/);
+  assert.match(uiSource, /项目已创建/);
 
   const attachSimple = declarationSource("attachSimpleFile");
   assert.match(attachSimple, /resolveSimpleImportTarget/);

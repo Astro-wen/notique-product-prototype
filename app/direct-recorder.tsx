@@ -14,6 +14,8 @@ type DirectRecorderProps = {
   disabled?: boolean;
   onSave: (file: File) => Promise<boolean>;
   onClose: () => void;
+  /** Reports whether the recorder holds audio that would be lost on unmount. */
+  onActiveChange?: (active: boolean) => void;
 };
 
 function microphoneIssue(error: unknown): string {
@@ -26,7 +28,7 @@ function microphoneIssue(error: unknown): string {
   return "暂时无法开始录音。你仍可以上传手机或电脑里已有的录音。";
 }
 
-export function DirectRecorder({ disabled, onSave, onClose }: DirectRecorderProps) {
+export function DirectRecorder({ disabled, onSave, onClose, onActiveChange }: DirectRecorderProps) {
   const [state, setState] = useState<RecorderState>("idle");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -36,6 +38,11 @@ export function DirectRecorder({ disabled, onSave, onClose }: DirectRecorderProp
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeRef = useRef("audio/webm");
+
+  useEffect(() => {
+    onActiveChange?.(state !== "idle" && state !== "unsupported" && state !== "requesting");
+    return () => onActiveChange?.(false);
+  }, [state, onActiveChange]);
 
   useEffect(() => {
     if (state !== "recording") return;

@@ -128,7 +128,7 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
       const skipped:string[]=[];
       for (let pi=0;pi<targets.length;pi++) {
         const project=targets[pi];const events=await api.listEvents(project.id);
-        if(!events.length){skipped.push(`“${project.name}”没有沟通记录`);continue;}
+        if(!events.length){skipped.push(`“${project.name}”还没有记录`);continue;}
         for(let ei=0;ei<events.length;ei++) {
           const event=events[ei], paragraphs:string[]=[];
           if(raw) {
@@ -169,7 +169,7 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
   function title(item:Project) {return <button className="pi-title" title={`${item.name} · 点击重命名`} onClick={()=>editProject(item,'name')}>{item.name}</button>;}
   function association(item:Project) {return <button className="pi-folder-tag" onClick={()=>{setFolder(item.folderName||'');setSelected(new Set());}} title="查看同一文件夹"><FolderOpen size={13}/>{item.folderName||'默认文件夹'}</button>;}
   return <div className="page pi-page">
-    <header className="pi-heading"><div><span className="section-kicker">工作空间</span><h1>项目</h1><p>把沟通、材料和下一步，收在同一个地方。</p></div><button className="text-button" onClick={onTrash}><Trash2 size={15}/>回收站</button></header>
+    <header className="pi-heading"><div><span className="section-kicker">工作空间</span><h1>项目</h1><p>记录、材料和下一步，都在一个地方</p></div><button className="text-button" onClick={onTrash}><Trash2 size={15}/>回收站</button></header>
     <div className="pi-search"><select aria-label="文件夹" value={folder} onChange={e=>{setFolder(e.target.value);setSelected(new Set());}}><option value="*">全部项目</option><option value="">默认文件夹</option>{folders.map(f=><option key={f}>{f}</option>)}</select><Search size={17}/><input aria-label="搜索项目" placeholder="搜索项目或文件夹…" value={query} onChange={e=>{setQuery(e.target.value);setSelected(new Set());}}/></div>
     <div className="pi-toolbar">
       {bulk?<label className="pi-select-all"><input ref={allCheckbox} type="checkbox" checked={allSelected} onChange={()=>setSelected(s=>{const next=new Set(s);for(const p of visible){if(allSelected)next.delete(p.id);else next.add(p.id);}return next;})}/>全选<span>已选择 <strong>{chosen.length}</strong> 项</span></label>:<button className="button primary" onClick={onCreate}><Plus size={17}/>新建项目</button>}
@@ -184,11 +184,11 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
     {state==='error'&&<div role="alert">{issue?.message}<button className="text-button" onClick={onRetry}>重试</button></div>}
     {state!=='loading'&&state!=='error'&&!visible.length&&<div className="pi-empty"><FolderOpen size={34}/><h2>{projects.length?'没有匹配的项目':'还没有项目'}</h2><p>{projects.length?'换个名称搜索，或查看全部项目。':'创建项目后，上传第一份材料开始整理。'}</p>{projects.length?<button className="button secondary" onClick={()=>{setQuery('');setFolder('*');}}>查看全部项目</button>:<button className="button primary" onClick={onCreate}>新建项目</button>}</div>}
     {visible.length>0&&<div className={`pi-collection pi-${view}`}>
-      {view==='list'&&<div className="pi-table-head"><span>项目 / 文件夹</span><span>沟通</span><span>{sort==='name'?'修改时间':sortLabels[sort]}</span><span>操作</span></div>}
+      {view==='list'&&<div className="pi-table-head"><span>项目 / 文件夹</span><span>记录</span><span>{sort==='name'?'修改时间':sortLabels[sort]}</span><span>操作</span></div>}
       {visible.map(item=><article key={item.id} onClick={e=>{if(!(e.target as HTMLElement).closest('button,input,[role="menuitem"]')){if(bulk)toggle(item.id);else void open(item);}}} className={`pi-item ${selected.has(item.id)?'is-selected':''}`}>
         <div className="pi-item-top">{bulk?<input aria-label={`选择 ${item.name}`} type="checkbox" checked={selected.has(item.id)} onChange={()=>toggle(item.id)}/>:<FolderOpen className="pi-folder-icon"/>}{view==='grid'&&menu(item)}</div>
-        <div className="pi-item-main">{title(item)}<div className="pi-associations">{association(item)}{Boolean(item.pendingCount)&&<span className="pi-pending">{item.pendingCount} 条待核对</span>}</div>{view==='grid'&&<button className="pi-preview" onClick={()=>bulk?toggle(item.id):void open(item)}>{item.description||item.scenario?.label||'在这里整理沟通记录、材料与跟进事项。'}</button>}</div>
-        <span className="pi-event-count">{item.eventCount??0} 次沟通</span><time className="pi-date" title={sort==='name'?'修改时间':sortLabels[sort]}>{date(item[sort==='name'?'updatedAt':sort])}</time>
+        <div className="pi-item-main">{title(item)}<div className="pi-associations">{association(item)}{Boolean(item.pendingCount)&&<span className="pi-pending">{item.pendingCount} 条待核对</span>}</div>{view==='grid'&&<button className="pi-preview" onClick={()=>bulk?toggle(item.id):void open(item)}>{item.description||item.scenario?.label||'在这里整理记录、材料和跟进'}</button>}</div>
+        <span className="pi-event-count">{item.eventCount??0} 条记录</span><time className="pi-date" title={sort==='name'?'修改时间':sortLabels[sort]}>{date(item[sort==='name'?'updatedAt':sort])}</time>
         <div className="pi-item-actions">{!bulk&&<button className="pi-open" aria-label={`打开 ${item.name}`} onClick={()=>void open(item)}>打开</button>}{view==='list'&&menu(item)}</div>
       </article>)}
     </div>}
@@ -196,12 +196,12 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
       <label className="field"><span>{edit.kind==='name'?'项目名称':'文件夹'}</span>{edit.kind==='name'?<input autoFocus maxLength={200} value={edit.name} onChange={e=>setEdit({...edit,name:e.target.value})}/>:<><input autoFocus list="pi-folders" maxLength={80} placeholder="默认文件夹" value={edit.folder} onChange={e=>setEdit({...edit,folder:e.target.value})}/><datalist id="pi-folders">{folders.map(f=><option key={f} value={f}/>)}</datalist></>}</label>
       {error&&<p className="pi-error" role="alert">{error}</p>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={()=>setEdit(null)}>取消</button><button className="button primary" disabled={busy||!edit.name.trim()}>{busy?'正在保存…':'保存'}</button></div>
     </form></Modal>}
-    {dialog==='delete'&&<Modal title={`删除${targets.length===1?'项目':` ${targets.length} 个项目`}？`} description="项目及其沟通、材料将移到回收站，可以恢复。" onClose={()=>setDialog(null)} dismissible={!busy}>
-      <div className="pi-dialog-body"><div className="pi-delete-items">{targets.map(p=><div key={p.id}><strong>{p.name}</strong><small>{previews.find(v=>v.project_id===p.id)?.can_delete===false?'转写或分析任务尚未完成，暂时不能删除':`${p.eventCount??0} 次沟通`}</small></div>)}</div>
+    {dialog==='delete'&&<Modal title={`删除${targets.length===1?'项目':` ${targets.length} 个项目`}？`} description="项目连同记录和材料移到回收站，可以恢复" onClose={()=>setDialog(null)} dismissible={!busy}>
+      <div className="pi-dialog-body"><div className="pi-delete-items">{targets.map(p=><div key={p.id}><strong>{p.name}</strong><small>{previews.find(v=>v.project_id===p.id)?.can_delete===false?'转写或分析任务尚未完成，暂时不能删除':`${p.eventCount??0} 条记录`}</small></div>)}</div>
       {busy&&!previews.length&&<p role="status">正在检查项目…</p>}{error&&<p className="pi-error" role="alert">{error}</p>}
       <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={()=>setDialog(null)}>取消</button>{!previews.length&&!busy?<button className="button secondary" onClick={()=>void showDelete(targets)}>重新检查</button>:<button className="button danger" disabled={busy||!previews.some(p=>p.can_delete)} onClick={()=>void remove()}>{busy?'处理中…':'移到回收站'}</button>}</div>
     </div></Modal>}
-    {dialog==='export'&&<Modal title="导出" description={`导出 ${targets.length} 个项目的沟通记录，按项目分文件夹打包。`} onClose={()=>setDialog(null)} dismissible={!busy}>
+    {dialog==='export'&&<Modal title="导出" description={`导出 ${targets.length} 个项目，按项目分文件夹`} onClose={()=>setDialog(null)} dismissible={!busy}>
       <div className="pi-dialog-body"><div className="pi-export-options"><label className="pi-export-check"><input type="checkbox" checked={raw} onChange={e=>setRaw(e.target.checked)} disabled={busy}/>原文</label>
         <div className="field"><span id="pi-export-format-label">文件格式</span>
           <Select.Root value={format} onValueChange={value=>setFormat(value as 'docx'|'txt')} disabled={busy}>

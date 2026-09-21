@@ -26,7 +26,7 @@ export function ViewItem({ item, onOpenClaim }: { item: Record<string, unknown>;
       {selected && <p><b>已选择：</b>{selected}</p>}
       {Array.isArray(rejected) && <p><b>未选择：</b>{rejected.map(stringValue).filter(Boolean).join("、") || "尚未记录"}</p>}
       {reason && reason !== description && <p><b>原因：</b>{reason}</p>}
-      {(openDays !== undefined || repeatCount !== undefined) && <p>{openDays !== undefined ? `已开放 ${openDays} 天` : ""}{openDays !== undefined && repeatCount !== undefined ? " · " : ""}{repeatCount !== undefined ? `在 ${repeatCount} 次后续沟通中再次出现` : ""}</p>}
+      {(openDays !== undefined || repeatCount !== undefined) && <p>{openDays !== undefined ? `已开放 ${openDays} 天` : ""}{openDays !== undefined && repeatCount !== undefined ? " · " : ""}{repeatCount !== undefined ? `之后 ${repeatCount} 条记录里再次提到` : ""}</p>}
       {evidenceIds.length > 0 && <p>{evidenceIds.length} 条原始证据</p>}
       {(claimId || versionId) && <button className="text-button" onClick={() => onOpenClaim(claimId || versionId!)}>查看记录与证据</button>}
     </article>

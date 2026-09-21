@@ -45,7 +45,7 @@ test("duplicate project names get stable option labels without renaming projects
 
   const first = labelFor(projects[0], projects);
   const second = labelFor(projects[1], projects);
-  assert.match(first, /^Morgan Family · 4 次沟通 · 更新 /);
+  assert.match(first, /^Morgan Family · 4 条记录 · 更新 /);
   assert.notEqual(first, second);
   assert.match(first, /pha111$/);
   assert.match(second, /eta222$/);

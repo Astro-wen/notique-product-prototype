@@ -24,7 +24,7 @@ export function typeLabel(value?: string): string {
     corroborating: "佐证材料",
     contextual: "背景参考",
     meeting: "会议",
-    showing: "现场沟通",
+    showing: "现场走访",
     estimate: "估价",
     walkthrough: "现场巡查",
     transcript: "逐字稿",
