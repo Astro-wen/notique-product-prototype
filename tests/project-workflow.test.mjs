@@ -350,7 +350,7 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   assert.match(uiSource, /条记录没有材料，已跳过/);
   assert.match(uiSource, /等待当前材料准备完成/);
   assert.match(uiSource, /正在处理，请稍候/);
-  assert.match(uiSource, /请先确认使用场景/);
+  assert.match(uiSource, /先确认场景/);
 
   const workflowAction = declarationSource("advanceProjectWorkflow");
   assert.match(workflowAction, /requestExtractionForEvent\(current\.event\)/);

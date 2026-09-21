@@ -291,7 +291,7 @@ test("buyer journey APIs keep draft links separate from formal relations and act
   assert.match(page, /两边确认后可接受/);
   // Draft and verified records now share one list and are told apart per row,
   // so the distinction is asserted where it is actually rendered.
-  assert.match(uiSource, /已确认表示核对过原文/);
+  assert.match(uiSource, /已确认 = 核对过原文/);
   assert.match(uiSource, /row\.verified \? "已确认" : "待核对"/);
   assert.match(uiSource, /只看已确认/);
   assert.match(provider, /Use type next_action only for a concrete future action/);

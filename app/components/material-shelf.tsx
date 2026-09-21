@@ -130,7 +130,7 @@ export function MaterialShelf({ assets, busy, accept, onFiles, onRecord, onRenam
 
       <button type="button" className="material-dropzone" disabled={busy} onClick={() => fileRef.current?.click()}>
         <span className="material-dropzone-mark" aria-hidden="true"><Upload /></span>
-        <strong>{empty ? "把录音、逐字稿或照片拖到这里" : "拖进来，或点击添加"}</strong>
+        <strong>{empty ? "拖拽录音、逐字稿或照片到这里" : "拖拽文件到这里，或点击上传"}</strong>
         <small>支持 MP3、M4A、WAV、WebM、TXT、VTT、SRT、JSON 和图片</small>
       </button>
       <button type="button" className="text-button material-record" disabled={busy} onClick={onRecord}>

@@ -140,7 +140,7 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
   assert.match(page, /initialSourceText=\{missingClaimSeed\?\.sourceText\}/);
   assert.match(page, /initialStatement=\{missingClaimSeed\?\.statement\}/);
   assert.match(page, /new Set\(initialSegmentIds\.slice\(0, 8\)\)/);
-  assert.match(page, /事实或背景，不会直接伪装成行动/);
+  assert.match(page, /这是事实，不是行动/);
   assert.match(page, /rail-review-warning/);
   assert.match(styles, /\.rail-quick-verdict/);
 });

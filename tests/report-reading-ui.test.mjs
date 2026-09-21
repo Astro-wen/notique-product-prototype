@@ -82,7 +82,7 @@ test("action and timeline empty states offer useful next steps", () => {
   assert.match(page, /const timelineFilters/);
   assert.match(page, /金额.*要求与偏好.*对象.*行动.*发生变化/s);
   assert.match(page, /timelineMomentMatches/);
-  assert.match(page, /filter === "all" \? "核对并确认内容后，变化会出现在这里。" : "切换到“全部”可查看其他已经确认的时间线节点。"/);
+  assert.match(page, /filter === "all" \? "核对并确认内容后，变化会出现在这里。" : "切到「全部」看其他已确认的节点"/);
   assert.match(styles, /\.timeline-filter/);
 });
 

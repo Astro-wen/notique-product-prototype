@@ -197,7 +197,7 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
       {error&&<p className="pi-error" role="alert">{error}</p>}<div className="modal-actions"><button type="button" className="button secondary" disabled={busy} onClick={()=>setEdit(null)}>取消</button><button className="button primary" disabled={busy||!edit.name.trim()}>{busy?'正在保存…':'保存'}</button></div>
     </form></Modal>}
     {dialog==='delete'&&<Modal title={`删除${targets.length===1?'项目':` ${targets.length} 个项目`}？`} description="项目连同记录和材料移到回收站，可以恢复" onClose={()=>setDialog(null)} dismissible={!busy}>
-      <div className="pi-dialog-body"><div className="pi-delete-items">{targets.map(p=><div key={p.id}><strong>{p.name}</strong><small>{previews.find(v=>v.project_id===p.id)?.can_delete===false?'转写或分析任务尚未完成，暂时不能删除':`${p.eventCount??0} 条记录`}</small></div>)}</div>
+      <div className="pi-dialog-body"><div className="pi-delete-items">{targets.map(p=><div key={p.id}><strong>{p.name}</strong><small>{previews.find(v=>v.project_id===p.id)?.can_delete===false?'还在处理，先不能删':`${p.eventCount??0} 条记录`}</small></div>)}</div>
       {busy&&!previews.length&&<p role="status">正在检查项目…</p>}{error&&<p className="pi-error" role="alert">{error}</p>}
       <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={()=>setDialog(null)}>取消</button>{!previews.length&&!busy?<button className="button secondary" onClick={()=>void showDelete(targets)}>重新检查</button>:<button className="button danger" disabled={busy||!previews.some(p=>p.can_delete)} onClick={()=>void remove()}>{busy?'处理中…':'移到回收站'}</button>}</div>
     </div></Modal>}

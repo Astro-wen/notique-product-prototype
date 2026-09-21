@@ -1893,7 +1893,7 @@ test("frontend never auto-retains evidence for a factual edit and reuses extract
   assert.match(verdictClient, /normalized_value:\s*edit!\.normalizedValue/);
   assert.match(verdictClient, /uncertainty:\s*edit!\.uncertainty/);
   assert.match(verdictClient, /retain_relation_ids:\s*edit!\.retainRelationIds/);
-  assert.match(page, /这条记录与旧记录的关系[\s\S]*?只勾选修改后仍然成立的关系/);
+  assert.match(page, /这条记录与旧记录的关系[\s\S]*?只勾修改后还成立的关系/);
   assert.match(page, /verified\s*&&\s*!edit[\s\S]*?修改已确认记录/);
   assert.match(page, /记录类型[\s\S]*?<select[\s\S]*?occurrenceClaimTypeOptions/);
   assert.match(page, /editHasSupportingEvidence[\s\S]*?direct[\s\S]*?corroborating/);
@@ -1924,7 +1924,7 @@ test("claim review stays locked until the exact complete evidence set is loaded"
     "event handlers must guard confirm and edit in addition to disabled buttons");
   assert.doesNotMatch(claimScreen, /批量处理选项|evidence-review-attestation/,
     "the simplified review detail must not expose a second batch-attestation workflow");
-  assert.match(claimScreen, /证据未完整加载[\s\S]*确认、核对声明和修改功能已停用/);
+  assert.match(claimScreen, /证据未完整加载[\s\S]*暂时不能确认或修改/);
   assert.match(claimScreen, /const evidenceReady\s*=\s*evidenceState\s*===\s*["']ready["']/);
   assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*verdictLocked\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
   assert.match(claimScreen, /type=["']checkbox["']\s+disabled=\{!evidenceReady\}/,

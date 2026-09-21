@@ -18,7 +18,7 @@ test("production build contains the real-data shell without seeded AI output", a
   assert.match(pageBundle, /新建项目/);
   assert.match(pageBundle, /正在读取项目/);
   assert.match(pageBundle, /保存后会进入现有的说话人识别和逐字稿流程/);
-  assert.match(pageBundle, /把录音、逐字稿或照片拖到这里/);
+  assert.match(pageBundle, /拖拽录音、逐字稿或照片到这里/);
   assert.match(pageBundle, /role:["'`]status["'`]/);
   assert.doesNotMatch(
     `${serverBundle}\n${pageBundle}`,
