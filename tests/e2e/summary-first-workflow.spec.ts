@@ -13,6 +13,7 @@ const test = base.extend<Fixtures>({
     // These are cheap wakes for Runs already persisted in the fixture, not
     // creation/retry mutations. Keep every other mutation blocked.
     fixture.allowMutation("POST", "/api/v1/jobs/dispatch");
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
     await fixture.install(page);
     await provide(fixture);
     for (const wake of fixture.writes.filter(({ path }) => path === "/api/v1/jobs/dispatch")) {
@@ -27,8 +28,10 @@ const test = base.extend<Fixtures>({
   }, { auto: true }],
 });
 
+const READ_PATH_WRITES = ["/api/v1/jobs/dispatch", "/api/v1/projects/project-a/opened"];
+
 function nonWakeWrites(apiFixture: NotiqueApiFixture) {
-  return apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch");
+  return apiFixture.writes.filter(({ path }) => !READ_PATH_WRITES.includes(path));
 }
 
 function isMobile(testInfo: TestInfo): boolean {
@@ -152,7 +155,7 @@ test("a completed Summary never closes an open direct-recording material interac
   await expect(page.getByRole("region", { name: "直接录音" })).toBeVisible();
   await expect(page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ })).toHaveClass(/active/);
   await expect(page.getByRole("heading", { name: "A 项目会议重点" })).toHaveCount(0);
-  expect(apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch")).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("facts finishing preserves the open Summary and its scroll position", async ({ page, apiFixture }, testInfo) => {
@@ -746,7 +749,7 @@ test("failed Summary and readable transcript fall back to Raw without exposing m
   await expect(page.getByRole("heading", { name: "AI 摘要未通过安全检查" })).toBeVisible();
   await expect(page.getByText("事实识别和原始逐字稿都已保留。", { exact: false })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
-  expect(apiFixture.writes.filter(({ path }) => path !== "/api/v1/jobs/dispatch")).toEqual([]);
+  expect(nonWakeWrites(apiFixture)).toEqual([]);
 });
 
 test("manual Raw selection replaces the route and survives reload from a Summary URL", async ({ page, apiFixture }) => {

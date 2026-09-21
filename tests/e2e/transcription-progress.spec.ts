@@ -9,6 +9,7 @@ const test = base.extend<Fixtures>({
     const fixture = new NotiqueApiFixture();
     fixture.enableTranscriptionProgress();
     fixture.allowMutation("POST", "/api/v1/jobs/dispatch");
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
     await fixture.install(page);
     await provide(fixture);
     fixture.assertNoUnexpectedWrites();
