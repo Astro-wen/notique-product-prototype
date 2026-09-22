@@ -1436,13 +1436,13 @@ test("artifact prompt cache keys stay within the OpenAI 64-character limit", asy
   assert.ok(readableKey.length <= 64);
 });
 
-test("artifact retry refreshes the panel and dispatches only the requested artifact", async () => {
-  assert.match(
-    uiSource,
-    /await onRetryArtifact\(event\.id, "summary"\);\s*await load\(true\);/,
-  );
+test("artifact retry refreshes the panel and dispatches once for the batch", async () => {
+  // 以前这里钉的是 onRetryArtifact(event.id, "summary")，那正是四个阅读视图
+  // 重新生成点不通的原因：summary 是不再生产的旧种类。现在按钮只重试失败
+  // 的种类，重试完刷新面板，派发器只叫一次。
+  assert.match(uiSource, /if \(failed\.length\) await onRetryReading\(event\.id, failed\);\s*await load\(true\);/);
   assert.doesNotMatch(uiSource, /className="transcript-subtabs"/);
-  assert.match(uiSource, /retryEventAiArtifact[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: artifactRun\.id \}\)/);
+  assert.match(uiSource, /retryReadingArtifacts[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: last\.id \}\)/);
 });
 
 test("fact extraction defaults to raw-only while readable remains an optional mapped aid", async () => {
@@ -1920,4 +1920,31 @@ test("重试按种类取契约版本，不再把四个阅读视图当成易读�
   // 章节、发言总结、要点回顾、概要重试一次就会被写上易读稿的契约版本。
   assert.doesNotMatch(source, /kind === "summary" \? EVENT_SUMMARY_PROMPT_VERSION/);
   assert.match(source, /const contract = EVENT_AI_ARTIFACT_CONTRACTS\[kind\]/);
+});
+
+
+test("重试路由认全部可生产的阅读种类，不认旧的 summary", async () => {
+  const route = await readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8");
+  // 曾手写成两种，四个阅读视图拆出来后没跟上，界面上的重新生成对它们一直 400。
+  assert.doesNotMatch(route, /const ARTIFACT_KINDS = \["summary", "readable_transcript"\]/);
+  assert.match(route, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)/);
+  const { READING_ARTIFACT_DEFINITIONS } = await import("../lib/domain/reading-pipeline.ts");
+  const kinds = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind);
+  for (const kind of ["readable_transcript", "chapters", "speakers", "key_points", "overview"]) {
+    assert.ok(kinds.includes(kind), `${kind} 必须可重试`);
+  }
+  assert.ok(!kinds.includes("summary"));
+});
+
+test("生成阅读总结按钮只重试失败的种类，不再传 summary", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /onRetryArtifact\(event\.id, "summary"\)/);
+  const fn = page.slice(page.indexOf("async function retrySummaryArtifact"), page.indexOf("async function startAnalysisAndLoadArtifacts"));
+  for (const kind of ["readable_transcript", "chapters", "speakers", "key_points", "overview"]) {
+    assert.ok(fn.includes(`"${kind}"`), `按钮必须考虑 ${kind}`);
+  }
+  assert.match(fn, /status === "failed" \|\| status == null/);
+  assert.match(fn, /if \(failed\.length\) await onRetryReading\(event\.id, failed\)/);
+  const parent = page.slice(page.indexOf("async function retryReadingArtifacts"), page.indexOf("async function retryEventAiArtifact("));
+  assert.match(parent, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)\.filter/);
 });

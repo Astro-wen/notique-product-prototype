@@ -92,6 +92,7 @@ import {
   listEventTranscriptSegments,
   recordAiDraftAssessment,
 } from "@/lib/server/db/ai-draft-repository";
+import { READING_ARTIFACT_DEFINITIONS, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
 import {
   ApiFault,
   enumValue,
@@ -161,7 +162,11 @@ const GLOSSARY_CATEGORIES = [
   "material",
   "property",
 ] as const;
-const ARTIFACT_KINDS = ["summary", "readable_transcript"] as const;
+// 可重试的种类从阅读线的定义派生，再加种类不用回来改这里。summary 故意
+// 不在内：它是旧产物，不再生产，重试它只会造出一条派发器不认识的运行。
+// 这行曾经手写成两种，四个阅读视图拆出来之后没跟上，界面上的重新生成
+// 对章节、发言总结、要点回顾、概要一直是 400。
+const ARTIFACT_KINDS: readonly ReadingArtifactKind[] = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind);
 
 function record(value: unknown, field: string): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

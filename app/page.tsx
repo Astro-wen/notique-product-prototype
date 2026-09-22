@@ -103,6 +103,7 @@ import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { MaterialShelf } from "@/app/components/material-shelf";
 import { fallbackChapters, shouldUseFallbackChapters } from "@/lib/domain/chapter-fallback";
+import { READING_ARTIFACT_DEFINITIONS, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
@@ -3987,21 +3988,29 @@ export default function Home() {
     }
   }
 
-  async function retryEventAiArtifact(
-    eventId: string,
-    kind: EventAiArtifactRun["kind"],
-  ): Promise<void> {
-    const action = `artifact:${kind}`;
-    setBusyAction(action);
+  /**
+   * 「生成阅读总结」走这里，一次重排队多个种类。子组件只传失败的种类，
+   * 已经成功的不重做：重试用的是新的幂等键，会另起一条运行，易读稿一次
+   * 五到七万输出 token，盲目重试五个正是内容寻址要避免的浪费。
+   * 按阅读线的定义顺序提交：章节是脊椎，后面三个挂在它上面，派发器按
+   * 就绪状态分波次跑，顺序对了它才不会先领到一个上游还没好的种类。
+   */
+  async function retryReadingArtifacts(eventId: string, kinds: ReadingArtifactKind[]): Promise<void> {
+    if (!kinds.length) return;
+    setBusyAction("artifact:reading");
     try {
-      const fingerprint = `${action}:${eventId}`;
-      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(fingerprint, idempotencyKey);
-      const artifactRun = await api.retryEventAiArtifact(eventId, kind, idempotencyKey);
-      mutationKeys.current.delete(fingerprint);
+      const ordered = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind).filter((kind) => kinds.includes(kind));
+      let last: { id: string } | null = null;
+      for (const kind of ordered) {
+        const fingerprint = `artifact:${kind}:${eventId}`;
+        const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+        mutationKeys.current.set(fingerprint, idempotencyKey);
+        last = await api.retryEventAiArtifact(eventId, kind, idempotencyKey);
+        mutationKeys.current.delete(fingerprint);
+      }
       await queryClient.invalidateQueries({ queryKey: notiqueQueryKeys.artifacts(eventId), exact: true });
-      await api.kickDispatcher({ kind: "artifact", runId: artifactRun.id }).catch(() => undefined);
-      flash(kind === "summary" ? "AI 摘要已重新提交" : "易读逐字稿已重新提交");
+      if (last) await api.kickDispatcher({ kind: "artifact", runId: last.id }).catch(() => undefined);
+      flash(`已重新提交 ${ordered.length} 项阅读整理`);
     } catch (error) {
       setEventIssue(toIssue(error));
       throw error;
@@ -5162,7 +5171,7 @@ export default function Home() {
           }}
           onCreateActionInline={(eventId, statement, segmentIds, verdictsLocked, owner, dueAt) => verdictsLocked ? createMissingClaim({ eventId, statement, type: "next_action", segmentIds, owner, dueAt }, true).then(() => undefined) : createConfirmedAction(eventId, statement, segmentIds, owner, dueAt)}
           onCompleteAction={(claimId) => void completeAction(claimId, true)}
-          onRetryArtifact={retryEventAiArtifact}
+          onRetryReading={retryReadingArtifacts}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
           onFocusTranscriptArtifact={(eventId, tab) => {
             routeRestoreEpoch.current += 1;
@@ -5461,7 +5470,7 @@ type SimpleTestScreenProps = {
   onReviewSaved: (claim: Claim) => void;
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean, owner?: string, dueAt?: string) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
-  onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onRetryReading: (eventId: string, kinds: ReadingArtifactKind[]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onFocusTranscriptArtifact: (eventId: string, tab: TranscriptArtifactTab) => void;
   onClearTranscriptArtifact: () => void;
@@ -5567,7 +5576,7 @@ function TranscriptArtifactsPanel({
   onReviewSaved,
   onCompleteAction,
   onAddPhoto,
-  onRetryArtifact,
+  onRetryReading,
   onStartAnalysis,
   onSelectTab,
   focusRequest,
@@ -5595,7 +5604,7 @@ function TranscriptArtifactsPanel({
   onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean, owner?: string, dueAt?: string) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
   onAddPhoto: () => void;
-  onRetryArtifact: (eventId: string, kind: EventAiArtifactRun["kind"]) => Promise<void>;
+  onRetryReading: (eventId: string, kinds: ReadingArtifactKind[]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onSelectTab: (tab: TranscriptArtifactTab) => void;
   focusRequest: TranscriptFocusRequest | null;
@@ -6633,7 +6642,18 @@ function TranscriptArtifactsPanel({
   }
 
   async function retrySummaryArtifact() {
-    await onRetryArtifact(event.id, "summary");
+    // 这个按钮以前传的是 summary，那是不再生产的旧种类，而且服务端也只认
+    // 旧的两种，所以四个视图的重新生成从来点不通。现在只把失败的种类交
+    // 上去；缺失也算失败，因为按钮只在空态里出现。
+    const statuses: Array<[ReadingArtifactKind, string | undefined]> = [
+      ["readable_transcript", readablePair.run?.status],
+      ["chapters", viewRunStatus(readingPairFor("chapters"))],
+      ["speakers", viewRunStatus(readingPairFor("speakers"))],
+      ["key_points", viewRunStatus(readingPairFor("key_points"))],
+      ["overview", viewRunStatus(readingPairFor("overview"))],
+    ];
+    const failed = statuses.filter(([, status]) => status === "failed" || status == null).map(([kind]) => kind);
+    if (failed.length) await onRetryReading(event.id, failed);
     await load(true);
   }
 
@@ -7008,7 +7028,7 @@ function SimpleTestScreen({
   onCreateActionInline,
   onReviewSaved,
   onCompleteAction,
-  onRetryArtifact,
+  onRetryReading,
   onStartAnalysis,
   onFocusTranscriptArtifact,
   onClearTranscriptArtifact,
@@ -7599,7 +7619,7 @@ function SimpleTestScreen({
                 onCreateActionInline={onCreateActionInline}
                 onCompleteAction={onCompleteAction}
                 onAddPhoto={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}
-                onRetryArtifact={onRetryArtifact}
+                onRetryReading={onRetryReading}
                 onStartAnalysis={onStartAnalysis}
                 onSelectTab={(tab) => {
                   markUserNavigation();
