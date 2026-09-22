@@ -2328,6 +2328,16 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 
 .pi-dialog-body { padding: 24px; }
 .pi-dialog-body .modal-actions .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+/* 选择器复用了项目列表的行样式，但那套网格是给整页宽度设计的：五列固定宽度
+   加起来就超过弹窗内容宽，项目名只剩几十像素，标签会折行。弹窗里换一套窄的，
+   并去掉「最近打开」那个标签，它和旁边的日期说的是同一件事。 */
+.pi-dialog-body .pi-list { padding: 0 14px; max-height: 320px; overflow-y: auto; }
+.pi-dialog-body .pi-item { grid-template-columns: 30px minmax(0, 1fr) auto auto; gap: 10px; min-height: 64px; padding: 12px 0; }
+.pi-dialog-body .pi-event-count { display: none; }
+.pi-dialog-body .pi-title { font-size: var(--text-sm); }
+.pi-dialog-body .pi-associations { margin-top: 5px; }
+.pi-dialog-body .pi-folder-tag { white-space: nowrap; }
+.pi-dialog-body .pi-open { white-space: nowrap; }
 
 .pi-format-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 40px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; color: var(--ink); text-align: left; font-size: 14px; }
 .pi-format-trigger > span:last-child { display: flex; color: var(--muted); }

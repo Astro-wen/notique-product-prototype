@@ -10,6 +10,7 @@ export const notiqueQueryKeys = {
   evidenceContext: (refId: string) => ["notique", "evidence", refId, "context"] as const,
   draftMemory: (projectId: string) => ["notique", "project", projectId, "draft-memory"] as const,
   actions: (projectId: string) => ["notique", "project", projectId, "actions"] as const,
+  routingSuggestion: (eventId: string) => ["notique", "event", eventId, "routing-suggestion"] as const,
   view: (projectId: string, view: ProjectViewName) => ["notique", "project", projectId, "view", view] as const,
 };
 
@@ -26,6 +27,19 @@ export function eventArtifactsQuery(eventId: string) {
     queryKey: notiqueQueryKeys.artifacts(eventId),
     queryFn: ({ signal }) => api.getEventAiArtifacts(eventId, signal),
     staleTime: 2_000,
+  });
+}
+
+/**
+ * 归属建议。绝大多数记录没有建议，返回 null 是正常结果不是错误，所以这里不
+ * 重试；建议是在概要产出之后才写进去的，拿不到就等下一次失效重取。
+ */
+export function routingSuggestionQuery(eventId: string) {
+  return queryOptions({
+    queryKey: notiqueQueryKeys.routingSuggestion(eventId),
+    queryFn: ({ signal }) => api.getRoutingSuggestion(eventId, signal),
+    staleTime: 10_000,
+    retry: false,
   });
 }
 

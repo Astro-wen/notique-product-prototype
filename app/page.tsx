@@ -68,6 +68,9 @@ import {
 } from "@/app/audio-chunking";
 import { sortProjects } from "@/lib/domain/project-index";
 import { resolveSimpleImportTarget } from "@/lib/domain/simple-import-target";
+import { NEW_PROJECT, routingChoice, type MaterialRouting } from "@/lib/domain/material-routing";
+import { ProjectPicker } from "@/app/components/project-picker";
+import { RoutingSuggestionBanner } from "@/app/components/routing-suggestion-banner";
 import {
   type ProjectWorkflowPlan,
 } from "@/lib/domain/project-workflow";
@@ -147,6 +150,7 @@ import {
   RelationTarget,
   RelationType,
   ReviewSession,
+  RoutingSuggestion,
   RunDebug,
   TranscriptionRun,
   TranscriptSegment,
@@ -166,6 +170,7 @@ import {
   eventTranscriptSegmentsQuery,
   notiqueQueryKeys,
   projectActionsQuery,
+  routingSuggestionQuery,
   verifiedViewQuery,
   workflowSnapshotQuery,
 } from "./notique-queries";
@@ -1804,6 +1809,8 @@ export default function Home() {
   const [audioPreparationProgressByAssetId, setAudioPreparationProgressByAssetId] = useState<Record<string, AudioPreparationProgress>>({});
   const [assetUploadProgress, setAssetUploadProgress] = useState<AssetUploadProgress | null>(null);
   const assetUploadAbortRef = useRef<AbortController | null>(null);
+  const [routingAsk, setRoutingAsk] = useState<{ resolve: (value: MaterialRouting) => void } | null>(null);
+  const pendingRoutingRef = useRef<MaterialRouting | null>(null);
   const assetUploadOperationRef = useRef<symbol | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
@@ -4488,6 +4495,20 @@ export default function Home() {
     }
     let targetProject = project;
     let targetEvent = event;
+    // 首页拖进来的材料先问归到哪。已经在某个项目里拖的不问，因为待在哪个项目
+    // 本身就是一次明确选择。
+    let routing = pendingRoutingRef.current;
+    if (!targetProject) {
+      if (!routing) {
+        routing = await askMaterialRouting();
+        pendingRoutingRef.current = routing;
+      }
+      if (routing.projectId !== NEW_PROJECT) {
+        targetProject = projects.find((item) => item.id === routing!.projectId) ?? null;
+      }
+    } else if (!routing) {
+      routing = routingChoice({ chosenProjectId: targetProject.id });
+    }
     try {
       const target = await resolveSimpleImportTarget({
         project: targetProject,
@@ -4511,6 +4532,9 @@ export default function Home() {
       if (!target) return false;
       targetProject = target.project;
       targetEvent = target.event;
+      if (target.createdEvent && routing) {
+        await api.setEventRoutingSource(targetEvent.id, routing.source).catch(() => undefined);
+      }
       setProject(targetProject);
       setEvent(targetEvent);
       setEvents((current) => current.some((item) => item.id === targetEvent?.id) ? current : [...current, targetEvent!]);
@@ -4632,6 +4656,64 @@ export default function Home() {
     }
   }
 
+  /**
+   * 问一句这份材料归到哪。没有可选的项目就不问，直接新建，免得弹一个只有
+   * 「新建项目」一个选项的框。
+   */
+  function askMaterialRouting(): Promise<MaterialRouting> {
+    if (!projects.length) return Promise.resolve(routingChoice({ skipped: true }));
+    return new Promise((resolve) => setRoutingAsk({ resolve }));
+  }
+
+  function answerMaterialRouting(routing: MaterialRouting) {
+    const pending = routingAsk;
+    setRoutingAsk(null);
+    pending?.resolve(routing);
+  }
+
+  const routingSuggestionResult = useQuery({
+    ...routingSuggestionQuery(event?.id ?? ""),
+    enabled: Boolean(event?.id),
+  });
+  const routingSuggestion = routingSuggestionResult.data ?? null;
+
+  /**
+   * 接受建议就是把这条记录连同材料搬到目标项目。搬完直接落在目标项目里，
+   * 因为人接受建议的意思就是要去那边继续看。
+   */
+  async function acceptRoutingSuggestion() {
+    if (!event || !routingSuggestion) return;
+    const eventId = event.id;
+    const targetProjectId = routingSuggestion.suggested_project_id;
+    setBusyAction("routing-move");
+    try {
+      const fingerprint = `event-move:${eventId}:${targetProjectId}`;
+      const key = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+      mutationKeys.current.set(fingerprint, key);
+      await api.moveEvent(eventId, targetProjectId, key);
+      mutationKeys.current.delete(fingerprint);
+      queryClient.removeQueries({ queryKey: notiqueQueryKeys.routingSuggestion(eventId) });
+      await loadProjects();
+      await loadSimpleProject(targetProjectId, eventId);
+      flash("已经挪过去了");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function dismissRoutingSuggestion() {
+    if (!event) return;
+    const eventId = event.id;
+    try {
+      await api.dismissRoutingSuggestion(eventId);
+    } catch {
+      // 忽略失败不值得打断人：建议条这次不消失，下次重取时还会在。
+    }
+    await queryClient.invalidateQueries({ queryKey: notiqueQueryKeys.routingSuggestion(eventId) });
+  }
+
   function goSimple() {
     setSimpleFlow(true);
     if (project) {
@@ -4652,6 +4734,7 @@ export default function Home() {
     setEvent(null);
     setEvents([]);
     setSelectedClaim(null);
+    pendingRoutingRef.current = null;
   }
 
   function goProjects() {
@@ -5107,6 +5190,9 @@ export default function Home() {
           onDeleteProject={openProjectDeletePreview}
           onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
           onExplain={() => navigateRoute({ view: "how-it-works" })}
+          routingSuggestion={routingSuggestion}
+          onAcceptRouting={() => void acceptRoutingSuggestion()}
+          onDismissRouting={() => void dismissRoutingSuggestion()}
         />}
         {screen === "how-it-works" && <HowItWorks onBack={navigateBack} />}
         {screen === "projects" && <ProjectIndex onChanged={(updated) => { setProjects(items => items.map(p => p.id === updated.id ? updated : p)); setProject(current => current?.id === updated.id ? updated : current); }} onDeleted={(ids) => { setProjects(items => items.filter(p => !ids.includes(p.id))); if (project && ids.includes(project.id)) clearCurrentProjectSelection(project.id); }} onTrash={() => { setShowTrash(true); void loadTrash(); }} state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
@@ -5259,6 +5345,15 @@ export default function Home() {
         {screen === "results" && <ResultsScreen project={project} events={events} tab={viewTab} data={viewData} state={viewState} issue={viewIssue} busy={busyAction} onWorkspaceTab={() => { const pid = project?.id || routeRef.current.projectId; if (pid) void loadSimpleProject(pid, event?.id || routeRef.current.eventId); }} onSelect={(tab) => void loadView(tab, undefined, "replace")} onRetry={() => void loadView(viewTab, undefined, "replace")} onOpenClaim={(id) => void openClaim(id, "results")} onResolveContradiction={(input) => void runContradictionResolution(input)} onCompleteAction={(claimId) => void completeAction(claimId)} onDecideDraftLink={(linkId, action) => void decideDraftLink(linkId, action)} onOpenAiSuggestions={() => void loadView("client-progress", undefined, "replace")} onAddAction={() => { setMissingClaimDefaultType("next_action"); setMissingClaimSeed(null); setShowMissingClaim(true); }} />}
         {screen === "run-debug" && <RunDebugScreen state={runDebugState} issue={runDebugIssue} debug={runDebug} onBack={navigateBack} onRetry={() => run && void openRunDebug(run.id, "replace")} />}
       </main>
+      {/* 不传 busy。上传在这里是停下来等答案，不是在忙：attachSimpleFile 一进来
+          就把 busyAction 设成了 asset，照搬过来会让整个弹框禁用，点了没反应。 */}
+      {routingAsk && <ProjectPicker
+        projects={projects}
+        busy={false}
+        onChoose={(projectId) => answerMaterialRouting(routingChoice({ chosenProjectId: projectId ?? NEW_PROJECT }))}
+        onSkip={() => answerMaterialRouting(routingChoice({ skipped: true }))}
+      />}
+
       {showNewProject && <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={async (name) => {
         setBusyAction("new-project");
         try {
@@ -5376,6 +5471,9 @@ type SimpleTestScreenProps = {
   onDeleteProject: () => void;
   onOpenTrash: () => void;
   onExplain: () => void;
+  routingSuggestion: RoutingSuggestion | null;
+  onAcceptRouting: () => void;
+  onDismissRouting: () => void;
 };
 
 function restoreWindowScrollPosition(targetY: number, onDone: () => void): () => void {
@@ -6920,6 +7018,9 @@ function SimpleTestScreen({
   onDeleteProject,
   onOpenTrash,
   onExplain,
+  routingSuggestion,
+  onAcceptRouting,
+  onDismissRouting,
 }: SimpleTestScreenProps) {
   const [showRecorder, setShowRecorder] = useState(false);
   // True while DirectRecorder holds audio; collapsing the panel then would
@@ -7459,6 +7560,17 @@ function SimpleTestScreen({
                 onRetry={onRetryTranscription}
               />)}
           </div>}
+
+          {/* 名字取不到就不显示：一条说不出目标项目叫什么的建议，人没法判断该不该接受。 */}
+          {routingSuggestion && !routingSuggestion.dismissed_at && routingSuggestion.suggested_project_name && <RoutingSuggestionBanner
+            suggestion={{
+              suggestedProjectId: routingSuggestion.suggested_project_id,
+              suggestedProjectName: routingSuggestion.suggested_project_name,
+            }}
+            busy={Boolean(busy)}
+            onAccept={onAcceptRouting}
+            onDismiss={onDismissRouting}
+          />}
 
           {factsRunningInBackground && readingAid && activeTab !== "transcript" && activeTab !== "materials" && <aside className="workflow-reading-banner" aria-live="polite">
             <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
