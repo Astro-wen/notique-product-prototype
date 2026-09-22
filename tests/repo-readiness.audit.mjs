@@ -319,11 +319,9 @@ test("repository enforces input-hash idempotency, scenario state CAS, and canoni
     /lower\(c?\.?type\)\s*=\s*'open question'/i,
     "Open Question uses the canonical open_question enum value",
   );
-  assert.match(
-    core,
-    /scenario_status[\s\S]{0,300}sequence_no[\s\S]{0,300}SCENARIO_CONFIRMATION_REQUIRED/i,
-    "later events must wait for scenario confirmation",
-  );
+  // 项目类型不再挡后面的记录，分析时也不再要求先确认。
+  assert.doesNotMatch(core, /throw new ApiFault\([\s\S]{0,40}"SCENARIO_CONFIRMATION_REQUIRED"/,
+    "no record waits for a scenario confirmation any more");
 });
 
 test("all four resource-creation APIs require durable request-hash idempotency", async () => {
@@ -831,7 +829,8 @@ test("the durable repair creates extraction for every uncovered current source m
   assert.match(automatic, /a\.kind <> 'audio'/);
   assert.match(automatic, /a\.processing_status = 'ready'/);
   assert.match(automatic, /HAVING COUNT\(\*\) <= \?/);
-  assert.match(automatic, /sc\.sequence_no = 1 OR sc\.scenario_status = 'confirmed'/);
+  // 任何一条就绪的记录都直接分析，不再等第一条定下项目类型。
+  assert.doesNotMatch(automatic, /sc\.sequence_no = 1 OR sc\.scenario_status = 'confirmed'/);
   assert.match(automatic, /ORDER BY random\(\)/);
   assert.match(automatic, /source_audio_asset_version_id/);
   assert.match(automatic, /json_valid\(er\.input_manifest_json\)/);
@@ -954,7 +953,7 @@ test("the durable repair creates extraction for every uncovered current source m
     const rows = database.prepare(candidateMatch[1]).all(25, null, null, 2, 50);
     assert.deepEqual(
       rows.map((row) => row.event_id).sort(),
-      ["event-added", "event-new", "event-photo", "event-restarted", "event-transcript", "event-unassessed-first"],
+      ["event-added", "event-new", "event-photo", "event-restarted", "event-transcript", "event-unassessed-first", "event-unassessed-later"],
       "transcript/photo-only, expanded manifests, and a once-failed unassessed first Event are repaired; successful, warning, cancelled, exhausted, draft, stale-lineage, and blocked later Events are skipped",
     );
     const scoped = database.prepare(candidateMatch[1]).all(25, "event-new", "event-new", 2, 50);
@@ -1343,7 +1342,7 @@ test("timeline repository loads historical claim versions used by relations and 
   );
 });
 
-test("first-event extraction owns one persisted scenario assessment lease", async () => {
+test("whichever record analyses first owns one persisted scenario assessment lease", async () => {
   const core = await read("lib/server/db/core-repository.ts");
   const extraction = core.slice(
     core.indexOf("export async function createExtractionRun"),
@@ -1362,9 +1361,14 @@ test("first-event extraction owns one persisted scenario assessment lease", asyn
   );
   assert.match(
     extraction,
-    /INSERT INTO mutation_guards[\s\S]*?scenario_status\s*=\s*'unassessed'[\s\S]*?sequence_no\s*=\s*1[\s\S]*?UPDATE projects[\s\S]*?scenario_status\s*=\s*'assessing'/i,
-    "the first-event eligibility check and lease mutation must share the same atomic D1 batch",
+    /INSERT INTO mutation_guards[\s\S]*?scenario_status\s*=\s*'unassessed'[\s\S]*?UPDATE projects[\s\S]*?scenario_status\s*=\s*'assessing'/i,
+    "the eligibility check and lease mutation must share the same atomic D1 batch",
   );
+  // 不再限定第一条记录：哪条先分析哪条判类型，别的记录不等。
+  const guard = extraction.slice(extraction.indexOf("if (needsScenarioAssessment) {"), extraction.indexOf("UPDATE projects", extraction.indexOf("if (needsScenarioAssessment) {")));
+  assert.doesNotMatch(guard, /sequence_no = 1/);
+  // 两条记录同时来抢，输的那条重建一次，这回不判类型，照常分析。
+  assert.match(extraction, /return createExtractionRun\(scope, eventId, idempotencyKey, assetVersionIds, true\)/);
 });
 
 test("the budget a Run is accepted under is the budget it is processed under", async () => {

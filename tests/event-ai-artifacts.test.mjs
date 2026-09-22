@@ -1941,10 +1941,12 @@ test("重试路由认全部可生产的阅读种类，不认旧的 summary", asy
   assert.match(route, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)/);
   const { READING_ARTIFACT_DEFINITIONS } = await import("../lib/domain/reading-pipeline.ts");
   const kinds = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind);
-  for (const kind of ["readable_transcript", "chapters", "speakers", "key_points", "overview"]) {
+  for (const kind of ["chapters", "speakers", "key_points", "overview"]) {
     assert.ok(kinds.includes(kind), `${kind} 必须可重试`);
   }
   assert.ok(!kinds.includes("summary"));
+  // 易读逐字稿已经删掉，不再生产，也就没有重试。
+  assert.ok(!kinds.includes("readable_transcript"));
 });
 
 test("生成阅读总结按钮只重试失败的种类，不再传 summary", async () => {

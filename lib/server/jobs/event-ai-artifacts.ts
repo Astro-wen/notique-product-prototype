@@ -702,14 +702,18 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
     });
     if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
     await persistSummaryArtifact(run, owner, validated.output, result.usage);
-    if (kind === "overview") {
-      // overview 是最后一步，到这里这份材料已经读完了，归属判断才有东西可比。
+    if (kind === "overview" || kind === "chapters") {
+      // 归属判断读概要和章节。两个同时开跑、谁先完不一定，由后完成的那个触发。
+      // 两个几乎同时完成时可能各触发一次，判断结果覆盖写，多一次无害。
       // 不 await：产物已经落库，这一层失败与否都不该改变本次任务的结果。
-      scheduleProjectRoutingSuggestion({
-        eventId: String(run.event_id),
-        workspaceId: String(run.workspace_id),
-        projectId: String(run.project_id),
-      });
+      const statuses = await readingDependencyStatuses(String(run.event_id), ["overview", "chapters"]);
+      if (statuses.overview === "succeeded" && statuses.chapters === "succeeded") {
+        scheduleProjectRoutingSuggestion({
+          eventId: String(run.event_id),
+          workspaceId: String(run.workspace_id),
+          projectId: String(run.project_id),
+        });
+      }
     }
     return "succeeded";
   } catch (error) {

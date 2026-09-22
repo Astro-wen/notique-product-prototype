@@ -104,7 +104,7 @@ import { summarySectionLabel, typeLabel } from "@/lib/domain/labels";
 import { ViewItem } from "@/app/components/view-item";
 import { MaterialShelf } from "@/app/components/material-shelf";
 import { fallbackChapters, shouldUseFallbackChapters } from "@/lib/domain/chapter-fallback";
-import { READING_ARTIFACT_DEFINITIONS, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
+import { READING_ARTIFACT_DEFINITIONS, readingViewState, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
@@ -1205,6 +1205,16 @@ function PublicWorkspaceConfirmationModal({ onCancel, onConfirm }: { onCancel: (
       <div className="modal-actions"><button className="button secondary" onClick={onCancel}>取消</button><button className="button primary" disabled={!confirmed} onClick={onConfirm}>确认并继续</button></div>
     </div>
   </Modal>;
+}
+
+/** 阅读视图还在生成：转圈加一句话，不拿任何兜底内容冒充结果。 */
+function ReadingGenerating() {
+  return <p className="reading-view-generating" role="status"><i className="spinner" aria-hidden="true" />内容生成中…</p>;
+}
+
+/** 这一个视图的任务失败了，别的视图不受影响。 */
+function ReadingFailed({ text, busy, onRetry }: { text: string; busy: boolean; onRetry: () => void }) {
+  return <div className="reading-view-empty"><p>{text}</p><button className="text-button" disabled={busy} onClick={onRetry}>重新生成</button></div>;
 }
 
 function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
@@ -5009,33 +5019,6 @@ export default function Home() {
     }
   }
 
-  async function confirmCurrentScenario(scenario: string, custom?: string) {
-    if (!project) return;
-    setBusyAction("scenario");
-    setProjectIssue(null);
-    try {
-      const fingerprint = ["scenario", project.id, project.scenarioVersion ?? 0, scenario, custom || ""].join(":");
-      const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
-      mutationKeys.current.set(fingerprint, idempotencyKey);
-      const updated = await api.confirmScenario(project, scenario, idempotencyKey, custom);
-      mutationKeys.current.delete(fingerprint);
-      setProject(updated);
-      flash("场景已确认");
-      if (screen === "simple") {
-        const targetEventId = projectWorkflow.currentEventId || event?.id || routeRef.current.eventId;
-        if (targetEventId) {
-          setTranscriptFocusRequest({ id: Date.now(), eventId: targetEventId, tab: "summary" });
-        } else {
-          await loadSimpleProject(project.id);
-        }
-      } else await loadProject(project.id);
-    } catch (error) {
-      setProjectIssue(toIssue(error));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function restoreAppRoute(requestedRoute: AppRoute): Promise<void> {
     const restoreEpoch = routeRestoreEpoch.current + 1;
     routeRestoreEpoch.current = restoreEpoch;
@@ -5298,7 +5281,6 @@ export default function Home() {
           }}
           onProjectWorkflowAction={() => void advanceProjectWorkflow()}
           onRetryTranscription={(audioAssetId) => void retryAudioTranscription(audioAssetId)}
-          onConfirmScenario={confirmCurrentScenario}
           transcriptionRun={transcriptionRun}
           onResult={(tab = "brief-card") => void loadView(tab)}
           onOpenClaim={(id, edit) => { setEditRequestedForClaim(edit ? id : null); void openClaimFromTranscriptSummary(id); }}
@@ -5357,7 +5339,7 @@ export default function Home() {
         />}
         {screen === "how-it-works" && <HowItWorks onBack={navigateBack} />}
         {screen === "projects" && <ProjectIndex onChanged={(updated) => { setProjects(items => items.map(p => p.id === updated.id ? updated : p)); setProject(current => current?.id === updated.id ? updated : current); }} onDeleted={(ids) => { setProjects(items => items.filter(p => !ids.includes(p.id))); if (project && ids.includes(project.id)) clearCurrentProjectSelection(project.id); }} onTrash={() => { setShowTrash(true); void loadTrash(); }} state={projectsState} issue={projectsIssue} projects={projects} onRetry={loadProjects} onOpen={(id) => { setSimpleFlow(false); void loadProject(id); }} onCreate={() => setShowNewProject(true)} />}
-        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void enterContinuousReview()} onResults={(tab) => void loadView(tab)} onConfirmScenario={confirmCurrentScenario} busy={busyAction === "scenario"} />}
+        {screen === "project" && <ProjectScreen key={`${project?.id ?? "none"}-${project?.scenarioVersion ?? 0}`} state={projectState} issue={projectIssue} project={project} events={events} onBack={navigateBack} onRetry={() => project && void loadProject(project.id, "project", "replace")} onOpenEvent={(id) => void loadEvent(id)} onNewEvent={() => setShowNewEvent(true)} onImport={() => requirePublicWorkspaceAcknowledgement(() => { setSimpleFlow(false); setShowImport(true); })} onReview={() => void enterContinuousReview()} onResults={(tab) => void loadView(tab)} />}
         {screen === "event" && <EventScreen state={eventState} issue={eventIssue} event={event} run={run} transcriptionRun={transcriptionRun} claims={claims} claimsState={claimsState} claimsIssue={claimsIssue} assetUploadProgress={assetUploadProgress?.eventId === event?.id ? assetUploadProgress : null} onCancelUpload={() => assetUploadAbortRef.current?.abort()} onBack={navigateBack} onRetry={() => event && void loadEvent(event.id, "replace")} onDebug={() => run && void openRunDebug(run.id)} onRequirePublicWorkspaceAcknowledgement={requirePublicWorkspaceAcknowledgement} onStart={async () => {
           if (event) await startExtractionForEvent(event);
         }} onReview={() => { if (run?.id && runComplete.has(run.status)) void loadReviewQueue(); }} onOpenClaim={(id) => void openClaim(id, "event")} onAttach={async (input) => {
@@ -5604,7 +5586,6 @@ type SimpleTestScreenProps = {
   onReorderAssets: (assetIds: string[]) => Promise<void>;
   onProjectWorkflowAction: () => void;
   onRetryTranscription: (audioAssetId: string) => void;
-  onConfirmScenario: (scenario: string, custom?: string) => Promise<void>;
   onResult: (tab?: ResultTab) => void;
   onOpenClaim: (id: string, edit?: boolean) => void;
   onOpenFullReview: () => void;
@@ -5953,13 +5934,15 @@ function TranscriptArtifactsPanel({
     if (previousTranscriptRevision.current === transcriptRevision) return;
     previousTranscriptRevision.current = transcriptRevision;
     void refreshTranscript();
-  }, [refreshTranscript, transcriptRevision]);
+    // 逐字稿一出来四个阅读 agent 就同时建好了，顺手取一次，别等下一轮。
+    void load(true);
+  }, [load, refreshTranscript, transcriptRevision]);
 
   const artifactRunning = runs.some((run) => run.status === "queued" || run.status === "processing");
   // 模型调用没有中间进度，能诚实报的是五步里走到第几步。每种只看最新一次运行。
   const readingProgress = useMemo(() => {
     const labels: Record<string, string> = {
-      readable_transcript: "易读逐字稿", chapters: "章节", speakers: "发言总结", key_points: "要点", overview: "概要",
+      chapters: "章节", speakers: "发言总结", key_points: "要点", overview: "概要",
     };
     const steps = READING_ARTIFACT_DEFINITIONS.map((definition) => {
       const latest = runs
@@ -5974,11 +5957,6 @@ function TranscriptArtifactsPanel({
     const done = steps.filter((step) => step.state === "done").length;
     return { steps, done, total: steps.length, active: artifactRunning && done < steps.length };
   }, [runs, artifactRunning]);
-  useEffect(() => {
-    if (!artifactRunning) return;
-    const timer = window.setInterval(() => void load(true), 5_000);
-    return () => window.clearInterval(timer);
-  }, [artifactRunning, load]);
 
   const runningRunIds = runs
     .filter((artifactRun) => artifactRun.status === "queued" || artifactRun.status === "processing")
@@ -6087,10 +6065,29 @@ function TranscriptArtifactsPanel({
   const generatedChapters = viewField(chaptersPair, "chapters");
   // 模型章节不会再来了（作业失败，或压根没排而分析也没在跑）时，按时间点和
   // 说话人轮换粗切一份目录顶上。它不编内容，只让读者有地方可点。
+  // 每个视图各看自己的任务：有内容就显示，自己那条任务失败才算失败，其余一律
+  // 「内容生成中」，包括任务还没取到页面上的那几秒。见 readingViewState。
+  const anyReadingRun = runs.some((artifactRun) => READING_ARTIFACT_DEFINITIONS.some((definition) => definition.kind === artifactRun.kind));
+  const noReadingWillCome = !anyReadingRun && Boolean(analysisRun) && !analysisRunning;
+  const viewStateFor = (hasContent: boolean, pair: { run?: { status?: string } | null }) =>
+    readingViewState({ hasContent, runStatus: viewRunStatus(pair), noReadingWillCome });
+  const chaptersState = viewStateFor(generatedChapters.length > 0, chaptersPair);
+  const speakersState = viewStateFor(generatedSpeakerSummaries.length > 0, speakersPair);
+  const keyPointsState = viewStateFor(keyPoints.length > 0, keyPointsPair);
+  const overviewState = viewStateFor(Boolean(overviewText), overviewPair);
+  // 有任务在跑就刷新（包括升级前建的旧任务），四个视图里还有在生成的也刷新。
+  const readingPollNeeded = artifactRunning || (availableRawSegments.length > 0
+    && [chaptersState, speakersState, keyPointsState, overviewState].includes("generating"));
+  // 以前只在有任务在跑时才轮询。页面若在任务建出来之前取过一次，拿到空列表就再也
+  // 不取，最后把「没整理出章节」当结论显示出来，其实四个 agent 都已经跑完了。
+  useEffect(() => {
+    if (!readingPollNeeded) return;
+    const timer = window.setInterval(() => void load(true), 4_000);
+    return () => window.clearInterval(timer);
+  }, [readingPollNeeded, load]);
   const useFallbackChapters = shouldUseFallbackChapters({
     generatedCount: generatedChapters.length,
-    summaryRunStatus: viewRunStatus(chaptersPair),
-    analysisRunning,
+    viewState: chaptersState,
     timedSegmentCount: availableRawSegments.filter((segment) => segment.start_ms != null).length,
   });
   const displayChapters: Record<string, unknown>[] = useFallbackChapters ? fallbackChapters(availableRawSegments) : generatedChapters;
@@ -6850,7 +6847,7 @@ function TranscriptArtifactsPanel({
         </ol>
       </div>}
 
-      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewText}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : <p className="rail-muted">{analysisRunning ? "概要正在整理，原文已可阅读。" : "暂无全文概要，可以阅读下方原文。"}</p>}</section></SmoothResize>
+      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewText}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没写出概要，可以先读下方原文。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}</section></SmoothResize>
       <header className="reader-intelligence-heading">
         <nav className="reader-insight-tabs" aria-label="智能速览方式">
           <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
@@ -6870,22 +6867,22 @@ function TranscriptArtifactsPanel({
               <button className="tingwu-recall" onClick={() => locateRawSources(ids)}><span aria-hidden="true">↶</span> 回顾</button></footer>
           </div>
         </article>;
-      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : <div className="reading-view-empty"><p>{viewRunStatus(keyPointsPair) === "processing" || viewRunStatus(keyPointsPair) === "queued" ? "正在整理要点…" : viewRunStatus(keyPointsPair) === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有问答要点。"}</p><button className="text-button" disabled={Boolean(busy) || viewRunStatus(keyPointsPair) === "processing" || viewRunStatus(keyPointsPair) === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
+      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出要点。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
       {orderedSummaryChapters.length ? <>
-        {useFallbackChapters && <p className="rail-muted chapter-fallback-note">这次没整理出章节，先按时间粗分，方便定位</p>}
+        {useFallbackChapters && <p className="rail-muted chapter-fallback-note">这次没整理出章节，先按时间粗分，方便定位 <button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>重新生成</button></p>}
         <div>{(chaptersExpanded ? orderedSummaryChapters : orderedSummaryChapters.slice(0, 2)).map((chapter) => renderChapter(chapter))}</div>
         <button className="text-button chapter-expand" aria-expanded={chaptersExpanded} onClick={() => setChaptersExpanded((value) => !value)}>{chaptersExpanded ? "收起章节" : `展开全部章节（${orderedSummaryChapters.length}）`}</button>
-      </> : <p className="rail-muted">章节整理好后会显示在这里，可以先阅读原文。</p>}
+      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出章节。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     {insightView === "speakers" && <section className="tingwu-speaker-summaries" aria-label="发言总结内容">
       {generatedSpeakerSummaries.length ? <><div className={speakersExpanded ? "expanded" : "collapsed"}>{generatedSpeakerSummaries.map((speaker, index) => <article key={`${firstString(speaker, ["asset_version_id"])}-${index}`}>
         <div className={`tingwu-speaker-label speaker-tone-${index % 4}`}><span className="speaker-avatar" aria-hidden="true"><Users /></span><span>{displaySpeakerLabel(speaker.speaker)}</span></div>
         <p>{firstString(speaker, ["summary"])}</p>
-      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : <div className="reading-view-empty"><p>{viewRunStatus(speakersPair) === "processing" || viewRunStatus(speakersPair) === "queued" ? "正在整理每位发言人的总结…" : viewRunStatus(speakersPair) === "failed" ? "这次总结未完成，请重新生成。" : "这份记录还没有发言总结。"}</p><button className="text-button" disabled={Boolean(busy) || viewRunStatus(speakersPair) === "processing" || viewRunStatus(speakersPair) === "queued"} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>生成阅读总结</button></div>}
+      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出发言总结。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     </SmoothResize>
@@ -7193,7 +7190,6 @@ function SimpleTestScreen({
   onReorderAssets,
   onProjectWorkflowAction,
   onRetryTranscription,
-  onConfirmScenario,
   onResult,
   onOpenClaim,
   onOpenFullReview,
@@ -7222,8 +7218,6 @@ function SimpleTestScreen({
   const [recorderActive, setRecorderActive] = useState(false);
   const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
   const [readerWasOpened, setReaderWasOpened] = useState(false);
-  const [scenario, setScenario] = useState("");
-  const [customScenario, setCustomScenario] = useState("");
   const workspaceAudioFileRef = useRef<HTMLInputElement>(null);
   const workspaceTranscriptFileRef = useRef<HTMLInputElement>(null);
   const workspacePhotoFileRef = useRef<HTMLInputElement>(null);
@@ -7282,8 +7276,6 @@ function SimpleTestScreen({
     : project && (issue?.code === "EXTRACTION_POLL_TIMEOUT" || (analysisFailed && materialsReady))
       ? onProjectWorkflowAction
       : undefined;
-  const needsScenario = project?.scenarioStatus === "pending_confirmation"
-    || Boolean(project?.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
   const factsRunningInBackground = factsStillRunning(extractionStatus);
   const factsCanBeReviewed = factsReadyForReview({
     extractionStatus,
@@ -7528,7 +7520,7 @@ function SimpleTestScreen({
     // only the explanation shown while that record is not reachable yet, so
     // reaching it costs one click rather than a menu, a card and a button.
     if (!busy) {
-      if (next === "results" && !needsScenario && analysisDone) { onResult("client-progress"); return; }
+      if (next === "results" && analysisDone) { onResult("client-progress"); return; }
     }
     setActiveTab(next);
     if ((next === "transcript" || next === "review") && event) {
@@ -7609,24 +7601,8 @@ function SimpleTestScreen({
 
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} compact />}
 
-      {needsScenario && (
-        <details className="scenario-context-optional" id="workspace-scenario">
-          <summary><span><b>设置项目类型</b><small>查看项目概览前设置</small></span><i aria-hidden="true"><ChevronDown /></i></summary>
-          <div className="scenario-context-body">
-            <header><span className="section-kicker">项目上下文</span><h2>这个项目属于哪一类？</h2><p>选择最贴近的一项，或填写项目类型。</p></header>
-          <div className="scenario-options">
-            {project?.scenarioCandidates?.map((item) => (
-              <label className={scenario === item.key ? "selected" : ""} key={item.key}>
-                <input type="radio" name="simple-scenario" value={item.key} checked={scenario === item.key} onChange={() => setScenario(item.key)} />
-                <span><strong>{item.label}</strong><small>{confidenceText(item.confidence)}{item.description ? ` · ${item.description}` : ""}</small></span>
-              </label>
-            ))}
-          </div>
-          <label className="field"><span>自定义类型（可选）</span><input value={customScenario} onChange={(change) => setCustomScenario(change.target.value)} placeholder="例如：保险理赔、房屋翻修或供应商评估" /></label>
-          <button className="button primary" disabled={busy === "scenario" || (!scenario && !customScenario.trim())} onClick={() => void onConfirmScenario(scenario || "custom", customScenario.trim() || undefined)}>{busy === "scenario" ? "正在保存…" : "确认后继续"}</button>
-          </div>
-        </details>
-      )}
+      {/* 以前这里有一张「设置项目类型」卡片，要人在三个候选里选一个才能往下走。
+          现在第一次分析时直接采用把握最大的那个，不再打断。 */}
 
       {/* 没有项目时整页交给落地页：原来这里渲染的是一整套工作区外壳，左边那栏
           写着「记录 0 次 / 还没有记录」，右边的标签页全都点不动。 */}
@@ -7788,7 +7764,7 @@ function SimpleTestScreen({
             </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中之后才能读原文和确认要点</p><button className="button secondary" onClick={() => setActiveTab("materials")}>去添加材料</button></div>}
           </div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析做完，这里直接打开项目概览"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>先完成本次分析</h3><p>本次分析做完，这里直接打开项目概览</p></div></div></div>}
         </article>
       </section>}
 
@@ -7812,23 +7788,14 @@ function PageHeader({ eyebrow, title, body, back, backLabel = "返回", actions 
 }
 
 
-function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenEvent, onNewEvent, onImport, onReview, onResults, onConfirmScenario, busy }: { state: AsyncState; issue: ApiIssue | null; project: Project | null; events: Event[]; onBack: () => void; onRetry: () => void; onOpenEvent: (id: string) => void; onNewEvent: () => void; onImport: () => void; onReview: () => void; onResults: (tab: ResultTab) => void; onConfirmScenario: (scenario: string, custom?: string) => Promise<void>; busy: boolean }) {
-  const [scenario, setScenario] = useState("");
-  const [custom, setCustom] = useState("");
+function ProjectScreen({ state, issue, project, events, onBack, onRetry, onOpenEvent, onNewEvent, onImport, onReview, onResults }: { state: AsyncState; issue: ApiIssue | null; project: Project | null; events: Event[]; onBack: () => void; onRetry: () => void; onOpenEvent: (id: string) => void; onNewEvent: () => void; onImport: () => void; onReview: () => void; onResults: (tab: ResultTab) => void }) {
   if (state === "loading") return <div className="page"><LoadingBlock label="正在读取 Project…" /></div>;
   if (state === "error" || !project) return <div className="page"><PageHeader title="Project" back={onBack} backLabel="返回项目列表" />{issue && <ErrorNotice issue={issue} onRetry={onRetry} />}</div>;
   const pendingReviewCount = project.pendingClaimCount + project.pendingOccurrenceCount;
-  const needsScenario = project.scenarioStatus === "pending_confirmation" || Boolean(project.scenarioCandidates?.length && project.scenarioStatus !== "confirmed");
   return (
     <div className="page">
       <PageHeader eyebrow="项目" title={project.name} body={`${events.length} 条记录 · ${statusLabel(project.scenarioStatus)}`} back={onBack} backLabel="返回项目列表" actions={<><button className="button secondary" onClick={onNewEvent}>新增材料</button><button className="button primary" onClick={onImport}>导入 Transcript</button></>} />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} compact />}
-      {needsScenario && <section className="scenario-panel">
-        <div><span className="section-kicker">需要你确认</span><h2>这个项目属于哪一类？</h2><p>只需选一次</p></div>
-        <div className="scenario-options">{project.scenarioCandidates?.map((item) => <label className={scenario === item.key ? "selected" : ""} key={item.key}><input type="radio" name="scenario" value={item.key} checked={scenario === item.key} onChange={() => setScenario(item.key)} /><span><strong>{item.label}</strong><small>{confidenceText(item.confidence)}{item.description ? ` · ${item.description}` : ""}</small></span></label>)}</div>
-        <label className="field"><span>自定义类型（可选）</span><input value={custom} onChange={(event) => setCustom(event.target.value)} placeholder="例如：顾问项目跟进" /></label>
-        <button className="button primary" disabled={busy || (!scenario && !custom.trim())} onClick={() => void onConfirmScenario(scenario || "custom", custom.trim() || undefined)}>{busy ? "正在保存…" : "确认使用场景"}</button>
-      </section>}
       {project.scenarioStatus === "confirmed" && <section className="project-status-row"><div><span className="section-kicker">已确认使用场景</span><strong>{project.scenario?.label || project.scenario?.key || "已确认"}</strong></div><button className="button secondary" onClick={() => onResults("folder-summary")}>打开当前结果</button></section>}
       <div className="project-screen-grid">
         <section className="panel event-panel">

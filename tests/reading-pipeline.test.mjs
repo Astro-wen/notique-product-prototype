@@ -6,80 +6,55 @@ import {
   readingArtifactDefinition,
   readingArtifactReadiness,
   readingArtifactWaves,
+  readingViewState,
 } from "../lib/domain/reading-pipeline.ts";
 
 const allSucceeded = () => "succeeded";
 const status = (map) => (dependency) => map[dependency] ?? "missing";
 
-test("chapters are the spine: only they and the readable pass read the whole transcript", () => {
-  const readsAll = READING_ARTIFACT_DEFINITIONS
-    .filter((item) => item.readsFullTranscript)
-    .map((item) => item.kind);
-  // 全文概要不读原文，这是整个重排省钱的地方：它只吃上游的几千 token。
-  assert.ok(!readsAll.includes("overview"));
-  assert.equal(readingArtifactDefinition("overview").readsFullTranscript, false);
-  assert.deepEqual(readingArtifactDefinition("overview").dependsOn, ["chapters", "speakers", "key_points"]);
-  // 发言总结和要点回顾不等章节：章节是可选目录，有就用，没有就整篇读。
-  assert.deepEqual(readingArtifactDefinition("speakers").dependsOn, []);
-  assert.deepEqual(readingArtifactDefinition("key_points").dependsOn, []);
+test("transcript first, then all four views start together, each reading the transcript", () => {
+  // 顺序只有一句话：录音转成逐字稿，四个 agent 同时开工。没有谁等谁。
+  assert.deepEqual(READING_ARTIFACT_DEFINITIONS.map((item) => item.kind), ["chapters", "speakers", "key_points", "overview"]);
+  for (const definition of READING_ARTIFACT_DEFINITIONS) {
+    assert.deepEqual(definition.dependsOn, [], `${definition.kind} 不该等别的视图`);
+    assert.equal(definition.readsFullTranscript, true, `${definition.kind} 应该自己读原文`);
+  }
+  // 发言总结和要点回顾开工时章节已经出来就拿来当目录，没出来不等。
   assert.deepEqual(readingArtifactDefinition("speakers").optionalUpstream, ["chapters"]);
   assert.deepEqual(readingArtifactDefinition("key_points").optionalUpstream, ["chapters"]);
-  assert.deepEqual(readingArtifactDefinition("readable_transcript").dependsOn, []);
-  // 章节读的是原始分段，从没用过易读版；挂在它后面只是白等三万 token 生成完。
-  assert.deepEqual(readingArtifactDefinition("chapters").dependsOn, []);
 });
 
-test("dispatch order follows the dependency graph and parallelises each wave", () => {
+test("the readable transcript agent is gone", () => {
+  // 它只给原稿加标点，一次五到七万 token，不进任何后续步骤。
+  assert.equal(READING_ARTIFACT_DEFINITIONS.some((item) => item.kind === "readable_transcript"), false);
+  assert.throws(() => readingArtifactDefinition("readable_transcript"));
+});
+
+test("dispatch runs every view in one wave", () => {
   const waves = readingArtifactWaves();
-  // 四个读原文的同一波并行，只有概要等它们。阅读线从四跳变成两跳。
-  assert.deepEqual(new Set(waves[0]), new Set(["readable_transcript", "chapters", "speakers", "key_points"]));
-  assert.deepEqual(waves.slice(1), [["overview"]]);
+  assert.equal(waves.length, 1);
+  assert.deepEqual(new Set(waves[0]), new Set(["chapters", "speakers", "key_points", "overview"]));
 });
 
-test("a kind with no dependency is always ready", () => {
-  assert.deepEqual(readingArtifactReadiness("readable_transcript", allSucceeded), {
-    state: "ready",
-    degraded: false,
-  });
+test("no view ever waits, even while chapters are still running or failed", () => {
+  for (const chapters of ["processing", "queued", "failed", "missing"]) {
+    for (const kind of ["speakers", "key_points", "overview"]) {
+      assert.deepEqual(readingArtifactReadiness(kind, status({ chapters })), { state: "ready", degraded: false });
+    }
+  }
+  assert.deepEqual(readingArtifactReadiness("chapters", allSucceeded), { state: "ready", degraded: false });
 });
 
-test("a running dependency makes the downstream wait instead of racing it", () => {
-  // 章节只是可选目录：它还在跑，发言总结照样立刻开工。
-  assert.deepEqual(
-    readingArtifactReadiness("speakers", status({ chapters: "processing" })),
-    { state: "ready", degraded: false },
-  );
-  assert.deepEqual(
-    readingArtifactReadiness("overview", status({ chapters: "succeeded", speakers: "queued", key_points: "succeeded" })),
-    { state: "wait", blockedBy: ["speakers"] },
-  );
-});
-
-test("a missing optional upstream never marks the run degraded", () => {
-  // 章节不是硬依赖，没出来就整篇读，这是正常路径，不算降级。
-  assert.deepEqual(
-    readingArtifactReadiness("speakers", status({ chapters: "failed" })),
-    { state: "ready", degraded: false },
-  );
-  assert.deepEqual(
-    readingArtifactReadiness("key_points", status({ chapters: "missing" })),
-    { state: "ready", degraded: false },
-  );
-});
-
-test("the overview writes a thinner pass while any upstream survived", () => {
-  assert.deepEqual(
-    readingArtifactReadiness("overview", status({ chapters: "succeeded", speakers: "failed", key_points: "failed" })),
-    { state: "ready", degraded: true, missing: ["speakers", "key_points"] },
-  );
-});
-
-test("the overview is abandoned rather than run blind when every upstream is gone", () => {
-  // 它不读原文，上游全废就无从写起。直接标失败，省下这一次调用。
-  assert.deepEqual(
-    readingArtifactReadiness("overview", status({ chapters: "failed", speakers: "failed", key_points: "missing" })),
-    { state: "abandon", missing: ["chapters", "speakers", "key_points"] },
-  );
+test("a view shows 内容生成中 until its own run settles, and only a real failure is a failure", () => {
+  const generating = { hasContent: false, noReadingWillCome: false };
+  assert.equal(readingViewState({ ...generating, runStatus: "queued" }), "generating");
+  assert.equal(readingViewState({ ...generating, runStatus: "processing" }), "generating");
+  // 任务还没取到页面上：逐字稿刚出来，四个 agent 正在建，这时不能下结论。
+  assert.equal(readingViewState({ ...generating, runStatus: undefined }), "generating");
+  assert.equal(readingViewState({ ...generating, runStatus: "failed" }), "failed");
+  assert.equal(readingViewState({ hasContent: true, runStatus: "failed", noReadingWillCome: false }), "ready");
+  // 分析都结束了、一条阅读任务都没有：不会再来了，别转个没完。
+  assert.equal(readingViewState({ hasContent: false, runStatus: undefined, noReadingWillCome: true }), "failed");
 });
 
 test("every declared dependency is itself a declared kind, and the graph has no cycle", () => {
@@ -110,21 +85,19 @@ test("the four views are created as separate runs; the old four-in-one is no lon
   assert.doesNotMatch(creation, /\$\{input\.extractionRunId\}:\$\{definition\.kind\}/);
 });
 
-test("a downstream view waits for its upstream instead of racing or wasting a call", async () => {
+test("the job still honours the readiness rule and passes optional upstream", async () => {
   const job = await readFile(
     new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url),
     "utf8",
   );
   assert.match(job, /readingArtifactReadiness\(kind, \(dependency\) => statuses\[dependency\] \?\? "missing"\)/);
-  assert.match(job, /if \(readiness\.state === "wait"\)[\s\S]*?return "pending";/);
-  assert.match(job, /if \(readiness\.state === "abandon"\)[\s\S]*?ARTIFACT_UPSTREAM_UNAVAILABLE/);
-  // 下游吃上游的产物，而不是回头重读原文。
-  // 可选上游一并取：readingUpstreamContent 只返回已成功的，没成功的自然不在。
   assert.match(job, /readingUpstreamContent\(String\(run\.event_id\), \[\s*\.\.\.definition\.dependsOn,\s*\.\.\.\(definition\.optionalUpstream \?\? \[\]\),\s*\]\)/);
   assert.match(job, /provider\.summarizeReadingView\(/);
+  // 归属判断读概要和章节，由后完成的那个触发。
+  assert.match(job, /kind === "overview" \|\| kind === "chapters"[\s\S]{0,400}statuses\.overview === "succeeded" && statuses\.chapters === "succeeded"[\s\S]{0,120}scheduleProjectRoutingSuggestion/);
 });
 
-test("the overview is written from upstream artifacts, never from the raw transcript", async () => {
+test("every view, the overview included, is written from the transcript", async () => {
   const provider = await readFile(
     new URL("../lib/server/ai/model-provider.ts", import.meta.url),
     "utf8",
@@ -133,11 +106,9 @@ test("the overview is written from upstream artifacts, never from the raw transc
     provider.indexOf("async summarizeReadingView("),
     provider.indexOf("async refineTranscript("),
   );
-  // 这是拆开之后仍然更省的原因：全文概要只吃几千 token 的上游产物。
-  assert.match(method, /if \(kind === "overview"\) \{[\s\S]*?payload\.chapters = upstream\.chapters/);
+  assert.doesNotMatch(method, /if \(kind === "overview"\) \{[\s\S]*?payload\.chapters = upstream\.chapters/);
   assert.match(method, /payload\.transcript_segments = input\.new_event\.transcript_segments/);
-  assert.match(method, /if \(kind !== "chapters" && upstream\.chapters\?\.length\) payload\.chapters = upstream\.chapters/);
-  // 单视图结果包回完整信封，复用同一个校验器，不另起一套引用检查。
+  assert.match(method, /\(kind === "speakers" \|\| kind === "key_points"\) && upstream\.chapters\?\.length/);
   assert.match(method, /validateEventSummaryProviderOutput\(ordered, summaryInput\)/);
 });
 

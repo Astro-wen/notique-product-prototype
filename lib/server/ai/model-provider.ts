@@ -1015,19 +1015,13 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       event_id: input.new_event.event_id,
       locale: input.project.locale,
     };
-    if (kind === "overview") {
-      // 不读原文。引用沿用上游条目已经核过的 segment id。
-      payload.chapters = upstream.chapters ?? [];
-      payload.speaker_summaries = upstream.speaker_summaries ?? [];
-      payload.key_points = upstream.key_points ?? [];
-    } else {
-      payload.transcript_segments = input.new_event.transcript_segments.map((segment) => ({
-        id: segment.id, asset_version_id: segment.assetVersionId, speaker: segment.speaker,
-        start_ms: segment.startMs, end_ms: segment.endMs, text: segment.textRaw,
-      }));
-      // 章节在就当目录用，按章取材，不必整篇重读一遍再找结构。
-      if (kind !== "chapters" && upstream.chapters?.length) payload.chapters = upstream.chapters;
-    }
+    // 四个视图都直接读原文，同时开跑。概要以前只吃另外三样的产出，只能排在最后。
+    payload.transcript_segments = input.new_event.transcript_segments.map((segment) => ({
+      id: segment.id, asset_version_id: segment.assetVersionId, speaker: segment.speaker,
+      start_ms: segment.startMs, end_ms: segment.endMs, text: segment.textRaw,
+    }));
+    // 发言总结和要点回顾开工时章节已经出来，就拿它当目录按章取材。
+    if ((kind === "speakers" || kind === "key_points") && upstream.chapters?.length) payload.chapters = upstream.chapters;
 
     const instruction = kind === "chapters"
       ? [
@@ -1048,9 +1042,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
             "answer resolves that question from the transcript.",
           ]
           : [
-            "Write the overall summary of this record from the supplied chapters, speaker summaries and key points.",
-            "Do not add anything the supplied material does not contain; you are summarizing a summary.",
-            "Return a single section with kind=overview. Reuse source_segment_ids from the supplied entries you are condensing.",
+            "Write the overall summary of this record from the transcript: who met, what they discussed, what was decided, and what remains open.",
+            "Write 3-6 sentences of synthesized prose, not a list and not quotes.",
+            "Return a single section with kind=overview whose items cite the source_segment_ids that support each sentence.",
             "Always return source_character_span as null.",
           ];
 

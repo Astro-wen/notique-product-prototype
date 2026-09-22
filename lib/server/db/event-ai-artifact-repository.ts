@@ -3,7 +3,6 @@ import {
   EVENT_AI_ARTIFACT_REASONING_EFFORTS,
   EVENT_SUMMARY_PROMPT_VERSION,
   EVENT_SUMMARY_SCHEMA_VERSION,
-  READABLE_TRANSCRIPT_PROMPT_VERSION,
   READABLE_TRANSCRIPT_SCHEMA_VERSION,
   type EventAiArtifactKind,
   type EventSummaryOutput,
@@ -398,7 +397,7 @@ export async function ensureEventAiArtifactRuns(input: {
   model: string;
 }): Promise<EventAiArtifactRunRecord[]> {
   const bindings = getBindings();
-  if (bindings.AI_EVENT_SUMMARY === "0" && bindings.AI_READABLE_TRANSCRIPT === "0") return [];
+  if (bindings.AI_EVENT_SUMMARY === "0") return [];
   const manifest = parseJson<Array<{ kind?: unknown }>>(input.inputManifestJson, []);
   if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return [];
   const timestamp = now();
@@ -411,14 +410,8 @@ export async function ensureEventAiArtifactRuns(input: {
     schema: string;
     enabled: boolean;
   }> = [
-    {
-      kind: "readable_transcript",
-      prompt: READABLE_TRANSCRIPT_PROMPT_VERSION,
-      schema: READABLE_TRANSCRIPT_SCHEMA_VERSION,
-      enabled: bindings.AI_READABLE_TRANSCRIPT !== "0",
-    },
+    // 易读逐字稿不再生产（历史产物仍可读），见 reading-pipeline.ts。
     ...READING_ARTIFACT_DEFINITIONS
-      .filter((item) => item.kind !== "readable_transcript")
       .map((item) => ({
         kind: item.kind as EventAiArtifactKind,
         prompt: EVENT_AI_ARTIFACT_CONTRACTS[item.kind].prompt,

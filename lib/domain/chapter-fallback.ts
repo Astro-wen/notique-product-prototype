@@ -152,14 +152,14 @@ function span(group: FallbackChapterSource[]): number {
  * 什么时候用兜底：模型章节为空，而且不会再来了（失败，或根本没排作业而
  * 分析也没在跑）。作业还在跑时不用，免得两种章节前后闪一下。
  */
+/**
+ * 按时间粗分的章节只在章节任务真的失败后才顶上。还在生成时显示「内容生成中」，
+ * 不拿粗分冒充结果。
+ */
 export function shouldUseFallbackChapters(input: {
   generatedCount: number;
-  summaryRunStatus: string | null | undefined;
-  analysisRunning: boolean;
+  viewState: "ready" | "generating" | "failed";
   timedSegmentCount: number;
 }): boolean {
-  if (input.generatedCount > 0 || input.timedSegmentCount === 0) return false;
-  if (input.summaryRunStatus === "processing" || input.summaryRunStatus === "queued") return false;
-  if (!input.summaryRunStatus && input.analysisRunning) return false;
-  return true;
+  return input.generatedCount === 0 && input.timedSegmentCount > 0 && input.viewState === "failed";
 }

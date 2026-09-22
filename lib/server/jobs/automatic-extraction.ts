@@ -175,8 +175,8 @@ export async function ensureAutomaticExtractionRuns(input?: {
      )
      SELECT sc.workspace_id, sc.event_id
        FROM source_counts sc
-      WHERE (sc.sequence_no = 1 OR sc.scenario_status = 'confirmed')
-        AND (? IS NULL OR sc.event_id = ?)
+      -- 项目类型不再挡后面的记录，任何一条就绪的记录都可以直接分析。
+      WHERE (? IS NULL OR sc.event_id = ?)
         AND NOT EXISTS (
           SELECT 1 FROM exact_runs er
            WHERE er.event_id = sc.event_id

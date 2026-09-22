@@ -330,7 +330,7 @@ test("an open workspace runs the recovery the Cron trigger does not", async () =
     path.join(root, "lib/server/jobs/automatic-extraction.ts"),
     "utf8",
   );
-  assert.match(automatic, /AND \(\? IS NULL OR sc\.event_id = \?\)/,
+  assert.match(automatic, /\(\? IS NULL OR sc\.event_id = \?\)/,
     "the scan can be restricted to one Event");
   const page2 = await readFile(path.join(root, "app/page.tsx"), "utf8");
   assert.match(page2, /api\.wakeWorkspace\(routeRef\.current\.eventId \|\| null\)/);

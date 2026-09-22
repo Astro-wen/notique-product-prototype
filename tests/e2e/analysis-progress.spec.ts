@@ -23,7 +23,8 @@ test("fact analysis stays in the background without a fake percentage", async ({
 
   const reader = page.getByRole("region", { name: "逐字稿阅读区" });
   await expect(reader).toBeVisible();
-  await expect(reader).toContainText("正在整理，原文已可阅读");
+  // 阅读视图还没写完时显示转圈和「内容生成中」，原文照样能读。
+  await expect(reader).toContainText("内容生成中…");
   await expect(reader.getByTestId("transcript-turn").first()).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "本次事实分析进度" })).toHaveCount(0);
   await expect(page.getByRole("main")).not.toContainText(/\d+%|已完成 \d+\/\d+ 步/);

@@ -2291,6 +2291,7 @@ export async function createExtractionRun(
   eventId: string,
   idempotencyKey: string,
   assetVersionIds: string[],
+  retriedAfterScenarioRace = false,
 ): Promise<{ run: ExtractionRunRecord; created: boolean }> {
   const bindings = getBindings();
   const providerHasEndpoint =
@@ -2315,13 +2316,9 @@ export async function createExtractionRun(
   }
   const project = await assertProject(scope, String(event.project_id));
   const scenarioStatus = String(project.scenario_status);
-  if (scenarioStatus !== "confirmed" && Number(event.sequence_no) !== 1) {
-    throw new ApiFault(
-      409,
-      "SCENARIO_CONFIRMATION_REQUIRED",
-      "Confirm the scenario from the first event before extracting later events.",
-    );
-  }
+  // 项目类型不再要人确认，也不再挡后面的记录：哪条记录先分析，就顺带判出类型并
+  // 直接采用（见 extraction-processor 的 persistModelOutput）。以前第二条起要等人
+  // 在卡片上点确认，整条流程卡在那里。
   if (assetVersionIds.length === 0) {
     throw new ApiFault(400, "BAD_REQUEST", "asset_version_ids must not be empty.");
   }
@@ -2479,7 +2476,8 @@ export async function createExtractionRun(
     : [];
   const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
   const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
-  const readableTranscriptEnabled = hasTranscriptInput && bindings.AI_READABLE_TRANSCRIPT !== "0";
+  // 易读逐字稿已经删掉，冻结参数里如实记成 false。
+  const readableTranscriptEnabled = false;
   const artifactStageCount = Number(eventSummaryEnabled) + Number(readableTranscriptEnabled);
   const maxModelStages = (pipelineEnabled ? 3 : 1) + artifactStageCount;
   const reservedModelTokens =
@@ -2593,19 +2591,8 @@ export async function createExtractionRun(
     return { run: extractionRunRecord(activeEventRun), created: false };
   }
 
+  // 还没判过类型就由这次分析顺带判；别的记录正在判，这次就照常分析，不等它。
   const needsScenarioAssessment = scenarioStatus === "unassessed";
-  if (
-    Number(event.sequence_no) === 1 &&
-    scenarioStatus !== "confirmed" &&
-    !needsScenarioAssessment
-  ) {
-    throw new ApiFault(
-      409,
-      "SCENARIO_CONFIRMATION_REQUIRED",
-      "The first event is already assessing a scenario or awaiting confirmation.",
-      { scenario_status: scenarioStatus },
-    );
-  }
 
   const runId = id("run");
   const outboxId = id("out");
@@ -2670,7 +2657,6 @@ export async function createExtractionRun(
              JOIN events e ON e.project_id = p.id
               WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
                 AND p.scenario_status = 'unassessed' AND e.id = ?
-                AND e.sequence_no = 1
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(
@@ -2823,10 +2809,15 @@ export async function createExtractionRun(
       );
     }
     if (needsScenarioAssessment) {
+      // 另一条记录刚抢到判类型的活。这次不判类型，照常分析：再建一次，这回读到的
+      // 状态已经不是未判定，不会再去抢。只重来一次，免得和失败重置来回打转。
+      if (!retriedAfterScenarioRace) {
+        return createExtractionRun(scope, eventId, idempotencyKey, assetVersionIds, true);
+      }
       throw new ApiFault(
         409,
         "SCENARIO_VERSION_CONFLICT",
-        "Another request acquired the first-event scenario assessment lease.",
+        "Another request acquired the scenario assessment lease.",
       );
     }
     throw error;

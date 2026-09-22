@@ -10,6 +10,8 @@ export const CHAPTERS_SCHEMA_VERSION = "reading-chapters.v1" as const;
 export const SPEAKERS_SCHEMA_VERSION = "reading-speakers.v1" as const;
 export const KEY_POINTS_SCHEMA_VERSION = "reading-key-points.v1" as const;
 export const OVERVIEW_SCHEMA_VERSION = "reading-overview.v1" as const;
+/** 概要改成自己读原文、和另外三个同时开跑，提示词换了，身份也要跟着换。 */
+export const OVERVIEW_PROMPT_VERSION = "reading-overview-prompt.v2" as const;
 
 /**
  * summary 是旧的四合一产物，不再生产，但历史记录里有，仍要能读。
@@ -39,7 +41,7 @@ export const EVENT_AI_ARTIFACT_CONTRACTS = {
   chapters: { prompt: READING_VIEW_PROMPT_VERSION, schema: CHAPTERS_SCHEMA_VERSION },
   speakers: { prompt: READING_VIEW_PROMPT_VERSION, schema: SPEAKERS_SCHEMA_VERSION },
   key_points: { prompt: READING_VIEW_PROMPT_VERSION, schema: KEY_POINTS_SCHEMA_VERSION },
-  overview: { prompt: READING_VIEW_PROMPT_VERSION, schema: OVERVIEW_SCHEMA_VERSION },
+  overview: { prompt: OVERVIEW_PROMPT_VERSION, schema: OVERVIEW_SCHEMA_VERSION },
 } as const satisfies Record<EventAiArtifactKind, { prompt: string; schema: string }>;
 export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type EventSummarySectionKind =

@@ -2,19 +2,18 @@
  * 阅读产物的工作流。
  *
  * 此前四个视图（全文概要、章节速览、发言总结、要点回顾）是同一次模型调用的
- * 四个必填字段，一处契约违规四样全灭，线上出现过。而且四样都各自通读一遍
- * 11 万 token 的原文，产出之间不互相利用。
+ * 四个必填字段，一处契约违规四样全灭，线上出现过。拆开以后又一度排成先后
+ * 几跳：章节先出，概要等另外三样出完才动，用户只能干等。
  *
- * 重排后章节是脊椎：它是唯一必须通读全文的一步，其余挂在它后面。
+ * 现在的顺序只有一句话：录音转成逐字稿，四个 agent 同时开工，各读一遍原文。
  *
- *   逐字稿 ──→ 易读版（独立，只服务阅读，可关）
- *   逐字稿 ──┬─→ 章节速览 ─┐
- *            ├─→ 发言总结 ─┼─→ 全文概要
- *            └─→ 要点回顾 ─┘
- *   三个各读一遍原文，同一波并行；概要只吃它们三个的产出。
+ *   逐字稿 ──┬─→ 章节速览
+ *            ├─→ 发言总结（章节已出就拿来当目录，没出不等）
+ *            ├─→ 要点回顾（同上）
+ *            └─→ 全文概要
  *
- * 这样做省的是输入：全文概要只吃上面三个产物（几千 token），不再吃 88k 原文；
- * 发言总结和要点回顾拿着章节当目录，可以按章取材而不是整篇重读。
+ * 易读逐字稿已经删掉：它只是给原稿加标点，一次要吐五到七万 token，却不进
+ * 任何后续步骤，阅读区一直直接显示原文。
  *
  * 每个产物的身份是它的输入内容（见 ensureEventAiArtifactRuns 的幂等键），
  * 所以重试抽取不会让任何一个重新生产。
@@ -55,16 +54,10 @@ export type ReadingArtifactDefinition = {
 };
 
 export const READING_ARTIFACT_DEFINITIONS: readonly ReadingArtifactDefinition[] = [
-  // 易读版只依赖原始分段，分块生成后合并。
-  { kind: "readable_transcript", dependsOn: [], degradesWithoutDependencies: true, readsFullTranscript: true },
-  // 脊椎。读原文，和易读版并行：provider 给章节喂的是原始分段，从没用过
-  // 易读版，之前挂在它后面只是白等易读稿那几分钟（七块两批，三万多 token）。
   { kind: "chapters", dependsOn: [], degradesWithoutDependencies: true, readsFullTranscript: true },
-  // 和章节同一波并行。章节已经出来就拿它当目录，没出来就整篇读，不等。
   { kind: "speakers", dependsOn: [], optionalUpstream: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
   { kind: "key_points", dependsOn: [], optionalUpstream: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
-  // 只吃上面三个的产物，不读原文。上游一个都没有就没得写。
-  { kind: "overview", dependsOn: ["chapters", "speakers", "key_points"], degradesWithoutDependencies: false, readsFullTranscript: false },
+  { kind: "overview", dependsOn: [], degradesWithoutDependencies: true, readsFullTranscript: true },
 ];
 
 const DEFINITION_BY_KIND = new Map(READING_ARTIFACT_DEFINITIONS.map((item) => [item.kind, item]));
@@ -137,4 +130,29 @@ export function readingArtifactWaves(): ReadingArtifactKind[][] {
     remaining = remaining.filter((kind) => !placed.has(kind));
   }
   return waves;
+}
+
+export type ReadingViewState = "ready" | "generating" | "failed";
+
+/**
+ * 一个阅读视图此刻该显示什么。
+ *
+ * 逐字稿一出来四个 agent 就同时开工，所以没内容时默认就是「内容生成中」，
+ * 连任务还没取到页面上的那几秒也算。只有自己那条任务终态失败，才显示失败并
+ * 允许按时间粗分章节。以前页面在取到任务之前就下了「没整理出章节」的结论，
+ * 其实四个 agent 正在跑。
+ *
+ * 唯一的例外：分析已经结束、这条记录却一条阅读任务都没有，说明它不会再有了，
+ * 算失败，不让转圈转个没完。
+ */
+export function readingViewState(input: {
+  hasContent: boolean;
+  runStatus: string | null | undefined;
+  /** 这条记录一条阅读任务都没有，而且分析已经结束。 */
+  noReadingWillCome: boolean;
+}): ReadingViewState {
+  if (input.hasContent) return "ready";
+  if (input.runStatus === "failed" || input.runStatus === "succeeded") return "failed";
+  if (input.runStatus === "queued" || input.runStatus === "processing") return "generating";
+  return input.noReadingWillCome ? "failed" : "generating";
 }

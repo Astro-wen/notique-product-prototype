@@ -405,3 +405,33 @@ export function validateDocumentPage(pageNumber: number | null, pageCount: numbe
   if (!Number.isInteger(pageNumber) || pageNumber < 1) return false;
   return pageCount == null || pageNumber <= pageCount;
 }
+
+/**
+ * 模型抄错了引文的材料版本 ID 时，从它引的句子反推回来。
+ *
+ * 2026-09-22 真实录音上见过：模型把版本 ID 的前半段和记录 ID 的后半段拼在一起，
+ * 这一条的 27 处引文全指向一份不存在的材料，20 条结论因为「没有有效原话」整条
+ * 被丢。版本 ID 本来就是冗余信息，每处引文还带着它引的句子 ID，句子属于哪份
+ * 材料是确定的。所以只在版本 ID 对不上、而引的句子全部存在且都属于同一份本次
+ * 输入的材料时才改回来；句子对不上、跨了材料、或不是逐字稿引文，一律不动，
+ * 照旧交给后面的校验拒掉。
+ */
+export function repairEvidenceAssetVersion(
+  evidence: { kind: string; asset_version_id: string; segment_ids?: readonly string[] | null },
+  inputVersionIds: ReadonlySet<string>,
+  segmentVersionById: ReadonlyMap<string, string | null>,
+): string | null {
+  if (inputVersionIds.has(evidence.asset_version_id)) return null;
+  if (evidence.kind !== "transcript" && evidence.kind !== "text") return null;
+  const ids = evidence.segment_ids ?? [];
+  if (!ids.length) return null;
+  const versions = new Set<string>();
+  for (const id of ids) {
+    const version = segmentVersionById.get(id);
+    if (!version) return null;
+    versions.add(version);
+  }
+  if (versions.size !== 1) return null;
+  const [version] = versions;
+  return inputVersionIds.has(version!) ? version! : null;
+}

@@ -32,44 +32,42 @@ type Box = {
 
 /*
  * 竖排：最上面是输入，中间左右两条线并排往下走，最后汇到底部的人工确认。
- * 之前横排时每个节点只有 132 宽，写不下 agent 名字和它交出的东西，带子背景
- * 还越过了 viewBox 上边被裁掉。现在节点 320 宽，四周都留了边。
+ * 阅读线四个 agent 同一排并行，所以左边的带子比右边宽；事实线是先后接力，竖着排。
  */
 const H = 66;
 const VIEW_W = 960;
 const VIEW_H = 700;
 
-const LANE_W = 452;
-const LANE_LEFT_X = 16;
-const LANE_RIGHT_X = 492;
+const READ_LANE_X = 16;
+const READ_LANE_W = 536;
+const FACT_LANE_X = READ_LANE_X + READ_LANE_W + 16;
+const FACT_LANE_W = VIEW_W - FACT_LANE_X - 16;
 const LANE_Y = 118;
 const LANE_H = 428;
 const NODE_W = 320;
-const HALF_W = 152;
-/** 阅读线第一排三个并排的 agent：三个 140 宽加两道 8 的缝，正好铺满带子。 */
-const THIRD_W = 140;
-const THIRD_GAP = 8;
+/** 阅读线四个并排的 agent：四个 124 宽加三道 8 的缝。 */
+const QUARTER_W = 124;
+const QUARTER_GAP = 8;
 const ROW = [160, 256, 352, 448] as const;
 
-const laneNodeX = (laneX: number) => laneX + (LANE_W - NODE_W) / 2;
-const thirdX = (laneX: number, index: number) =>
-  laneX + (LANE_W - 3 * THIRD_W - 2 * THIRD_GAP) / 2 + index * (THIRD_W + THIRD_GAP);
+const factNodeX = FACT_LANE_X + (FACT_LANE_W - NODE_W) / 2;
+const quarterX = (index: number) =>
+  READ_LANE_X + (READ_LANE_W - 4 * QUARTER_W - 3 * QUARTER_GAP) / 2 + index * (QUARTER_W + QUARTER_GAP);
 
 const BOXES: Box[] = [
   { id: "material", x: 210, y: 20, w: 220, label: "材料", sub: ["音频、已有逐字稿、照片"], tone: "input" },
   { id: "transcript", x: 530, y: 20, w: 220, label: "逐字稿", sub: ["语音识别服务转写，不是 agent", "带时间点和说话人"], tone: "input" },
 
-  // 三个读原文的同一排并行，谁先出谁先显示；概要等它们三个。
-  { id: "chapters", x: thirdX(LANE_LEFT_X, 0), y: ROW[0], w: THIRD_W, label: "章节 agent", sub: ["读全文分章"], tone: "read" },
-  { id: "speakers", x: thirdX(LANE_LEFT_X, 1), y: ROW[0], w: THIRD_W, label: "发言总结 agent", sub: ["读全文，不等章节"], tone: "read" },
-  { id: "points", x: thirdX(LANE_LEFT_X, 2), y: ROW[0], w: THIRD_W, label: "要点回顾 agent", sub: ["读全文，不等章节"], tone: "read" },
-  { id: "overview", x: laneNodeX(LANE_LEFT_X), y: ROW[1], w: NODE_W, label: "全文概要 agent", sub: ["只读上面三样的产出，不读逐字稿"], tone: "read" },
-  // 另起一路，不进后面任何一步，所以不画连线。默认关着。
-  { id: "readable", x: laneNodeX(LANE_LEFT_X) + NODE_W - HALF_W + 8, y: ROW[2], w: HALF_W, label: "易读逐字稿 agent", sub: ["给原稿断句加标点", "另起一路，默认关"], tone: "read" },
-  { id: "inventory", x: laneNodeX(LANE_RIGHT_X), y: ROW[0], w: NODE_W, label: "清点 agent", sub: ["交出：可能的事实清单，宁可多列"], tone: "fact" },
-  { id: "verify", x: laneNodeX(LANE_RIGHT_X), y: ROW[1], w: NODE_W, label: "核对 agent", sub: ["交出：逐条配上原话的事实", "和每条候选的去向"], tone: "fact" },
-  { id: "escalate", x: laneNodeX(LANE_RIGHT_X), y: ROW[2], w: NODE_W, label: "重核 agent", sub: ["七种情况任一命中才跑", "两份里留下问题更少的"], tone: "fact" },
-  { id: "judge", x: laneNodeX(LANE_RIGHT_X), y: ROW[3], w: NODE_W, label: "引用判断 agent（未上线）", sub: ["已做好，还没接进任务", "现在核对结果直接到你手上"], tone: "fact", pending: true },
+  // 逐字稿一出来四个同时开工，各读一遍原文，谁先写完谁先显示。
+  { id: "chapters", x: quarterX(0), y: ROW[0], w: QUARTER_W, label: "章节 agent", sub: ["读全文分章"], tone: "read" },
+  { id: "speakers", x: quarterX(1), y: ROW[0], w: QUARTER_W, label: "发言总结 agent", sub: ["读全文按人总结"], tone: "read" },
+  { id: "points", x: quarterX(2), y: ROW[0], w: QUARTER_W, label: "要点回顾 agent", sub: ["读全文整理问答"], tone: "read" },
+  { id: "overview", x: quarterX(3), y: ROW[0], w: QUARTER_W, label: "全文概要 agent", sub: ["读全文写概要"], tone: "read" },
+
+  { id: "inventory", x: factNodeX, y: ROW[0], w: NODE_W, label: "清点 agent", sub: ["交出：可能的事实清单，宁可多列"], tone: "fact" },
+  { id: "verify", x: factNodeX, y: ROW[1], w: NODE_W, label: "核对 agent", sub: ["交出：逐条配上原话的事实", "和每条候选的去向"], tone: "fact" },
+  { id: "escalate", x: factNodeX, y: ROW[2], w: NODE_W, label: "重核 agent", sub: ["丢了事实、有冲突时才跑", "两份里留下问题更少的"], tone: "fact" },
+  { id: "judge", x: factNodeX, y: ROW[3], w: NODE_W, label: "引用判断 agent（未上线）", sub: ["已做好，还没接进任务", "现在核对结果直接到你手上"], tone: "fact", pending: true },
 
   { id: "human", x: 280, y: 586, w: 400, label: "你逐条确认", sub: ["确认过的才进报告"], tone: "human" },
 ];
@@ -79,14 +77,16 @@ const EDGES: Array<[string, string]> = [
   ["transcript", "chapters"],
   ["transcript", "speakers"],
   ["transcript", "points"],
-  ["chapters", "overview"],
-  ["speakers", "overview"],
-  ["points", "overview"],
+  ["transcript", "overview"],
   ["transcript", "inventory"],
   ["inventory", "verify"],
   ["verify", "escalate"],
   ["escalate", "judge"],
   ["judge", "human"],
+  // 四条从同一排往下走，拐在同一高度，看起来是一条汇总线。
+  ["chapters", "human"],
+  ["speakers", "human"],
+  ["points", "human"],
   ["overview", "human"],
 ];
 
@@ -140,10 +140,9 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
       <figure className="hiw-figure">
         <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="img" aria-labelledby="hiw-diagram-title">
           <title id="hiw-diagram-title">
-            材料先由语音识别服务转成逐字稿，然后分两条线：阅读线里章节、发言总结、要点回顾三个 agent
-            同时读原文，全文概要 agent 再汇总它们三个；事实线由清点、核对、重核三个 agent 接力，引用判断 agent
-            已做好但未上线。
-            两条线最后都汇到你逐条确认。
+            材料先由语音识别服务转成逐字稿。逐字稿一出来，阅读线的章节、发言总结、要点回顾、全文概要
+            四个 agent 和事实线的清点 agent 同时开工；事实线接着由核对 agent 配原话，出问题时重核 agent
+            再核一遍，引用判断 agent 已做好但未上线。两条线最后都汇到你逐条确认。
           </title>
           <defs>
             <marker id="hiw-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
@@ -152,10 +151,10 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
           </defs>
 
           <g className="hiw-band">
-            <rect x={LANE_LEFT_X} y={LANE_Y} width={LANE_W} height={LANE_H} rx="12" />
-            <text x={LANE_LEFT_X + 14} y={LANE_Y + 24}>阅读线　让人能看懂这场对话</text>
-            <rect x={LANE_RIGHT_X} y={LANE_Y} width={LANE_W} height={LANE_H} rx="12" />
-            <text x={LANE_RIGHT_X + 14} y={LANE_Y + 24}>事实线　把结论钉回原话</text>
+            <rect x={READ_LANE_X} y={LANE_Y} width={READ_LANE_W} height={LANE_H} rx="12" />
+            <text x={READ_LANE_X + 14} y={LANE_Y + 24}>阅读线　让人能看懂这场对话</text>
+            <rect x={FACT_LANE_X} y={LANE_Y} width={FACT_LANE_W} height={LANE_H} rx="12" />
+            <text x={FACT_LANE_X + 14} y={LANE_Y + 24}>事实线　把结论钉回原话</text>
           </g>
 
           <g className="hiw-edges">
@@ -203,20 +202,19 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
         <li>
           <h2>整理成能读的版本</h2>
           <p>
-            章节、发言总结、要点回顾三个 agent 同时开工，各自读一遍原文，谁先出来谁先显示。
-            章节 agent 交出章节和每章的时间范围；发言总结和要点回顾开工时章节已经出来就拿它当目录，
-            没出来就整篇读，不等。全文概要 agent 只读这三样的产出，不读逐字稿，上游一样都没有就不写。
-            易读逐字稿 agent 给原稿断句加标点，另起一路，不进后面任何一步，默认关着。
+            逐字稿一出来，章节、发言总结、要点回顾、全文概要四个 agent 同时开工，各自读一遍原文，
+            谁先写完谁先显示，还没写完的位置显示「内容生成中」。章节 agent 交出章节和每章的时间范围；
+            发言总结和要点回顾开工时章节已经出来，就拿它当目录。
           </p>
           <p className="hiw-aside">
-            这四样以前是一次调用的四个字段，一处格式出错四样全没。现在各自独立，一样失败不影响其余。
-            每样产物按输入内容取身份，重试不会让已经做好的重做一遍。
+            四样各自独立，一样失败不影响其余，失败的那一样可以单独重新生成。章节没生成出来时，
+            会先按时间粗分一份目录，并标明是粗分。
           </p>
         </li>
         <li>
           <h2>判断该放进哪个项目</h2>
           <p>
-            概要出来之后，系统拿它和已有的项目比一次。够确定才会在记录上出现一条建议，说它可能
+            概要和章节都出来之后，系统拿它们和已有的项目比一次。够确定才会在记录上出现一条建议，说它可能
             该放进哪个项目，不够确定就不出现。点挪过去，这条记录连同材料和逐字稿一起搬走。
             不点就什么都不会发生。
           </p>
@@ -229,17 +227,20 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
           <h2>找出事实，配上原话</h2>
           <p>
             清点 agent 读逐字稿，把可能的事实列全，宁可多列，交出一份候选清单。核对 agent 拿着
-            清单和易读逐字稿逐条配原话，该合并的合并，该丢的丢，并交代每条为什么留下或去掉。
+            清单和逐字稿逐条配原话，该合并的合并，该丢的丢，并交代每条为什么留下或去掉。
             分成两遍，是因为找得全和判得准放在一次里做，模型会为了少出错而漏掉东西。
           </p>
         </li>
         <li>
           <h2>重核，只在出问题时</h2>
           <p>
-            核对完有一道不靠模型的检查，看七种情况：格式不合契约、清点里的条目没有交代去向、
-            标为关键的事实被丢掉、关系判断信心不足（低于 0.85）、留下未解决的冲突、一条里塞了好几件事、
-            之前标过的问题又出现。任何一种命中，重核 agent 再核对一遍，两份里留下问题更少的那份：
-            先比丢掉的关键事实，再比没交代去向的条目。都没中就不重做，不额外花钱。
+            核对完有一道不靠模型的检查：格式不合契约、清点里的条目没有交代去向、标为关键的事实被丢掉、
+            关系判断信心不足（低于 0.85）、留下未解决的冲突、之前标过的问题又出现。任何一种命中，
+            重核 agent 再核对一遍，两份里留下问题更少的那份。都没中就不重做，不额外花钱。
+          </p>
+          <p className="hiw-aside">
+            一条里塞了两件事不再单独触发重核：实测重核从没因此补回过事实，每次却要多等一两分钟。
+            这样的条目照常交给你确认，你可以直接改。
           </p>
         </li>
         <li>

@@ -70,8 +70,9 @@ test("the workspace keeps analysis progress user-facing and hides internal diagn
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
-  assert.match(page, /analysisRunning \? "概要正在整理，原文已可阅读。"/);
-  assert.match(page, /暂无全文概要，可以阅读下方原文。/);
+  // 概要还没写完显示「内容生成中」，不再根据事实线在不在跑来猜。
+  assert.match(page, /overviewState === "generating" \? <ReadingGenerating \/>/);
+  assert.match(page, /这次没写出概要，可以先读下方原文。/);
   assert.doesNotMatch(page, /data-testid="analysis-progress-journey"/);
   assert.doesNotMatch(page, /处理详情|测试版本·每秒更新|后端定期检查模型任务/);
   assert.match(page, /className="reader-intelligence-heading"/);

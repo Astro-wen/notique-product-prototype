@@ -20,6 +20,7 @@ import {
   recoverTranscriptEvidence,
   validateDocumentPage,
   validatePhotoBbox,
+  repairEvidenceAssetVersion,
 } from "@/lib/domain/evidence";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
@@ -1065,8 +1066,18 @@ function prepareEvidence(
 ): PreparedEvidence[] {
   const manifestById = new Map(manifestRows.map((row) => [String(row.id), row]));
   const segmentById = new Map(segments.map((segment) => [segment.id, segment]));
+  const inputVersionIds = new Set(
+    manifestRows.filter((row) => String(row.event_id) === String(run.event_id)).map((row) => String(row.id)),
+  );
+  const segmentVersionById = new Map(segments.map((segment) => [segment.id, segment.assetVersionId]));
   const prepared: PreparedEvidence[] = [];
-  for (const item of evidence) {
+  for (const original of evidence) {
+    // 版本 ID 抄错但引的句子都对得上同一份材料：改回来，别因为一个冗余字段丢掉整条结论。
+    const repairedVersion = repairEvidenceAssetVersion(original, inputVersionIds, segmentVersionById);
+    if (repairedVersion) {
+      warnings.push({ code: "EVIDENCE_VERSION_REPAIRED", from: original.asset_version_id, to: repairedVersion });
+    }
+    const item = repairedVersion ? { ...original, asset_version_id: repairedVersion } : original;
     const asset = manifestById.get(item.asset_version_id);
     if (!asset || String(asset.event_id) !== String(run.event_id)) {
       warnings.push({ code: "EVIDENCE_SCOPE_INVALID", asset_version_id: item.asset_version_id });
@@ -1370,12 +1381,8 @@ async function persistModelOutput(
   if (needsScenario && !output.scenario_assessment) {
     throw new ProcessingFault("MODEL_OUTPUT_INVALID", "First-event extraction omitted scenario candidates.");
   }
-  if (!needsScenario && output.scenario_assessment !== null) {
-    throw new ProcessingFault(
-      "MODEL_OUTPUT_INVALID",
-      "Extraction returned scenario candidates for a project with a confirmed scenario.",
-    );
-  }
+  // 不负责判类型的分析也可能带回候选（它开始时项目还没有类型），直接不用，
+  // 不为这个作废整次分析。
   const timestamp = now();
   const db = getD1();
   const guardId = id("guard");
@@ -1562,18 +1569,25 @@ async function persistModelOutput(
     );
   }
   if (needsScenario) {
+    // 直接采用把握最大的那个类型，不再弹卡片等人确认：那张卡片用户看不懂，还把
+    // 后面的记录都卡住。不推进 context_version，免得同项目里正在跑的分析白跑。
+    const candidates = output.scenario_assessment!.candidates;
+    const chosen = [...candidates].sort((left, right) => right.confidence - left.confidence)[0]!;
     statements.push(
       db
         .prepare(
           `UPDATE projects
-              SET scenario_status = 'pending_confirmation',
-                  scenario_candidates_json = ?, scenario_lease_expires_at = NULL,
-                  updated_at = ?
+              SET scenario_status = 'confirmed', scenario = ?,
+                  scenario_candidates_json = ?, scenario_version = scenario_version + 1,
+                  scenario_confirmed_by = 'system:auto-scenario', scenario_confirmed_at = ?,
+                  scenario_lease_expires_at = NULL, updated_at = ?
             WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
               AND scenario_assessment_run_id = ? AND context_version = ?`,
         )
         .bind(
-          JSON.stringify(output.scenario_assessment!.candidates),
+          chosen.scenario,
+          JSON.stringify(candidates),
+          timestamp,
           timestamp,
           run.project_id,
           run.workspace_id,

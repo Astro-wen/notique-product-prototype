@@ -102,7 +102,8 @@ test("public uploads require a per-session safety acknowledgement", () => {
 });
 
 test("the original transcript opens while explicit Summary evidence returns remain restorable", () => {
-  assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: targetEventId, tab: "summary" \}\)/);
+  // 确认项目类型之后跳回摘要的那条路随卡片一起删了，剩下的回摘要入口还在。
+  assert.match(page, /setTranscriptFocusRequest\(\{ id: Date\.now\(\), eventId: current\.event\.id, tab: "summary" \}\)/);
   assert.match(page, /openClaimFromTranscriptSummary/);
   assert.match(page, /summaryReturnContext\.current/);
   assert.match(page, /restoreScrollY: context\.scrollY/);
@@ -181,7 +182,9 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.match(styles, /\.meeting-tabs-project/);
   // The project entry navigates straight to the record; it must not render an
   // interstitial whose only content is another button.
-  assert.match(page, /if \(next === "results" && !needsScenario && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
+  // 项目类型不再要人确认，分析做完就直接打开项目概览。
+  assert.match(page, /if \(next === "results" && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
+  assert.doesNotMatch(page, /<b>设置项目类型<\/b>|<h2>这个项目属于哪一类/);
   assert.match(page, /if \(\(next === "transcript" \|\| next === "review"\) && event\)/);
   assert.doesNotMatch(page, />打开项目概览</, "the dead interstitial button is replaced by direct navigation");
   assert.match(page, /className="reader-action-rail"/);
@@ -200,11 +203,13 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
 });
 
 test("missing reading summaries offer generation while raw remains readable", () => {
-  assert.match(page, /生成阅读总结/);
   assert.match(page, /className="artifact-panel raw-artifact"/);
-  // 每个视图看自己那条流水线：要点在跑不影响发言的提示文案，反之亦然。
-  assert.match(page, /viewRunStatus\(keyPointsPair\) === "processing"/);
-  assert.match(page, /viewRunStatus\(speakersPair\) === "processing"/);
+  // 每个视图看自己那条流水线：生成中转圈，自己失败了才给重新生成。
+  for (const state of ["overviewState", "chaptersState", "speakersState", "keyPointsState"]) {
+    assert.match(page, new RegExp(`${state} === "generating" \\? <ReadingGenerating \\/>`));
+  }
+  assert.match(page, /内容生成中…/);
+  assert.doesNotMatch(page, /暂无全文概要|概要正在整理/);
   assert.match(page, /details\.reason === "analysis_required"/);
 });
 

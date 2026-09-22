@@ -73,21 +73,22 @@ test("the chapter count is capped by merging the shortest neighbours", () => {
   assert.deepEqual(all, segments.map((segment) => segment.id));
 });
 
-test("the fallback only steps in when the model chapters are not coming", () => {
-  const base = { generatedCount: 0, analysisRunning: false, timedSegmentCount: 12 };
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: "failed" }), true);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: null }), true);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: "processing" }), false);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: "queued" }), false);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: null, analysisRunning: true }), false);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: "failed", generatedCount: 3 }), false);
-  assert.equal(shouldUseFallbackChapters({ ...base, summaryRunStatus: "failed", timedSegmentCount: 0 }), false);
+test("the fallback only steps in after the chapters run really failed", () => {
+  const base = { generatedCount: 0, timedSegmentCount: 12 };
+  assert.equal(shouldUseFallbackChapters({ ...base, viewState: "failed" }), true);
+  // 还在生成就显示「内容生成中」，不拿粗分冒充结果。
+  assert.equal(shouldUseFallbackChapters({ ...base, viewState: "generating" }), false);
+  assert.equal(shouldUseFallbackChapters({ ...base, viewState: "ready" }), false);
+  assert.equal(shouldUseFallbackChapters({ ...base, viewState: "failed", generatedCount: 3 }), false);
+  assert.equal(shouldUseFallbackChapters({ ...base, viewState: "failed", timedSegmentCount: 0 }), false);
 });
 
 test("the reading workspace shows fallback chapters only when the model ones are not coming, and says so", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   // 拆开之后章节看自己那条流水线的状态，不再跟着四合一的 summary Run 走。
-  assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?summaryRunStatus: viewRunStatus\(chaptersPair\),[\s\S]*?analysisRunning,/);
+  assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?viewState: chaptersState,/);
+  // 生成中显示转圈和「内容生成中」。
+  assert.match(page, /chaptersState === "generating" \? <ReadingGenerating \/>/);
   assert.match(page, /useFallbackChapters \? fallbackChapters\(availableRawSegments\) : generatedChapters/);
   assert.match(page, /const chapterAnchors = displayChapters\.flatMap/);
   // 兜底章节必须标出来，不能冒充 AI 章节。
