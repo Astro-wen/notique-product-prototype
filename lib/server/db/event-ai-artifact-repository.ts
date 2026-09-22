@@ -193,8 +193,10 @@ export async function sourceSegmentsForArtifactRun(runId: string): Promise<{
   if (new Set(allVersionIds).size !== allVersionIds.length) {
     throw new Error("ARTIFACT_INPUT_MANIFEST_INVALID");
   }
+  // 这里算的必须和 ensureEventAiArtifactRuns 里算的逐字一致，否则每个新建
+  // 的产物一领取就判定输入变了。产物的身份是它的输入内容，不含创建它的那次
+  // 抽取：抽取失败重试会换 id，带上它就等于回到了按 run 取身份的老做法。
   const expectedInputHash = await hashText(JSON.stringify({
-    extraction_run_id: run.extraction_run_id,
     input_manifest: parsedManifest,
     kind: run.kind,
     provider: run.provider,
@@ -579,11 +581,14 @@ export async function createEventAiArtifactRetry(
   }
   const runId = id("earun");
   const timestamp = now();
-  const promptVersion = kind === "summary" ? EVENT_SUMMARY_PROMPT_VERSION : READABLE_TRANSCRIPT_PROMPT_VERSION;
-  const schemaVersion = kind === "summary" ? EVENT_SUMMARY_SCHEMA_VERSION : READABLE_TRANSCRIPT_SCHEMA_VERSION;
+  // 这个三目只认 summary 和 readable_transcript，是四个阅读视图拆出来之前
+  // 写的：章节、发言总结、要点回顾、概要都会落到易读稿的版本号上，重试一次
+  // 就把错的契约版本写进库。改成按种类查契约表。
+  const contract = EVENT_AI_ARTIFACT_CONTRACTS[kind];
+  const promptVersion = contract.prompt;
+  const schemaVersion = contract.schema;
   const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[kind];
   const inputHash = await hashText(JSON.stringify({
-    extraction_run_id: source.extraction_run_id,
     input_manifest: manifest,
     kind,
     provider: source.provider,

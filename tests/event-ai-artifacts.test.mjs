@@ -1877,3 +1877,47 @@ test("reading uses one original document even when a readable artifact exists", 
   assert.match(uiSource, /const readerTab = "raw"/);
   assert.doesNotMatch(uiSource, /className="artifact-panel readable-artifact"/);
 });
+
+test("产物指纹在创建、校验、重试三处算得完全一样", async () => {
+  const source = await readFile(
+    new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url),
+    "utf8",
+  );
+  // 这三处各自 JSON.stringify 一个对象再哈希，字段顺序和取值必须逐字一致。
+  // 其中任意一处多带一个字段，那条路径产出的产物就会在另一条路径上被判定
+  // 输入已变。线上表现是每一个新建的阅读产物一领取就失败，五个视图全灭。
+  const bodies = [...source.matchAll(/hashText\(JSON\.stringify\(\{([\s\S]*?)\}\)\)/g)]
+    .map((match) => match[1])
+    .filter((body) => body.includes("input_manifest"));
+  assert.equal(bodies.length, 3, "创建、校验、重试三处，少一处说明有人删了或加了第四处");
+
+  const shape = (body) => body
+    .split("\n")
+    .map((line) => line.trim())
+    // 只留真正的字段行：空行和注释不算。`kind,` 这种简写属性没有冒号，
+    // 但它同样是一个字段，不能漏掉。
+    .filter((line) => line && !line.startsWith("//") && !line.startsWith("*"))
+    .map((line) => line.split(":")[0].replace(/,$/, "").trim())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  const [first, ...rest] = bodies.map(shape);
+  for (const other of rest) assert.equal(other, first, "三处的字段集合必须相同");
+
+  // extraction_run_id 绝不能回来：抽取重试会换 id，带上它等于退回按
+  // run 取身份，已经成功的产物会被整份重做一遍。
+  for (const body of bodies) {
+    assert.ok(!body.includes("extraction_run_id"), "指纹里不该有 extraction_run_id");
+  }
+});
+
+test("重试按种类取契约版本，不再把四个阅读视图当成易读稿", async () => {
+  const source = await readFile(
+    new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url),
+    "utf8",
+  );
+  // 旧写法是 kind === "summary" ? 摘要版本 : 易读稿版本，只认两种；
+  // 章节、发言总结、要点回顾、概要重试一次就会被写上易读稿的契约版本。
+  assert.doesNotMatch(source, /kind === "summary" \? EVENT_SUMMARY_PROMPT_VERSION/);
+  assert.match(source, /const contract = EVENT_AI_ARTIFACT_CONTRACTS\[kind\]/);
+});
