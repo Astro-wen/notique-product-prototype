@@ -277,3 +277,30 @@ test("every workspace read of a Claim's evidence goes through the resolver", asy
   // Verified Claims matter too: a Summary sentence matches against all of them.
   assert.match(page, /\.\.\.pendingClaims,\s*\.\.\.claims\.filter\(\(claim\) => claim\.reviewStatus !== "pending"\),/);
 });
+
+
+test("四个阅读视图的产物按各自形状算引用，不再被当成不属于当前原文", async () => {
+  const { selectTranscriptArtifactPair } = await loadArtifactSelection();
+  const rawSegmentIds = new Set(["seg_a", "seg_b", "seg_c"]);
+  const run = (kind) => ({ id: `run-${kind}`, kind, status: "succeeded", created_at: "2026-09-22T00:00:00.000Z" });
+  const artifact = (kind, content) => ({ id: `art-${kind}`, kind, run_id: `run-${kind}`, artifact_version: 1, created_at: "2026-09-22T00:00:01.000Z", content });
+  // 这四种形状以前都算出零引用，产物被过滤，界面退回兜底章节。
+  const cases = [
+    ["chapters", { chapters: [{ title: "t", summary: "s", source_segment_ids: ["seg_a", "seg_b"] }] }],
+    ["speakers", { speaker_summaries: [{ speaker: "A", summary: "s", source_segment_ids: ["seg_b"] }] }],
+    ["key_points", { key_points: [{ question: "q", answer: "a", source_segment_ids: ["seg_c"] }] }],
+    ["overview", { sections: [{ kind: "overview", title: "t", items: [{ item_key: "k", text: "x", source_segment_ids: ["seg_a"] }] }] }],
+    ["readable_transcript", { segments: [{ readable_key: "r", source_segment_ids: ["seg_a"] }] }],
+  ];
+  for (const [kind, content] of cases) {
+    const pair = selectTranscriptArtifactPair({ runs: [run(kind)], artifacts: [artifact(kind, content)], kind, rawSegmentIds });
+    assert.equal(pair.artifact?.id, `art-${kind}`, `${kind} 的产物必须配上它的运行`);
+  }
+  // 过滤本身仍然有效：引用了不在当前原文里的 id 就不能显示。
+  const stale = selectTranscriptArtifactPair({
+    runs: [run("chapters")],
+    artifacts: [artifact("chapters", { chapters: [{ title: "t", summary: "s", source_segment_ids: ["seg_zzz"] }] })],
+    kind: "chapters", rawSegmentIds,
+  });
+  assert.equal(stale.artifact, null);
+});

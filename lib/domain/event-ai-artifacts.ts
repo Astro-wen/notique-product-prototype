@@ -341,11 +341,30 @@ function stringValue(
   return value;
 }
 
+/**
+ * 把模型抄坏的段落 id 拉回来。
+ *
+ * 概要不读原文，只沿用上游条目里的 source_segment_ids，模型要做的只是原样
+ * 复制一个 40 字符的 hash id。低强度下它偶尔会在尾巴上多吐一个字符（线上
+ * 见过 `..._00104タ`），六次重试次次如此，一个视图整个作废。
+ *
+ * 修复规则故意窄：id 本身只含 [A-Za-z0-9_]，把尾部不在这个集合里的字符去掉，
+ * 去掉之后必须正好命中一个真实存在的段落 id，否则不修、照旧报错。这样修出
+ * 来的引用一定指向一条真的原文，等价于对空白的 trim，不会凭空造出引用；
+ * 掉字、换字这类没法确定意图的损坏仍然按无效处理。
+ */
+export function repairSegmentId(id: string, known: ReadonlyMap<string, unknown> | ReadonlySet<string>): string {
+  if (known.has(id)) return id;
+  const stripped = id.replace(/[^A-Za-z0-9_]+$/u, "");
+  return stripped !== id && stripped.length > 0 && known.has(stripped) ? stripped : id;
+}
+
 function segmentIds(
   value: unknown,
   path: string,
   issues: ArtifactContractIssue[],
   max = 24,
+  known?: ReadonlyMap<string, unknown> | ReadonlySet<string>,
 ): string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > max) {
     issues.push({ path, message: `Expected 1 to ${max} source segment IDs.` });
@@ -354,8 +373,9 @@ function segmentIds(
   const output: string[] = [];
   const seen = new Set<string>();
   value.forEach((item, index) => {
-    const id = stringValue(item, `${path}[${index}]`, issues, 128);
-    if (!id) return;
+    const raw = stringValue(item, `${path}[${index}]`, issues, 128);
+    if (!raw) return;
+    const id = known ? repairSegmentId(raw, known) : raw;
     if (seen.has(id)) issues.push({ path: `${path}[${index}]`, message: "Duplicate segment ID." });
     else {
       seen.add(id);
@@ -587,7 +607,7 @@ function validateEventSummary(
           const itemKey = stringValue(item.item_key, `${itemPath}.item_key`, issues, 128);
           if (seenKeys.has(itemKey)) issues.push({ path: `${itemPath}.item_key`, message: "Duplicate summary item key." });
           seenKeys.add(itemKey);
-          const ids = segmentIds(item.source_segment_ids, `${itemPath}.source_segment_ids`, issues);
+          const ids = segmentIds(item.source_segment_ids, `${itemPath}.source_segment_ids`, issues, 24, rawById);
           const citedSegments: TranscriptSegment[] = [];
           ids.forEach((id) => {
             const segment = rawById.get(id);

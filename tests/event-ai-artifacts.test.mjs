@@ -1948,3 +1948,27 @@ test("生成阅读总结按钮只重试失败的种类，不再传 summary", asy
   const parent = page.slice(page.indexOf("async function retryReadingArtifacts"), page.indexOf("async function retryEventAiArtifact("));
   assert.match(parent, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)\.filter/);
 });
+
+
+test("被模型抄坏尾巴的段落 id 会被拉回真实 id，其它损坏照旧无效", async () => {
+  const { repairSegmentId } = await import("../lib/domain/event-ai-artifacts.ts");
+  const known = new Set(["seg_av_bde464811f9f48b58f6db609665c3319_00104", "seg_av_x_00105"]);
+  // 线上见过的形态：尾巴多一个字符。修回来。
+  assert.equal(repairSegmentId("seg_av_bde464811f9f48b58f6db609665c3319_00104タ", known), "seg_av_bde464811f9f48b58f6db609665c3319_00104");
+  assert.equal(repairSegmentId("seg_av_x_00105 ", known), "seg_av_x_00105");
+  assert.equal(repairSegmentId("seg_av_x_00105.", known), "seg_av_x_00105");
+  // 已经合法的原样返回。
+  assert.equal(repairSegmentId("seg_av_x_00105", known), "seg_av_x_00105");
+  // 去掉尾巴后不是任何真实 id：不修，让严格校验去拒绝。掉字、换字都属于这类。
+  assert.equal(repairSegmentId("seg_av_x_0010タ", known), "seg_av_x_0010タ");
+  assert.equal(repairSegmentId("seg_av_x_00106", known), "seg_av_x_00106");
+  // 绝不能把一个 id 修成另一个真实 id 的前缀之外的东西：只允许去尾，不允许截断合法字符。
+  assert.equal(repairSegmentId("seg_av_x_001059", known), "seg_av_x_001059");
+});
+
+test("概要条目的引用校验会先做去尾修复，再严格校验", async () => {
+  const source = await readFile(new URL("../lib/domain/event-ai-artifacts.ts", import.meta.url), "utf8");
+  // 修复只在拿到 rawById 的那条校验路径上生效，其它调用 segmentIds 的地方不受影响。
+  assert.match(source, /segmentIds\(item\.source_segment_ids, `\$\{itemPath\}\.source_segment_ids`, issues, 24, rawById\)/);
+  assert.match(source, /const id = known \? repairSegmentId\(raw, known\) : raw;/);
+});

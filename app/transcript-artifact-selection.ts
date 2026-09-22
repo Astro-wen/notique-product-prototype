@@ -14,18 +14,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * 一份产物引用了哪些原文段落。
+ *
+ * 引用分散在每种产物各自的集合里：易读稿在 segments，章节在 chapters，
+ * 发言总结在 speaker_summaries，要点在 key_points，概要和旧 summary 在
+ * sections[].items。这里曾只认 summary 和 segments 两种形状，四个阅读视图
+ * 拆出来之后没跟上，于是章节、发言总结、要点回顾在库里明明成功了，前端
+ * 却算出零引用，被当成不属于当前原文而过滤掉，界面退回兜底章节。
+ * 按 kind 分支不如把所有已知集合都收进来：形状再变也不会漏。
+ */
 function sourceSegmentIds(artifact: EventAiArtifactRecord): string[] {
   if (!isRecord(artifact.content)) return [];
-  const records = artifact.kind === "summary"
-    ? [
-      ...(Array.isArray(artifact.content.sections) ? artifact.content.sections : [])
-        .flatMap((section) => isRecord(section) && Array.isArray(section.items) ? section.items : []),
-      ...[artifact.content.key_points, artifact.content.speaker_summaries, artifact.content.chapters]
-        .flatMap((items) => Array.isArray(items) ? items : []),
-    ]
-    : Array.isArray(artifact.content.segments)
-      ? artifact.content.segments
-      : [];
+  const content = artifact.content;
+  const records = [
+    ...(Array.isArray(content.sections) ? content.sections : [])
+      .flatMap((section) => isRecord(section) && Array.isArray(section.items) ? section.items : []),
+    ...[content.key_points, content.speaker_summaries, content.chapters, content.segments]
+      .flatMap((items) => Array.isArray(items) ? items : []),
+  ];
   return records.flatMap((record) => {
     if (!isRecord(record) || !Array.isArray(record.source_segment_ids)) return [];
     return record.source_segment_ids.filter(
