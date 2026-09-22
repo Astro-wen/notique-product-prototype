@@ -36,6 +36,15 @@ import {
 } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import {
+  activeProviderRequestIds,
+  cancelRemoteResponses,
+  runCancellationBatch,
+} from "@/lib/server/db/run-cancellation-repository";
+import {
+  recordPurgePlan,
+  trashedEventIdsForProject,
+} from "@/lib/server/db/record-purge-repository";
+import {
   assetRecord,
   claimRecord,
   eventRecord,
@@ -381,9 +390,11 @@ async function getDeletedProject(
 ): Promise<ProjectRecord> {
   const row = await first(
     `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
-      WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NOT NULL`,
+      WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NOT NULL
+        AND p.system_role IS NULL`,
     [projectId, scope.workspaceId],
   );
+  // 收容单条记录的隐藏项目也在回收站里，但它不是用户的项目，不能恢复也不能删。
   if (!row) throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Deleted project was not found.");
   return projectRecord(row);
 }
@@ -392,6 +403,7 @@ export async function listDeletedProjects(scope: RequestScope): Promise<ProjectR
   const rows = await all(
     `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
       WHERE p.workspace_id = ? AND p.deleted_at IS NOT NULL
+        AND p.system_role IS NULL
       ORDER BY p.deleted_at DESC`,
     [scope.workspaceId],
   );
@@ -423,6 +435,8 @@ export async function getProjectDeletePreview(
     ],
   );
   const activeJobCount = Number(row?.active_job_count ?? 0);
+  // 在跑的任务不再挡删除：删的时候一起停下，见 lib/domain/run-cancellation.ts。
+  // 之前一条卡住的转写就能把整个项目永久锁住。字段留着，老客户端照样能读。
   return {
     project_id: project.id,
     project_name: project.name,
@@ -430,7 +444,7 @@ export async function getProjectDeletePreview(
     material_count: Number(row?.material_count ?? 0),
     pending_count: project.pending_claim_count + project.pending_occurrence_count,
     active_job_count: activeJobCount,
-    can_delete: activeJobCount === 0,
+    can_delete: true,
   };
 }
 
@@ -447,35 +461,33 @@ export async function moveProjectToTrash(
     {},
   );
   if (replay.response) return getDeletedProject(scope, replay.response.projectId);
-  const preview = await getProjectDeletePreview(scope, projectId);
-  if (!preview.can_delete) {
-    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Wait for transcription and analysis to finish before deleting this project.", {
-      active_job_count: preview.active_job_count,
-    });
-  }
+  await getProject(scope, projectId);
   const timestamp = now();
   const guardId = id("guard");
+  // 先记下交给供应商的后台响应，删除提交之后再逐个取消。
+  const providerRequests = await activeProviderRequestIds("project", projectId, scope.workspaceId);
   await getD1().batch([
     getD1().prepare(
       `INSERT INTO mutation_guards (id, guard_value, created_at)
        SELECT ?, CASE WHEN EXISTS (
          SELECT 1 FROM projects p
           WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM extraction_runs WHERE project_id = p.id AND status IN ('queued','processing'))
-            AND NOT EXISTS (SELECT 1 FROM transcription_runs WHERE project_id = p.id AND status IN ('queued','processing'))
-            AND NOT EXISTS (SELECT 1 FROM event_ai_artifact_runs WHERE project_id = p.id AND status IN ('queued','processing'))
        ) THEN 1 ELSE 0 END, ?`,
     ).bind(guardId, projectId, scope.workspaceId, timestamp),
+    ...runCancellationBatch("project", {
+      timestamp,
+      scopeId: projectId,
+      workspace: scope.workspaceId,
+      reason: "project_trashed",
+    }),
     getD1().prepare(
       `UPDATE projects SET deleted_at = ?, updated_at = ?
-        WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
-          AND NOT EXISTS (SELECT 1 FROM extraction_runs WHERE project_id = ? AND status IN ('queued','processing'))
-          AND NOT EXISTS (SELECT 1 FROM transcription_runs WHERE project_id = ? AND status IN ('queued','processing'))
-          AND NOT EXISTS (SELECT 1 FROM event_ai_artifact_runs WHERE project_id = ? AND status IN ('queued','processing'))`,
-    ).bind(timestamp, timestamp, projectId, scope.workspaceId, projectId, projectId, projectId),
+        WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    ).bind(timestamp, timestamp, projectId, scope.workspaceId),
     mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { projectId }, timestamp),
     getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
+  await cancelRemoteResponses(providerRequests);
   return getDeletedProject(scope, projectId);
 }
 
@@ -580,8 +592,17 @@ export async function permanentlyDeleteProject(
       projectId, scope.workspaceId,
     ],
   );
+  // 这个项目里单独删掉、还躺在回收站的记录已经搬进收容项目，不会跟着项目级联，
+  // 要一起清掉，不然它们在回收站里会一直指着一个不存在的项目。
+  const trashedRecords = await recordPurgePlan(
+    await trashedEventIdsForProject(projectId, scope.workspaceId),
+    scope.workspaceId,
+  );
   try {
-    await Promise.all(keyRows.map((row) => getEvidenceBucket().delete(String(row.key))));
+    await Promise.all([
+      ...keyRows.map((row) => String(row.key)),
+      ...trashedRecords.keys,
+    ].map((key) => getEvidenceBucket().delete(key)));
   } catch {
     throw new ApiFault(503, "R2_BINDING_UNAVAILABLE", "Stored project files could not be fully deleted. The project remains locked in the recycle bin so permanent deletion can be retried safely.");
   }
@@ -595,6 +616,7 @@ export async function permanentlyDeleteProject(
            AND EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)
        ) THEN 1 ELSE 0 END, ?`,
     ).bind(guardId, projectId, scope.workspaceId, purgeLockId, timestamp),
+    ...trashedRecords.statements,
     getD1().prepare(
       `DELETE FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL`,
     ).bind(projectId, scope.workspaceId),

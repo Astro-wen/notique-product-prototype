@@ -1220,6 +1220,12 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .delete-preview dt { color: var(--muted); font-size: var(--text-xs); }
 .delete-preview dd { margin: 4px 0 0; font-size: var(--text-md); font-weight: 700; }
 .danger-note { margin: 0; padding: 11px 12px; border-radius: var(--radius-md); background: var(--red-soft); color: var(--red); line-height: 1.5; }
+.delete-preview dl.delete-preview-pair { grid-template-columns: repeat(2, 1fr); }
+.delete-preview-note { margin: 0; color: var(--muted); line-height: 1.5; }
+/* 删当前记录的按钮跟着「添加记录」走，同样只在工作区里出现；悬停时变红，提醒这是删除。 */
+.simple-delete-event { color: var(--muted); }
+.simple-delete-event:hover:not(:disabled) { background: var(--red-soft); color: var(--red); }
+.trash-heading { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
 .trash-list { padding: 0 20px 20px; display: grid; gap: var(--space-2); }
 .trash-list > article { min-height: 72px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .trash-list > article > span { display: grid; gap: var(--space-1); }

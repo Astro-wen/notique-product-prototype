@@ -1092,3 +1092,31 @@ test("被交付的默认配置没有把原件上限压下去", async () => {
   // 服务端取的是 min(环境变量, 代码常量)，所以样例配置写低了就等于默认调低。
   assert.equal(Number(configured[1]), MAX_AUDIO_BYTES);
 });
+
+test("a retryable transcription failure stops requeueing once attempts or age run out", async () => {
+  const {
+    transcriptionRetryExhausted,
+    TRANSCRIPTION_MAX_ATTEMPTS: MAX_TRANSCRIPTION_ATTEMPTS,
+    TRANSCRIPTION_MAX_AGE_MS: MAX_TRANSCRIPTION_AGE_MS,
+  } = await loadTypeScriptModule("lib/domain/transcription-retry.ts");
+  const queuedAt = "2026-09-22T16:00:00.000Z";
+  const at = (ms) => new Date(Date.parse(queuedAt) + ms).toISOString();
+
+  // 第一次、第二次超时还能再排。
+  assert.equal(transcriptionRetryExhausted({ attempt_no: 1, queued_at: queuedAt }, at(60_000)), false);
+  assert.equal(transcriptionRetryExhausted({ attempt_no: MAX_TRANSCRIPTION_ATTEMPTS - 1, queued_at: queuedAt }, at(60_000)), false);
+  // 次数用完就判死，不再无限循环。
+  assert.equal(transcriptionRetryExhausted({ attempt_no: MAX_TRANSCRIPTION_ATTEMPTS, queued_at: queuedAt }, at(60_000)), true);
+  // 次数没用完但拖太久也判死。
+  assert.equal(transcriptionRetryExhausted({ attempt_no: 1, queued_at: queuedAt }, at(MAX_TRANSCRIPTION_AGE_MS)), true);
+  // 没有 queued_at 的旧行退回 created_at。
+  assert.equal(transcriptionRetryExhausted({ attempt_no: 1, created_at: queuedAt }, at(MAX_TRANSCRIPTION_AGE_MS + 1)), true);
+});
+
+test("the transcription processor consults the retry cap and a manual chunk retry resets it", async () => {
+  const processor = await readFile(path.join(root, "lib/server/jobs/transcription-processor.ts"), "utf8");
+  assert.match(processor, /retryable && !transcriptionRetryExhausted\(leased, now\(\)\)/);
+  assert.match(processor, /attempts_exhausted: true/);
+  const repository = await readFile(path.join(root, "lib/server/db/transcription-repository.ts"), "utf8");
+  assert.match(repository, /attempt_no = 0, queued_at = \?/);
+});

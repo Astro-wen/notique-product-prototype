@@ -723,9 +723,11 @@ export async function retryFailedTranscriptionChunks(
       `UPDATE transcription_runs
           SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
               current_queued_at = ?, finished_at = NULL, error_code = NULL,
-              error_details_json = NULL, updated_at = ?
+              error_details_json = NULL, updated_at = ?,
+              -- 人点了重试，给一份新的重试额度，见 transcriptionRetryExhausted。
+              attempt_no = 0, queued_at = ?
         WHERE parent_run_id = ? AND workspace_id = ? AND status = 'failed'`,
-    ).bind(timestamp, timestamp, parentRunId, scope.workspaceId),
+    ).bind(timestamp, timestamp, timestamp, parentRunId, scope.workspaceId),
     db.prepare(
       `UPDATE transcription_queue_outbox
           SET status = 'pending', attempt = 0, next_attempt_at = ?, sent_at = NULL,

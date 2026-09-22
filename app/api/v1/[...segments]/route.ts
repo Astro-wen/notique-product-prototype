@@ -1,4 +1,11 @@
 import {
+  getEventTrashPreview,
+  listTrashedEvents,
+  moveEventToTrash,
+  permanentlyDeleteEvent,
+  restoreEvent,
+} from "@/lib/server/db/event-trash-repository";
+import {
   abandonAssetUpload,
   confirmScenario,
   createEvent,
@@ -378,8 +385,15 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "events") {
     return ok({ events: await listEvents(scope, segments[1]) }, id);
   }
+  // 放在 events/:id 前面，不然 trash 会被当成一条记录的 id。
+  if (segments.length === 2 && segments[0] === "events" && segments[1] === "trash") {
+    return ok({ events: await listTrashedEvents(scope) }, id);
+  }
   if (segments.length === 2 && segments[0] === "events") {
     return ok(await getEvent(scope, segments[1]), id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "delete-preview") {
+    return ok({ preview: await getEventTrashPreview(scope, segments[1]) }, id);
   }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "transcript-segments") {
     return ok({ segments: await listEventTranscriptSegments(scope, segments[1]) }, id);
@@ -696,6 +710,10 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "restore") {
     await jsonObject(request);
     return ok({ project: await restoreProject(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "restore") {
+    await jsonObject(request);
+    return ok({ event: await restoreEvent(scope, segments[1], idempotencyKey(request)) }, id);
   }
   if (
     segments.length === 5 &&
@@ -1150,6 +1168,16 @@ async function deleteHandler(request: Request, segments: string[], id: string): 
   if (segments.length === 2 && segments[0] === "projects") {
     await jsonObject(request);
     return ok({ project: await moveProjectToTrash(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 2 && segments[0] === "events") {
+    await jsonObject(request);
+    const result = await moveEventToTrash(scope, segments[1], idempotencyKey(request));
+    return ok({ event_id: result.event_id, project_id: result.project_id }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "permanent") {
+    await jsonObject(request);
+    const result = await permanentlyDeleteEvent(scope, segments[1], idempotencyKey(request));
+    return ok({ event_id: result.eventId, permanently_deleted: true }, id);
   }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "permanent") {
     const body = await jsonObject(request);

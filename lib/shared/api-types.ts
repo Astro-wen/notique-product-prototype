@@ -125,6 +125,35 @@ export type ProjectRecord = {
   updated_at: string;
 };
 
+/** 删一条记录之前给界面看的：删掉会带走什么，有没有删不了的原因。 */
+export type EventTrashPreviewRecord = {
+  event_id: string;
+  event_title: string;
+  project_id: string;
+  material_count: number;
+  /** 这条记录里已经确认过的结论，删掉之后报告里也会少掉，恢复后回来。 */
+  confirmed_count: number;
+  /** 还在跑的任务，删的时候一起停下，不挡删除。 */
+  active_job_count: number;
+  can_trash: boolean;
+  blockers: string[];
+};
+
+/** 回收站里的一条记录。 */
+export type TrashedEventRecord = {
+  event_id: string;
+  event_title: string;
+  occurred_at: string | null;
+  created_at: string;
+  trashed_at: string;
+  project_id: string;
+  /** 原项目已经永久删除时为空。 */
+  project_name: string | null;
+  /** 原项目也在回收站里，要先恢复项目。 */
+  project_in_trash: boolean;
+  material_count: number;
+};
+
 export type ProjectDeletePreviewRecord = {
   project_id: string;
   project_name: string;
@@ -832,6 +861,11 @@ export type GetProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListDeletedProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
 export type ProjectDeletePreviewResponse = ApiSuccess<{ preview: ProjectDeletePreviewRecord }>;
 export type ProjectMutationResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type EventTrashPreviewResponse = ApiSuccess<{ preview: EventTrashPreviewRecord }>;
+export type ListTrashedEventsResponse = ApiSuccess<{ events: TrashedEventRecord[] }>;
+export type EventTrashResponse = ApiSuccess<{ event_id: string; project_id: string }>;
+export type EventRestoreResponse = ApiSuccess<{ event: EventRecord }>;
+export type PermanentEventDeleteResponse = ApiSuccess<{ event_id: string; permanently_deleted: boolean }>;
 export type DraftMemoryRecord = {
   claim_id: string;
   claim_version_id: string;

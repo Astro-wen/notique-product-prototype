@@ -147,6 +147,8 @@ import {
   Project,
   ProjectAction,
   ProjectDeletePreview,
+  EventTrashPreview,
+  TrashedEvent,
   ProjectViewName,
   RelationTarget,
   RelationType,
@@ -1214,14 +1216,35 @@ function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
     <div className="delete-preview">
       <strong>{preview.project_name}</strong>
       <dl><div><dt>记录</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
-      {!preview.can_delete && <p className="danger-note">还有 {preview.active_job_count} 个转写、分析或 AI 阅读任务正在运行。完成前不能删除。</p>}
-      <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button danger" disabled={busy || !preview.can_delete} onClick={() => void onConfirm()}>{busy ? "正在移动…" : "移到回收站"}</button></div>
+      <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button danger" disabled={busy} onClick={() => void onConfirm()}>{busy ? "正在移动…" : "移到回收站"}</button></div>
     </div>
   </Modal>;
 }
 
-function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onRestore, onPermanentDelete }: {
+/**
+ * 删一条记录。在跑的转写和分析不拦，删的时候一起停下。拦得住的只有一种：
+ * 这条记录的结论和别的记录连着，删了会断。
+ */
+function RecordDeleteModal({ preview, busy, onClose, onConfirm }: {
+  preview: EventTrashPreview;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return <Modal title="把这条记录移到回收站？" description="可以从回收站恢复" onClose={onClose} dismissible={!busy}>
+    <div className="delete-preview">
+      <strong>{preview.event_title}</strong>
+      <dl className="delete-preview-pair"><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>已确认</dt><dd>{preview.confirmed_count} 条</dd></div></dl>
+      {preview.confirmed_count > 0 && preview.can_trash && <p className="delete-preview-note">这 {preview.confirmed_count} 条会从报告里拿掉，恢复后回来。</p>}
+      {!preview.can_trash && <p className="danger-note">{preview.blockers.join(" ")}</p>}
+      <div className="modal-actions"><button className="button secondary" disabled={busy} onClick={onClose}>取消</button><button className="button danger" disabled={busy || !preview.can_trash} onClick={() => void onConfirm()}>{busy ? "正在移动…" : "移到回收站"}</button></div>
+    </div>
+  </Modal>;
+}
+
+function ProjectTrashModal({ projects, records, state, issue, busy, onClose, onRetry, onRestore, onPermanentDelete, onRestoreRecord, onPermanentDeleteRecord }: {
   projects: Project[];
+  records: TrashedEvent[];
   state: AsyncState;
   issue: ApiIssue | null;
   busy: string | null;
@@ -1229,21 +1252,37 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
   onRetry: () => Promise<void>;
   onRestore: (project: Project, openAfterRestore?: boolean) => Promise<void>;
   onPermanentDelete: (project: Project, confirmation: string) => Promise<void>;
+  onRestoreRecord: (record: TrashedEvent) => Promise<void>;
+  onPermanentDeleteRecord: (record: TrashedEvent) => Promise<void>;
 }) {
   const [permanentTarget, setPermanentTarget] = useState<Project | null>(null);
-  const [confirmation, setConfirmation] = useState("");
+  const [permanentRecord, setPermanentRecord] = useState<TrashedEvent | null>(null);
+  const showHeadings = projects.length > 0 && records.length > 0;
   return <Modal title="回收站" description="恢复后材料、记录和报告都会回来。回收站不会自动清空" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".pi-trash" wide>
     <div className="trash-list">
       {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
-      {state === "empty" && <EmptyState title="回收站是空的" body="移入回收站的项目会显示在这里。" />}
-      {projects.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.eventCount ?? 0} 条记录 · 删除于 {formatDate(item.deletedAt, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRestore(item, true)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentTarget(item); setConfirmation(""); }}>永久删除</button></div></article>)}
+      {state === "empty" && <EmptyState title="回收站是空的" body="删掉的项目和记录会显示在这里。" />}
+      {showHeadings && projects.length > 0 && <h3 className="trash-heading">项目</h3>}
+      {projects.map((item) => <article key={item.id}><span><strong>{item.name}</strong><small>{item.eventCount ?? 0} 条记录 · 删除于 {formatDate(item.deletedAt, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy)} onClick={() => void onRestore(item, true)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentTarget(item); setPermanentRecord(null); }}>永久删除</button></div></article>)}
+      {showHeadings && <h3 className="trash-heading">记录</h3>}
+      {records.map((item) => {
+        // 原项目也在回收站或已经没了，这条记录就没有地方可回。
+        const home = item.project_name == null ? "原项目已永久删除" : item.project_in_trash ? `${item.project_name}，项目也在回收站` : item.project_name;
+        const canRestore = item.project_name != null && !item.project_in_trash;
+        return <article key={item.event_id}><span><strong>{item.event_title}</strong><small>{home} · 删除于 {formatDate(item.trashed_at, true)}</small></span><div><button className="button secondary" disabled={Boolean(busy) || !canRestore} title={canRestore ? undefined : "先恢复原项目"} onClick={() => void onRestoreRecord(item)}>恢复并打开</button><button className="text-button danger" disabled={Boolean(busy)} onClick={() => { setPermanentRecord(item); setPermanentTarget(null); }}>永久删除</button></div></article>;
+      })}
     </div>
+    {permanentRecord && <div className="permanent-confirm">
+      <h3>永久删除“{permanentRecord.event_title}”</h3>
+      <p>这条记录的录音、逐字稿和结论都会删除，无法恢复</p>
+      <div className="modal-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => setPermanentRecord(null)}>取消</button><button className="button danger" disabled={Boolean(busy)} onClick={() => void onPermanentDeleteRecord(permanentRecord).then(() => setPermanentRecord(null))}>{busy === `permanent-record:${permanentRecord.event_id}` ? "正在清理文件…" : "永久删除"}</button></div>
+    </div>}
     {permanentTarget && <div className="permanent-confirm">
       <h3>永久删除“{permanentTarget.name}”</h3>
       <p>录音、照片、逐字稿和全部记录都会删除，无法恢复</p>
-      <label className="field"><span>输入完整项目名称确认</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoFocus /></label>
-      <div className="modal-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => setPermanentTarget(null)}>取消</button><button className="button danger" disabled={Boolean(busy) || confirmation !== permanentTarget.name} onClick={() => void onPermanentDelete(permanentTarget, confirmation).then(() => { setPermanentTarget(null); setConfirmation(""); })}>{busy === `permanent:${permanentTarget.id}` ? "正在清理文件…" : "永久删除"}</button></div>
+      {/* 服务端仍核对项目名，防止删错项目；名字由界面带上，不再让人手打一遍。 */}
+      <div className="modal-actions"><button className="button secondary" disabled={Boolean(busy)} onClick={() => setPermanentTarget(null)}>取消</button><button className="button danger" disabled={Boolean(busy)} onClick={() => void onPermanentDelete(permanentTarget, permanentTarget.name).then(() => setPermanentTarget(null))}>{busy === `permanent:${permanentTarget.id}` ? "正在清理文件…" : "永久删除"}</button></div>
     </div>}
   </Modal>;
 }
@@ -1846,6 +1885,9 @@ export default function Home() {
   const [trashState, setTrashState] = useState<AsyncState>("idle");
   const [trashIssue, setTrashIssue] = useState<ApiIssue | null>(null);
   const [undoDeletedProject, setUndoDeletedProject] = useState<Project | null>(null);
+  const [recordDeletePreview, setRecordDeletePreview] = useState<EventTrashPreview | null>(null);
+  const [trashRecords, setTrashRecords] = useState<TrashedEvent[]>([]);
+  const [undoDeletedRecord, setUndoDeletedRecord] = useState<TrashedEvent | null>(null);
   const [simpleFlow, setSimpleFlow] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // 侧栏按文件夹列项目。没有文件夹的归到默认文件夹并排最前，和项目管理页的
@@ -2021,7 +2063,13 @@ export default function Home() {
 
   const flash = useCallback((message: string) => {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2600);
+    // 撤销按钮只活在这条提示里。提示消失后不清掉，下一条无关的提示会带着一个
+    // 撤销旧删除的按钮冒出来。
+    window.setTimeout(() => {
+      setToast(null);
+      setUndoDeletedProject(null);
+      setUndoDeletedRecord(null);
+    }, 2600);
   }, []);
 
   const requirePublicWorkspaceAcknowledgement = useCallback((action: () => void) => {
@@ -4071,6 +4119,7 @@ export default function Home() {
       setDeletePreview(null);
       setDeleteTarget(null);
       setUndoDeletedProject(deleted);
+      setUndoDeletedRecord(null);
       flash("项目已移到回收站");
       // 删的是别的项目就别动当前这个：人还在它里面干活，把他弹走没有道理。
       if (!wasCurrent) return;
@@ -4090,9 +4139,10 @@ export default function Home() {
     setTrashState("loading");
     setTrashIssue(null);
     try {
-      const deleted = await api.listDeletedProjects();
+      const [deleted, records] = await Promise.all([api.listDeletedProjects(), api.listTrashedEvents()]);
       setTrashProjects(deleted);
-      setTrashState(deleted.length ? "ready" : "empty");
+      setTrashRecords(records);
+      setTrashState(deleted.length || records.length ? "ready" : "empty");
     } catch (error) {
       setTrashIssue(toIssue(error));
       setTrashState("error");
@@ -4125,6 +4175,84 @@ export default function Home() {
       queryClient.removeQueries({ queryKey: ["notique", "project", target.id] });
       setTrashProjects((current) => current.filter((item) => item.id !== target.id));
       flash(`“${target.name}”已永久删除`);
+    } catch (error) {
+      setTrashIssue(toIssue(error));
+      throw error;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function openRecordDeletePreview(eventId: string): Promise<void> {
+    setBusyAction("record-delete-preview");
+    try {
+      setRecordDeletePreview(await api.getEventTrashPreview(eventId));
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function moveRecordToTrash(): Promise<void> {
+    const preview = recordDeletePreview;
+    if (!preview) return;
+    const wasCurrent = event?.id === preview.event_id;
+    setBusyAction("record-delete");
+    try {
+      await api.moveEventToTrash(preview.event_id, crypto.randomUUID());
+      setRecordDeletePreview(null);
+      setUndoDeletedProject(null);
+      setUndoDeletedRecord({
+        event_id: preview.event_id,
+        event_title: preview.event_title,
+        occurred_at: null,
+        created_at: "",
+        trashed_at: new Date().toISOString(),
+        project_id: preview.project_id,
+        project_name: project?.name ?? null,
+        project_in_trash: false,
+        material_count: preview.material_count,
+      });
+      flash("记录已移到回收站");
+      await invalidateProjectReadModels(preview.project_id);
+      // 删的是正在看的那条，就交给 loadSimpleProject 按记住的顺序挑下一条。
+      if (project?.id === preview.project_id) {
+        await loadSimpleProject(preview.project_id, wasCurrent ? undefined : event?.id, "replace");
+      }
+      void loadProjects();
+    } catch (error) {
+      setEventIssue(toIssue(error));
+      setRecordDeletePreview(null);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function restoreDeletedRecord(record: TrashedEvent): Promise<void> {
+    setBusyAction(`restore-record:${record.event_id}`);
+    try {
+      await api.restoreEvent(record.event_id, crypto.randomUUID());
+      setUndoDeletedRecord((current) => current?.event_id === record.event_id ? null : current);
+      await invalidateProjectReadModels(record.project_id);
+      setShowTrash(false);
+      flash(`“${record.event_title}”已恢复`);
+      void loadProjects();
+      await loadSimpleProject(record.project_id, record.event_id, "replace");
+    } catch (error) {
+      setTrashIssue(toIssue(error));
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function permanentlyDeleteRecord(record: TrashedEvent): Promise<void> {
+    setBusyAction(`permanent-record:${record.event_id}`);
+    try {
+      await api.permanentlyDeleteEvent(record.event_id, crypto.randomUUID());
+      setTrashRecords((current) => current.filter((item) => item.event_id !== record.event_id));
+      flash(`“${record.event_title}”已永久删除`);
     } catch (error) {
       setTrashIssue(toIssue(error));
       throw error;
@@ -5140,6 +5268,7 @@ export default function Home() {
           onCancelUpload={() => assetUploadAbortRef.current?.abort()}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
           onNewEvent={() => { setSimpleFlow(true); if (project) setShowNewEvent(true); }}
+          onDeleteEvent={(id) => void openRecordDeletePreview(id)}
           onAddFile={attachSimpleFile}
           onRenameAsset={async (assetId, filename) => {
             await api.renameAsset(assetId, filename);
@@ -5422,8 +5551,9 @@ export default function Home() {
       }} />}
       {showPublicWorkspaceConfirmation && <PublicWorkspaceConfirmationModal onCancel={cancelPublicWorkspaceAcknowledgement} onConfirm={confirmPublicWorkspaceAcknowledgement} />}
       {deletePreview && <ProjectDeleteModal preview={deletePreview} busy={busyAction === "project-delete"} onClose={() => { setDeletePreview(null); setDeleteTarget(null); }} onConfirm={moveProjectToTrash} />}
-      {showTrash && <ProjectTrashModal projects={trashProjects} state={trashState} issue={trashIssue} busy={busyAction} onClose={() => setShowTrash(false)} onRetry={loadTrash} onRestore={restoreDeletedProject} onPermanentDelete={permanentlyDeleteProject} />}
-      {toast && <div className="toast" role="status"><Check aria-hidden="true" />{toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}</div>}
+      {recordDeletePreview && <RecordDeleteModal preview={recordDeletePreview} busy={busyAction === "record-delete"} onClose={() => setRecordDeletePreview(null)} onConfirm={moveRecordToTrash} />}
+      {showTrash && <ProjectTrashModal projects={trashProjects} records={trashRecords} state={trashState} issue={trashIssue} busy={busyAction} onClose={() => setShowTrash(false)} onRetry={loadTrash} onRestore={restoreDeletedProject} onPermanentDelete={permanentlyDeleteProject} onRestoreRecord={restoreDeletedRecord} onPermanentDeleteRecord={permanentlyDeleteRecord} />}
+      {toast && <div className="toast" role="status"><Check aria-hidden="true" />{toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}{!undoDeletedProject && undoDeletedRecord && <button onClick={() => void restoreDeletedRecord(undoDeletedRecord)}>撤销</button>}</div>}
     </div>
   );
 }
@@ -5451,6 +5581,7 @@ type SimpleTestScreenProps = {
   onCancelUpload: () => void;
   onUseEvent: (id: string) => void;
   onNewEvent: () => void;
+  onDeleteEvent: (id: string) => void;
   onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
   onRenameAsset: (assetId: string, filename: string) => Promise<void>;
   onReorderAssets: (assetIds: string[]) => Promise<void>;
@@ -7039,6 +7170,7 @@ function SimpleTestScreen({
   onCancelUpload,
   onUseEvent,
   onNewEvent,
+  onDeleteEvent,
   onAddFile,
   onRenameAsset,
   onReorderAssets,
@@ -7449,6 +7581,7 @@ function SimpleTestScreen({
             </select>
           </label>
           <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>
+          {event && <button type="button" className="icon-button simple-new-event-mobile simple-delete-event" disabled={loadingSelection || Boolean(busy)} onClick={() => onDeleteEvent(event.id)} aria-label="删除这条记录" title="删除这条记录"><Trash2 aria-hidden="true" /></button>}
         </>}
         {event && <span className={`simple-session-status current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
       </section>}

@@ -13,7 +13,7 @@ async function setup(page: Page, blocked = false) {
   const response=(data:unknown,status=200)=>route.fulfill({status,json:{data,request_id:'project-index-test'}});
   if(path==='/api/v1/projects'&&method==='GET')return response({projects});
   const preview=path.match(/\/projects\/([^/]+)\/delete-preview$/);
-  if(preview){const p=projects.find(p=>p.id===preview[1])!;return response({preview:{project_id:p.id,project_name:p.name,can_delete:!(blocked&&p.id==='project-b'),active_job_count:blocked&&p.id==='project-b'?1:0,event_count:p.event_count,material_count:2,pending_count:0}});}
+  if(preview){const p=projects.find(p=>p.id===preview[1])!;return response({preview:{project_id:p.id,project_name:p.name,can_delete:true,active_job_count:blocked&&p.id==='project-b'?1:0,event_count:p.event_count,material_count:2,pending_count:0}});}
   const match=path.match(/\/projects\/([^/]+)$/);
   if(match&&(method==='PUT'||method==='DELETE')){
    const index=projects.findIndex(p=>p.id===match[1]); const body=request.postDataJSON();writes.push({method,path,body});
@@ -45,13 +45,14 @@ test('click title renames without opening; folder metadata is saved',async({page
  await expect(page.getByRole('button',{name:'待跟进',exact:true})).toBeVisible();expect(writes[1].body.folder_name).toBe('待跟进');
 });
 
-test('batch selects all, offers only export/delete; cancel causes no deletion; blocked projects stay',async({page})=>{
+test('batch selects all, offers only export/delete; cancel causes no deletion; a running job never blocks',async({page})=>{
+ // 客户 B 有任务在跑。删除时服务端把任务一起停下，界面不再拦。
  const {writes}=await setup(page,true);await page.getByRole('button',{name:'批量',exact:true}).click();await page.getByLabel('全选').check();
  await expect(page.locator('.pi-tools button')).toHaveText(['导出','删除','取消批量']);
  await page.getByRole('button',{name:'删除',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();expect(writes).toEqual([]);
- await page.getByRole('button',{name:'删除',exact:true}).click();await expect(page.getByText('还在处理，先不能删')).toBeVisible();
- await page.getByRole('button',{name:'移到回收站'}).click();await expect(page.getByRole('alert')).toContainText('客户 B');
- expect(writes.filter(w=>w.method==='DELETE').map(w=>w.path)).toEqual(['/api/v1/projects/project-a']);await expect(page.locator('.pi-item')).toHaveCount(1);
+ await page.getByRole('button',{name:'删除',exact:true}).click();await expect(page.getByText('还在处理，先不能删')).toHaveCount(0);
+ await page.getByRole('button',{name:'移到回收站'}).click();
+ await expect(page.locator('.pi-item')).toHaveCount(0);expect(writes.filter(w=>w.method==='DELETE').map(w=>w.path).sort()).toEqual(['/api/v1/projects/project-a','/api/v1/projects/project-b']);
 });
 
 test('batch export produces a downloaded zip and honors raw metadata options',async({page})=>{

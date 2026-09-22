@@ -1835,21 +1835,25 @@ test("Summary source loading accepts raw Transcript and pasted text but excludes
   assert.match(repository, /ARTIFACT_INPUT_MANIFEST_CHANGED/);
 });
 
-test("project deletion is reversible, blocks active jobs, and deletes R2 before D1", async () => {
+test("project deletion is reversible, stops active jobs instead of refusing, and deletes R2 before D1", async () => {
   const [repository, route, uiSource] = await Promise.all([
     readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(repository, /active_job_count[\s\S]*event_ai_artifact_runs/);
+  // 预览仍然数在跑的任务，但只是告知；删的时候在同一批里把它们停下。
+  assert.match(repository, /event_ai_artifact_runs[\s\S]*AS active_job_count/);
+  assert.match(repository, /\.\.\.runCancellationBatch\("project"[\s\S]*UPDATE projects SET deleted_at/);
   assert.match(repository, /INSERT INTO mutation_guards[\s\S]*UPDATE projects SET deleted_at/);
-  assert.match(repository, /Promise\.all\(keyRows\.map[\s\S]*DELETE FROM projects/);
+  assert.match(repository, /Promise\.all\(\[\s*\.\.\.keyRows\.map[\s\S]*DELETE FROM projects/);
   assert.match(repository, /project-purge:\$\{projectId\}[\s\S]*NOT EXISTS \(SELECT 1 FROM mutation_guards WHERE id = \?\)/);
   assert.match(repository, /Stored project files could not be fully deleted[\s\S]*remains locked in the recycle bin/);
   assert.match(route, /segments\[1\] === "trash"/);
   assert.match(route, /segments\[2\] === "restore"/);
   assert.match(route, /segments\[2\] === "permanent"/);
-  assert.match(uiSource, /输入完整项目名称确认/);
+  // 永久删除不再要求手打项目名，名字由界面带给服务端核对。
+  assert.doesNotMatch(uiSource, /输入完整项目名称确认/);
+  assert.match(uiSource, /onPermanentDelete\(permanentTarget, permanentTarget\.name\)/);
   assert.match(uiSource, /已移到回收站[\s\S]*撤销/);
 });
 

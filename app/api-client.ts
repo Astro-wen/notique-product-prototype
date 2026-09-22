@@ -48,6 +48,11 @@ import type {
   ProjectActionsResponse,
   CompleteProjectActionResponse,
   PermanentProjectDeleteResponse,
+  EventTrashPreviewResponse,
+  ListTrashedEventsResponse,
+  EventTrashResponse,
+  EventRestoreResponse,
+  PermanentEventDeleteResponse,
   EventAiArtifactsResponse,
   EventAiArtifactRecord,
   EventAiArtifactRunRecord,
@@ -120,6 +125,8 @@ export type EventMovePreview = {
   target_project_id: string;
 };
 export type ProjectDeletePreview = ProjectDeletePreviewResponse["data"]["preview"];
+export type EventTrashPreview = EventTrashPreviewResponse["data"]["preview"];
+export type TrashedEvent = ListTrashedEventsResponse["data"]["events"][number];
 export type DraftMemory = DraftMemoryResponse["data"]["draft_memory"];
 export type ProjectAction = ProjectActionsResponse["data"]["actions"][number];
 
@@ -1219,6 +1226,52 @@ export const api = {
       body: "{}",
     });
     return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async getEventTrashPreview(eventId: Id): Promise<EventTrashPreview> {
+    const body = await request<EventTrashPreviewResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/delete-preview`,
+      { cache: "no-store" },
+    );
+    return body.data.preview;
+  },
+
+  async moveEventToTrash(eventId: Id, idempotencyKey: string): Promise<{ eventId: Id; projectId: Id }> {
+    const body = await request<EventTrashResponse>(`/api/v1/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    if (body.data.event_id !== eventId) invalidContract("The server trashed a different record.");
+    return { eventId: body.data.event_id, projectId: body.data.project_id };
+  },
+
+  async listTrashedEvents(): Promise<TrashedEvent[]> {
+    const body = await request<ListTrashedEventsResponse>("/api/v1/events/trash", { cache: "no-store" });
+    return body.data.events;
+  },
+
+  async restoreEvent(eventId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<EventRestoreResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/restore`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    if (body.data.event?.id !== eventId) invalidContract("The server restored a different record.");
+  },
+
+  async permanentlyDeleteEvent(eventId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<PermanentEventDeleteResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/permanent`,
+      {
+        method: "DELETE",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    if (body.data.event_id !== eventId || body.data.permanently_deleted !== true) {
+      invalidContract("The server returned an invalid permanent deletion result.");
+    }
   },
 
   async permanentlyDeleteProject(projectId: Id, confirmName: string, idempotencyKey: string): Promise<void> {

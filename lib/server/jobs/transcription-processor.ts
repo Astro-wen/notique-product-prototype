@@ -10,6 +10,7 @@ import {
   classifyTranscriptionHttpFailure,
   classifyTranscriptionTransportFailure,
   loadOrStageTranscriptionResult,
+  transcriptionRetryExhausted,
 } from "@/lib/domain/transcription-retry";
 import { normalizeTranscriptText } from "@/lib/domain/transcript";
 import { mergeChunkTranscripts } from "@/lib/domain/audio-chunking";
@@ -575,6 +576,7 @@ async function markFailed(
   run: Row,
   owner: string,
   error: unknown,
+  extraDetails?: Record<string, unknown>,
 ): Promise<TranscriptionProcessResult> {
   const timestamp = now();
   const code = errorCode(error);
@@ -593,7 +595,7 @@ async function markFailed(
       .bind(
         timestamp,
         code,
-        JSON.stringify({ message: safeError(error) }),
+        JSON.stringify({ message: safeError(error), ...extraDetails }),
         providerRequestId,
         timestamp,
         run.id,
@@ -722,21 +724,18 @@ export async function processTranscriptionRun(
     }
     return result;
   } catch (error) {
-    if (error instanceof TranscriptionFault && error.retryable) {
-      return markRetryable(leased, owner, error);
+    const retryable = error instanceof TranscriptionFault && error.retryable
+      ? error
+      : stagedReady
+        ? new TranscriptionFault("TRANSCRIPTION_PERSIST_RETRY", safeError(error), true)
+        : null;
+    if (retryable && !transcriptionRetryExhausted(leased, now())) {
+      return markRetryable(leased, owner, retryable);
     }
-    if (stagedReady) {
-      return markRetryable(
-        leased,
-        owner,
-        new TranscriptionFault(
-          "TRANSCRIPTION_PERSIST_RETRY",
-          safeError(error),
-          true,
-        ),
-      );
-    }
-    const failed = await markFailed(leased, owner, error);
+    // 可重试但次数或时长已经用完，按原错误码判死，别让它在队列里无限循环。
+    const failed = await markFailed(leased, owner, retryable ?? error, retryable
+      ? { attempts_exhausted: true, attempt_no: Number(leased.attempt_no) }
+      : undefined);
     if (leased.parent_run_id) {
       await finalizeChunkedTranscriptionParent(String(leased.parent_run_id)).catch(() => undefined);
     }

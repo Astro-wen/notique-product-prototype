@@ -125,6 +125,28 @@ function providerBaseUrl(bindings: RuntimeBindings, provider = bindings.AI_PROVI
   return null;
 }
 
+/**
+ * 删除项目或记录时，把已经交给供应商、还在后台跑的响应逐个取消。
+ *
+ * 尽力而为：本地已经把任务标停，结果回来也写不进去，这里只是省下供应商那边
+ * 继续计费的时间。没配 key、发不出去、超时，一律安静放过。
+ */
+export async function cancelBackgroundResponses(
+  bindings: RuntimeBindings,
+  responseIds: readonly string[],
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const apiKey = bindings.AI_API_KEY?.trim();
+  const baseUrl = providerBaseUrl(bindings);
+  if (!apiKey || !baseUrl || responseIds.length === 0) return;
+  await Promise.allSettled(responseIds.map((responseId) =>
+    fetcher(`${baseUrl}/responses/${encodeURIComponent(responseId)}/cancel`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5_000),
+    })));
+}
+
 function extractionJsonSchema() {
   const nullableIdentifier = {
     anyOf: [

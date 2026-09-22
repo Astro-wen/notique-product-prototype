@@ -589,6 +589,9 @@ export class NotiqueApiFixture {
   private readonly manualClaims = new Map<string, ReturnType<typeof claimRecord>>();
   private activeProjectIds = new Set(["project-a", "project-b"]);
   private trashProjectIds = new Set(["project-trash"]);
+  /** 单条记录的回收站。删掉的记录从项目的记录列表里消失，恢复后回来。 */
+  private trashedEventIds = new Set<string>();
+  private eventTrashBlockers: string[] = [];
   private actions: FixtureAction[] = [
     {
       claim_id: "claim-action-confirmed",
@@ -755,7 +758,16 @@ export class NotiqueApiFixture {
     return null;
   }
 
+  /** 让删记录的预览报出跨记录引用，界面应该拦住。 */
+  blockEventTrash(reasons: string[]) {
+    this.eventTrashBlockers = reasons;
+  }
+
   private eventsForProject(projectId: string) {
+    return this.allEventsForProject(projectId).filter((item) => !this.trashedEventIds.has(item.id));
+  }
+
+  private allEventsForProject(projectId: string) {
     if (projectId === "project-a") {
       return [eventRecord("event-a", projectId, "A 初次沟通", "run-a", 1)];
     }
@@ -915,6 +927,21 @@ export class NotiqueApiFixture {
       return;
     }
 
+    const eventTrashMatch = path.match(/^\/api\/v1\/events\/([^/]+)$/);
+    if (method === "DELETE" && eventTrashMatch) {
+      const eventId = decodeURIComponent(eventTrashMatch[1]);
+      this.trashedEventIds.add(eventId);
+      await this.fulfill(route, envelope({ event_id: eventId, project_id: "project-a" }));
+      return;
+    }
+    const eventRestoreMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/restore$/);
+    if (method === "POST" && eventRestoreMatch) {
+      const eventId = decodeURIComponent(eventRestoreMatch[1]);
+      this.trashedEventIds.delete(eventId);
+      await this.fulfill(route, envelope({ event: this.allEventsForProject("project-a").find((item) => item.id === eventId) }));
+      return;
+    }
+
     if (method === "POST" && path === "/api/v1/projects/project-trash/restore") {
       this.trashProjectIds.delete("project-trash");
       this.activeProjectIds.add("project-trash");
@@ -1038,6 +1065,42 @@ export class NotiqueApiFixture {
           .map((id) => this.project(id))
           .filter(Boolean);
         await this.fulfill(route, envelope({ projects }));
+        return;
+      }
+
+      if (path === "/api/v1/events/trash") {
+        const events = [...this.trashedEventIds].map((eventId) => ({
+          event_id: eventId,
+          event_title: this.allEventsForProject("project-a").find((item) => item.id === eventId)?.title ?? eventId,
+          occurred_at: null,
+          created_at: "2026-08-15T11:00:00.000Z",
+          trashed_at: "2026-09-22T10:00:00.000Z",
+          project_id: "project-a",
+          project_name: this.project("project-a")?.name ?? null,
+          project_in_trash: false,
+          material_count: 1,
+        }));
+        await this.fulfill(route, envelope({ events }));
+        return;
+      }
+
+      const eventDeletePreviewMatch = path.match(/^\/api\/v1\/events\/([^/]+)\/delete-preview$/);
+      if (eventDeletePreviewMatch) {
+        const eventId = decodeURIComponent(eventDeletePreviewMatch[1]);
+        const found = this.allEventsForProject("project-a").find((item) => item.id === eventId);
+        await this.fulfill(route, envelope({
+          preview: {
+            event_id: eventId,
+            event_title: found?.title ?? eventId,
+            project_id: "project-a",
+            material_count: 1,
+            confirmed_count: 2,
+            // 正在跑的任务不拦删除，这里故意报一个，界面不该出现任何拦截提示。
+            active_job_count: 1,
+            can_trash: this.eventTrashBlockers.length === 0,
+            blockers: this.eventTrashBlockers,
+          },
+        }));
         return;
       }
 
