@@ -29,6 +29,7 @@ import {
   readingArtifactDefinition,
   readingArtifactReadiness,
 } from "@/lib/domain/reading-pipeline";
+import { scheduleProjectRoutingSuggestion } from "@/lib/server/jobs/project-routing";
 
 type Row = Record<string, unknown>;
 
@@ -669,6 +670,15 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
     });
     if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
     await persistSummaryArtifact(run, owner, validated.output, result.usage);
+    if (kind === "overview") {
+      // overview 是最后一步，到这里这份材料已经读完了，归属判断才有东西可比。
+      // 不 await：产物已经落库，这一层失败与否都不该改变本次任务的结果。
+      scheduleProjectRoutingSuggestion({
+        eventId: String(run.event_id),
+        workspaceId: String(run.workspace_id),
+        projectId: String(run.project_id),
+      });
+    }
     return "succeeded";
   } catch (error) {
     if (error instanceof ModelBackgroundPendingError) {

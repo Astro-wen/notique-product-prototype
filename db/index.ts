@@ -8,6 +8,8 @@ export type RuntimeBindings = {
   AI_API_KEY?: string;
   /** 引用支持度判断方。不配就没有判断，系统表现与今天一致。 */
   JEV_API_KEY?: string;
+  /** 归属建议（第三层）的开关。默认关；关着时这一层一行都不跑。 */
+  PROJECT_ROUTING_ENABLED?: string;
   AI_API_BASE_URL?: string;
   AI_MODEL?: string;
   AI_PROVIDER?: string;
