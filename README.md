@@ -49,7 +49,7 @@ npm run dev
 ```text
 AI_PROVIDER=openai
 AI_MODEL=<固定版本的多模态模型>
-AI_REASONING_EFFORT=high      # 线上 wrangler.jsonc 用 low，见下
+AI_REASONING_EFFORT=high
 AI_VERIFIER_REASONING_EFFORT=high
 AI_TWO_PASS_PIPELINE=1
 AI_DRAFT_CONTEXT=0
@@ -65,7 +65,7 @@ Agent A 使用 `AI_REASONING_EFFORT=high` 盘点最多 24 条内部原子事实�
 发现关键遗漏、清单没对上、低置信关系、冲突或错误 Reaffirmed 时，Agent B 以同一强度再复核
 一次；只有复合 Claim 这一个问题时不复核，留给人工核对并记一条提示。两个 Agent 共用同一个
 `AI_API_KEY`，不需要第二个密钥。`max` 不属于当前产品配置；缺失或误填的强度都回到 `high`。
-线上的 `wrangler.jsonc` 目前配的是 low/low，比这里更快也更省，结论会更少，要不要改是部署时的决定。
+线上 `wrangler.jsonc` 与本地示例统一使用 high/high，优先保持与实测一致的结论质量。
 
 2026-09-22 用同一份 14 分钟真实录音实测：xhigh 加复核平均 8.1 分钟；high 不做复合复核
 平均 3.7 分钟，事实条数相同；medium 3.2 分钟但整段合同条款漏掉、多条引文对不上原话。

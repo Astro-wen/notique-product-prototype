@@ -1252,16 +1252,21 @@ test("new and retried reading artifacts use low effort while existing Runs keep 
   );
 });
 
-test("new fact Runs use the production low-latency reasoning profile without dropping two-pass verification", async () => {
+test("new fact Runs use the production high reasoning profile without dropping two-pass verification", async () => {
   const [exampleEnvironment, workerConfig] = await Promise.all([
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
   ]);
-  assert.match(exampleEnvironment, /^AI_REASONING_EFFORT=low$/m);
-  assert.match(exampleEnvironment, /^AI_VERIFIER_REASONING_EFFORT=low$/m);
+  assert.match(exampleEnvironment, /^AI_REASONING_EFFORT=high$/m);
+  assert.match(exampleEnvironment, /^AI_VERIFIER_REASONING_EFFORT=high$/m);
   assert.match(exampleEnvironment, /^AI_TWO_PASS_PIPELINE=1$/m);
-  assert.match(workerConfig, /"AI_REASONING_EFFORT"\s*:\s*"low"/);
-  assert.match(workerConfig, /"AI_VERIFIER_REASONING_EFFORT"\s*:\s*"low"/);
+  assert.match(exampleEnvironment, /^MAX_AUDIO_BYTES=104857600$/m);
+  assert.doesNotMatch(exampleEnvironment, /^AI_READABLE_TRANSCRIPT=/m);
+  assert.match(workerConfig, /"AI_REASONING_EFFORT"\s*:\s*"high"/);
+  assert.match(workerConfig, /"AI_VERIFIER_REASONING_EFFORT"\s*:\s*"high"/);
+  assert.match(workerConfig, /"MAX_AUDIO_BYTES"\s*:\s*"104857600"/);
+  assert.doesNotMatch(workerConfig, /PROJECT_ROUTING_ENABLED/);
+  assert.doesNotMatch(workerConfig, /AI_READABLE_TRANSCRIPT/);
   assert.match(workerConfig, /"AI_TWO_PASS_PIPELINE"\s*:\s*"1"/);
 });
 
