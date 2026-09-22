@@ -127,9 +127,14 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
   assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds, claimEvidence\(claim\)\)/);
   assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
   assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
-  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked, actionOwner\.trim\(\) \|\| undefined, actionDueAt \|\| undefined\)/);
+  // 行动只填一句话，负责人和截止日期那套表单删了。
+  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked\)/);
+  assert.doesNotMatch(page, /负责人（可选）|截止日期（可选）/);
+  // 行动页是清单：模型找出的下一步先列成建议，勾一下进自己的清单。
+  assert.match(page, /const suggestedActions = claims\.filter\(\(claim\) =>[\s\S]{0,80}claim\.type === "next_action" && claim\.reviewStatus === "pending"/);
+  assert.match(page, /aria-label="建议加入的行动"/);
+  assert.match(page, /aria-label="我的清单"/);
   assert.match(page, /className="rail-action-composer"/);
-  assert.match(page, /已关联最相关的 8 段原话/);
   assert.match(page, /function selectTranscriptGroup/);
   assert.match(page, /selectTranscriptGroup\(group, "raw"\)/);
   assert.match(page, /const trustedEventActionItems = eventActionItems\.filter/);

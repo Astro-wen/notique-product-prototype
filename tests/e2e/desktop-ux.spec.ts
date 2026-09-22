@@ -145,24 +145,24 @@ test('inline review guards evidence, retains edits on failure, and submits the c
   expect(write.body).toMatchObject({action:'edit', edit:{statement:'预算上限调整为 110 万美元',retain_existing_evidence:false}});
 });
 
-test('action creation sends owner and deadline with source evidence', async ({page}) => {
+test('an action is one sentence with source evidence, no owner or deadline form', async ({page}) => {
   const fixture = new NotiqueApiFixture(); fixture.enableSummaryFirstFlow(); fixture.completeSummary(); fixture.completeFacts();
   for (const path of ['/api/v1/events/event-a/manual-claims','/api/v1/claims/claim-manual-action/evidence-review-attestations','/api/v1/claims/claim-manual-action/verdicts']) fixture.allowMutation('POST',path);
   await fixture.install(page);
   await page.goto('/?project=project-a&event=event-a&view=simple');
-  await page.locator('.reader-action-tabs').getByRole('button',{name:/行动/}).click();
-  await page.getByRole('button',{name:'从当前重点建立行动'}).click();
+  await page.getByTestId('transcript-turn-body').filter({hasText:'预算上限是 120 万美元'}).first().click();
+  await page.locator('.reader-action-rail').getByRole('button',{name:'添加跟进行动'}).click();
   const form = page.locator('.rail-action-composer');
+  await expect(form.getByLabel('负责人（可选）')).toHaveCount(0);
+  await expect(form.getByLabel('截止日期（可选）')).toHaveCount(0);
   await form.getByLabel('要完成什么').fill('发送三套候选房源');
-  await form.getByLabel('负责人（可选）').fill('Kyle');
-  await form.getByLabel('截止日期（可选）').fill('2026-10-01');
   await form.getByRole('button',{name:'确认并加入行动'}).click();
   await expect(form).toHaveCount(0);
   const write = fixture.writes.find(w=>w.path.endsWith('/manual-claims'))!;
-  expect(write.body).toMatchObject({statement:'发送三套候选房源',type:'next_action',owner:'Kyle',due_at:'2026-10-01'});
+  expect(write.body).toMatchObject({statement:'发送三套候选房源',type:'next_action'});
   expect((write.body as {segment_ids:string[]}).segment_ids.length).toBeGreaterThan(0);
-  await expect(page.locator('.rail-action-list')).toContainText('Kyle');
-  await expect(page.locator('.rail-action-list')).toContainText('2026/10/01');
+  await page.locator('.reader-action-tabs').getByRole('button',{name:/行动/}).click();
+  await expect(page.locator('.rail-action-list')).toContainText('发送三套候选房源');
 });
 
 

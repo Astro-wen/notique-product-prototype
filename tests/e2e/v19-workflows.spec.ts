@@ -178,7 +178,7 @@ test("source, pending, and action views remain one continuous Summary workflow",
 
   await actionTabs.getByRole("button", { name: /^行动/ }).click();
   await expect(actionTabs.getByRole("button", { name: /^行动/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(rail).toContainText("这里显示已确认的行动");
+  await expect(rail.getByRole("region", { name: "我的清单" })).toBeVisible();
 
   await actionTabs.getByRole("button", { name: "核对详情", exact: true }).click();
   await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();

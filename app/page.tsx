@@ -5756,9 +5756,7 @@ function TranscriptArtifactsPanel({
   const [actionComposerOpen, setActionComposerOpen] = useState(false);
   const [actionComposerRevision, setActionComposerRevision] = useState<string | null>(null);
   const [actionStatement, setActionStatement] = useState("");
-  const [actionOwner, setActionOwner] = useState("");
-  const [actionDueAt, setActionDueAt] = useState("");
-  const actionDrafts = useRef(new Map<string, { statement: string; owner: string; dueAt: string }>());
+  const actionDrafts = useRef(new Map<string, { statement: string }>());
   const [inlineReview, setInlineReview] = useState<{ id: string; edit: boolean } | null>(null);
   const pendingScroll = useRef(0);
   const [actionComposerIssue, setActionComposerIssue] = useState<string | null>(null);
@@ -6326,6 +6324,10 @@ function TranscriptArtifactsPanel({
   const trustedEventActionItems = eventActionItems.filter(
     (action) => action.status === "confirmed" || action.status === "completed",
   );
+  // 模型从这次沟通里找出来的下一步，还没人点头。行动页把它们列成清单，勾一下就进
+  // 自己的清单，不要就划掉；不再让人填负责人、截止日期那套表单。
+  const suggestedActions = claims.filter((claim) =>
+    claim.type === "next_action" && claim.reviewStatus === "pending" && (!claim.eventId || claim.eventId === event.id));
   const sourceSelectionRevision = [
     event.id,
     analysisRun?.id || "",
@@ -6404,21 +6406,15 @@ function TranscriptArtifactsPanel({
       : selectedPoint?.key;
     return `${revision}::${pointKey ?? "default"}`;
   }
-  function persistActionDraft(overrides: Partial<{ statement: string; owner: string; dueAt: string }> = {}) {
+  function persistActionDraft(overrides: Partial<{ statement: string }> = {}) {
     const key = currentActionDraftKey();
     if (!key) return;
-    const draft = {
-      statement: overrides.statement ?? actionStatement,
-      owner: overrides.owner ?? actionOwner,
-      dueAt: overrides.dueAt ?? actionDueAt,
-    };
-    if (draft.statement.trim() || draft.owner.trim() || draft.dueAt) actionDrafts.current.set(key, draft);
+    const draft = { statement: overrides.statement ?? actionStatement };
+    if (draft.statement.trim()) actionDrafts.current.set(key, draft);
     else actionDrafts.current.delete(key);
   }
-  function setActionDraftField(field: "statement" | "owner" | "dueAt", value: string) {
-    if (field === "statement") setActionStatement(value);
-    if (field === "owner") setActionOwner(value);
-    if (field === "dueAt") setActionDueAt(value);
+  function setActionDraftField(field: "statement", value: string) {
+    setActionStatement(value);
     persistActionDraft({ [field]: value });
   }
   // A Claim whose refs are still resolving has no segment ids yet. Saying its
@@ -6667,7 +6663,6 @@ function TranscriptArtifactsPanel({
     const draft = actionDrafts.current.get(`${selectedPointRevision}::${selectedPoint.key}`);
     setActionStatement(draft?.statement ?? (selectedPoint.sectionKind === "next_step" ? selectedPoint.summaryText : ""));
     setActionComposerIssue(null);
-    setActionOwner(draft?.owner ?? ""); setActionDueAt(draft?.dueAt ?? "");
     setActionComposerRevision(selectedPointRevision);
     setActionComposerOpen(true);
   }
@@ -6684,7 +6679,7 @@ function TranscriptArtifactsPanel({
     if (!actionComposerIsCurrent || !selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
     setActionComposerIssue(null);
     try {
-      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8), verdictsLocked, actionOwner.trim() || undefined, actionDueAt || undefined);
+      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8), verdictsLocked);
       const key = currentActionDraftKey();
       if (key) actionDrafts.current.delete(key);
       setActionComposerOpen(false);
@@ -6703,8 +6698,7 @@ function TranscriptArtifactsPanel({
     }}>
       <blockquote className="rail-action-context"><strong>关联内容</strong>{selectedPoint.summaryText}</blockquote>
       <label><span>要完成什么</span><textarea autoFocus value={actionStatement} onChange={(change) => setActionDraftField("statement", change.target.value)} placeholder="例如：负责人周五前发送三份候选方案。" /></label>
-      <div className="rail-action-fields"><label><span>负责人（可选）</span><input value={actionOwner} maxLength={200} onChange={(change) => setActionDraftField("owner", change.target.value)} placeholder="谁来跟进" /></label><label><span>截止日期（可选）</span><input type="date" value={actionDueAt} onChange={(change) => setActionDraftField("dueAt", change.target.value)} /></label></div>
-      <small>{selectedPoint.sourceIds.length > 8 ? `已关联最相关的 8 段原话（本重点共 ${selectedPoint.sourceIds.length} 段）` : `已关联 ${selectedPoint.sourceIds.length} 段原话`}；{verdictsLocked ? "分析完成后可在待确认中确认。" : "这是你亲自写下的行动，会直接进入正式记录。"}</small>
+      <small>{verdictsLocked ? "分析完成后可在待确认中确认。" : "这是你亲自写下的行动，会直接进入正式记录。"}</small>
       {actionComposerIssue && <p role="alert">{actionComposerIssue}</p>}
       <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={cancelActionComposer}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : verdictsLocked ? "加入待确认" : "确认并加入行动"}</button></div>
     </form>;
@@ -7070,15 +7064,32 @@ function TranscriptArtifactsPanel({
         </div>}
 
         {actionView === "actions" && <div className="reader-action-body actions-view" id="reader-action-panel">
-          <div className="rail-explainer"><strong>跟进行动</strong><p>这里显示已确认的行动，做完后标记完成。</p></div>
-          {selectedPoint?.sourceIds.length ? actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />从当前重点建立行动</button> : <p className="rail-context-note">先在左边点一条重点</p>}
+          {suggestedActions.length > 0 && <section className="rail-action-group" aria-label="建议加入的行动">
+            <header><strong>建议加入</strong><span>{suggestedActions.length} 条</span></header>
+            <div className="rail-action-list suggested">{suggestedActions.map((claim) => {
+              const refs = claimEvidence(claim);
+              const sourceIds = refs.flatMap((ref) => ref.segmentIds);
+              const needsDetail = claim.needsAdditionalEvidence || claim.relationsForReview.some((relation) => relation.status === "proposed") || !sourceIds.length;
+              return <article key={claim.id}>
+                <button className="action-check" disabled={Boolean(busy) || verdictsLocked || needsDetail} aria-label={`把 ${claim.statement} 加入清单`} title={needsDetail ? "先打开核对" : "加入清单"} onClick={() => onQuickVerdict(claim.id, "confirm", sourceIds, refs)}><Plus aria-hidden="true" /></button>
+                <span><strong>{claim.statement}</strong><p>
+                  {sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(sourceIds)}>看原话</button>}
+                  {needsDetail && <button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>打开核对</button>}
+                  <button className="text-button" disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", sourceIds, refs)}>不要</button>
+                </p></span>
+              </article>;
+            })}</div>
+          </section>}
           {projectActions.isLoading && <div className="rail-loading"><span className="spinner" />正在读取行动…</div>}
           {projectActions.isError && <div className="rail-inline-error"><span>行动没加载出来</span><button className="text-button" onClick={() => void projectActions.refetch()}>重试</button></div>}
-          {!actionComposerIsCurrent && !projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <div className="rail-complete-state"><Plus aria-hidden="true" /><strong>这条记录还没有已确认行动</strong><p>在「待确认」里确认后会出现在这里</p></div>}
+          <section className="rail-action-group" aria-label="我的清单">
+            <header><strong>我的清单</strong><span>{trustedEventActionItems.filter((item) => item.status !== "completed").length} 项待完成</span></header>
+            {!projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <p className="rail-context-note">{suggestedActions.length ? "从上面勾选加入" : "这次沟通还没有要跟进的行动"}</p>}
           {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
             const actionClaim = claims.find((claim) => claim.id === action.claim_id);
             return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${/^\d{4}-\d{2}-\d{2}$/.test(action.due_at) ? action.due_at.replaceAll("-", "/") : formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>;
           })}</div>}
+          </section>
         </div>}
       </aside>
     </div>
