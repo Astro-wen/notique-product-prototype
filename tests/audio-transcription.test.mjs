@@ -1063,3 +1063,32 @@ test("one dispatch stream per Run, however often the page wakes it", async () =>
   assert.match(page, /orchestrationMode === "chunked" && latest\.status === "processing"\) \{\s*wakeChunkedTranscription/,
     "the poll loop still wakes chunked Runs; the client is what keeps it to one stream");
 });
+
+test("原件上限管的是存档，不是转写服务的单文件限制", async () => {
+  const { MAX_AUDIO_BYTES } = await loadTypeScriptModule("lib/domain/audio-transcription.ts");
+  const { AUDIO_CHUNK_TARGET_MS } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+
+  // 送去转写的是浏览器切出来的块，不是原件：16kHz 单声道 16 位 WAV
+  // （见 app/audio-chunking.ts 的 prepareAudioChunk）。
+  const chunkBytes = (AUDIO_CHUNK_TARGET_MS / 1000) * 16_000 * 2;
+  assert.ok(chunkBytes < 6 * 1024 * 1024, `一块应当只有几 MB，实际 ${chunkBytes}`);
+
+  // 这条是重点：谁把原件上限按 OpenAI 的 25MB 去调，这里就会红。
+  // 25MB 拦的是只用于存档的原件，而转写那一侧根本看不到原件，
+  // 结果是一段正常长度的录音连传都传不进来。
+  const openAiPerFileLimit = 25 * 1024 * 1024;
+  assert.ok(
+    MAX_AUDIO_BYTES > openAiPerFileLimit,
+    "原件上限不该被压到转写服务的单文件限制以下",
+  );
+  assert.ok(chunkBytes * 4 < MAX_AUDIO_BYTES, "原件上限要给切块留出充足余量");
+});
+
+test("被交付的默认配置没有把原件上限压下去", async () => {
+  const example = await readFile(path.join(root, ".env.example"), "utf8");
+  const configured = /^MAX_AUDIO_BYTES=(\d+)$/m.exec(example);
+  assert.ok(configured, ".env.example 必须写明这个值，否则部署时只能靠猜");
+  const { MAX_AUDIO_BYTES } = await loadTypeScriptModule("lib/domain/audio-transcription.ts");
+  // 服务端取的是 min(环境变量, 代码常量)，所以样例配置写低了就等于默认调低。
+  assert.equal(Number(configured[1]), MAX_AUDIO_BYTES);
+});

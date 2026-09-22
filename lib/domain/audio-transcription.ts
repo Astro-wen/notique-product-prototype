@@ -4,6 +4,12 @@ export const AUDIO_TRANSCRIPTION_PARSER_VERSION = "openai-diarized-json.v1";
 // Cloudflare's Free/Pro Worker request-body ceiling is 100 MB. Keep the
 // application limit at the same practical ceiling; larger files need a
 // multipart/R2 upload path instead of buffering one request in the Worker.
+//
+// 这不是转写服务的单文件上限，别按那个数去调它。原件上传后只做存档，送去
+// 转写的是浏览器切出来的块：16kHz 单声道 WAV、每块 AUDIO_CHUNK_TARGET_MS
+// 三分钟，一块约 5.5 MB，远在任何服务商的单文件限制之内。把这个值压到
+// OpenAI 的 25 MB 会让一段正常长度的录音连传都传不进来，而转写那一侧根本
+// 看不到原件。tests/audio-transcription.test.mjs 钉着这个关系。
 export const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
 export const AUDIO_FILE_ACCEPT = ".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm";
