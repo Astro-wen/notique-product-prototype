@@ -6062,10 +6062,16 @@ function TranscriptArtifactsPanel({
       layout.style.setProperty("--reader-height", `${Math.max(220, window.innerHeight - documentTop - 12)}px`);
     };
     update();
-    const observer = new ResizeObserver(update);
+    // 回调里给 layout 写 --reader-height 会改它的高度，进而改被观察的父节点，
+    // 同一帧里再次触发观察器。推到下一帧，避免 ResizeObserver 的未送达通知告警。
+    let scheduled = 0;
+    const observer = new ResizeObserver(() => {
+      if (scheduled) return;
+      scheduled = requestAnimationFrame(() => { scheduled = 0; update(); });
+    });
     if (layout.parentElement) observer.observe(layout.parentElement);
     window.addEventListener("resize", update);
-    return () => { observer.disconnect(); window.removeEventListener("resize", update); };
+    return () => { observer.disconnect(); cancelAnimationFrame(scheduled); window.removeEventListener("resize", update); };
   }, [state]);
 
   const speakerSummaries = [...speakerBuckets.entries()].map(([key, groups]) => {

@@ -45,9 +45,18 @@ export function SmoothResize({ children }: { children: ReactNode }) {
       });
     };
     update.current = measure;
-    const observer = new ResizeObserver(measure);
+    // 观察回调里同步改 container 的 height 和 overflow 会改变布局，浏览器在
+    // 同一帧里再次回到这里，于是报 ResizeObserver loop completed with
+    // undelivered notifications，开发模式下会弹一个盖住整页的错误框。推到下
+    // 一帧再量。React 提交后那条路（下面的 useLayoutEffect）仍然是同步的，
+    // 绘制前量旧高度这件事不受影响。
+    let observed = 0;
+    const observer = new ResizeObserver(() => {
+      if (observed) return;
+      observed = requestAnimationFrame(() => { observed = 0; measure(); });
+    });
     observer.observe(content);
-    return () => { observer.disconnect(); animation?.cancel(); cancelAnimationFrame(frame); container.style.height = ""; container.style.overflow = ""; update.current = null; };
+    return () => { observer.disconnect(); animation?.cancel(); cancelAnimationFrame(frame); cancelAnimationFrame(observed); container.style.height = ""; container.style.overflow = ""; update.current = null; };
   }, []);
   useLayoutEffect(() => { update.current?.(); });
   return <div className="smooth-resize" ref={outer}><div className="smooth-resize-content" ref={inner}>{children}</div></div>;
