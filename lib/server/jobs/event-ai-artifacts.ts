@@ -11,6 +11,7 @@ import type { ModelUsage } from "@/lib/domain/model-contract";
 import {
   createModelProvider,
   ModelBackgroundPendingError,
+  ModelBackgroundStalledError,
   ModelOutputInvalidError,
   ModelProviderRequestError,
   ModelTimeoutError,
@@ -36,6 +37,11 @@ type Row = Record<string, unknown>;
 const TARGET_LEASE_MS = 40_000;
 const CRON_LEASE_MS = 2 * 60_000;
 const ARTIFACT_PROVIDER_TIMEOUT_MS = 25_000;
+/**
+ * 阅读产物的后台响应挂多久算卡住。同一批分块一分钟就完，五分钟没动基本
+ * 不会再动了；等到三十分钟的任务上限只是把用户晾在那里。
+ */
+const ARTIFACT_BACKGROUND_STALL_MS = 5 * 60_000;
 const MAX_CREATE_ATTEMPTS = 3;
 const MAX_JOB_AGE_MS = 30 * 60_000;
 const READABLE_CHUNK_CONCURRENCY = 4;
@@ -70,6 +76,7 @@ function nextPoll(timestamp: string, milliseconds = 5_000): string {
 
 function transient(error: unknown): boolean {
   return error instanceof ModelTimeoutError ||
+    error instanceof ModelBackgroundStalledError ||
     error instanceof ModelProviderRequestError && (
       error.status === null || error.status === 408 || error.status === 409 ||
       error.status === 429 || (error.status !== null && error.status >= 500)
@@ -139,7 +146,8 @@ async function deferTransient(run: Row, owner: string, error: unknown): Promise<
       `UPDATE event_ai_artifact_runs
           SET status = ?, next_attempt_at = ?, lease_owner = NULL,
               lease_expires_at = NULL, error_code = ?, error_details_json = ?,
-              finished_at = CASE WHEN ? THEN ? ELSE finished_at END, updated_at = ?
+              finished_at = CASE WHEN ? THEN ? ELSE finished_at END, updated_at = ?,
+              provider_request_id = CASE WHEN ? THEN NULL ELSE provider_request_id END
         WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
     )
     .bind(
@@ -150,6 +158,8 @@ async function deferTransient(run: Row, owner: string, error: unknown): Promise<
       terminal ? 1 : 0,
       timestamp,
       timestamp,
+      // 卡住的响应已被取消，留着 id 只会在下一轮 GET 到 cancelled 后终态失败。
+      error instanceof ModelBackgroundStalledError ? 1 : 0,
       run.id,
       owner,
     )
@@ -387,7 +397,9 @@ async function parkReadableChunkFailure(
   // resuming the old one returns the same invalid text — and clearing the id
   // is also what lets the attempt cap below count this retry.
   const invalidOutput = error instanceof ModelOutputInvalidError;
-  const attemptsExpired = (chunk.provider_request_id == null || invalidOutput)
+  // 卡住的响应同样要从新的响应重做，id 必须清掉，也同样计入尝试上限。
+  const stalled = error instanceof ModelBackgroundStalledError;
+  const attemptsExpired = (chunk.provider_request_id == null || invalidOutput || stalled)
     && chunk.attempt_no >= MAX_CREATE_ATTEMPTS;
   const terminal = !retryable || ageExpired || attemptsExpired;
   const guardId = id("guard");
@@ -416,7 +428,7 @@ async function parkReadableChunkFailure(
     ).bind(
       terminal ? "failed" : "queued",
       errorCode,
-      !terminal && invalidOutput ? 1 : 0,
+      !terminal && (invalidOutput || stalled) ? 1 : 0,
       timestamp,
       chunk.id,
       run.id,
@@ -519,6 +531,7 @@ async function processReadableChunkAttempt(
       ...(chunk.provider_request_id ? { resumeProviderResponseId: chunk.provider_request_id } : {}),
       onProviderResponse: (response) => recordReadableProviderResponse(run, owner, chunk, response),
       promptCacheKey: `notique:${run.extraction_run_id}:readable:${chunk.chunk_index}`,
+      backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS,
     });
     const validated = validateReadableTranscriptOutput(result.output, {
       eventId: String(run.event_id),
@@ -669,6 +682,7 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
       ...(run.provider_request_id ? { resumeProviderResponseId: String(run.provider_request_id) } : {}),
       onProviderResponse,
       promptCacheKey: `notique:${run.extraction_run_id}:event-artifacts`,
+      backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS,
     };
     const result = isReadingView
       ? await provider.summarizeReadingView(

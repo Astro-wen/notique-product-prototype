@@ -12,6 +12,7 @@ import {
 } from "@/lib/domain/asset-policy";
 import {
   EXTRACTION_RUN_LEASE_MS,
+  MAX_AI_TIMEOUT_MS,
   normalizeVerifierReasoningEffort,
 } from "@/lib/domain/model-config";
 import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
@@ -46,6 +47,7 @@ import {
   createModelProvider,
   isModelProviderNotConfigured,
   ModelBackgroundPendingError,
+  ModelBackgroundStalledError,
   ModelOutputInvalidError,
   ModelProviderRequestError,
   ModelTimeoutError,
@@ -170,6 +172,9 @@ function sanitizedIssue(value: unknown): Record<string, unknown> {
   if (value instanceof ModelBackgroundPendingError) {
     return { background_status: value.providerStatus };
   }
+  if (value instanceof ModelBackgroundStalledError) {
+    return { background_status: value.providerStatus, stalled_ms: value.ageMs };
+  }
   if (value instanceof ModelOutputInvalidError) {
     return { issues: value.issues.slice(0, 25) };
   }
@@ -183,6 +188,7 @@ function sanitizedIssue(value: unknown): Record<string, unknown> {
 function errorCode(error: unknown): string {
   if (isModelProviderNotConfigured(error)) return "MODEL_PROVIDER_NOT_CONFIGURED";
   if (error instanceof ModelBackgroundPendingError) return error.code;
+  if (error instanceof ModelBackgroundStalledError) return error.code;
   if (error instanceof ModelTimeoutError) return "MODEL_TIMEOUT";
   if (error instanceof ModelOutputInvalidError) return "MODEL_OUTPUT_INVALID";
   if (error instanceof ModelProviderRequestError) return "MODEL_PROVIDER_REQUEST_FAILED";
@@ -192,6 +198,7 @@ function errorCode(error: unknown): string {
 
 function isTransientModelError(error: unknown): boolean {
   if (error instanceof ModelBackgroundPendingError) return true;
+  if (error instanceof ModelBackgroundStalledError) return true;
   if (error instanceof ModelTimeoutError) return true;
   return error instanceof ModelProviderRequestError &&
     (error.status === null || error.status === 408 || error.status === 429 || error.status >= 500);
@@ -410,6 +417,31 @@ async function runModelStage<T>(input: {
       // onProviderResponse has already persisted the durable Response ID. Keep
       // this exact stage attempt processing so the next Worker invocation uses
       // GET /responses/:id rather than creating another paid Response.
+      throw error;
+    }
+    if (error instanceof ModelBackgroundStalledError) {
+      // 后台响应卡住已被取消。把这次阶段尝试标成失败，下一轮就不会再恢复它
+      // （canResumeProcessingModelStage 只认 processing），而是开新的 attempt、
+      // 新的幂等键、重新 POST。仍按瞬时错误往上抛，让 Run 排队重试。
+      const finishedAt = now();
+      await upsertExtractionModelStage({
+        runId: String(input.run.id),
+        stage: input.stage,
+        attempt,
+        provider: input.provider,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        promptVersion: input.promptVersion,
+        schemaVersion: input.schemaVersion,
+        status: "failed",
+        inputHash: input.inputHash,
+        providerRequestId: null,
+        errorCode: error.code,
+        errorDetails: { ...input.details, ...sanitizedIssue(error) },
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+      });
       throw error;
     }
     if (isTransientModelError(error)) {
@@ -1936,7 +1968,7 @@ export async function processExtractionRun(
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (stageOptions) => inventoryProvider.inventoryClaims(
           inventoryContext,
-          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
+          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
         ),
       });
       completedUsage = inventoryStage.usage;
@@ -2030,7 +2062,7 @@ export async function processExtractionRun(
             invoke: (stageOptions) => verifierProvider.verifyClaims(
               verificationContext,
               inventoryStage.output,
-              { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
+              { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
             ),
           });
         } catch (error) {
@@ -2089,6 +2121,7 @@ export async function processExtractionRun(
               {
                 ...stageOptions,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
+                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
                 qualityFeedback: [
                   ...storedEscalationReasons,
                   "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
@@ -2169,6 +2202,7 @@ export async function processExtractionRun(
               {
                 ...stageOptions,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
+                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
                 qualityFeedback: [
                   ...assessment.reasons,
                   ...(assessment.droppedCriticalInventoryKeys.length

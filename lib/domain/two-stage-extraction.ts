@@ -126,6 +126,11 @@ export type ModelStageRequestOptions = {
    */
   resumeProviderResponseId?: string;
   /**
+   * 恢复后台响应时的卡住预算（毫秒）。超过仍未开始出结果就取消并要求重发。
+   * 阅读产物用五分钟，抽取阶段用自己的超时。
+   */
+  backgroundStallMs?: number;
+  /**
    * Called as soon as OpenAI returns a durable Response ID, before a queued or
    * in-progress result is yielded back to the job runner.
    */

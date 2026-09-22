@@ -30,6 +30,7 @@ import {
 import {
   OpenAiBackgroundPending,
   OpenAiBackgroundRequestFailed,
+  OpenAiBackgroundStalled,
   requestOpenAiBackgroundResponse,
 } from "@/lib/server/ai/openai-background";
 import {
@@ -81,6 +82,23 @@ export class ModelProviderRequestError extends Error {
  * persisted. The Run can release its Worker lease and resume with GET later;
  * this is not a provider failure and must not create a new stage attempt.
  */
+/**
+ * 后台响应超过预算仍无进展，已取消。和 Pending 的区别：调用方必须丢掉
+ * providerResponseId 重新发起，而不是继续 GET。
+ */
+export class ModelBackgroundStalledError extends Error {
+  readonly code = "MODEL_BACKGROUND_STALLED";
+
+  constructor(
+    readonly providerResponseId: string,
+    readonly providerStatus: "queued" | "in_progress",
+    readonly ageMs: number,
+  ) {
+    super(`OpenAI background Response stalled (${providerStatus}, ${Math.round(ageMs / 1000)}s) and was cancelled.`);
+    this.name = "ModelBackgroundStalledError";
+  }
+}
+
 export class ModelBackgroundPendingError extends Error {
   readonly code = "MODEL_BACKGROUND_PENDING";
 
@@ -821,6 +839,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
             ...(options?.resumeProviderResponseId
               ? { resumeResponseId: options.resumeProviderResponseId }
               : {}),
+            ...(options?.backgroundStallMs
+              ? { stallBudgetMs: options.backgroundStallMs }
+              : {}),
             signal: controller.signal,
             onResponse: options?.onProviderResponse,
           });
@@ -832,6 +853,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
               error.responseId,
               error.responseStatus,
             );
+          }
+          if (error instanceof OpenAiBackgroundStalled) {
+            throw new ModelBackgroundStalledError(error.responseId, error.responseStatus, error.ageMs);
           }
           if (error instanceof OpenAiBackgroundRequestFailed) {
             throw new ModelProviderRequestError(error.message, error.httpStatus);

@@ -1869,7 +1869,8 @@ test("an invalid model output is retried under the attempt cap, not failed on si
   assert.match(jobs, /SET status = 'queued', provider_request_id = NULL/);
   assert.match(jobs, /transient\(error\) \|\| error instanceof ModelOutputInvalidError,/,
     "readable chunks get the same bounded retry");
-  assert.match(jobs, /const attemptsExpired = \(chunk\.provider_request_id == null \|\| invalidOutput\)/,
+  // 无效输出和被取消的卡住响应都要从新响应重做，两者都计入上限。
+  assert.match(jobs, /const attemptsExpired = \(chunk\.provider_request_id == null \|\| invalidOutput \|\| stalled\)/,
     "an invalid chunk retry still counts against the cap");
 });
 
@@ -1993,4 +1994,21 @@ test("阅读区在整理期间显示五步进度，只看每种最新一次运�
   // 全部完成后进度条收起，不留一个 5/5 挂在那里。
   assert.match(block, /active: artifactRunning && done < steps\.length/);
   assert.match(page, /readingProgress\.active && <div className="reading-progress"/);
+});
+
+
+test("后台响应卡住：产物和分块都丢掉旧 id 重发，抽取阶段标失败后开新尝试", async () => {
+  const job = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.match(job, /const ARTIFACT_BACKGROUND_STALL_MS = 5 \* 60_000;/);
+  assert.equal((job.match(/backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS/g) || []).length, 2);
+  assert.match(job, /error instanceof ModelBackgroundStalledError \|\|/);
+  assert.match(job, /provider_request_id = CASE WHEN \? THEN NULL ELSE provider_request_id END[\s\S]{0,700}error instanceof ModelBackgroundStalledError \? 1 : 0/);
+  assert.match(job, /!terminal && \(invalidOutput \|\| stalled\) \? 1 : 0/);
+
+  const processor = await readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8");
+  const stalledBranch = processor.slice(processor.indexOf("if (error instanceof ModelBackgroundStalledError) {"), processor.indexOf("if (isTransientModelError(error)) {"));
+  assert.match(stalledBranch, /status: "failed"/);
+  assert.match(stalledBranch, /providerRequestId: null/);
+  // 清点、核对、两处重核，四个阶段调用点都带预算。
+  assert.equal((processor.match(/backgroundStallMs: timeoutMs \?\? MAX_AI_TIMEOUT_MS/g) || []).length, 4);
 });
