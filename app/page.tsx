@@ -105,6 +105,7 @@ import { ViewItem } from "@/app/components/view-item";
 import { MaterialShelf } from "@/app/components/material-shelf";
 import { fallbackChapters, shouldUseFallbackChapters } from "@/lib/domain/chapter-fallback";
 import { READING_ARTIFACT_DEFINITIONS, readingViewState, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
+import { splitOverviewFigures } from "@/lib/domain/overview-highlights";
 import { ProjectOverviewList } from "@/app/components/project-overview-list";
 import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
@@ -6059,7 +6060,15 @@ function TranscriptArtifactsPanel({
   const viewRunStatus = (pair: { run?: { status?: string } | null }) => pair.run?.status ?? summaryRun?.status;
   const summarySectionsRaw = viewField(overviewPair, "sections");
   const summarySections = prioritizeSummarySections(summarySectionsRaw);
-  const overviewText = summarySectionsRaw.filter((section) => firstString(section, ["kind"]) === "overview").flatMap((section) => recordArray(section.items).map((item) => firstString(item, ["text"]) || "")).join(" ");
+  // 概要按句保留各自的引用，关键数字标出来：对得上结论的点了去核对，对不上的点了回原话。
+  const overviewItems = summarySectionsRaw
+    .filter((section) => firstString(section, ["kind"]) === "overview")
+    .flatMap((section) => recordArray(section.items).map((item) => ({
+      text: firstString(item, ["text"]) || "",
+      sourceIds: stringValues(item.source_segment_ids),
+    })))
+    .filter((item) => item.text);
+  const overviewText = overviewItems.map((item) => item.text).join(" ");
   const keyPoints = viewField(keyPointsPair, "key_points");
   const generatedSpeakerSummaries = viewField(speakersPair, "speaker_summaries");
   const generatedChapters = viewField(chaptersPair, "chapters");
@@ -6847,7 +6856,11 @@ function TranscriptArtifactsPanel({
         </ol>
       </div>}
 
-      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewText}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没写出概要，可以先读下方原文。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}</section></SmoothResize>
+      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewItems.map((item, index) => <span key={index}>{index > 0 ? " " : ""}{splitOverviewFigures(item.text, claims).map((piece, pieceIndex) => piece.kind === "text"
+      ? <Fragment key={pieceIndex}>{piece.text}</Fragment>
+      : piece.claimId
+        ? <button key={pieceIndex} type="button" className="overview-figure is-claim" title="打开这条结论核对" onClick={() => onOpenClaim(piece.claimId!)}>{piece.text}</button>
+        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没写出概要，可以先读下方原文。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}</section></SmoothResize>
       <header className="reader-intelligence-heading">
         <nav className="reader-insight-tabs" aria-label="智能速览方式">
           <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>

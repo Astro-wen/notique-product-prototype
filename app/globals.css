@@ -2131,6 +2131,11 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .tingwu-keywords i { background: var(--surface-muted); border-radius: 3px; padding: 3px 8px; font-size: 14px; line-height: 21px; color: var(--brand-green); font-style: normal; }
 .tingwu-keywords button { flex-shrink: 0; padding-block: 6px; color: var(--brand-green); font-size: 12px; }
 .tingwu-overview-copy { position: relative; margin-bottom: 30px; }
+/* 概要里的关键数字。普通的是金额、日期这类事实，点了回原话；和结论对上的用暖色，点了去核对。 */
+.overview-figure { display: inline; margin: 0; padding: 0 3px; border: 0; border-radius: 4px; background: var(--brand-green-soft); color: var(--brand-green); font: inherit; font-weight: 700; line-height: inherit; cursor: pointer; }
+.overview-figure:hover:not(:disabled) { text-decoration: underline; }
+.overview-figure:disabled { cursor: default; }
+.overview-figure.is-claim { background: var(--amber-soft); color: var(--amber); }
 .tingwu-overview-copy > p { margin: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink); font-size: 15px; line-height: 1.85; }
 .tingwu-overview-copy > p.expanded { display: block; }
 .tingwu-overview-copy > button { display: block; margin-left: auto; color: var(--brand-green); font-size: 12px; padding: 2px 0; }
