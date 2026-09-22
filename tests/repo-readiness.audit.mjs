@@ -2306,10 +2306,27 @@ test("Project and Event review counts stay separate from verified-only views", a
   );
   assert.match(page, /pendingClaimCount \+ event\.pendingOccurrenceCount/);
   assert.doesNotMatch(page, /accept=\{`[^`]*\.pdf/);
+  // 这条保证以前挂在 goSimple 一个按钮上：切回核心流程时手动核对
+  // event 是不是还属于当前 project。goSimple 已经删掉——它的名字最后
+  // 叫「首页」，做的事却是重开当前项目，这两件事本来就不该是一个函数，
+  // 这个函数拆没了，保证挪到了 loadSimpleProject 自己身上：它无条件清空
+  // event、重新拉这个 project 自己的记录列表，chooseRememberedSelection
+  // 只会从这份新列表里选，选不中就退回列表第一条，不会漏过一个跨项目的
+  // event。现在每个调用 loadSimpleProject 的入口都自带这层保证，不再
+  // 只靠一个按钮。
   assert.match(
     page,
-    /function goSimple\(\)[\s\S]{0,350}event\?\.projectId === project\.id[\s\S]{0,180}loadSimpleProject\(project\.id, preferredEventId\)/,
-    "switching from advanced tools must reload a Project-consistent Event before showing the core flow",
+    /const loadSimpleProject = useCallback\(async \([\s\S]{0,80}preferredEventId\?: string/,
+    "every entry into a Project's workspace goes through the one function that scopes its Event",
+  );
+  const guidedWorkflow = await readFile(
+    new URL("../lib/domain/guided-workflow.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    guidedWorkflow,
+    /items\.find\(\(item\) => item\.id === rememberedId\) \?\? items\[0\] \?\? null/,
+    "a remembered Event id that does not belong to the freshly fetched list is never used",
   );
 });
 
