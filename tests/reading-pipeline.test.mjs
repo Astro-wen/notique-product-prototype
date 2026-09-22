@@ -19,8 +19,11 @@ test("chapters are the spine: only they and the readable pass read the whole tra
   assert.ok(!readsAll.includes("overview"));
   assert.equal(readingArtifactDefinition("overview").readsFullTranscript, false);
   assert.deepEqual(readingArtifactDefinition("overview").dependsOn, ["chapters", "speakers", "key_points"]);
-  assert.deepEqual(readingArtifactDefinition("speakers").dependsOn, ["chapters"]);
-  assert.deepEqual(readingArtifactDefinition("key_points").dependsOn, ["chapters"]);
+  // 发言总结和要点回顾不等章节：章节是可选目录，有就用，没有就整篇读。
+  assert.deepEqual(readingArtifactDefinition("speakers").dependsOn, []);
+  assert.deepEqual(readingArtifactDefinition("key_points").dependsOn, []);
+  assert.deepEqual(readingArtifactDefinition("speakers").optionalUpstream, ["chapters"]);
+  assert.deepEqual(readingArtifactDefinition("key_points").optionalUpstream, ["chapters"]);
   assert.deepEqual(readingArtifactDefinition("readable_transcript").dependsOn, []);
   // 章节读的是原始分段，从没用过易读版；挂在它后面只是白等三万 token 生成完。
   assert.deepEqual(readingArtifactDefinition("chapters").dependsOn, []);
@@ -28,12 +31,9 @@ test("chapters are the spine: only they and the readable pass read the whole tra
 
 test("dispatch order follows the dependency graph and parallelises each wave", () => {
   const waves = readingArtifactWaves();
-  // 易读稿和章节同一波并行，章节不再等易读稿。
-  assert.deepEqual(new Set(waves[0]), new Set(["readable_transcript", "chapters"]));
-  assert.deepEqual(waves.slice(1), [
-    ["speakers", "key_points"],
-    ["overview"],
-  ]);
+  // 四个读原文的同一波并行，只有概要等它们。阅读线从四跳变成两跳。
+  assert.deepEqual(new Set(waves[0]), new Set(["readable_transcript", "chapters", "speakers", "key_points"]));
+  assert.deepEqual(waves.slice(1), [["overview"]]);
 });
 
 test("a kind with no dependency is always ready", () => {
@@ -44,9 +44,10 @@ test("a kind with no dependency is always ready", () => {
 });
 
 test("a running dependency makes the downstream wait instead of racing it", () => {
+  // 章节只是可选目录：它还在跑，发言总结照样立刻开工。
   assert.deepEqual(
     readingArtifactReadiness("speakers", status({ chapters: "processing" })),
-    { state: "wait", blockedBy: ["chapters"] },
+    { state: "ready", degraded: false },
   );
   assert.deepEqual(
     readingArtifactReadiness("overview", status({ chapters: "succeeded", speakers: "queued", key_points: "succeeded" })),
@@ -54,15 +55,15 @@ test("a running dependency makes the downstream wait instead of racing it", () =
   );
 });
 
-test("a terminally failed dependency still lets a self-sufficient kind run, degraded", () => {
-  // 章节没出来，发言总结退回整篇原文，照样能出东西。
+test("a missing optional upstream never marks the run degraded", () => {
+  // 章节不是硬依赖，没出来就整篇读，这是正常路径，不算降级。
   assert.deepEqual(
     readingArtifactReadiness("speakers", status({ chapters: "failed" })),
-    { state: "ready", degraded: true, missing: ["chapters"] },
+    { state: "ready", degraded: false },
   );
   assert.deepEqual(
     readingArtifactReadiness("key_points", status({ chapters: "missing" })),
-    { state: "ready", degraded: true, missing: ["chapters"] },
+    { state: "ready", degraded: false },
   );
 });
 
@@ -118,7 +119,8 @@ test("a downstream view waits for its upstream instead of racing or wasting a ca
   assert.match(job, /if \(readiness\.state === "wait"\)[\s\S]*?return "pending";/);
   assert.match(job, /if \(readiness\.state === "abandon"\)[\s\S]*?ARTIFACT_UPSTREAM_UNAVAILABLE/);
   // 下游吃上游的产物，而不是回头重读原文。
-  assert.match(job, /upstream = await readingUpstreamContent\(String\(run\.event_id\), definition\.dependsOn\)/);
+  // 可选上游一并取：readingUpstreamContent 只返回已成功的，没成功的自然不在。
+  assert.match(job, /readingUpstreamContent\(String\(run\.event_id\), \[\s*\.\.\.definition\.dependsOn,\s*\.\.\.\(definition\.optionalUpstream \?\? \[\]\),\s*\]\)/);
   assert.match(job, /provider\.summarizeReadingView\(/);
 });
 

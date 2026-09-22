@@ -46,20 +46,26 @@ const LANE_Y = 118;
 const LANE_H = 428;
 const NODE_W = 320;
 const HALF_W = 152;
+/** 阅读线第一排三个并排的 agent：三个 140 宽加两道 8 的缝，正好铺满带子。 */
+const THIRD_W = 140;
+const THIRD_GAP = 8;
 const ROW = [160, 256, 352, 448] as const;
 
 const laneNodeX = (laneX: number) => laneX + (LANE_W - NODE_W) / 2;
+const thirdX = (laneX: number, index: number) =>
+  laneX + (LANE_W - 3 * THIRD_W - 2 * THIRD_GAP) / 2 + index * (THIRD_W + THIRD_GAP);
 
 const BOXES: Box[] = [
   { id: "material", x: 210, y: 20, w: 220, label: "材料", sub: ["音频、已有逐字稿、照片"], tone: "input" },
   { id: "transcript", x: 530, y: 20, w: 220, label: "逐字稿", sub: ["语音识别服务转写，不是 agent", "带时间点和说话人"], tone: "input" },
 
-  { id: "readable", x: laneNodeX(LANE_LEFT_X), y: ROW[0], w: NODE_W, label: "易读逐字稿 agent", sub: ["交出：断句加标点的稿子"], tone: "read" },
-  { id: "chapters", x: laneNodeX(LANE_LEFT_X), y: ROW[1], w: NODE_W, label: "章节 agent", sub: ["唯一通读全文的一步", "交出：章节和每章的时间范围"], tone: "read" },
-  { id: "speakers", x: laneNodeX(LANE_LEFT_X), y: ROW[2], w: HALF_W, label: "发言总结 agent", sub: ["拿章节当目录"], tone: "read" },
-  { id: "points", x: laneNodeX(LANE_LEFT_X) + NODE_W - HALF_W, y: ROW[2], w: HALF_W, label: "要点回顾 agent", sub: ["拿章节当目录"], tone: "read" },
-  { id: "overview", x: laneNodeX(LANE_LEFT_X), y: ROW[3], w: NODE_W, label: "全文概要 agent", sub: ["只读上面三样的产出，不读逐字稿"], tone: "read" },
-
+  // 三个读原文的同一排并行，谁先出谁先显示；概要等它们三个。
+  { id: "chapters", x: thirdX(LANE_LEFT_X, 0), y: ROW[0], w: THIRD_W, label: "章节 agent", sub: ["读全文分章"], tone: "read" },
+  { id: "speakers", x: thirdX(LANE_LEFT_X, 1), y: ROW[0], w: THIRD_W, label: "发言总结 agent", sub: ["读全文，不等章节"], tone: "read" },
+  { id: "points", x: thirdX(LANE_LEFT_X, 2), y: ROW[0], w: THIRD_W, label: "要点回顾 agent", sub: ["读全文，不等章节"], tone: "read" },
+  { id: "overview", x: laneNodeX(LANE_LEFT_X), y: ROW[1], w: NODE_W, label: "全文概要 agent", sub: ["只读上面三样的产出，不读逐字稿"], tone: "read" },
+  // 另起一路，不进后面任何一步，所以不画连线。默认关着。
+  { id: "readable", x: laneNodeX(LANE_LEFT_X) + NODE_W - HALF_W + 8, y: ROW[2], w: HALF_W, label: "易读逐字稿 agent", sub: ["给原稿断句加标点", "另起一路，默认关"], tone: "read" },
   { id: "inventory", x: laneNodeX(LANE_RIGHT_X), y: ROW[0], w: NODE_W, label: "清点 agent", sub: ["交出：可能的事实清单，宁可多列"], tone: "fact" },
   { id: "verify", x: laneNodeX(LANE_RIGHT_X), y: ROW[1], w: NODE_W, label: "核对 agent", sub: ["交出：逐条配上原话的事实", "和每条候选的去向"], tone: "fact" },
   { id: "escalate", x: laneNodeX(LANE_RIGHT_X), y: ROW[2], w: NODE_W, label: "重核 agent", sub: ["七种情况任一命中才跑", "两份里留下问题更少的"], tone: "fact" },
@@ -70,10 +76,10 @@ const BOXES: Box[] = [
 
 const EDGES: Array<[string, string]> = [
   ["material", "transcript"],
-  ["transcript", "readable"],
-  ["readable", "chapters"],
-  ["chapters", "speakers"],
-  ["chapters", "points"],
+  ["transcript", "chapters"],
+  ["transcript", "speakers"],
+  ["transcript", "points"],
+  ["chapters", "overview"],
   ["speakers", "overview"],
   ["points", "overview"],
   ["transcript", "inventory"],
@@ -134,8 +140,9 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
       <figure className="hiw-figure">
         <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="img" aria-labelledby="hiw-diagram-title">
           <title id="hiw-diagram-title">
-            材料先由语音识别服务转成逐字稿，然后分两条线：阅读线依次由易读逐字稿、章节、发言总结和要点回顾、
-            全文概要四个 agent 接力；事实线由清点、核对、重核三个 agent 接力，引用判断 agent 已做好但未上线。
+            材料先由语音识别服务转成逐字稿，然后分两条线：阅读线里章节、发言总结、要点回顾三个 agent
+            同时读原文，全文概要 agent 再汇总它们三个；事实线由清点、核对、重核三个 agent 接力，引用判断 agent
+            已做好但未上线。
             两条线最后都汇到你逐条确认。
           </title>
           <defs>
@@ -196,10 +203,10 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
         <li>
           <h2>整理成能读的版本</h2>
           <p>
-            易读逐字稿 agent 给原稿断句加标点。章节 agent 读全文，交出章节和每章的时间范围，
-            有易读版就读易读版。全文只在这一步被通读一遍。发言总结 agent 和要点回顾 agent
-            拿章节当目录按章取材，章节没出来就退回整篇读。全文概要 agent 只读前面三样的产出，
-            不读逐字稿，上游一样都没有就不写。
+            章节、发言总结、要点回顾三个 agent 同时开工，各自读一遍原文，谁先出来谁先显示。
+            章节 agent 交出章节和每章的时间范围；发言总结和要点回顾开工时章节已经出来就拿它当目录，
+            没出来就整篇读，不等。全文概要 agent 只读这三样的产出，不读逐字稿，上游一样都没有就不写。
+            易读逐字稿 agent 给原稿断句加标点，另起一路，不进后面任何一步，默认关着。
           </p>
           <p className="hiw-aside">
             这四样以前是一次调用的四个字段，一处格式出错四样全没。现在各自独立，一样失败不影响其余。

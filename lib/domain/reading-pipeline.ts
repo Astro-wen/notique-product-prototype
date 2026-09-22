@@ -7,10 +7,11 @@
  *
  * 重排后章节是脊椎：它是唯一必须通读全文的一步，其余挂在它后面。
  *
- *   逐字稿 ──→ 易读版（独立，只服务阅读）
- *   逐字稿 ──→ 章节速览 ──┬─→ 发言总结 ─┐
- *                         ├─→ 要点回顾 ─┼─→ 全文概要
- *                         └────────────┘
+ *   逐字稿 ──→ 易读版（独立，只服务阅读，可关）
+ *   逐字稿 ──┬─→ 章节速览 ─┐
+ *            ├─→ 发言总结 ─┼─→ 全文概要
+ *            └─→ 要点回顾 ─┘
+ *   三个各读一遍原文，同一波并行；概要只吃它们三个的产出。
  *
  * 这样做省的是输入：全文概要只吃上面三个产物（几千 token），不再吃 88k 原文；
  * 发言总结和要点回顾拿着章节当目录，可以按章取材而不是整篇重读。
@@ -38,6 +39,11 @@ export type ReadingArtifactDefinition = {
   /** 必须先成功的产物。空表示只依赖逐字稿本身。 */
   dependsOn: readonly ReadingArtifactKind[];
   /**
+   * 有就用、没有不等的上游。发言总结和要点回顾拿章节当目录能按章取材，
+   * 但章节没出来它们照样能整篇读；把章节列成硬依赖只是让它们干等一分钟。
+   */
+  optionalUpstream?: readonly ReadingArtifactKind[];
+  /**
    * 依赖失败时是否仍然开跑。
    *
    * true 表示这一步能在缺少上游时退化工作（章节没出来就自己读全文），
@@ -54,9 +60,9 @@ export const READING_ARTIFACT_DEFINITIONS: readonly ReadingArtifactDefinition[] 
   // 脊椎。读原文，和易读版并行：provider 给章节喂的是原始分段，从没用过
   // 易读版，之前挂在它后面只是白等易读稿那几分钟（七块两批，三万多 token）。
   { kind: "chapters", dependsOn: [], degradesWithoutDependencies: true, readsFullTranscript: true },
-  // 拿章节当目录按章取材；章节没出来就退回整篇。
-  { kind: "speakers", dependsOn: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
-  { kind: "key_points", dependsOn: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
+  // 和章节同一波并行。章节已经出来就拿它当目录，没出来就整篇读，不等。
+  { kind: "speakers", dependsOn: [], optionalUpstream: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
+  { kind: "key_points", dependsOn: [], optionalUpstream: ["chapters"], degradesWithoutDependencies: true, readsFullTranscript: true },
   // 只吃上面三个的产物，不读原文。上游一个都没有就没得写。
   { kind: "overview", dependsOn: ["chapters", "speakers", "key_points"], degradesWithoutDependencies: false, readsFullTranscript: false },
 ];

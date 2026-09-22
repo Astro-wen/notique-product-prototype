@@ -659,7 +659,11 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
         await failRun(run, owner, new Error("ARTIFACT_UPSTREAM_UNAVAILABLE"));
         return "failed";
       }
-      upstream = await readingUpstreamContent(String(run.event_id), definition.dependsOn);
+      // 硬依赖此时都已成功；可选上游有就带上，没有也不等。
+      upstream = await readingUpstreamContent(String(run.event_id), [
+        ...definition.dependsOn,
+        ...(definition.optionalUpstream ?? []),
+      ]);
     }
     const onProviderResponse = async (response: { id: string; status: string }) => {
       await getD1()
