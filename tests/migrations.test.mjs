@@ -70,9 +70,24 @@ test("all D1 migrations apply from an empty database", async () => {
     "readable_segment_sources",
     "event_ai_artifact_chunks",
     "draft_link_candidates",
+    "event_routing_suggestions",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }
+
+  // 第二层要记下这条记录的项目是谁定的，第三层据此决定自己该不该出声。
+  const eventColumns = new Set(
+    database.prepare("PRAGMA table_info(events)").all().map((row) => row.name),
+  );
+  assert.equal(eventColumns.has("routing_source"), true, "missing events.routing_source");
+  assert.throws(
+    () => database.prepare(
+      `INSERT INTO event_routing_suggestions (event_id, workspace_id, suggested_project_id, probability, judge)
+       VALUES ('evt_missing', 'ws', 'prj_missing', 1.4, 'jev')`,
+    ).run(),
+    /CHECK constraint failed|FOREIGN KEY constraint failed/,
+    "概率必须落在 0 到 1，阈值判断才站得住",
+  );
 
   const transcriptionIndexes = new Set(
     database

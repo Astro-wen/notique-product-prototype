@@ -65,6 +65,7 @@ import {
   retryFailedTranscriptionChunks,
 } from "@/lib/server/db/transcription-repository";
 import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
+import { readRoutingSuggestion } from "@/lib/server/db/routing-suggestion-repository";
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
 import {
   completeProjectAction,
@@ -370,6 +371,11 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "ai-artifacts") {
     return ok(await listEventAiArtifacts(scope, segments[1]), id);
+  }
+  // 归属建议是只读数据：没有「接受」这条路，因为把材料移到别的项目今天还不存在。
+  // 没有建议是常态，返回 null 而不是 404。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "routing-suggestion") {
+    return ok({ routing_suggestion: await readRoutingSuggestion(scope, segments[1]) }, id);
   }
   if (
     segments.length === 3 &&

@@ -120,6 +120,12 @@ export const events = sqliteTable(
       .notNull()
       .default("draft"),
     activeRunId: text("active_run_id"),
+    /**
+     * 这条记录落进当前项目是谁定的："user" 表示用户在选择器里选过，
+     * "skipped" 表示他跳过了选择器。空表示选择器上线之前的记录。
+     * 见 lib/domain/material-routing.ts：选过的材料，归属建议必须闭嘴。
+     */
+    routingSource: text("routing_source", { enum: ["user", "skipped"] }),
     metadataJson: text("metadata_json").notNull().default("{}"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1306,5 +1312,36 @@ export const gapChecks = sqliteTable(
       table.scenarioVersion,
       table.overlayVersion,
     ),
+  ],
+);
+
+/**
+ * 归属建议（第三层）。只读的数据，没有任何搬动动作：把材料从一个项目移到另一个
+ * 项目这件事今天并不存在，所以建议只是一条摆在那里的提示。
+ *
+ * 每条记录最多一条在手的建议，所以 event_id 直接做主键：重跑覆盖，不堆历史。
+ */
+export const eventRoutingSuggestions = sqliteTable(
+  "event_routing_suggestions",
+  {
+    eventId: text("event_id")
+      .primaryKey()
+      .references(() => events.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull(),
+    suggestedProjectId: text("suggested_project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    probability: real("probability").notNull(),
+    judge: text("judge").notNull(),
+    createdAt: createdAt(),
+    /** 用户划掉之后填上。填了就不再展示，也不会因为重算再弹一次。 */
+    dismissedAt: text("dismissed_at"),
+  },
+  (table) => [
+    check(
+      "ck_event_routing_suggestions_probability",
+      sql`${table.probability} >= 0 AND ${table.probability} <= 1`,
+    ),
+    index("idx_event_routing_suggestions_project").on(table.suggestedProjectId),
   ],
 );
