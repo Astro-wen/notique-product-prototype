@@ -1043,7 +1043,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
           ]
           : [
             "Write the overall summary of this record from the transcript: who met, what they discussed, what was decided, and what remains open.",
-            "Write 3-6 sentences of synthesized prose, not a list and not quotes.",
+            "Write 2-4 sentences of synthesized prose, not a list and not quotes. Shorter is better; this overview must finish alongside the other views.",
             "Return a single section with kind=overview whose items cite the source_segment_ids that support each sentence.",
             "Always return source_character_span as null.",
           ];

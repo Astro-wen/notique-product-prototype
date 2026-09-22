@@ -11,7 +11,7 @@ export const SPEAKERS_SCHEMA_VERSION = "reading-speakers.v1" as const;
 export const KEY_POINTS_SCHEMA_VERSION = "reading-key-points.v1" as const;
 export const OVERVIEW_SCHEMA_VERSION = "reading-overview.v1" as const;
 /** 概要改成自己读原文、和另外三个同时开跑，提示词换了，身份也要跟着换。 */
-export const OVERVIEW_PROMPT_VERSION = "reading-overview-prompt.v2" as const;
+export const OVERVIEW_PROMPT_VERSION = "reading-overview-prompt.v3" as const;
 
 /**
  * summary 是旧的四合一产物，不再生产，但历史记录里有，仍要能读。
