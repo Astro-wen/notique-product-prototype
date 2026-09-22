@@ -7071,11 +7071,13 @@ function TranscriptArtifactsPanel({
               const sourceIds = refs.flatMap((ref) => ref.segmentIds);
               const needsDetail = claim.needsAdditionalEvidence || claim.relationsForReview.some((relation) => relation.status === "proposed") || !sourceIds.length;
               return <article key={claim.id}>
-                <button className="action-check" disabled={Boolean(busy) || verdictsLocked || needsDetail} aria-label={`把 ${claim.statement} 加入清单`} title={needsDetail ? "原话还没对上，先核对" : "加入清单"} onClick={() => onQuickVerdict(claim.id, "confirm", sourceIds, refs)}><Plus aria-hidden="true" /></button>
+                <span className="action-check" aria-hidden="true"><ListChecks /></span>
                 <span><strong>{claim.statement}</strong><p>
+                  {needsDetail
+                    ? <button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>接受</button>
+                    : <button className="text-button" disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "confirm", sourceIds, refs)}>接受</button>}
+                  <button className="text-button" disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", sourceIds, refs)}>放弃</button>
                   {sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(sourceIds)}>看原话</button>}
-                  {needsDetail && <button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>先核对一下</button>}
-                  <button className="text-button" disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", sourceIds, refs)}>划掉</button>
                 </p></span>
               </article>;
             })}</div>
