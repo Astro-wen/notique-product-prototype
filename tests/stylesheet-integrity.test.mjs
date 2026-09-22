@@ -75,7 +75,6 @@ test("every statically named class is declared in the stylesheet", async () => {
   const KNOWN_UNSTYLED = [
     "debug-output",
     "event-panel",
-    "form-note",
     "neutral",
     "source-panel",
   ];

@@ -2246,7 +2246,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .pi-page { width: 100%; max-width: 1720px; padding: 38px 40px 64px; }
 .pi-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 26px; }
 .pi-heading h1 { margin: 7px 0 9px; font-size: 32px; font-weight: 650; letter-spacing: -.04em; }
-.pi-heading p { margin: 0; color: var(--muted); font-size: 14px; }
 .pi-heading > button { display: flex; align-items: center; gap: 7px; }
 .pi-search { display: flex; align-items: center; max-width: 510px; height: 44px; border: 1px solid var(--line); background: #fff; border-radius: 9px; overflow: hidden; }
 .pi-search select { max-width: 190px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; height: 100%; padding: 0 14px; color: var(--ink); font-size: 13px; }

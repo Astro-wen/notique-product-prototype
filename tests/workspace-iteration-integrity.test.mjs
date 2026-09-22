@@ -160,7 +160,8 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.equal(typeof parsedPackage.dependencies?.["lucide-react"], "string");
   assert.match(page, /from "lucide-react"/);
   assert.match(page, /className="brand-mark"><NotebookPen/);
-  assert.match(page, /<LayoutDashboard aria-hidden="true" \/>/);
+  // 侧栏把「项目工作区」改名叫「首页」，图标也跟着从仪表盘换成了房子。
+  assert.match(page, /<HomeIcon aria-hidden="true" \/>/);
   assert.match(page, /<Pause aria-hidden="true" \/> : <Play aria-hidden="true" \/>/);
   assert.match(page, /<Camera aria-hidden="true" \/>添加手写笔记/);
   assert.match(page, /className="speaker-avatar" aria-hidden="true"><Users \/>/);

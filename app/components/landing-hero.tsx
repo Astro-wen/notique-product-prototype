@@ -131,7 +131,7 @@ export function LandingHero({
             <Rotator words={BUILDS} current={buildIndex} />
           </span>
         </h1>
-        <p className="landing-sub">报告里每句话都找得到出处，你没点头的不会写进去。</p>
+        <p className="landing-sub">结论都能点开看到原话，确认过的才进报告</p>
       </header>
 
       <div className="landing-actions">

@@ -1585,7 +1585,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
     const trusted = recordArray(verified.currentClaims ?? verified.current_claims).map(claimViewItem);
     return <div className="summary-view client-progress-view">
       <section className="memory-layer"><details className="record-help"><summary>这些记录代表什么？</summary><p>已确认 = 核对过原文。变化和进展看时间线</p></details><ProjectOverviewList drafts={drafts} trusted={trusted} onOpenClaim={onOpenClaim} /></section>
-      {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能相关的记录</span><h3>只是提示，不改已确认的内容</h3><p>只有两边都经过人工确认后，接受按钮才会开放；接受后才创建正式关系。</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
+      {draftLinks.length > 0 && <section className="memory-layer draft-link-layer"><header><span className="eyebrow">可能相关的记录</span><h3>只是提示，不改已确认的内容</h3><p>两边都确认过，接受按钮才能点。接受之后才建立正式关系</p></header><div className="draft-link-list">{draftLinks.map((link, index) => {
         const linkId = firstString(link, ["id"]);
         const sourceId = firstString(link, ["source_claim_id"]);
         const targetId = firstString(link, ["target_draft_claim_id"]);
@@ -1598,7 +1598,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   }
   if (tab === "actions") {
     const actions = objectItems(data);
-    if (!actions.length) return <div className="action-empty-state"><EmptyState title="目前没有下一步行动" body="AI 建议会先留在草稿层；确认后才能进入站内行动清单。" /><div><button className="button primary" onClick={onOpenAiSuggestions}>查看 AI 建议</button><button className="button secondary" onClick={onAddAction}>从原文补充行动</button></div><p>补充的行动先进待确认</p></div>;
+    if (!actions.length) return <div className="action-empty-state"><EmptyState title="目前没有下一步行动" body="AI 提的建议要先确认，确认过的才会出现在这里" /><div><button className="button primary" onClick={onOpenAiSuggestions}>查看 AI 建议</button><button className="button secondary" onClick={onAddAction}>从原文补充行动</button></div><p>补充的行动先进待确认</p></div>;
     return <div className="action-list">{actions.map((item, index) => {
       const claimId = firstString(item, ["claim_id"]);
       const status = firstString(item, ["status"]) || "ai_suggested";
@@ -1631,7 +1631,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   if (tab === "risks" && isRecord(data)) {
     const claims = recordArray(data.claims).map(claimViewItem);
     const contradictions = recordArray(data.contradictions);
-    if (!claims.length && !contradictions.length) return <EmptyState title="目前没有已确认的风险或未解决矛盾" body="这不代表没有风险，只代表现有已确认记录中没有。" />;
+    if (!claims.length && !contradictions.length) return <EmptyState title="目前没有已确认的风险或未解决矛盾" body="已确认的记录里没有。没核对过的内容不算在内" />;
     return <div className="summary-view"><ResultSection title="风险记录" empty="目前没有单独标记的风险。" hasContent={claims.length > 0}><div className="view-grid">{claims.map((item, index) => <ViewItem key={firstString(item, ["claim_id"]) || index} item={item} onOpenClaim={onOpenClaim} />)}</div></ResultSection><ResultSection title="待解决的矛盾" empty="没有待解决的矛盾" hasContent={contradictions.length > 0}><div className="contradiction-list">{contradictions.map((item, index) => { const relationId = firstString(item, ["relationId", "relation_id"]) || String(index); return <ContradictionCard key={relationId} item={item} onOpenClaim={onOpenClaim} onResolve={onResolveContradiction} busy={busyAction === `relation:${relationId}`} />; })}</div></ResultSection></div>;
   }
   if (tab === "gap-check" && isRecord(data)) {
@@ -1643,7 +1643,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   }
   if (tab === "next-meeting-agenda") {
     const rows = objectItems(data);
-    if (!rows.length) return <EmptyState title="目前没有下次必须确认的内容" body="资料缺口、开放问题和未解决矛盾会汇总到这里。" />;
+    if (!rows.length) return <EmptyState title="目前没有下次必须确认的内容" body="核对时没查清的问题会出现在这里" />;
     return <div className="agenda-list">{rows.map((item, index) => {
       const sourceKind = firstString(item, ["sourceKind", "source_kind"]);
       if (sourceKind === "contradiction") {
@@ -1679,9 +1679,9 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
       decisions: ["目前没有已确认的决定", "确认后才会出现在这里"],
       preferences: ["目前没有已确认的偏好", "确认偏好后，这里会保留当前内容和变化过程。"],
       "open-questions": ["目前没有待确认问题", "新问题经过审核后会显示首次出现、重提次数和开放天数。"],
-      risks: ["目前没有已确认的风险或未解决矛盾", "这不代表没有风险，只代表现有已确认记录中没有。"],
+      risks: ["目前没有已确认的风险或未解决矛盾", "已确认的记录里没有。没核对过的内容不算在内"],
       "gap-check": ["还不能运行资料缺口检查", "先确认使用场景。只有已配置检查规则的场景才会生成缺口。"],
-      "next-meeting-agenda": ["目前没有下次必须确认的内容", "资料缺口、开放问题和未解决矛盾会汇总到这里。"],
+      "next-meeting-agenda": ["目前没有下次必须确认的内容", "核对时没查清的问题会出现在这里"],
       "brief-card": ["会前简报的信息还不够", "没有的就是没有，不会编"],
     };
     return <EmptyState title={copy[tab][0]} body={emptyReason || copy[tab][1]} />;
@@ -7544,10 +7544,10 @@ function SimpleTestScreen({
                 focusRequest={transcriptFocusRequest}
                 onFocusHandled={onTranscriptFocusHandled}
               />
-            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中后可以读原文、看总结、确认要点</p><button className="button secondary" onClick={() => setActiveTab("materials")}>去添加材料</button></div>}
+            </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中之后才能读原文和确认要点</p><button className="button secondary" onClick={() => setActiveTab("materials")}>去添加材料</button></div>}
           </div>}
 
-          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析完成后，这里会直接打开项目概览：关键事实、需求、负责人和下一步。"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
+          {activeTab === "results" && <div className="meeting-tab-panel"><div className="tab-action-card"><span className="tab-action-icon" aria-hidden="true"><LayoutDashboard /></span><div><span className="section-kicker">整个项目</span><h3>{needsScenario ? "先确认工作场景" : "先完成本次分析"}</h3><p>{needsScenario ? "确认场景后可以看全项目概览" : "本次分析做完，这里直接打开项目概览"}</p>{needsScenario && <button className="button primary" onClick={() => { const panel = document.getElementById("workspace-scenario") as HTMLDetailsElement | null; if (panel) { panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "center" }); panel.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true }); } }}>选择工作场景并继续</button>}</div></div></div>}
         </article>
       </section>}
 
@@ -7782,7 +7782,7 @@ function EventScreen({ state, issue, event, run, transcriptionRun, claims, claim
     <div className="page">
       <PageHeader eyebrow={typeLabel(event.eventType)} title={event.title} body={formatDate(event.occurredAt, true)} back={onBack} backLabel="返回项目" actions={<>{canStart && <button className="button primary" disabled={busy === "extraction"} onClick={onStart}>{busy === "extraction" ? "正在提交…" : run ? "重新提取" : "开始提取"}</button>}{runComplete.has(run?.status ?? "") && <button className="button secondary" onClick={onReview}>确认结果</button>}</>} />
       {issue && <ErrorNotice issue={issue} onRetry={retryIssue} />}
-      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "有几处需要重点核对" : run.status === "failed" ? "材料都在，可以重新整理" : "请核对事实与关系；只有人工确认的内容会进入正式结果。")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
+      {run && <section className={`run-banner ${run.status === "failed" ? "failed" : ""}`}><div className="run-state-icon">{runInProgress.has(run.status) ? <span className="spinner" /> : runComplete.has(run.status) ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}</div><div><span className="section-kicker">本次处理</span><h2>{extractionProgressLabel(run)}</h2><p>{run.errorMessage || (runInProgress.has(run.status) ? extractionProgressBody(run) : run.status === "completed_with_warnings" ? "有几处需要重点核对" : run.status === "failed" ? "材料都在，可以重新整理" : "核对事实和关系。确认过的才进正式结果")}</p>{run.errorCode && <small>{run.errorCode}</small>}<div className="run-recovery-actions">{run.status === "failed" && <button className="button secondary" disabled={!canStart || Boolean(busy)} onClick={onStart}>{busy === "extraction" ? "正在提交…" : "重新分析"}</button>}{issue?.code === "EXTRACTION_POLL_TIMEOUT" && <button className="button secondary" disabled={Boolean(busy)} onClick={onRetryRunStatus}>{busy === "run-status" ? "正在检查…" : "重新检查后台状态"}</button>}<button className="text-button run-debug-link" onClick={onDebug}>查看本次运行详情</button></div></div></section>}
       <div className="event-workspace">
         <section className="panel source-panel">
           <div className="section-heading"><div><h2>本次材料</h2><p>录音会先转成带说话人和时间点的逐字稿，再参与提取。</p></div><button className="button secondary small" disabled={busy === "asset"} onClick={() => onRequirePublicWorkspaceAcknowledgement(() => fileRef.current?.click())}>{busy === "asset" ? "正在同步…" : "上传材料"}</button></div>
@@ -7845,7 +7845,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
   const rawJson = JSON.stringify(redactDebugValue(data), null, 2);
   return (
     <div className="page debug-page">
-      <PageHeader eyebrow="内部页" title="本次运行详情" body="模型、输入、结果和成本的详情" back={onBack} backLabel="返回记录" actions={<StatusBadge value={stringValue(data.status)} />} />
+      <PageHeader eyebrow="内部页" title="本次运行详情" body="这次用了什么模型、花了多少" back={onBack} backLabel="返回记录" actions={<StatusBadge value={stringValue(data.status)} />} />
       <section className="debug-request"><span>本次页面请求 ID</span><code>{debug.requestId}</code></section>
       <div className="debug-grid">
         <section className="panel debug-section"><div className="section-heading"><div><h2>模型与执行参数</h2><p>这些值从本次 Run 保存的配置读取，不使用当前环境变量补齐。</p></div></div><div className="debug-fields"><DebugField label="Provider" value={data.provider} /><DebugField label="Model" value={data.model} /><DebugField label="Reasoning effort" value={reasoningEffort ?? "未冻结"} mono /><DebugField label="最大输出 token" value={maxOutputTokens ? `${maxOutputTokens} tokens` : "未冻结"} /><DebugField label="请求超时" value={timeoutMs ? `${timeoutMs} ms` : "未冻结"} /><DebugField label="Prompt" value={data.prompt_version} mono /><DebugField label="Schema" value={data.schema_version} mono /><DebugField label="Parser" value={data.parser_version} mono /><DebugField label="Provider Request ID" value={data.provider_request_id} mono /></div>{missingFrozenParameters.length > 0 && <p className="debug-config-warning" role="alert">这次 Run 没有完整冻结执行参数：{missingFrozenParameters.join("、")}。调试时不能用当前环境配置代替这次运行的实际值。</p>}</section>
@@ -7860,7 +7860,7 @@ function RunDebugScreen({ state, issue, debug, onBack, onRetry }: { state: Async
           ? stageDetails.escalation_reasons.filter((reason): reason is string => typeof reason === "string")
           : [];
         return <article key={firstString(stage, ["id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{label}</strong><small>{statusLabel(firstString(stage, ["status"]))} · Reasoning {firstString(stage, ["reasoning_effort"]) || "未记录"}</small><small>Input {firstString(stage, ["input_tokens"]) || "—"} · Output {firstString(stage, ["output_tokens"]) || "—"} · {firstString(stage, ["duration_ms"]) || "—"} ms</small>{escalationReasons.length > 0 && <small>升级原因：{escalationReasons.join("、")}</small>}{firstString(stage, ["error_code"]) && <code>{firstString(stage, ["error_code"])}</code>}</div></article>;
-      })}</div> : <EmptyState title="还没有阶段记录" body="任务开始调用模型后，这里会显示每一轮的真实状态。" />}</section>
+      })}</div> : <EmptyState title="还没有阶段记录" body="开始调用模型之后，每一轮的状态会出现在这里" />}</section>
       <section className="panel debug-section"><div className="section-heading"><div><h2>阅读辅助 Agent</h2><p>摘要和易读版不影响原始逐字稿</p></div></div>{artifactRuns.length ? <div className="manifest-list">{artifactRuns.map((artifactRun, index) => {
         const kind = firstString(artifactRun, ["kind"]);
         return <article key={firstString(artifactRun, ["id"]) || index}><span className="event-order">{index + 1}</span><div><strong>{kind === "summary" ? "Summary Agent · AI 摘要" : "Transcript Refiner · 易读逐字稿"}</strong><small>{statusLabel(firstString(artifactRun, ["status"]))} · Luna {firstString(artifactRun, ["reasoning_effort"]) || "high"}</small><small>Input {firstString(artifactRun, ["input_tokens"]) || "—"} · Output {firstString(artifactRun, ["output_tokens"]) || "—"} · Attempt {firstString(artifactRun, ["attempt_no"]) || "0"}</small>{firstString(artifactRun, ["provider_request_id"]) && <code>{firstString(artifactRun, ["provider_request_id"])}</code>}{firstString(artifactRun, ["error_code"]) && <code>{firstString(artifactRun, ["error_code"])}</code>}</div></article>;
@@ -8010,7 +8010,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
     : 0;
   return (
     <div className="page narrow-page">
-      <PageHeader eyebrow="待确认" title="确认重要内容" body="逐条查看原始依据，再选择确认、修改或不采纳。" back={onBack} backLabel="返回 AI 草稿" />
+      <PageHeader eyebrow="待确认" title="确认重要内容" body="一条一条看原话，然后决定留不留" back={onBack} backLabel="返回 AI 草稿" />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
       {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">确认用时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本轮确认已完成" : "本轮计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待确认</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>
@@ -8342,13 +8342,12 @@ function ResultsScreen({ project, events, tab, data, state, issue, busy, onWorks
 function NewProjectModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (name: string) => Promise<void>; busy: boolean }) {
   const [name, setName] = useState("");
   return (
-    <Modal title="新建项目" description="Notique 会持续整理同一个项目的重点、已确认信息、未决问题和下一步" onClose={onClose}>
+    <Modal title="新建项目" onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { event.preventDefault(); void onCreate(name.trim()); }}>
         <label className="field">
           <span>项目名称（可选）</span>
           <input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={200} placeholder="留空，第一份材料整理后自动命名" />
         </label>
-        <p className="form-note">留空会用 AI 生成的标题，随时可以改</p>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={onClose}>取消</button>
           <button className="button primary" disabled={busy}>{busy ? "正在创建…" : "创建项目"}</button>
