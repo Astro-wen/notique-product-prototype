@@ -19,6 +19,11 @@ const test = base.extend<Fixtures>({
   }, { auto: true }],
 });
 
+// 换项目走侧栏的项目列表。工作区顶栏那个「当前项目」选择框是第二个入口，已经撤掉。
+function sidebarProject(page: Page, name: string) {
+  return page.locator("button.sidebar-project").filter({ hasText: name });
+}
+
 // 47f849a 之后进入操作栏的是逐字稿里那一段本身，见 summary-first-workflow.spec.ts。
 async function selectSourceTurn(page: Page, text: string): Promise<void> {
   await page.getByTestId("transcript-turn-body").filter({ hasText: text }).first().click();
@@ -37,10 +42,10 @@ test("a delayed Project A snapshot and Claims response cannot overwrite Project 
     apiFixture.waitForProjectAClaimsRequest(),
     apiFixture.waitForProjectASnapshotRequest(),
   ]);
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-a");
+  await expect(sidebarProject(page, "Buyer A")).toHaveAttribute("aria-current", "true");
 
-  await page.getByLabel("选择当前项目").selectOption("project-b");
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
+  await sidebarProject(page, "Buyer B").click();
+  await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
 
   apiFixture.releaseProjectAClaims();
@@ -66,14 +71,14 @@ test("a completed old Run cannot refresh Project A over a newer Project B select
     apiFixture.waitForProjectACompletionEventRefresh(),
   ]);
 
-  await page.getByLabel("选择当前项目").selectOption("project-b");
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
+  await sidebarProject(page, "Buyer B").click();
+  await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
 
   apiFixture.releaseProjectACompletionRefresh();
   await page.waitForTimeout(500);
 
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
+  await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
   await expect(page.getByText("A 初次沟通", { exact: true })).toHaveCount(0);
 });
@@ -233,18 +238,16 @@ test("local-only allowlist covers Action completion and trash restore without to
   await expect(page.getByText("经纪人周五前发送三套符合预算的房源", { exact: true })).toBeVisible();
   await expect(page.locator(".action-card.completed")).toContainText("已完成");
 
-  // 这一段测的是回收站恢复，不是导航。品牌名现在回首页（会清掉当前项目），
-  // 而项目菜单只在选中项目时才有，所以直接回到工作区。
-  await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page).toHaveURL(/view=simple/);
-  await page.getByRole("button", { name: "项目菜单" }).click();
-  await page.getByRole("menuitem", { name: "回收站", exact: true }).click();
+  // 这一段测的是回收站恢复，不是导航。回收站现在只在「项目管理」页，从侧栏一步到。
+  await page.locator(".sidebar").getByRole("button", { name: "项目管理" }).click();
+  await expect(page).toHaveURL(/view=projects/);
+  await page.locator(".pi-heading").getByRole("button", { name: "回收站" }).click();
   await expect(page.getByRole("dialog", { name: "回收站" })).toBeVisible();
   await expect(page.getByText("Recovered Buyer", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "恢复并打开" }).click();
 
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-trash");
-  await expect(page.getByLabel("选择当前项目").locator("option:checked")).toContainText("Recovered Buyer");
+  await expect(page).toHaveURL(/view=simple/);
+  await expect(sidebarProject(page, "Recovered Buyer")).toHaveAttribute("aria-current", "true");
 
   // Dispatcher wakes are the workspace recovery heartbeat, not content
   // mutations: production has no working Cron trigger, so an open workspace is

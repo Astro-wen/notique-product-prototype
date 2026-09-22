@@ -108,7 +108,7 @@ import { ReviewShortcuts } from "@/app/components/review-shortcuts";
 import { Modal } from "@/app/components/modal";
 import { TranscriptViewer } from "@/app/components/transcript-viewer";
 import { firstString, isRecord, stringValue } from "@/lib/domain/claim-fields";
-import { formatDate, projectSelectionLabel } from "@/lib/domain/project-label";
+import { formatDate } from "@/lib/domain/project-label";
 import { LandingHero } from "@/app/components/landing-hero";
 import { HowItWorks } from "@/app/components/how-it-works";
 import {
@@ -1209,7 +1209,7 @@ function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
-  return <Modal title="把项目移到回收站？" description="可以从回收站恢复" onClose={onClose} dismissible={!busy} returnFocusSelector=".project-menu-trigger">
+  return <Modal title="把项目移到回收站？" description="可以从回收站恢复" onClose={onClose} dismissible={!busy}>
     <div className="delete-preview">
       <strong>{preview.project_name}</strong>
       <dl><div><dt>记录</dt><dd>{preview.event_count} 次</dd></div><div><dt>材料</dt><dd>{preview.material_count} 份</dd></div><div><dt>待核对</dt><dd>{preview.pending_count} 条</dd></div></dl>
@@ -1231,7 +1231,7 @@ function ProjectTrashModal({ projects, state, issue, busy, onClose, onRetry, onR
 }) {
   const [permanentTarget, setPermanentTarget] = useState<Project | null>(null);
   const [confirmation, setConfirmation] = useState("");
-  return <Modal title="回收站" description="恢复后材料、记录和报告都会回来。回收站不会自动清空" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".project-menu-trigger" wide>
+  return <Modal title="回收站" description="恢复后材料、记录和报告都会回来。回收站不会自动清空" onClose={onClose} dismissible={!Boolean(busy)} returnFocusSelector=".pi-trash" wide>
     <div className="trash-list">
       {state === "loading" && <LoadingBlock label="正在读取回收站…" />}
       {state === "error" && issue && <ErrorNotice issue={issue} onRetry={() => void onRetry()} />}
@@ -5110,8 +5110,6 @@ export default function Home() {
         </aside>
         {screen === "simple" && <SimpleTestScreen
           key={project?.id ?? "none"}
-          projects={projects}
-          projectsState={projectsState}
           projectsIssue={projectsIssue}
           project={project}
           projectState={projectState}
@@ -5131,9 +5129,7 @@ export default function Home() {
           audioPreparationProgressByAssetId={audioPreparationProgressByAssetId}
           assetUploadProgress={assetUploadProgress}
           onCancelUpload={() => assetUploadAbortRef.current?.abort()}
-          onUseProject={(id) => { setSimpleFlow(true); void loadSimpleProject(id); }}
           onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
-          onStartOwn={() => { setSimpleFlow(true); setShowNewProject(true); }}
           onNewEvent={() => { setSimpleFlow(true); if (project) setShowNewEvent(true); }}
           onAddFile={attachSimpleFile}
           onRenameAsset={async (assetId, filename) => {
@@ -5199,8 +5195,6 @@ export default function Home() {
             || showMissingClaim
             || routeRestoring.current}
           onNotice={flash}
-          onDeleteProject={openProjectDeletePreview}
-          onOpenTrash={() => { setShowTrash(true); void loadTrash(); }}
           onExplain={() => navigateRoute({ view: "how-it-works" })}
           routingSuggestion={routingSuggestion}
           onAcceptRouting={() => void acceptRoutingSuggestion()}
@@ -5426,8 +5420,6 @@ export default function Home() {
 }
 
 type SimpleTestScreenProps = {
-  projects: Project[];
-  projectsState: AsyncState;
   projectsIssue: ApiIssue | null;
   project: Project | null;
   projectState: AsyncState;
@@ -5448,9 +5440,7 @@ type SimpleTestScreenProps = {
   audioPreparationProgressByAssetId: Record<string, AudioPreparationProgress>;
   assetUploadProgress: AssetUploadProgress | null;
   onCancelUpload: () => void;
-  onUseProject: (id: string) => void;
   onUseEvent: (id: string) => void;
-  onStartOwn: () => void;
   onNewEvent: () => void;
   onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
   onRenameAsset: (assetId: string, filename: string) => Promise<void>;
@@ -5480,8 +5470,6 @@ type SimpleTestScreenProps = {
   onRequirePublicWorkspaceAcknowledgement: (action: () => void) => void;
   externalInteractionActive: boolean;
   onNotice: (message: string) => void;
-  onDeleteProject: () => void;
-  onOpenTrash: () => void;
   onExplain: () => void;
   routingSuggestion: RoutingSuggestion | null;
   onAcceptRouting: () => void;
@@ -6978,8 +6966,6 @@ function AudioTranscriptionProgressPanel({
 }
 
 function SimpleTestScreen({
-  projects,
-  projectsState,
   projectsIssue,
   project,
   projectState,
@@ -7000,9 +6986,7 @@ function SimpleTestScreen({
   audioPreparationProgressByAssetId,
   assetUploadProgress,
   onCancelUpload,
-  onUseProject,
   onUseEvent,
-  onStartOwn,
   onNewEvent,
   onAddFile,
   onRenameAsset,
@@ -7027,8 +7011,6 @@ function SimpleTestScreen({
   onRequirePublicWorkspaceAcknowledgement,
   externalInteractionActive,
   onNotice,
-  onDeleteProject,
-  onOpenTrash,
   onExplain,
   routingSuggestion,
   onAcceptRouting,
@@ -7040,7 +7022,6 @@ function SimpleTestScreen({
   const [recorderActive, setRecorderActive] = useState(false);
   const [activeTab, setActiveTab] = useState<"materials" | "transcript" | "review" | "results">("materials");
   const [readerWasOpened, setReaderWasOpened] = useState(false);
-  const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [scenario, setScenario] = useState("");
   const [customScenario, setCustomScenario] = useState("");
   const workspaceAudioFileRef = useRef<HTMLInputElement>(null);
@@ -7053,11 +7034,6 @@ function SimpleTestScreen({
   useEffect(() => {
     currentTranscriptFocusRequest.current = transcriptFocusRequest;
   }, [transcriptFocusRequest]);
-  const sortedProjects = [...projects].sort((left, right) => {
-    const leftSample = left.name.startsWith("[SYNTHETIC]") ? 0 : 1;
-    const rightSample = right.name.startsWith("[SYNTHETIC]") ? 0 : 1;
-    return leftSample - rightSample || left.name.localeCompare(right.name, "zh-CN");
-  });
   const readyAssets = event?.assets.filter(assetIsAnalyzable) ?? [];
   const visibleAssets = event?.assets.filter((asset) => !assetIsGeneratedAiArtifact(asset)) ?? [];
   const materialsReady = readyAssets.length > 0;
@@ -7264,9 +7240,7 @@ function SimpleTestScreen({
     || projectWorkflow.phase === "complete"
     || projectWorkflow.phase === "draft_ready"
     || projectWorkflow.phase === "partially_reviewed";
-  const materialInteractionActive = showRecorder
-    || showProjectMenu
-    || externalInteractionActive;
+  const materialInteractionActive = showRecorder || externalInteractionActive;
 
   useEffect(() => {
     const nextScope = summaryFirstScopeKey ?? `${project?.id ?? "none"}:${event?.id ?? "none"}:no-run`;
@@ -7384,12 +7358,6 @@ function SimpleTestScreen({
     onFocusTranscriptArtifact(event.id, target);
   }
 
-  function afterProjectMenuCloses(action: () => void) {
-    // Let Radix restore focus to the menu trigger before an action opens a
-    // Dialog. The Dialog can then restore focus to that same trigger on close.
-    window.requestAnimationFrame(action);
-  }
-
   function chooseSupportingFile(change: ChangeEvent<HTMLInputElement>) {
     const file = change.target.files?.[0];
     change.target.value = "";
@@ -7413,29 +7381,15 @@ function SimpleTestScreen({
 
   return (
     <div className="page simple-page">
-      {/* 首页不再放这条栏：新建项目和回收站都在「项目管理」里，下拉框在这里
-          也没有可选的东西。首页只负责收材料，收到了就跳进工作区。 */}
+      {/* 这条是面包屑，不是控制台：只说现在在哪个项目、哪条记录、什么状态。
+          换项目走侧栏的项目列表，新建项目和回收站在「项目管理」页，删项目是
+          侧栏每行的垃圾桶，都不再在这里重复一份。首页也不放这条栏：首页只负
+          责收材料，收到了就跳进工作区。 */}
       {project && <section className="simple-session" aria-label="当前项目和材料">
         <div className="simple-session-copy">
           <span className="context-mark" aria-hidden="true"><FolderOpen /></span>
           <span><strong>{project.name.replace(/^\[SYNTHETIC\]\s*/, "")}</strong><small>{event ? event.title : "选一条记录"}</small></span>
         </div>
-        <label>
-          <span>当前项目</span>
-          <select
-            aria-label="选择当前项目"
-            value={project?.id ?? ""}
-            disabled={projectsState === "loading" || Boolean(busy)}
-            onChange={(change) => onUseProject(change.target.value)}
-          >
-            <option value="" disabled>{projectsState === "loading" ? "正在读取…" : "请选择"}</option>
-            {sortedProjects.map((item) => (
-              <option key={item.id} value={item.id}>
-                {projectSelectionLabel(item, sortedProjects)}
-              </option>
-            ))}
-          </select>
-        </label>
         {events.length > 0 && <>
           <label className="simple-event-select">
             <span>当前记录</span>
@@ -7446,26 +7400,6 @@ function SimpleTestScreen({
           <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>
         </>}
         {event && <span className={`simple-session-status current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
-        <DropdownMenu.Root open={showProjectMenu} onOpenChange={setShowProjectMenu}>
-          <div className="project-menu-wrap">
-            <DropdownMenu.Trigger asChild>
-              <button className="button secondary project-menu-trigger" aria-label="项目菜单" disabled={Boolean(busy)}><span>项目菜单</span><MoreHorizontal aria-hidden="true" /></button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content className="project-menu" align="end" sideOffset={7} collisionPadding={12}>
-                <DropdownMenu.Item asChild>
-                  <button onClick={() => afterProjectMenuCloses(onStartOwn)}>新建项目</button>
-                </DropdownMenu.Item>
-                <DropdownMenu.Item asChild>
-                  <button onClick={() => afterProjectMenuCloses(onOpenTrash)}>回收站</button>
-                </DropdownMenu.Item>
-                <DropdownMenu.Item asChild disabled={!project}>
-                  <button className="danger" disabled={!project} onClick={() => afterProjectMenuCloses(onDeleteProject)}>移到回收站</button>
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </div>
-        </DropdownMenu.Root>
       </section>}
 
       <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />

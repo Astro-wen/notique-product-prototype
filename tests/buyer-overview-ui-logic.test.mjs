@@ -51,5 +51,6 @@ test("duplicate project names get stable option labels without renaming projects
   assert.match(second, /eta222$/);
   assert.equal(labelFor(projects[2], projects), "Oak Street");
   assert.equal(projects[0].name, "Morgan Family");
-  assert.match(uiSource, /projectSelectionLabel\(item, sortedProjects\)/);
+  // 原先这里还钉着工作区顶栏那个项目选择框在用这个函数。选择框撤掉之后界面上
+  // 没有项目下拉了，钉不住，就只留这个纯函数本身的行为。
 });

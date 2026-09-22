@@ -1,4 +1,4 @@
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 
 import { NotiqueApiFixture } from "./notique-api-fixture";
 
@@ -17,6 +17,11 @@ const test = base.extend<Fixtures>({
     fixture.assertNoUnexpectedWrites();
   }, { auto: true }],
 });
+
+// 换项目走侧栏的项目列表。工作区顶栏那个「当前项目」选择框是第二个入口，已经撤掉。
+function sidebarProject(page: Page, name: string) {
+  return page.locator("button.sidebar-project").filter({ hasText: name });
+}
 
 test("a warm result tab reuses the same Project, Events, and verified View reads", async ({ page, apiFixture }) => {
   const projectPath = "/api/v1/projects/project-a";
@@ -59,8 +64,8 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
   await apiFixture.waitForProjectASnapshotRequest();
   expect(apiFixture.readCount(projectASnapshotPath)).toBe(1);
 
-  await page.getByLabel("选择当前项目").selectOption("project-b");
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
+  await sidebarProject(page, "Buyer B").click();
+  await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
   await expect.poll(() => apiFixture.readCount(projectBSnapshotPath)).toBeGreaterThan(0);
 
@@ -70,7 +75,7 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
     + apiFixture.failedReadCount(projectASnapshotPath)
   )).toBeGreaterThan(0);
 
-  await expect(page.getByLabel("选择当前项目")).toHaveValue("project-b");
+  await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
   await expect(page.locator(".current-event-status:visible")).toHaveText("已完成");
   await page.getByRole("button", { name: /^本次重点/ }).click();

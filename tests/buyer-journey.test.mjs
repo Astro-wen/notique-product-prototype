@@ -280,7 +280,8 @@ test("buyer journey APIs keep draft links separate from formal relations and act
   assert.match(route, /segments\[0\] === "draft-links"[\s\S]*applyDraftLinkVerdict/);
   assert.match(route, /segments\[0\] === "actions"[\s\S]*completeProjectAction/);
   assert.match(page, /新建项目/);
-  assert.match(page, /onStartOwn=\{\(\) => \{ setSimpleFlow\(true\); setShowNewProject\(true\); \}\}/);
+  // 新建项目的入口只剩「项目管理」页那一个，工作区顶栏的项目菜单已经撤掉。
+  assert.match(page, /onCreate=\{\(\) => setShowNewProject\(true\)\}/);
   assert.match(page, /if \(simpleFlow\) await loadSimpleProject\(created\.id\)/);
   // The draft page and its 稍后核对 exit are absorbed by the workspace, where
   // pending drafts wait in the rail without blocking the next communication.

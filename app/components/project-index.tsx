@@ -169,7 +169,7 @@ export function ProjectIndex({state,issue,projects,onRetry,onOpen,onCreate,onCha
   function title(item:Project) {return <button className="pi-title" title={`${item.name} · 点击重命名`} onClick={()=>editProject(item,'name')}>{item.name}</button>;}
   function association(item:Project) {return <button className="pi-folder-tag" onClick={()=>{setFolder(item.folderName||'');setSelected(new Set());}} title="查看同一文件夹"><FolderOpen size={13}/>{item.folderName||'默认文件夹'}</button>;}
   return <div className="page pi-page">
-    <header className="pi-heading"><div><span className="section-kicker">工作空间</span><h1>项目</h1></div><button className="text-button" onClick={onTrash}><Trash2 size={15}/>回收站</button></header>
+    <header className="pi-heading"><div><span className="section-kicker">工作空间</span><h1>项目</h1></div><button className="text-button pi-trash" onClick={onTrash}><Trash2 size={15}/>回收站</button></header>
     <div className="pi-search"><select aria-label="文件夹" value={folder} onChange={e=>{setFolder(e.target.value);setSelected(new Set());}}><option value="*">全部项目</option><option value="">默认文件夹</option>{folders.map(f=><option key={f}>{f}</option>)}</select><Search size={17}/><input aria-label="搜索项目" placeholder="搜索项目或文件夹…" value={query} onChange={e=>{setQuery(e.target.value);setSelected(new Set());}}/></div>
     <div className="pi-toolbar">
       {bulk?<label className="pi-select-all"><input ref={allCheckbox} type="checkbox" checked={allSelected} onChange={()=>setSelected(s=>{const next=new Set(s);for(const p of visible){if(allSelected)next.delete(p.id);else next.add(p.id);}return next;})}/>全选<span>已选择 <strong>{chosen.length}</strong> 项</span></label>:<button className="button primary" onClick={onCreate}><Plus size={17}/>新建项目</button>}

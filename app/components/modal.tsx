@@ -17,6 +17,9 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
   dismissible?: boolean;
+  /** 打开对话框的那个控件。Radix 自带的「还原焦点」在这里靠不住：打开时同时
+      拉数据，重渲染之后它记着的那个节点已经不是屏幕上的那一个，焦点就掉回
+      body。给一个选择器，关闭时自己把焦点送回去。 */
   returnFocusSelector?: string;
 }) {
   return (

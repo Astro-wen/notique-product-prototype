@@ -175,3 +175,19 @@ test("core navigation and reading controls use one SVG icon system", () => {
   assert.match(recorder, /<Mic \/>/);
   assert.match(styles, /\.reader-audio-label \{ display: flex; \}/);
 });
+
+test("工作区顶栏是面包屑，不再重复侧栏和「项目管理」已有的入口", () => {
+  // 换项目在侧栏的项目列表，移到回收站是侧栏每行的垃圾桶，新建项目和回收站在
+  // 「项目管理」页。这三件事各留一个入口，顶栏只说现在在哪个项目、哪条记录、
+  // 什么状态。再往这条栏里加一个项目选择框或一个项目菜单就是退回去了。
+  const bar = page.match(/<section className="simple-session"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(bar, "工作区顶栏没找到，选择器或结构被改过");
+  assert.doesNotMatch(bar, /选择当前项目|项目菜单|DropdownMenu/);
+  assert.doesNotMatch(page, /project-menu/);
+  assert.doesNotMatch(styles, /\.project-menu/);
+  // 留下的四件东西：项目名、当前记录、添加记录、状态。
+  assert.match(bar, /className="simple-session-copy"/);
+  assert.match(bar, /aria-label="选择记录"/);
+  assert.match(bar, /aria-label="添加记录"/);
+  assert.match(bar, /className=\{`simple-session-status/);
+});

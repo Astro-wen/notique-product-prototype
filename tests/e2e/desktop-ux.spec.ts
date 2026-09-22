@@ -234,5 +234,8 @@ test('long audio reader scrolls back to the top and keeps its dock inside resize
   await page.setViewportSize({width:1440,height:800});
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(801);
-  await expect(page.getByLabel('选择当前项目')).toBeInViewport();
+  // 顶栏现在是面包屑，「当前项目」选择框已撤掉。这里量的还是同一件事：回到桌面宽度后
+  // 整条顶栏仍在视口内，没有被阅读区顶出屏幕。认整条而不认里面某一件，宽度一变里面
+  // 哪几件露出来会跟着变，整条不会。
+  await expect(page.locator('.simple-session')).toBeInViewport();
 });

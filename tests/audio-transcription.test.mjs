@@ -848,9 +848,10 @@ test("simple flow supports audio-first setup and preserves a transcription start
   assert.match(beginSimple, /return \{ project: created, event: null \}/);
   assert.match(beginSimple, /async function beginSimpleTest\(/);
   assert.match(beginSimple, /if \(openTranscriptAfterCreate\) setShowImport\(true\)/);
+  // 新建项目的入口只剩「项目管理」页那一个，工作区顶栏的项目菜单已经撤掉。
   assert.match(
     uiSource,
-    /onStartOwn=\{\(\) => \{ setSimpleFlow\(true\); setShowNewProject\(true\); \}\}/,
+    /onCreate=\{\(\) => setShowNewProject\(true\)\}/,
     "the named buyer-project flow must open the form instead of silently creating a test record",
   );
   assert.match(
