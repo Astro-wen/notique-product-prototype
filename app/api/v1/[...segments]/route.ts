@@ -65,7 +65,15 @@ import {
   retryFailedTranscriptionChunks,
 } from "@/lib/server/db/transcription-repository";
 import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
-import { readRoutingSuggestion } from "@/lib/server/db/routing-suggestion-repository";
+import {
+  dismissRoutingSuggestion,
+  readRoutingSuggestion,
+  setEventRoutingSource,
+} from "@/lib/server/db/routing-suggestion-repository";
+import {
+  getEventMovePreview,
+  moveEvent,
+} from "@/lib/server/db/event-move-repository";
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
 import {
   completeProjectAction,
@@ -118,6 +126,8 @@ type JsonRecord = Record<string, unknown>;
 
 const EVENT_TYPES = ["meeting", "showing", "estimate", "walkthrough"] as const;
 const ASSET_KINDS = ["transcript", "photo", "pdf", "text", "audio"] as const;
+// 只有这两种来源：用户在选择器里点了项目，或者他跳过了选择器。
+const ROUTING_SOURCES = ["user", "skipped"] as const;
 const CLAIM_TYPES = [
   "budget",
   "preference",
@@ -372,10 +382,19 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "ai-artifacts") {
     return ok(await listEventAiArtifacts(scope, segments[1]), id);
   }
-  // 归属建议是只读数据：没有「接受」这条路，因为把材料移到别的项目今天还不存在。
   // 没有建议是常态，返回 null 而不是 404。
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "routing-suggestion") {
     return ok({ routing_suggestion: await readRoutingSuggestion(scope, segments[1]) }, id);
+  }
+  // 目标项目从查询串来：这是一次只读的试算，换个目标就是换个问题，不该占用一个
+  // 写入语义的请求体。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "move-preview") {
+    const target = requiredString(
+      new URL(request.url).searchParams.get("target"),
+      "target",
+      { max: 128 },
+    );
+    return ok({ preview: await getEventMovePreview(scope, segments[1], target) }, id);
   }
   if (
     segments.length === 3 &&
@@ -560,6 +579,38 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       idempotencyKey(request),
     );
     return ok({ claim }, id, 201);
+  }
+  // 接受一条归属建议，或者用户自己挑了另一个项目，都走这条。搬不动的原因在
+  // 409 的 details.blockers 里，逐条都是可以直接念给人听的话。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "move") {
+    const body = await jsonObject(request);
+    const event = await moveEvent(
+      scope,
+      segments[1],
+      requiredString(body.target_project_id, "target_project_id", { max: 128 }),
+      idempotencyKey(request),
+    );
+    return ok({ event }, id);
+  }
+  // 第二层的选择器落库。只在这一列还空着时才写，所以重传材料不会改掉用户当初的表态。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "routing-source") {
+    const body = await jsonObject(request);
+    await setEventRoutingSource(
+      scope,
+      segments[1],
+      enumValue(body.source, "source", ROUTING_SOURCES),
+    );
+    return ok({ ok: true }, id);
+  }
+  if (
+    segments.length === 4 &&
+    segments[0] === "events" &&
+    segments[2] === "routing-suggestion" &&
+    segments[3] === "dismiss"
+  ) {
+    await jsonObject(request);
+    await dismissRoutingSuggestion(scope, segments[1]);
+    return ok({ ok: true }, id);
   }
   if (
     segments.length === 3 &&

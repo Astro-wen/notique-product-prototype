@@ -13,6 +13,7 @@ import type {
   CreateManualRelationResponse,
   CreateEventRequest,
   CreateEventResponse,
+  EventRecord,
   CreateExtractionRunResponse,
   CreateProjectRequest,
   CreateProjectResponse,
@@ -62,6 +63,7 @@ import type {
   WorkflowEventStatusSummaryRecord,
   WorkflowSnapshotRecord,
 } from "../lib/shared/api-types";
+import type { RoutingSource } from "../lib/domain/material-routing";
 
 export type Id = string;
 
@@ -94,6 +96,29 @@ export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project" | "events"
 };
 export type EventAiArtifactRun = EventAiArtifactRunRecord;
 export type EventAiArtifact = EventAiArtifactRecord;
+export type { RoutingSource };
+
+/**
+ * 一条在手的归属建议。字段沿用服务端的下划线命名，因为它是直接从 JSON 里拿出来的，
+ * 中间没有 normalize 这一步可以改名。
+ */
+export type RoutingSuggestion = {
+  event_id: string;
+  suggested_project_id: string;
+  suggested_project_name: string | null;
+  probability: number;
+  judge: string;
+  created_at: string;
+  dismissed_at: string | null;
+};
+
+/** 搬之前的试算。blockers 里每一条都是可以直接念给人听的话。 */
+export type EventMovePreview = {
+  can_move: boolean;
+  blockers: string[];
+  source_project_id: string;
+  target_project_id: string;
+};
 export type ProjectDeletePreview = ProjectDeletePreviewResponse["data"]["preview"];
 export type DraftMemory = DraftMemoryResponse["data"]["draft_memory"];
 export type ProjectAction = ProjectActionsResponse["data"]["actions"][number];
@@ -1432,6 +1457,53 @@ export const api = {
     const event = requireId(normalizeEvent(body.data.event), "event");
     event.assets = body.data.assets.map(normalizeAsset).filter((item): item is Asset => Boolean(item));
     return event;
+  },
+
+  async getRoutingSuggestion(eventId: Id, signal?: AbortSignal): Promise<RoutingSuggestion | null> {
+    const body = await request<ApiSuccess<{ routing_suggestion: RoutingSuggestion | null }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-suggestion`,
+      { cache: "no-store", signal },
+    );
+    // 没有建议是常态，不是空数据。
+    return body.data.routing_suggestion ?? null;
+  },
+
+  async getEventMovePreview(eventId: Id, targetProjectId: Id): Promise<EventMovePreview> {
+    const body = await request<ApiSuccess<{ preview: EventMovePreview }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/move-preview?target=${encodeURIComponent(targetProjectId)}`,
+      { cache: "no-store" },
+    );
+    const preview = body.data.preview;
+    if (typeof preview?.can_move !== "boolean" || !Array.isArray(preview.blockers)) {
+      invalidContract("The server returned an invalid move preview.");
+    }
+    return preview;
+  },
+
+  async moveEvent(eventId: Id, targetProjectId: Id, idempotencyKey: string): Promise<Event> {
+    const body = await request<ApiSuccess<{ event: EventRecord }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/move`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ target_project_id: targetProjectId }),
+      },
+    );
+    return requireId(normalizeEvent(body.data.event), "event");
+  },
+
+  async setEventRoutingSource(eventId: Id, source: RoutingSource): Promise<void> {
+    await request<ApiSuccess<{ ok: true }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-source`,
+      { method: "POST", body: jsonBody({ source }) },
+    );
+  },
+
+  async dismissRoutingSuggestion(eventId: Id): Promise<void> {
+    await request<ApiSuccess<{ ok: true }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-suggestion/dismiss`,
+      { method: "POST", body: "{}" },
+    );
   },
 
   async listEventTranscriptSegments(eventId: Id, signal?: AbortSignal): Promise<TranscriptSegment[]> {
