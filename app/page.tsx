@@ -4724,18 +4724,8 @@ export default function Home() {
     await queryClient.invalidateQueries({ queryKey: notiqueQueryKeys.routingSuggestion(eventId) });
   }
 
-  function goSimple() {
-    setSimpleFlow(true);
-    if (project) {
-      const preferredEventId = event?.projectId === project.id ? event.id : undefined;
-      void loadSimpleProject(project.id, preferredEventId);
-      return;
-    }
-    setScreen("simple");
-  }
-
-  // 品牌名回首页，而不是回当前项目的工作区，后者由侧栏的首页项（goSimple）在做。
-  // 没有这一条，打开任何项目之后就再也回不到首页了。
+  // 品牌名和侧栏的首页项都回首页。这里曾经有一个 goSimple，名字叫首页、
+  // 做的却是重开当前项目，点了之后人还留在项目里，首页永远到不了。
   function goHome() {
     setSimpleFlow(true);
     invalidateNavigationRequests();
@@ -5064,7 +5054,7 @@ export default function Home() {
         </button>
         <button className="brand" onClick={goHome} aria-label="Notique AI · 首页"><span className="brand-mark"><NotebookPen aria-hidden="true" /></span><span className="sidebar-label">Notique AI</span></button>
         <nav aria-label="主要导航">
-          <button className={screen === "simple" ? "active" : ""} onClick={goSimple} aria-label="首页" title={sidebarCollapsed ? "首页" : undefined}><span className="sidebar-nav-icon"><HomeIcon aria-hidden="true" /></span><span className="sidebar-nav-label">首页</span></button>
+          <button className={screen === "simple" && !project ? "active" : ""} onClick={goHome} aria-label="首页" title={sidebarCollapsed ? "首页" : undefined}><span className="sidebar-nav-icon"><HomeIcon aria-hidden="true" /></span><span className="sidebar-nav-label">首页</span></button>
           <button className={screen === "projects" ? "active" : ""} onClick={goProjects} aria-label="项目管理" title={sidebarCollapsed ? "项目管理" : undefined}><span className="sidebar-nav-icon"><FolderOpen aria-hidden="true" /></span><span className="sidebar-nav-label">项目管理</span></button>
         </nav>
         {/* 收起后只剩图标条，列表放不下，索性不渲染；801 到 980px 之间侧栏也是
