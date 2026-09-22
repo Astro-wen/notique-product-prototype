@@ -1,3 +1,4 @@
+import { CONTEXT_CHANGED_RESTARTED } from "@/lib/domain/context-restart";
 import { getD1 } from "@/db";
 import {
   deriveProjectWorkflowDisplayStatus,
@@ -203,7 +204,12 @@ export async function getWorkflowSnapshot(
     const pendingOccurrenceCount = integer(row, "pending_occurrence_count");
     const candidateCount = integer(row, "candidate_count");
     const materialStatus = String(row.material_status) as MaterialStatus;
-    const extractionStatus = nullableText(row, "extraction_status");
+    // 因上下文变化自动接班的旧任务读成排队中：接班任务马上接上，这一瞬间不该显示失败。
+    const rawExtractionStatus = nullableText(row, "extraction_status");
+    const extractionStatus = rawExtractionStatus === "failed" &&
+      nullableText(row, "extraction_error_code") === CONTEXT_CHANGED_RESTARTED
+      ? "queued"
+      : rawExtractionStatus;
     const extractionStage = nullableText(row, "extraction_stage") as ExtractionModelStageName | null;
     const transcriptionStatus = nullableText(row, "transcription_status");
     const materialTotal = integer(row, "material_total");

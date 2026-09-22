@@ -49,7 +49,7 @@ npm run dev
 ```text
 AI_PROVIDER=openai
 AI_MODEL=<固定版本的多模态模型>
-AI_REASONING_EFFORT=xhigh
+AI_REASONING_EFFORT=high      # 线上 wrangler.jsonc 用 low，见下
 AI_VERIFIER_REASONING_EFFORT=high
 AI_TWO_PASS_PIPELINE=1
 AI_DRAFT_CONTEXT=0
@@ -60,11 +60,15 @@ INTERNAL_JOB_TOKEN=<高强度随机 Secret>
 OpenAI 的正式提取路径使用 Responses API。当前新 Run 的双阶段合同是 Prompt v9：
 Context Pack v3、Agent A Inventory v3、Agent B Verification v4，最终 Claim 输出继续使用
 claim-extraction v3。Prompt v8.2 与更早 Run 只作为历史审计，不会混进新合同：
-Agent A 使用 `AI_REASONING_EFFORT=xhigh` 盘点最多 24 条内部原子事实，Agent B 默认用
-`AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系；确定性检查
-发现关键遗漏、低置信关系、冲突、复合 Claim 或错误 Reaffirmed 时，Agent B 才升级到
-`xhigh` 再复核一次。两个 Agent 共用同一个 `AI_API_KEY`，不需要第二个密钥。
-`max` 不属于当前产品配置；缺失或误填的第一轮强度会回到 `xhigh`，第二轮会回到 `high`。
+Agent A 使用 `AI_REASONING_EFFORT=high` 盘点最多 24 条内部原子事实，Agent B 用
+`AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系。确定性检查
+发现关键遗漏、清单没对上、低置信关系、冲突或错误 Reaffirmed 时，Agent B 以同一强度再复核
+一次；只有复合 Claim 这一个问题时不复核，留给人工核对并记一条提示。两个 Agent 共用同一个
+`AI_API_KEY`，不需要第二个密钥。`max` 不属于当前产品配置；缺失或误填的强度都回到 `high`。
+线上的 `wrangler.jsonc` 目前配的是 low/low，比这里更快也更省，结论会更少，要不要改是部署时的决定。
+
+2026-09-22 用同一份 14 分钟真实录音实测：xhigh 加复核平均 8.1 分钟；high 不做复合复核
+平均 3.7 分钟，事实条数相同；medium 3.2 分钟但整段合同条款漏掉、多条引文对不上原话。
 
 每个 OpenAI 模型阶段都以 Responses API 的 `background: true` 创建。服务端收到 Response ID
 后先把它保存到对应阶段，再释放当前任务租约；后续 Outbox 唤醒使用

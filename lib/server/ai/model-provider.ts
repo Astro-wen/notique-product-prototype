@@ -1166,12 +1166,17 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       if (Array.isArray(source.candidates)) {
         candidateValue = {
           ...source,
-          candidates: source.candidates.map((candidate) =>
-            candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
-              (candidate as Record<string, unknown>).critical === false
-              ? { ...(candidate as Record<string, unknown>), critical_reason: null }
-              : candidate
-          ),
+          candidates: source.candidates.map((candidate) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+            const item = candidate as Record<string, unknown>;
+            if (item.critical === false) return { ...item, critical_reason: null };
+            // 标了关键却没写理由：2026-09-22 真实录音上见过一次，整次分析因此作废。
+            // 关键标记本身要留着，它决定这条漏了会不会触发复核；理由只是说明，补一句。
+            if (item.critical === true && (typeof item.critical_reason !== "string" || !item.critical_reason.trim())) {
+              return { ...item, critical_reason: "Marked critical without a stated reason." };
+            }
+            return item;
+          }),
         };
       }
     }

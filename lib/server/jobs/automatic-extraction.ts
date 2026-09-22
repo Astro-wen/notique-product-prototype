@@ -1,3 +1,4 @@
+import { CONTEXT_CHANGED_RESTARTED } from "@/lib/domain/context-restart";
 import { getD1 } from "@/db";
 import { createExtractionRun } from "@/lib/server/db/core-repository";
 import { ApiFault } from "@/lib/server/http/api";
@@ -145,7 +146,7 @@ export async function ensureAutomaticExtractionRuns(input?: {
         GROUP BY workspace_id, event_id
        HAVING COUNT(*) <= ?
      ), exact_runs AS (
-       SELECT er.workspace_id, er.event_id, er.id, er.status
+       SELECT er.workspace_id, er.event_id, er.id, er.status, er.error_code
          FROM extraction_runs er
          JOIN source_counts sc
            ON sc.event_id = er.event_id AND sc.workspace_id = er.workspace_id
@@ -190,6 +191,8 @@ export async function ensureAutomaticExtractionRuns(input?: {
                   WHERE failed.event_id = sc.event_id
                     AND failed.workspace_id = sc.workspace_id
                     AND failed.status = 'failed'
+                    -- 因上下文变化自动接班的不算失败，接班任务已经在跑。
+                    AND COALESCE(failed.error_code, '') <> 'CONTEXT_CHANGED_RESTARTED'
                ) >= ?
              )
         )
@@ -304,7 +307,7 @@ export async function ensureAutomaticExtractionRuns(input?: {
     }
 
     const previousRuns = await all(
-      `SELECT id, status, input_manifest_json
+      `SELECT id, status, error_code, input_manifest_json
          FROM extraction_runs
         WHERE event_id = ? AND workspace_id = ?
         ORDER BY created_at DESC`,
@@ -324,7 +327,9 @@ export async function ensureAutomaticExtractionRuns(input?: {
       });
       continue;
     }
-    const failedAttempts = exactRuns.filter((row) => String(row.status) === "failed").length;
+    // 因上下文变化自动接班的旧任务不算失败，和上面的查询同一个口径。
+    const failedAttempts = exactRuns.filter((row) =>
+      String(row.status) === "failed" && String(row.error_code ?? "") !== CONTEXT_CHANGED_RESTARTED).length;
     if (failedAttempts >= MAX_AUTOMATIC_EXTRACTION_ATTEMPTS) {
       result.deferred += 1;
       result.items.push({

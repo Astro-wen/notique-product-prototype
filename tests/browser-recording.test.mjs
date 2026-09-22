@@ -60,7 +60,8 @@ test("core UI presents one meeting workspace without removing advanced tools", a
     readFile(path.join(root, "app/components/material-shelf.tsx"), "utf8"),
     readFile(path.join(root, "app/components/landing-hero.tsx"), "utf8"),
   ]);
-  assert.match(page, /simple-meeting-rail/);
+  // 记录侧栏在带项目的工作区里任何宽度都不显示，已经删掉，切记录只走顶栏。
+  assert.doesNotMatch(page, /simple-meeting-rail/);
   assert.match(page, /meeting-tabs/);
   // 材料 names the files of this communication; the rail's 来源 names a
   // quote's origin. One word no longer means two things on one screen, and
@@ -83,7 +84,7 @@ test("core UI presents one meeting workspace without removing advanced tools", a
   assert.doesNotMatch(page, /高级工具/);
   assert.match(styles, /\.simple-workspace/);
   assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-event-select \{ display: grid !important; \}/);
-  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*\.simple-meeting-rail \{ display: none; \}/);
+  assert.doesNotMatch(styles, /simple-meeting-rail/);
 });
 
 test("the no-project screen is a landing page, not an empty copy of the workspace", async () => {

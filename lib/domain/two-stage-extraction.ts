@@ -543,6 +543,16 @@ export function toFinalExtractClaimsOutput(verification: VerificationOutput): Fi
   };
 }
 
+/**
+ * 只有这些理由时不值得多跑一趟复核。
+ *
+ * 复合结论（一条里塞了两件事）实测六次复核里只有两次被拆得更好，其余没改善或
+ * 输出无效，且从没补回过一条事实；每次却要多等一两分钟。它们本来就进人工核对，
+ * 人在屏幕上看得见、改得了。所以只因为这个就不复核，改记一条提示。
+ * 丢了关键事实、有没对上的清单、有冲突、低置信关系、重复确认有问题，照旧复核。
+ */
+export const REVIEW_ONLY_ESCALATION_REASONS: ReadonlySet<VerificationEscalationReason> = new Set(["compound_claim"]);
+
 export function assessVerificationEscalation(
   inventory: InventoryOutput,
   verification: unknown,
@@ -589,7 +599,7 @@ export function assessVerificationEscalation(
   }
 
   return {
-    required: reasons.size > 0,
+    required: [...reasons].some((reason) => !REVIEW_ONLY_ESCALATION_REASONS.has(reason)),
     reasons: [...reasons],
     unmappedInventoryKeys,
     droppedCriticalInventoryKeys,

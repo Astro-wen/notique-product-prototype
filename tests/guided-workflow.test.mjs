@@ -64,10 +64,8 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(uiSource, /pendingOccurrenceCount=\{claimRouteReadonly \? 0 :/);
   assert.match(uiSource, /relationsReviewed/);
   assert.equal((uiSource.match(/api\.completeReviewSession/g) ?? []).length, 1, "review completion has one mutation path");
-  assert.doesNotMatch(uiSource, /<em>\{itemDisplayStatus\.label\}<\/em>/);
-  assert.match(uiSource, /const itemSummary = eventWorkflowSummaries\[item\.id\]/);
-  assert.match(uiSource, /const itemDisplayStatus = workflowEventDisplayStatus\(itemSummary\)/);
-  assert.match(uiSource, /const materialCount = itemSummary\?\.statusSummary\.materialCount/);
+  // 当前记录的状态和各记录共用同一份服务端快照，不在界面上另算一套。
+  assert.match(uiSource, /const currentEventSummary = event \? eventWorkflowSummaries\[event\.id\] : undefined/);
   assert.doesNotMatch(uiSource, /Luna Max|旧的 max/);
 });
 
@@ -75,7 +73,7 @@ test("mobile keeps one event selector and resets the tab when switching events",
   const styles = fs.readFileSync("app/globals.css", "utf8");
   assert.match(uiSource, /function selectEvent\(nextEventId: string\)[\s\S]*?setActiveTab\("materials"\);[\s\S]*?onUseEvent\(nextEventId\)/);
   assert.match(uiSource, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
-  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.simple-meeting-rail \{ display: none; \}/);
+  assert.doesNotMatch(styles, /simple-meeting-rail/);
   assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });
 

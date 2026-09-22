@@ -86,12 +86,9 @@ test("action and timeline empty states offer useful next steps", () => {
   assert.match(styles, /\.timeline-filter/);
 });
 
-test("meeting rail and selected header share the workflow snapshot status", () => {
-  const rail = page.slice(page.indexOf('<div className="simple-meeting-list">'), page.indexOf('</aside>', page.indexOf('<div className="simple-meeting-list">')));
-  assert.match(rail, /eventWorkflowSummaries\[item\.id\]/);
-  assert.match(rail, /statusSummary\.materialCount/);
-  assert.match(rail, /statusSummary\.pendingCount/);
-  assert.doesNotMatch(rail, /displayItem\.assets|item\.assets|deriveGuidedDisplayStatus/);
+test("the selected record's status comes from the workflow snapshot", () => {
+  // 以前还和记录侧栏比对，侧栏删掉以后只剩顶栏这一处显示状态。
+  assert.doesNotMatch(page, /simple-meeting-list/);
   assert.match(page, /currentEventSummary\s*\? workflowEventDisplayStatus\(currentEventSummary\)/);
 });
 

@@ -80,6 +80,7 @@ import {
   nextPendingClaimId,
 } from "@/lib/domain/guided-workflow";
 import { ACTIVE_BACKGROUND_WAKE_MS, runNeedsRecovery, runPollDelayMs } from "@/lib/domain/run-timing";
+import { CONTEXT_CHANGED_RESTARTED } from "@/lib/domain/context-restart";
 import {
   factsReadyForReview,
   factsStillRunning,
@@ -2915,6 +2916,22 @@ export default function Home() {
                   : "waiting_scenario",
               );
             }
+          } else if (latest.status === "failed" && latest.errorCode === CONTEXT_CHANGED_RESTARTED) {
+            // 分析途中项目上下文变了，服务端已经另起一个任务重跑。换到接班任务上
+            // 接着等，不报错。接班还没建好就再等一轮；接不上时旧任务会改回普通失败码。
+            const refreshedEvent = await api.getEvent(eventId);
+            if (!pollIsCurrent()) return;
+            const successorId = refreshedEvent.latestRun?.id || refreshedEvent.latestRunId;
+            if (successorId && successorId !== runId) {
+              const successor = await api.getRun(successorId);
+              if (!pollIsCurrent()) return;
+              setEvent(refreshedEvent);
+              setRun(successor);
+              void api.kickDispatcher({ kind: "extraction", runId: successorId }).catch(() => undefined);
+              return;
+            }
+            schedule();
+            return;
           } else if (latest.status === "failed") {
             if (pollIsCurrent()) {
               setRun(latest);
@@ -7630,26 +7647,8 @@ function SimpleTestScreen({
       </LandingHero>}
 
       {project && <section className="simple-workspace" aria-label="项目工作区">
-        <aside className="simple-meeting-rail">
-          <header><div><span className="section-kicker">记录</span><strong>{events.length} 次</strong></div>{events.length > 0 && <button className="icon-button" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>}</header>
-          <div className="simple-meeting-list">
-            {events.map((item, index) => {
-              const itemSummary = eventWorkflowSummaries[item.id];
-              const itemDisplayStatus = workflowEventDisplayStatus(itemSummary);
-              const materialCount = itemSummary?.statusSummary.materialCount;
-              const itemPending = itemSummary?.statusSummary.pendingCount ?? 0;
-              return (
-                <button className={item.id === event?.id ? "active" : ""} key={item.id} disabled={loadingSelection || Boolean(busy)} onClick={() => selectEvent(item.id)}>
-                  <span className="meeting-index">{index + 1}</span>
-                  <span><strong>{item.title}</strong><small>{formatDate(item.occurredAt || item.createdAt)} · {materialCount == null ? "读取材料状态" : `${materialCount} 份材料`}</small></span>
-                  {itemPending > 0 ? <span className="meeting-pending">{itemPending}</span> : <span className={`guided-status ${itemDisplayStatus.tone}`}>{itemDisplayStatus.label}</span>}
-                </button>
-              );
-            })}
-            {events.length === 0 && <p>还没有记录</p>}
-          </div>
-        </aside>
-
+        {/* 以前这里还有一条记录侧栏，但带项目的工作区在任何宽度下都把它藏起来，
+            切记录一直走顶栏的选择框。删了，免得有人往一个看不见的地方加功能。 */}
         <article className="simple-current-event">
           <header className="current-event-header">
             <div><span className="section-kicker">当前记录</span><h2>{event?.title || "从第一份材料开始"}</h2><p>{event ? `${formatDate(event.occurredAt || event.createdAt, true)} · ${visibleAssets.length} 份材料` : "录音或上传逐字稿，项目会自动建好"}</p></div>

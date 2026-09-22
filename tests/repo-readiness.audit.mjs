@@ -204,7 +204,8 @@ test("reasoning effort is frozen per Run and Run Debug exposes execution limits"
   const page = uiSource;
 
   assert.doesNotMatch(modelConfig, /OPENAI_REASONING_EFFORTS\s*=\s*\[[\s\S]{0,200}["']max["']/);
-  assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']xhigh["']/);
+  // 没配置时清点默认 high：真实录音实测和 xhigh 出的事实一样，快一分钟以上。
+  assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']high["']/);
   assert.match(modelConfig, /normalizeVerifierReasoningEffort[\s\S]{0,220}\|\| ["']high["']/);
 
   assert.match(
@@ -885,7 +886,8 @@ test("the durable repair creates extraction for every uncovered current source m
         workspace_id TEXT NOT NULL,
         event_id TEXT NOT NULL,
         status TEXT NOT NULL,
-        input_manifest_json TEXT NOT NULL
+        input_manifest_json TEXT NOT NULL,
+        error_code TEXT
       );
       INSERT INTO projects VALUES
         ('project-a', 'ws-a', NULL, 'confirmed'),
@@ -903,7 +905,8 @@ test("the durable repair creates extraction for every uncovered current source m
         ('event-stale', 'ws-a', 'project-a', 'ready', 1),
         ('event-unassessed-first', 'ws-a', 'project-b', 'ready', 1),
         ('event-unassessed-later', 'ws-a', 'project-b', 'ready', 2),
-        ('event-retry-exhausted', 'ws-a', 'project-c', 'ready', 1);
+        ('event-retry-exhausted', 'ws-a', 'project-c', 'ready', 1),
+        ('event-restarted', 'ws-a', 'project-a', 'ready', 1);
       INSERT INTO assets VALUES
         ('audio-new', 'ws-a', 'event-new', 'audio', 'audio-version-new', 'ready', '{}', NULL),
         ('derived-new', 'ws-a', 'event-new', 'transcript', 'transcript-version-new', 'ready', '{"source_audio_asset_version_id":"audio-version-new"}', NULL),
@@ -920,24 +923,29 @@ test("the durable repair creates extraction for every uncovered current source m
         ('derived-stale', 'ws-a', 'event-stale', 'transcript', 'transcript-version-old', 'ready', '{"source_audio_asset_version_id":"audio-version-old"}', NULL),
         ('first-unassessed', 'ws-a', 'event-unassessed-first', 'transcript', 'transcript-version-first', 'ready', '{}', NULL),
         ('later-unassessed', 'ws-a', 'event-unassessed-later', 'transcript', 'transcript-version-later', 'ready', '{}', NULL),
-        ('retry-exhausted', 'ws-a', 'event-retry-exhausted', 'transcript', 'transcript-version-exhausted', 'ready', '{}', NULL);
-      INSERT INTO extraction_runs VALUES (
+        ('retry-exhausted', 'ws-a', 'event-retry-exhausted', 'transcript', 'transcript-version-exhausted', 'ready', '{}', NULL),
+        ('restarted', 'ws-a', 'event-restarted', 'transcript', 'transcript-version-restarted', 'ready', '{}', NULL);
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
         'run-covered', 'ws-a', 'event-covered', 'succeeded',
         '[{"asset_version_id":"transcript-version-covered"}]'
       );
-      INSERT INTO extraction_runs VALUES (
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
         'run-added-old', 'ws-a', 'event-added', 'succeeded',
         '[{"asset_version_id":"transcript-version-added"}]'
       );
-      INSERT INTO extraction_runs VALUES (
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
         'run-first-failed', 'ws-a', 'event-unassessed-first', 'failed',
         '[{"asset_version_id":"transcript-version-first"}]'
       );
-      INSERT INTO extraction_runs VALUES
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES
         ('run-exhausted-1', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
         ('run-exhausted-2', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
         ('run-warning', 'ws-a', 'event-warning-covered', 'completed_with_warnings', '[{"asset_version_id":"transcript-version-warning"}]'),
         ('run-cancelled', 'ws-a', 'event-cancelled-covered', 'cancelled', '[{"asset_version_id":"transcript-version-cancelled"}]');
+      -- 两次都是因上下文变化自动接班的旧任务，不算失败，还应该被补上。
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json, error_code) VALUES
+        ('run-restarted-1', 'ws-a', 'event-restarted', 'failed', '[{"asset_version_id":"transcript-version-restarted"}]', 'CONTEXT_CHANGED_RESTARTED'),
+        ('run-restarted-2', 'ws-a', 'event-restarted', 'failed', '[{"asset_version_id":"transcript-version-restarted"}]', 'CONTEXT_CHANGED_RESTARTED');
     `);
     // The two nulls are the optional Event scope: a browser may only commission
     // analysis for the Event on its screen, so opening the app cannot spend
@@ -946,7 +954,7 @@ test("the durable repair creates extraction for every uncovered current source m
     const rows = database.prepare(candidateMatch[1]).all(25, null, null, 2, 50);
     assert.deepEqual(
       rows.map((row) => row.event_id).sort(),
-      ["event-added", "event-new", "event-photo", "event-transcript", "event-unassessed-first"],
+      ["event-added", "event-new", "event-photo", "event-restarted", "event-transcript", "event-unassessed-first"],
       "transcript/photo-only, expanded manifests, and a once-failed unassessed first Event are repaired; successful, warning, cancelled, exhausted, draft, stale-lineage, and blocked later Events are skipped",
     );
     const scoped = database.prepare(candidateMatch[1]).all(25, "event-new", "event-new", 2, 50);

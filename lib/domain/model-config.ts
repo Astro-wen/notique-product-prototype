@@ -48,13 +48,20 @@ export function outboxLeaseDurationMs(
 
 export type OpenAiReasoningEffort = typeof OPENAI_REASONING_EFFORTS[number];
 
+/**
+ * 第一轮（清点）的默认强度。
+ *
+ * 2026-09-22 用同一份 14 分钟真实录音实测：xhigh 三次 2.5 到 3.9 分钟，high
+ * 1.7 到 3.0 分钟，出来的事实条数和 xhigh 一样；medium 只有一半输出，整段合同
+ * 条款都没清点出来。所以默认 high。
+ */
 export function normalizeOpenAiReasoningEffort(
   value: string | undefined,
 ): OpenAiReasoningEffort {
-  const normalized = value?.trim().toLowerCase() || "xhigh";
+  const normalized = value?.trim().toLowerCase() || "high";
   return (OPENAI_REASONING_EFFORTS as readonly string[]).includes(normalized)
     ? normalized as OpenAiReasoningEffort
-    : "xhigh";
+    : "high";
 }
 
 export function normalizeVerifierReasoningEffort(

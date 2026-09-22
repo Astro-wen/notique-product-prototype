@@ -1280,6 +1280,12 @@ test("inventory safely discards explanations attached to non-critical candidates
     inventoryMethod.indexOf("critical_reason: null") < inventoryMethod.indexOf("validateInventoryOutput(candidateValue)"),
     "the harmless provider normalization must happen before strict validation",
   );
+  // 标了关键却没写理由：保留关键标记，补一句说明，不让整次分析作废。
+  assert.match(inventoryMethod, /item\.critical === true && \(typeof item\.critical_reason !== "string" \|\| !item\.critical_reason\.trim\(\)\)/);
+  assert.match(inventoryMethod, /critical_reason: "Marked critical without a stated reason\."/);
+  assert.ok(
+    inventoryMethod.indexOf("Marked critical without a stated reason.") < inventoryMethod.indexOf("validateInventoryOutput(candidateValue)"),
+  );
 });
 
 test("verification safely removes dangling bookkeeping without weakening evidence validation", async () => {

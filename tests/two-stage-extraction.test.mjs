@@ -444,6 +444,21 @@ test("unresolved conflicts, compound claims, and reaffirmed issues each escalate
   assert.ok(result.reasons.includes("reaffirmed_issue"));
 });
 
+test("a compound claim alone is left for human review instead of another verification pass", () => {
+  // 六次实测里为复合结论多跑的复核只有两次拆得更好，从没补回过事实，每次多等一两分钟。
+  const compoundOnly = assessVerificationEscalation(inventory(), verification({
+    quality_review: { unresolved_conflict_keys: [], compound_claim_keys: ["claim-1"], reaffirmed_issue_claim_keys: [] },
+  }));
+  assert.deepEqual(compoundOnly.reasons, ["compound_claim"]);
+  assert.equal(compoundOnly.required, false);
+
+  // 同时有别的问题时照旧复核。
+  const withConflict = assessVerificationEscalation(inventory(), verification({
+    quality_review: { unresolved_conflict_keys: ["conflict-1"], compound_claim_keys: ["claim-1"], reaffirmed_issue_claim_keys: [] },
+  }));
+  assert.equal(withConflict.required, true);
+});
+
 test("quality flags are bounded and may only reference final claim keys", () => {
   const result = validateVerificationOutput(verification({
     quality_review: {

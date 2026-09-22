@@ -53,6 +53,12 @@ import {
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
 import { loadProjectLedger } from "@/lib/server/db/ledger-repository";
+import { createExtractionRun } from "@/lib/server/db/core-repository";
+import {
+  CONTEXT_CHANGED_RESTARTED,
+  contextRestartIdempotencyKey,
+  mayRestartAfterContextChange,
+} from "@/lib/domain/context-restart";
 import { listProjectDraftMemory } from "@/lib/server/db/buyer-journey-repository";
 import {
   getLatestExtractionModelStage,
@@ -1896,6 +1902,17 @@ export async function processExtractionRun(
       );
     }
     const input = await loadContextInput(leased);
+    // 排队期间项目上下文已经变了：现在就发现，接班任务还一次模型都没调过。
+    // 不查的话下面存快照的守卫会拦下，报的是一个说不清的内部错误。
+    const currentContext = await first(
+      `SELECT context_version FROM projects WHERE id = ? AND workspace_id = ?`,
+      [leased.project_id, leased.workspace_id],
+    );
+    if (currentContext && Number(currentContext.context_version) !== Number(leased.context_version)) {
+      throw new ProcessingFault("CLAIM_VERSION_CONFLICT", "Project context changed before extraction started.", {
+        before_model_stages: true,
+      });
+    }
     await persistContextSnapshot(
       leased,
       owner,
@@ -1913,7 +1930,7 @@ export async function processExtractionRun(
     const inventoryEffort =
       typeof frozenModelParams.reasoning_effort === "string"
         ? frozenModelParams.reasoning_effort
-        : "xhigh";
+        : "high";
     const verifierEffort = normalizeVerifierReasoningEffort(
       typeof frozenModelParams.verifier_reasoning_effort === "string"
         ? frozenModelParams.verifier_reasoning_effort
@@ -2259,6 +2276,13 @@ export async function processExtractionRun(
           "Verification did not produce a valid final output.",
         );
       }
+      if (!assessment.required && assessment.reasons.includes("compound_claim")) {
+        // 没为复合结论单独复核，记下来，核对时能看到是哪几条。
+        pipelineWarnings.push({
+          code: "MODEL_COMPOUND_CLAIMS_LEFT_FOR_REVIEW",
+          claim_keys: acceptedVerification.quality_review.compound_claim_keys,
+        });
+      }
       if (assessment.required) {
         pipelineWarnings.push({
           code: "MODEL_QUALITY_GATE_UNRESOLVED",
@@ -2339,7 +2363,83 @@ export async function processExtractionRun(
     if (frozenModelParams.two_pass_pipeline === true && isTransientModelError(error)) {
       return deferRunForStageRetry(leased, owner, error, completedUsage);
     }
+    if (error instanceof ProcessingFault && error.code === "CLAIM_VERSION_CONFLICT") {
+      return restartAfterContextChange(leased, owner, error, completedUsage);
+    }
     return markRunFailed(leased, owner, error, completedUsage);
+  }
+}
+
+/**
+ * 上下文在分析途中变了：旧任务收尾，另起一个用新上下文的接班任务。
+ * 规则和理由见 lib/domain/context-restart.ts。
+ */
+async function restartAfterContextChange(
+  run: Row,
+  owner: string,
+  error: ProcessingFault,
+  completedUsage: ModelUsage | null,
+): Promise<ExtractionProcessResult> {
+  const recent = await first(
+    `SELECT COUNT(*) AS n FROM extraction_runs
+      WHERE event_id = ? AND workspace_id = ? AND error_code = ?
+        AND finished_at >= ?`,
+    [
+      run.event_id,
+      run.workspace_id,
+      CONTEXT_CHANGED_RESTARTED,
+      new Date(Date.now() - 60 * 60_000).toISOString(),
+    ],
+  );
+  if (!mayRestartAfterContextChange(Number(recent?.n ?? 0))) {
+    return markRunFailed(run, owner, error, completedUsage);
+  }
+  // 先按接班的码收尾：界面轮询到这一刻看到的就是「在换任务」，不会闪一下失败。
+  const failed = await markRunFailed(
+    run,
+    owner,
+    new ProcessingFault(CONTEXT_CHANGED_RESTARTED, "Project context changed; a fresh run continues.", {
+      ...error.details,
+      restarted_from_run_id: run.id,
+    }),
+    completedUsage,
+  );
+  if (failed.errorCode !== CONTEXT_CHANGED_RESTARTED) return failed;
+  const manifest = parseJson<Array<{ asset_version_id?: unknown }>>(String(run.input_manifest_json ?? "[]"), []);
+  const assetVersionIds = manifest
+    .map((item) => item?.asset_version_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  try {
+    const { run: successor } = await createExtractionRun(
+      { workspaceId: String(run.workspace_id), actorId: "system:notique-extraction" },
+      String(run.event_id),
+      contextRestartIdempotencyKey(String(run.id)),
+      assetVersionIds,
+    );
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET error_details_json = json_set(COALESCE(error_details_json, '{}'), '$.successor_run_id', ?),
+                updated_at = ?
+          WHERE id = ? AND error_code = ?`,
+      )
+      .bind(successor.id, now(), run.id, CONTEXT_CHANGED_RESTARTED)
+      .run();
+    return failed;
+  } catch (creationError) {
+    // 接不上班就退回原来的失败，界面照常提示重新整理。
+    console.error("extraction_context_restart_failed", {
+      run_id: run.id,
+      message: creationError instanceof Error ? creationError.message : String(creationError),
+    });
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs SET error_code = 'CLAIM_VERSION_CONFLICT', updated_at = ?
+          WHERE id = ? AND error_code = ?`,
+      )
+      .bind(now(), run.id, CONTEXT_CHANGED_RESTARTED)
+      .run();
+    return { ...failed, errorCode: "CLAIM_VERSION_CONFLICT" };
   }
 }
 

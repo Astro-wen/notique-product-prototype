@@ -35,10 +35,11 @@ import {
 
 const NOW = "2026-08-10T12:00:00.000Z";
 
-test("Luna uses xhigh for inventory and high for verification without max", () => {
-  assert.equal(normalizeOpenAiReasoningEffort(undefined), "xhigh");
+test("Luna defaults to high for inventory and verification, never max", () => {
+  // 2026-09-22 真实录音实测：清点 high 和 xhigh 出的事实一样，快一分钟以上。
+  assert.equal(normalizeOpenAiReasoningEffort(undefined), "high");
   assert.equal(normalizeOpenAiReasoningEffort("xhigh"), "xhigh");
-  assert.equal(normalizeOpenAiReasoningEffort("max"), "xhigh");
+  assert.equal(normalizeOpenAiReasoningEffort("max"), "high");
   assert.equal(normalizeVerifierReasoningEffort(undefined), "high");
   assert.equal(normalizeVerifierReasoningEffort("max"), "high");
 });
