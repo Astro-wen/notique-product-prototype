@@ -24,7 +24,6 @@ import {
   FileImage,
   FileText,
   FileDown,
-  Folder,
   FolderOpen,
   Home as HomeIcon,
   Image as ImageIcon,
@@ -42,6 +41,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -1811,6 +1811,7 @@ export default function Home() {
   const assetUploadAbortRef = useRef<AbortController | null>(null);
   const [routingAsk, setRoutingAsk] = useState<{ resolve: (value: MaterialRouting) => void } | null>(null);
   const pendingRoutingRef = useRef<MaterialRouting | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const assetUploadOperationRef = useRef<symbol | null>(null);
   const [reviewSession, setReviewSession] = useState<ReviewSession | null>(null);
   const [showMissingClaim, setShowMissingClaim] = useState(false);
@@ -4009,13 +4010,17 @@ export default function Home() {
     }
   }
 
-  async function openProjectDeletePreview(): Promise<void> {
-    if (!project) return;
+  /** 不传就是删当前项目，项目菜单走这一支；侧栏的垃圾桶按钮传它自己那一个。 */
+  async function openProjectDeletePreview(target?: Project): Promise<void> {
+    const deleting = target ?? project;
+    if (!deleting) return;
     setBusyAction("project-delete-preview");
+    setDeleteTarget(deleting);
     try {
-      setDeletePreview(await api.getProjectDeletePreview(project.id));
+      setDeletePreview(await api.getProjectDeletePreview(deleting.id));
     } catch (error) {
       setProjectIssue(toIssue(error));
+      setDeleteTarget(null);
     } finally {
       setBusyAction(null);
     }
@@ -4046,20 +4051,25 @@ export default function Home() {
     setProjectWorkflow(idleProjectWorkflow);
   }
 
-  async function moveCurrentProjectToTrash(): Promise<void> {
-    if (!project || !deletePreview) return;
-    const deleting = project;
+  async function moveProjectToTrash(): Promise<void> {
+    const deleting = deleteTarget;
+    if (!deleting || !deletePreview) return;
+    const wasCurrent = project?.id === deleting.id;
     setBusyAction("project-delete");
     try {
       const deleted = await api.moveProjectToTrash(deleting.id, crypto.randomUUID());
-      const remaining = projects.filter((item) => item.id !== deleting.id);
-      setProjects(remaining);
+      setProjects((current) => current.filter((item) => item.id !== deleting.id));
       setDeletePreview(null);
+      setDeleteTarget(null);
       setUndoDeletedProject(deleted);
-      clearCurrentProjectSelection(deleting.id);
       flash("项目已移到回收站");
-      if (remaining[0]) await loadSimpleProject(remaining[0].id, undefined, "replace");
-      else navigateRoute({ view: "simple" }, "replace");
+      // 删的是别的项目就别动当前这个：人还在它里面干活，把他弹走没有道理。
+      if (!wasCurrent) return;
+      clearCurrentProjectSelection(deleting.id);
+      navigateRoute({ view: "simple" }, "replace");
+      setProject(null);
+      setEvent(null);
+      setEvents([]);
     } catch (error) {
       setProjectIssue(toIssue(error));
     } finally {
@@ -5064,13 +5074,15 @@ export default function Home() {
             {projectsState === "loading" && sidebarFolders.length === 0 && <p className="sidebar-projects-loading">正在读取…</p>}
             {sidebarFolders.map(([folder, items]) => (
               <section key={folder} className="sidebar-folder">
-                <h2 className="sidebar-folder-name"><Folder aria-hidden="true" /><span>{folder}</span></h2>
+                <h2 className="sidebar-folder-name">{folder}</h2>
                 <ul>
                   {items.map((item) => {
                     const name = item.name.replace(/^\[SYNTHETIC\]\s*/, "");
                     const pending = item.pendingCount ?? 0;
                     return (
-                      <li key={item.id}>
+                      // 垃圾桶是独立按钮，不能塞进项目按钮里（按钮不能嵌套），
+                      // 所以这一行是两个并排的按钮，整行共用 hover 高亮。
+                      <li key={item.id} className="sidebar-project-row">
                         <button
                           type="button"
                           className={`sidebar-project${project?.id === item.id ? " active" : ""}`}
@@ -5080,6 +5092,16 @@ export default function Home() {
                         >
                           <span className="sidebar-project-name">{name}</span>
                           {pending > 0 && <span className="sidebar-project-badge" aria-label={`${pending} 条待确认`}>{pending}</span>}
+                        </button>
+                        <button
+                          type="button"
+                          className="sidebar-project-delete"
+                          aria-label={`把 ${name} 移到回收站`}
+                          title="移到回收站"
+                          disabled={Boolean(busyAction)}
+                          onClick={() => void openProjectDeletePreview(item)}
+                        >
+                          <Trash2 aria-hidden="true" />
                         </button>
                       </li>
                     );
@@ -5406,7 +5428,7 @@ export default function Home() {
         }
       }} />}
       {showPublicWorkspaceConfirmation && <PublicWorkspaceConfirmationModal onCancel={cancelPublicWorkspaceAcknowledgement} onConfirm={confirmPublicWorkspaceAcknowledgement} />}
-      {deletePreview && <ProjectDeleteModal preview={deletePreview} busy={busyAction === "project-delete"} onClose={() => setDeletePreview(null)} onConfirm={moveCurrentProjectToTrash} />}
+      {deletePreview && <ProjectDeleteModal preview={deletePreview} busy={busyAction === "project-delete"} onClose={() => { setDeletePreview(null); setDeleteTarget(null); }} onConfirm={moveProjectToTrash} />}
       {showTrash && <ProjectTrashModal projects={trashProjects} state={trashState} issue={trashIssue} busy={busyAction} onClose={() => setShowTrash(false)} onRetry={loadTrash} onRestore={restoreDeletedProject} onPermanentDelete={permanentlyDeleteProject} />}
       {toast && <div className="toast" role="status"><Check aria-hidden="true" />{toast}{undoDeletedProject && <button onClick={() => void restoreDeletedProject(undoDeletedProject, true)}>撤销</button>}</div>}
     </div>

@@ -43,3 +43,32 @@ test("the sidebar project list scrolls on its own and is hidden on icon-only sid
   // 801 到 980px 之间侧栏不靠 .sidebar-collapsed 也是图标条，列表同样得藏起来。
   assert.match(css, /@media \(max-width: 980px\)[\s\S]*?\.sidebar-projects \{ display: none; \}/);
 });
+
+test("侧栏每个项目自带垃圾桶，删的是它自己不是当前项目", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  // 按钮不能嵌套，所以项目名和垃圾桶是并排两个按钮，整行共用 hover 高亮。
+  assert.match(page, /className="sidebar-project-row"/);
+  assert.match(page, /className="sidebar-project-delete"/);
+  assert.match(page, /openProjectDeletePreview\(item\)/);
+  // 读屏要听得出删的是哪一个，光说「移到回收站」分不清是哪一行。
+  assert.match(page, /aria-label=\{`把 \$\{name\} 移到回收站`\}/);
+});
+
+test("删掉别的项目不会把人从当前项目里弹走", async () => {
+  const { declarationSource } = await import("./helpers/ui-source.mjs");
+  const move = declarationSource("moveProjectToTrash");
+  assert.match(move, /const wasCurrent = project\?\.id === deleting\.id;/);
+  // 删的不是当前项目就到此为止：人还在它里面干活。
+  assert.match(move, /if \(!wasCurrent\) return;/);
+});
+
+test("侧栏的项目列表不吃主导航那套通用按钮样式", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  // 项目列表也是一个 nav。不排除的话 width:100% 会把垃圾桶撑成整行，
+  // 项目名被挤成 0 宽，整个列表看起来是空的。
+  assert.match(css, /\.sidebar nav:not\(\.sidebar-projects\) button \{/);
+  assert.match(css, /\.sidebar nav:not\(\.sidebar-projects\) \{ display: grid/);
+  assert.match(css, /\.interface-refresh \.sidebar nav:not\(\.sidebar-projects\) button \{/);
+  // 折叠态和窄屏那两条不用排除：那两种情况下列表本来就不渲染。
+  assert.doesNotMatch(css, /^\.sidebar nav button \{/m);
+});

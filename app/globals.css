@@ -74,25 +74,34 @@ img { max-width: 100%; }
 .account > span:last-child { display: grid; gap: var(--space-1); min-width: 0; }
 .account strong { font-size: var(--text-sm); }
 .account small { color: var(--muted); font-size: var(--text-xs); }
-.sidebar nav { display: grid; gap: var(--space-1); }
-.sidebar nav button { min-height: 39px; width: 100%; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0 10px; display: flex; align-items: center; gap: var(--space-3); text-align: left; color: var(--ink); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar nav:not(.sidebar-projects) { display: grid; gap: var(--space-1); }
+.sidebar nav:not(.sidebar-projects) button { min-height: 39px; width: 100%; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0 10px; display: flex; align-items: center; gap: var(--space-3); text-align: left; color: var(--ink); font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-nav-icon { width: 18px; flex: none; text-align: center; }
 .sidebar-nav-icon svg { width: 18px; height: 18px; vertical-align: middle; }
 .sidebar-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.sidebar nav button:hover { background: var(--surface-muted); }
-.sidebar nav button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
+.sidebar nav:not(.sidebar-projects) button:hover { background: var(--surface-muted); }
+.sidebar nav:not(.sidebar-projects) button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
 /* 项目列表占掉侧栏剩下的高度并自己滚动；侧栏本身是 fixed 的 flex 列，
    不给 min-height: 0 的话长列表会把整栏撑出屏幕。 */
 .sidebar-projects { flex: 1 1 auto; min-height: 0; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); overflow-y: auto; display: grid; align-content: start; gap: var(--space-3); }
 .sidebar-projects-loading { margin: 0; padding: 0 10px; color: var(--subtle); font-size: var(--text-xs); }
 .sidebar-folder { display: grid; gap: 2px; }
 .sidebar-folder ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
-.sidebar-folder-name { margin: 0; padding: 4px 10px; display: flex; align-items: center; gap: var(--space-2); color: var(--subtle); font-size: var(--text-2xs); font-weight: 750; letter-spacing: .04em; }
-.sidebar-folder-name svg { width: 13px; height: 13px; flex: none; }
-.sidebar-folder-name span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-project { min-height: 32px; width: 100%; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0 10px 0 18px; display: flex; align-items: center; gap: var(--space-2); text-align: left; color: var(--ink); font-size: var(--text-sm); }
-.sidebar-project:hover { background: var(--surface-muted); }
+/* 分组名带图标时，它的文字会被图标推到项目名右边，层级读起来是反的。
+   去掉图标，分组名和项目名共用同一条左边界，靠字号和颜色分层。 */
+.sidebar-folder-name { margin: 0; padding: 6px 10px 2px; color: var(--subtle); font-size: var(--text-2xs); font-weight: 750; letter-spacing: .04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 整行是一个 hover 目标，垃圾桶在行内右端，不占项目名的宽度。 */
+.sidebar-project-row { position: relative; display: flex; align-items: center; border-radius: var(--radius-sm); }
+.sidebar-project-row:hover { background: var(--surface-muted); }
+.sidebar-project { min-height: 34px; min-width: 0; flex: 1 1 auto; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 0 4px 0 10px; display: flex; align-items: center; gap: var(--space-2); text-align: left; color: var(--ink); font-size: var(--text-sm); }
 .sidebar-project.active { background: var(--brand-green-soft); color: var(--brand-green-dark); font-weight: 700; }
+.sidebar-project-row:has(.sidebar-project.active) { background: var(--brand-green-soft); }
+/* 平时不出现，免得两三个项目的侧栏看起来全是按钮；指到这一行或键盘聚焦才露出来。 */
+.sidebar-project-delete { flex: none; width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; opacity: 0; }
+.sidebar-project-delete svg { width: 14px; height: 14px; }
+.sidebar-project-row:hover .sidebar-project-delete, .sidebar-project-delete:focus-visible { opacity: 1; }
+.sidebar-project-delete:hover:not(:disabled) { background: var(--red-soft); color: var(--red); }
+.sidebar-project-delete:disabled { opacity: 0; }
 .sidebar-project-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-project-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: #fff; font-size: var(--text-2xs); font-weight: 800; line-height: 18px; text-align: center; }
 .mobile-header { display: none; }
@@ -1920,7 +1929,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .interface-refresh .brand { letter-spacing: -.04em; }
 .interface-refresh .sidebar { border-color: var(--line); background: var(--sidebar); }
 .interface-refresh .avatar { background: #dce5d7; color: #3b5542; }
-.interface-refresh .sidebar nav button { min-height: 44px; font-size: 13px; border-radius: 10px; transition: background 160ms ease, color 160ms ease; }
+.interface-refresh .sidebar nav:not(.sidebar-projects) button { min-height: 44px; font-size: 13px; border-radius: 10px; transition: background 160ms ease, color 160ms ease; }
 .interface-refresh .sidebar nav button.active { background: var(--brand-green-soft); color: var(--brand-green-dark); box-shadow: inset 0 0 0 1px #d9e5d8; }
 .interface-refresh .sidebar-toggle { box-shadow: none; }
 .interface-refresh .public-workspace-notice { position: relative; width: 100%; min-height: 32px; margin-bottom: 12px; border: 0; border-bottom: 1px solid #e5e8e0; border-radius: 0; background: transparent; color: #7a7564; justify-content: flex-end; padding: 7px 0; font-size: 11px; backdrop-filter: none; }
