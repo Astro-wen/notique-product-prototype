@@ -1972,3 +1972,25 @@ test("概要条目的引用校验会先做去尾修复，再严格校验", async
   assert.match(source, /segmentIds\(item\.source_segment_ids, `\$\{itemPath\}\.source_segment_ids`, issues, 24, rawById\)/);
   assert.match(source, /const id = known \? repairSegmentId\(raw, known\) : raw;/);
 });
+
+
+test("等上游或等下一批分块时放回队列，不消耗尝试次数", async () => {
+  const job = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  // leaseRun 领取时加一，放回时对称地减一；否则下游等易读稿那几分钟里被领
+  // 十来次，attempt_no 越过上限，模型第一次抄错就被判死。
+  assert.match(job, /attempt_no = attempt_no \+ CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END/);
+  const release = job.slice(job.indexOf("async function releaseForNextReadableChunk"), job.indexOf("async function parkReadableChunkFailure"));
+  assert.match(release, /attempt_no = MAX\(0, attempt_no - CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END\)/);
+  // 等上游的放回走的就是这个函数，且延时不再是十五秒。
+  assert.match(job, /readiness\.state === "wait"[\s\S]{0,260}releaseForNextReadableChunk\(run, owner, 0, 0, 5_000\)/);
+});
+
+test("阅读区在整理期间显示五步进度，只看每种最新一次运行", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const block = page.slice(page.indexOf("const readingProgress = useMemo"), page.indexOf("}, [runs, artifactRunning]);"));
+  assert.match(block, /READING_ARTIFACT_DEFINITIONS\.map/);
+  assert.match(block, /run\.created_at > best\.created_at \? run : best/);
+  // 全部完成后进度条收起，不留一个 5/5 挂在那里。
+  assert.match(block, /active: artifactRunning && done < steps\.length/);
+  assert.match(page, /readingProgress\.active && <div className="reading-progress"/);
+});

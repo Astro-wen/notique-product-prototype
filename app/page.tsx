@@ -5808,6 +5808,24 @@ function TranscriptArtifactsPanel({
   }, [refreshTranscript, transcriptRevision]);
 
   const artifactRunning = runs.some((run) => run.status === "queued" || run.status === "processing");
+  // 模型调用没有中间进度，能诚实报的是五步里走到第几步。每种只看最新一次运行。
+  const readingProgress = useMemo(() => {
+    const labels: Record<string, string> = {
+      readable_transcript: "易读逐字稿", chapters: "章节", speakers: "发言总结", key_points: "要点", overview: "概要",
+    };
+    const steps = READING_ARTIFACT_DEFINITIONS.map((definition) => {
+      const latest = runs
+        .filter((run) => run.kind === definition.kind)
+        .reduce<typeof runs[number] | null>((best, run) => !best || run.created_at > best.created_at ? run : best, null);
+      const state = latest?.status === "succeeded" ? "done"
+        : latest?.status === "processing" ? "active"
+        : latest?.status === "failed" ? "failed"
+        : "pending";
+      return { kind: definition.kind, label: labels[definition.kind] ?? definition.kind, state };
+    });
+    const done = steps.filter((step) => step.state === "done").length;
+    return { steps, done, total: steps.length, active: artifactRunning && done < steps.length };
+  }, [runs, artifactRunning]);
   useEffect(() => {
     if (!artifactRunning) return;
     const timer = window.setInterval(() => void load(true), 5_000);
@@ -6676,6 +6694,13 @@ function TranscriptArtifactsPanel({
     >
     <section className="reader-overview" aria-label="智能速览">
       <h2 className="tingwu-overview-title"><NotebookPen aria-hidden="true" />记录概览</h2>
+      {readingProgress.active && <div className="reading-progress" role="status" aria-live="polite" aria-label={`阅读整理 ${readingProgress.done}/${readingProgress.total}`}>
+        <div><span><i className="spinner" aria-hidden="true" />正在整理阅读版本</span><strong>{readingProgress.done}/{readingProgress.total}</strong></div>
+        <progress max={readingProgress.total} value={readingProgress.done} />
+        <ol>
+          {readingProgress.steps.map((step) => <li key={step.kind} className={`reading-progress-step is-${step.state}`}>{step.label}</li>)}
+        </ol>
+      </div>}
 
       <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewText}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : <p className="rail-muted">{analysisRunning ? "概要正在整理，原文已可阅读。" : "暂无全文概要，可以阅读下方原文。"}</p>}</section></SmoothResize>
       <header className="reader-intelligence-heading">

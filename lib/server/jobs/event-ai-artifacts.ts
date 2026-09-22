@@ -339,6 +339,18 @@ async function parkReadableChunkPending(
   ]);
 }
 
+/**
+ * 把运行放回队列，但这一次领取不算一次尝试。
+ *
+ * leaseRun 每领取一次就把 attempt_no 加一，而这里的两种放回都不是失败：
+ * 易读稿做完一批分块等下一批，下游视图等上游还没好。等易读稿那几分钟里
+ * 下游会被领起来又放回十来次，attempt_no 涨到两位数，早就越过
+ * MAX_CREATE_ATTEMPTS。之后模型第一次抄错 id，retryInvalidOutput 一看次数
+ * 已耗尽，直接判死。界面上就是"这次总结未完成"，用户以为模型不稳定，
+ * 其实是等待被记成了失败。放回时把领取加上的那一次减掉，attempt_no 只数
+ * 真正打到模型的次数。只减 provider_request_id 为空的情况，和领取时加一的
+ * 条件对称。
+ */
 async function releaseForNextReadableChunk(
   run: Row,
   owner: string,
@@ -350,7 +362,8 @@ async function releaseForNextReadableChunk(
   await getD1().prepare(
     `UPDATE event_ai_artifact_runs
         SET status = 'queued', next_attempt_at = ?, lease_owner = NULL,
-            lease_expires_at = NULL, error_code = NULL, error_details_json = ?, updated_at = ?
+            lease_expires_at = NULL, error_code = NULL, error_details_json = ?, updated_at = ?,
+            attempt_no = MAX(0, attempt_no - CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END)
       WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
   ).bind(
     nextPoll(timestamp, delayMs),
@@ -624,8 +637,9 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
       const statuses = await readingDependencyStatuses(String(run.event_id), definition.dependsOn);
       const readiness = readingArtifactReadiness(kind, (dependency) => statuses[dependency] ?? "missing");
       if (readiness.state === "wait") {
-        // 上游还在跑。退回队列等下一轮，不抢跑也不白花一次调用。
-        await releaseForNextReadableChunk(run, owner, 0, 0, 15_000);
+        // 上游还在跑。退回队列等下一轮，不抢跑也不白花一次调用；这一次
+        // 领取不算尝试，见 releaseForNextReadableChunk。五秒够派发器转一圈。
+        await releaseForNextReadableChunk(run, owner, 0, 0, 5_000);
         return "pending";
       }
       if (readiness.state === "abandon") {

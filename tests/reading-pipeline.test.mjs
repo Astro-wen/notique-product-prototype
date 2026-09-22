@@ -22,12 +22,15 @@ test("chapters are the spine: only they and the readable pass read the whole tra
   assert.deepEqual(readingArtifactDefinition("speakers").dependsOn, ["chapters"]);
   assert.deepEqual(readingArtifactDefinition("key_points").dependsOn, ["chapters"]);
   assert.deepEqual(readingArtifactDefinition("readable_transcript").dependsOn, []);
+  // 章节读的是原始分段，从没用过易读版；挂在它后面只是白等三万 token 生成完。
+  assert.deepEqual(readingArtifactDefinition("chapters").dependsOn, []);
 });
 
 test("dispatch order follows the dependency graph and parallelises each wave", () => {
-  assert.deepEqual(readingArtifactWaves(), [
-    ["readable_transcript"],
-    ["chapters"],
+  const waves = readingArtifactWaves();
+  // 易读稿和章节同一波并行，章节不再等易读稿。
+  assert.deepEqual(new Set(waves[0]), new Set(["readable_transcript", "chapters"]));
+  assert.deepEqual(waves.slice(1), [
     ["speakers", "key_points"],
     ["overview"],
   ]);
