@@ -6,8 +6,9 @@ import type { RoutingSource } from "@/lib/domain/material-routing";
 /**
  * 归属建议的读写（第三层）。
  *
- * 只写，不搬。把材料从一个项目移到另一个项目这件事今天并不存在，所以这里没有
- * 「接受建议」的路径，只有一条摆着的数据和一个划掉的动作。
+ * 只写，不搬。这里始终只有一条摆着的数据和一个划掉的动作；接受建议之后真正的
+ * 搬动在 lib/server/db/event-move-repository.ts，它搬完会把这条建议删掉。
+ * 两件事分开，是因为建议可以错，而搬动必须对。
  */
 
 type Row = Record<string, unknown>;
