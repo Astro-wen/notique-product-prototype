@@ -513,13 +513,14 @@ export async function reopenProjectAction(
            SELECT 1 FROM claim_relations WHERE id = ? AND status = 'active'
          ) THEN 1 ELSE 0 END, ?`,
       ).bind(guardId, relationId, timestamp),
-      db.prepare(`UPDATE claim_relations SET status = 'inactive' WHERE id = ?`).bind(relationId),
+      // 那条「已完成：…」是完成时合成的，不是从原话里来的，撤回就整条删掉，
+      // 连同关系。留着只会让下一次完成撞上同一个键。
       db.prepare(
-        `UPDATE claims SET lifecycle_status = 'withdrawn', withdraw_reason = 'action_reopened', updated_at = ?
-          WHERE workspace_id = ? AND current_version_id = (
-            SELECT source_claim_version_id FROM claim_relations WHERE id = ?
-          )`,
-      ).bind(timestamp, scope.workspaceId, relationId),
+        `DELETE FROM claims
+          WHERE workspace_id = ? AND source = 'human'
+            AND current_version_id = (SELECT source_claim_version_id FROM claim_relations WHERE id = ?)`,
+      ).bind(scope.workspaceId, relationId),
+      db.prepare(`DELETE FROM claim_relations WHERE id = ?`).bind(relationId),
       db.prepare(
         `UPDATE claims SET lifecycle_status = 'active', resolved_at = NULL, updated_at = ?
           WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'resolved'`,
@@ -613,7 +614,7 @@ export async function completeProjectAction(
         action.project_id,
         action.event_id,
         action.extraction_run_id,
-        `completed:${claimId}`,
+        `completed:${claimId}:${timestamp}`,
         completionVersionId,
         action.first_event_id,
         timestamp,

@@ -204,8 +204,10 @@ test("a completed action can be reopened, and the check toggles it back", async 
   ]);
   const reopen = repo.slice(repo.indexOf("export async function reopenProjectAction"), repo.indexOf("export async function completeProjectAction"));
   // 撤回完成：完成时建的那条「已完成」结论撤回，关系停用，行动回到进行中。
-  assert.match(reopen, /UPDATE claim_relations SET status = 'inactive' WHERE id = \?/);
-  assert.match(reopen, /withdraw_reason = 'action_reopened'/);
+  // 撤回直接删掉合成的那条结论和关系；键带时间，撤回再完成不会撞唯一索引。
+  assert.match(reopen, /DELETE FROM claims[\s\S]{0,160}source_claim_version_id FROM claim_relations WHERE id = \?/);
+  assert.match(reopen, /DELETE FROM claim_relations WHERE id = \?/);
+  assert.match(repo, /`completed:\$\{claimId\}:\$\{timestamp\}`/);
   assert.match(reopen, /SET lifecycle_status = 'active', resolved_at = NULL/);
   assert.match(route, /segments\[2\] === "reopen"/);
   assert.match(client, /\/reopen`/);
