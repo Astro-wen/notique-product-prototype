@@ -109,9 +109,10 @@ test("the first completed snapshot opens Raw and a refresh restores it without a
   await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ })).toHaveAttribute("aria-pressed", "true");
   await expect(rail.getByRole("button", { name: "从第一条开始确认" })).toBeVisible();
   await rail.locator(".rail-pending-list").getByText("预算上限是 120 万美元", { exact: true }).click();
-  await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
-  await expect(rail).toContainText("预算上限是 120 万美元。");
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
+  // 待确认里点一条，就地打开证据和判断按钮，不跳走。
+  await expect(rail.locator(".inline-review-view")).toContainText("原始证据");
+  await expect(rail.locator(".inline-review-view")).toContainText("预算上限是 120 万美元。");
+  await expect(rail.locator(".inline-review-view").getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
   await expect(page).toHaveURL(/view=simple(?!.*claim=)/);
   await expect(page.locator(".draft-actions")).toHaveCount(0);
   if (!isMobile(testInfo)) await expect(page.locator(".reader-reading-pane")).toBeVisible();
@@ -219,13 +220,12 @@ test("a Summary sentence with two overlapping Claims requires an explicit choice
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expandSummaryIfCollapsed(page);
 
-  // 同一句原话挂着两条待确认，操作栏把两条都列出来，读者必须点名选一条。
+  // 同一句原话挂着两条待确认：核对详情只说有两条，判断到待确认里做。
   await selectSourceTurn(page, "预算上限是 120 万美元");
   const rail = page.locator(".reader-action-rail");
-  await expect(rail.locator(".rail-review-item")).toHaveCount(2);
-  await expect(rail.getByRole("button", { name: /客户仍需确认 120 万美元是否包含装修预算/ })).toBeVisible();
-
-  await rail.getByRole("button", { name: /客户仍需确认 120 万美元是否包含装修预算/ }).click();
+  await expect(rail.getByRole("button", { name: /这句里有 2 条待确认，去处理/ })).toBeVisible();
+  await rail.getByRole("button", { name: /这句里有 2 条待确认，去处理/ }).click();
+  await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page).toHaveURL(/view=simple(?!.*claim=)/);
   // 内联核对面板打开的是这条的证据，读者在这里逐条对原文。
   await expect(rail.locator(".inline-review-view")).toContainText("原始证据");
@@ -498,14 +498,13 @@ test("a visible source can be confirmed in place without leaving the reading wor
   await expandSummaryIfCollapsed(page);
   await selectSourceTurn(page, "预算上限是 120 万美元");
   const rail = page.locator(".reader-action-rail");
-  await expect(rail.getByText("预算上限是 120 万美元", { exact: true }).last()).toBeVisible();
   await expect(rail.locator(".point-trust-state.pending")).toHaveText("需确认");
-  await expect(rail.locator(".rail-review-row .status-badge.warning")).toHaveText("待确认");
-  await rail.getByRole("button", { name: "确认", exact: true }).click();
+  // 核对详情只看原话；判断在待确认里做，从这句直接跳过去。
+  await rail.getByRole("button", { name: /这句里有 1 条待确认，去处理/ }).click();
+  await expect(rail.locator(".inline-review-view")).toContainText("原始证据");
+  await rail.locator(".inline-review-view").getByRole("button", { name: "确认并加入正式结果" }).click();
 
-  await expect(rail.locator(".point-trust-state.verified")).toHaveText("已确认");
-  await expect(rail.locator(".rail-review-row .status-badge.success")).toHaveText("已确认");
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
+  await expect(rail.locator(".inline-review-view")).toHaveCount(0);
   await expect(page).toHaveURL(/view=simple/);
   expect(apiFixture.writes.find(({ path }) => path.endsWith("/claim-summary-pending/verdicts"))?.body).toMatchObject({
     action: "confirm",
@@ -513,23 +512,6 @@ test("a visible source can be confirmed in place without leaving the reading wor
   });
 });
 
-test("an incompletely displayed source cannot be quick-confirmed", async ({ page, apiFixture }) => {
-  apiFixture.completeSummary();
-  apiFixture.completeReadableTranscript();
-  apiFixture.completeFacts();
-  apiFixture.enableIncompleteSummaryEvidence();
-  await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expandSummaryIfCollapsed(page);
-
-  await selectSourceTurn(page, "预算上限是 120 万美元");
-  const rail = page.locator(".reader-action-rail");
-  const row = rail.locator(".rail-review-row").filter({ hasText: "预算上限是 120 万美元" });
-  await expect(row.getByRole("button", { name: "确认", exact: true })).toBeDisabled();
-  await expect(row).toContainText("这条还需补证据或判断与旧记录的关系");
-  await expect(row.getByRole("button", { name: "打开详情核对" })).toBeVisible();
-  await expect(page).toHaveURL(/view=simple(?!.*claim=)/);
-  expect(apiFixture.writes.some(({ path }) => path.includes("/verdicts"))).toBe(false);
-});
 
 test("chapter and speaker insights stay selected above the same transcript document", async ({ page, apiFixture }) => {
   apiFixture.completeSummary();

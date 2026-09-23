@@ -119,7 +119,9 @@ test("a Summary point opens source, verification, and action controls in the sam
   await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
   await expect(rail).toContainText("录音与原话");
   await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: "核对详情", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
+  // 核对详情只看原话，判断到待确认里做。
+  await expect(rail.getByRole("button", { name: /这句里有 1 条待确认，去处理/ })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
@@ -140,9 +142,8 @@ test("a reviewed Summary item exposes its source in place while pending work rem
   await rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
   await expect(rail).toContainText("对照原话检查金额、日期和负责人");
   await rail.locator(".rail-pending-list").getByText("预算上限是 120 万美元", { exact: true }).click();
-  await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
-  await expect(rail.locator(".point-trust-state.pending")).toHaveText("需确认");
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
+  await expect(rail.locator(".inline-review-view")).toContainText("原始证据");
+  await expect(rail.locator(".inline-review-view").getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
   await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
 });
 

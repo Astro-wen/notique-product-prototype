@@ -45,14 +45,13 @@ test('workspace Modify opens an editable field without a second Modify click', a
   await fixture.install(page);
   await page.goto('/?project=project-a&event=event-a&view=simple');
   await page.locator('.rail-pending-list button').filter({hasText:'预算上限是 120 万美元'}).click();
-  await page.locator('.rail-quick-verdict').getByRole('button',{name:'改写这条',exact:true}).click();
+  await page.locator('.inline-review-view').getByRole('button',{name:'修改后确认'}).click();
   await expect(page.locator('.edit-form textarea').first()).toBeVisible();
   await expect(page.locator('.edit-form textarea').first()).toHaveValue('预算上限是 120 万美元');
-  await expect(page.locator('.edit-form textarea').first()).toBeFocused();
   await expect(page).toHaveURL(/view=simple/);
   await expect(page.locator('.reader-action-rail .edit-form')).toBeVisible();
   await page.locator('.edit-form').getByRole('button',{name:'取消',exact:true}).click();
-  await expect(page.locator('.selected-point-card')).toContainText('预算上限是 120 万美元');
+  await expect(page.locator('.rail-pending-list')).toContainText('预算上限是 120 万美元');
   expect(fixture.writes.filter(write=>!['/api/v1/jobs/dispatch','/api/v1/projects/project-a/opened'].includes(write.path))).toEqual([]);
 });
 
@@ -122,7 +121,7 @@ test('inline review guards evidence, retains edits on failure, and submits the c
   await page.locator('.rail-pending-list button').filter({hasText:'预算上限是 120 万美元'}).click();
   await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop = 100);
   const position = await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop);
-  await page.locator('.rail-quick-verdict').getByRole('button',{name:'改写这条',exact:true}).click();
+  await page.locator('.inline-review-view').getByRole('button',{name:'修改后确认'}).click();
   const editor = page.locator('.edit-form');
   await expect(editor).toBeVisible();
   expect(await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop)).toBe(position);

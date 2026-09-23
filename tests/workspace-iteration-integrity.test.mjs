@@ -115,37 +115,23 @@ test("cancelling during Asset init aborts the real control-plane request", async
   }
 });
 
-test("the reading rail supports guarded in-place decisions and source-seeded actions", () => {
-  assert.match(page, /async function quickVerdictFromWorkspace/);
-  // The gate reads the refs it is handed, not the Claim: a Claim from the list
-  // payload carries evidence ids only, so reading them off it made this gate
-  // see no evidence at all and refuse every in-place confirmation.
-  assert.match(page, /if \(!refs\.length \|\| !visibleSourceIds\.length\) return false/);
-  assert.match(page, /ref\.kind\.includes\("transcript"\)[\s\S]{0,160}ref\.segmentIds\.every\(\(id\) => visible\.has\(id\)\)/);
-  assert.match(page, /const displayedSourceIds = selectedSourceGroups\.flatMap/);
-  assert.match(page, /claimEvidenceFitsSourceRail\(claimEvidence\(claim\), displayedSourceIds\)/);
-  assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds, claimEvidence\(claim\)\)/);
-  assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
-  assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
-  // 手写行动的表单删了：行动只来自模型建议，接受就进清单。
-  assert.doesNotMatch(page, /rail-action-composer|添加跟进行动|负责人（可选）/);
+test("the reading rail is a lens: evidence in 核对详情, decisions only in 待确认, no manual entry", () => {
+  // 待确认里点一条就地打开证据和判断；核对详情只看原话，只告诉人这句有几条在等。
+  assert.match(page, /function selectClaimInRail\(claim: Claim\) \{[\s\S]{0,400}setInlineReview\(\{ id: claim\.id, edit: false \}\);\s*setActionView\("pending"\)/);
+  assert.match(page, /actionView === "pending" && inlineReview && <div className="reader-action-body inline-review-view"/);
+  assert.match(page, /这句里有 \{pendingHere\.length\} 条待确认，去处理/);
+  assert.doesNotMatch(page, /rail-quick-verdict|rail-review-warning|rail-capture-point/);
+  // 手工补录和手写行动的表单都删了：内容只来自模型，人只做判断。
+  assert.doesNotMatch(page, /MissingClaimModal|保存这条重点|从原文补充行动|rail-action-composer|添加跟进行动|负责人（可选）/);
   // 行动页是清单：模型找出的下一步先列成建议，勾一下进自己的清单。
+  assert.match(page, /async function quickVerdictFromWorkspace/);
   assert.match(page, /const suggestedActions = claims\.filter\(\(claim\) =>[\s\S]{0,80}claim\.type === "next_action" && claim\.reviewStatus === "pending"/);
   assert.match(page, /aria-label="建议加入的行动"/);
   assert.match(page, /aria-label="我的清单"/);
   assert.match(page, /function selectTranscriptGroup/);
-  assert.match(page, /selectTranscriptGroup\(group, "raw"\)/);
   assert.match(page, /const trustedEventActionItems = eventActionItems\.filter/);
   assert.match(page, /action\.status === "confirmed" \|\| action\.status === "completed"/);
   assert.doesNotMatch(page, /setSourceDrawer|className="source-drawer"/);
-  assert.match(page, /const stayInWorkspace = stayInWorkspaceOverride \?\? Boolean/);
-  assert.match(page, /if \(!stayInWorkspace\) \{\s*await loadReviewQueue\("draft"\)/);
-  assert.match(page, /initialSourceText=\{missingClaimSeed\?\.sourceText\}/);
-  assert.match(page, /initialStatement=\{missingClaimSeed\?\.statement\}/);
-  assert.match(page, /new Set\(initialSegmentIds\.slice\(0, 8\)\)/);
-  assert.match(page, /这是事实，不是行动/);
-  assert.match(page, /rail-review-warning/);
-  assert.match(styles, /\.rail-quick-verdict/);
 });
 
 test("the simple launchpad treats a Transcript as a first-class source", () => {

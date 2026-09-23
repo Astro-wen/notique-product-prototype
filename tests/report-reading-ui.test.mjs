@@ -77,8 +77,7 @@ test("results use four general project entrances and keep other views accessible
 
 test("action and timeline empty states offer useful next steps", () => {
   assert.match(page, /查看 AI 建议/);
-  assert.match(page, /从原文补充行动/);
-  assert.match(page, /setMissingClaimDefaultType\("next_action"\)/);
+  assert.doesNotMatch(page, /从原文补充行动/);
   assert.match(page, /const timelineFilters/);
   assert.match(page, /金额.*要求与偏好.*对象.*行动.*发生变化/s);
   assert.match(page, /timelineMomentMatches/);
