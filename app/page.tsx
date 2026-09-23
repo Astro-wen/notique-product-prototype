@@ -6058,8 +6058,13 @@ function TranscriptArtifactsPanel({
   // 「内容生成中」，包括任务还没取到页面上的那几秒。见 readingViewState。
   const anyReadingRun = runs.some((artifactRun) => READING_ARTIFACT_DEFINITIONS.some((definition) => definition.kind === artifactRun.kind));
   const noReadingWillCome = !anyReadingRun && Boolean(analysisRun) && !analysisRunning;
+  // 产物和逐字稿是两条请求并行取的。产物先到、逐字稿还没到时，产物因为对不上
+  // 原文而暂时不算数，这一瞬间不能判成失败，否则会闪一下「这次没写出概要」。
+  const readingInputsLoading = transcriptState === "loading" || artifactState === "loading";
   const viewStateFor = (hasContent: boolean, pair: { run?: { status?: string } | null }) =>
-    readingViewState({ hasContent, runStatus: viewRunStatus(pair), noReadingWillCome });
+    readingInputsLoading && !hasContent
+      ? "generating"
+      : readingViewState({ hasContent, runStatus: viewRunStatus(pair), noReadingWillCome });
   const chaptersState = viewStateFor(generatedChapters.length > 0, chaptersPair);
   const speakersState = viewStateFor(generatedSpeakerSummaries.length > 0, speakersPair);
   const keyPointsState = viewStateFor(keyPoints.length > 0, keyPointsPair);
