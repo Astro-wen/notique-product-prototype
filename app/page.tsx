@@ -1215,7 +1215,7 @@ function ReadingGenerating() {
 
 /** 这一个视图的任务失败了，别的视图不受影响。 */
 function ReadingFailed({ text, busy, onRetry }: { text: string; busy: boolean; onRetry: () => void }) {
-  return <div className="reading-view-empty"><p>{text}</p><button className="text-button" disabled={busy} onClick={onRetry}>重新生成</button></div>;
+  return <div className="reading-view-empty"><p><i className="spinner" aria-hidden="true" />{text}</p><button className="text-button" disabled={busy} onClick={onRetry}>再试一次</button></div>;
 }
 
 function ProjectDeleteModal({ preview, busy, onClose, onConfirm }: {
@@ -6079,6 +6079,32 @@ function TranscriptArtifactsPanel({
     const timer = window.setInterval(() => void load(true), 4_000);
     return () => window.clearInterval(timer);
   }, [readingPollNeeded, load]);
+  // 某个视图的任务失败了，先自己重试，不把失败摆给人看。每个视图最多自动重来两次，
+  // 同一次失败只重来一次；重来还是失败才留一个「再试一次」。
+  const autoRetriedRuns = useRef(new Map<string, number>());
+  const failedViewRuns = [
+    ["chapters", chaptersState, chaptersPair] as const,
+    ["speakers", speakersState, speakersPair] as const,
+    ["key_points", keyPointsState, keyPointsPair] as const,
+    ["overview", overviewState, overviewPair] as const,
+  ].filter(([, state, pair]) => state === "failed" && pair.run?.status === "failed" && pair.run.id);
+  const failedViewKey = failedViewRuns.map(([kind, , pair]) => `${kind}:${pair.run!.id}`).join(",");
+  useEffect(() => {
+    if (!failedViewKey) return;
+    const retryKinds: ReadingArtifactKind[] = [];
+    for (const [kind, , pair] of failedViewRuns) {
+      const runId = pair.run!.id;
+      if (autoRetriedRuns.current.has(`${kind}:${runId}`)) continue;
+      const perKind = [...autoRetriedRuns.current.keys()].filter((key) => key.startsWith(`${kind}:`)).length;
+      if (perKind >= 2) continue;
+      autoRetriedRuns.current.set(`${kind}:${runId}`, 1);
+      retryKinds.push(kind);
+    }
+    if (!retryKinds.length) return;
+    void onRetryReading(event.id, retryKinds).then(() => load(true)).catch(() => undefined);
+    // failedViewRuns 由 failedViewKey 唯一决定。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failedViewKey, event.id, onRetryReading, load]);
   const useFallbackChapters = shouldUseFallbackChapters({
     generatedCount: generatedChapters.length,
     viewState: chaptersState,
@@ -6719,7 +6745,6 @@ function TranscriptArtifactsPanel({
     // 旧的两种，所以四个视图的重新生成从来点不通。现在只把失败的种类交
     // 上去；缺失也算失败，因为按钮只在空态里出现。
     const statuses: Array<[ReadingArtifactKind, string | undefined]> = [
-      ["readable_transcript", readablePair.run?.status],
       ["chapters", viewRunStatus(readingPairFor("chapters"))],
       ["speakers", viewRunStatus(readingPairFor("speakers"))],
       ["key_points", viewRunStatus(readingPairFor("key_points"))],
@@ -6761,7 +6786,7 @@ function TranscriptArtifactsPanel({
       ? <Fragment key={pieceIndex}>{piece.text}</Fragment>
       : piece.claimId
         ? <button key={pieceIndex} type="button" className="overview-figure is-claim" title="打开这条结论核对" onClick={() => onOpenClaim(piece.claimId!)}>{piece.text}</button>
-        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没写出概要，可以先读下方原文。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}</section></SmoothResize>
+        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="概要还在生成，可以先读原文。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}</section></SmoothResize>
       <header className="reader-intelligence-heading">
         <nav className="reader-insight-tabs" aria-label="智能速览方式">
           <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
@@ -6781,22 +6806,22 @@ function TranscriptArtifactsPanel({
               <button className="tingwu-recall" onClick={() => locateRawSources(ids)}><span aria-hidden="true">↶</span> 回顾</button></footer>
           </div>
         </article>;
-      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出要点。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
+      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="要点还在生成。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
       {orderedSummaryChapters.length ? <>
-        {useFallbackChapters && <p className="rail-muted chapter-fallback-note">这次没整理出章节，先按时间粗分，方便定位 <button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>重新生成</button></p>}
+        {useFallbackChapters && <p className="rail-muted chapter-fallback-note">章节还在生成，先按时间粗分方便定位 <button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact().catch(() => undefined)}>重新生成</button></p>}
         <div>{(chaptersExpanded ? orderedSummaryChapters : orderedSummaryChapters.slice(0, 2)).map((chapter) => renderChapter(chapter))}</div>
         <button className="text-button chapter-expand" aria-expanded={chaptersExpanded} onClick={() => setChaptersExpanded((value) => !value)}>{chaptersExpanded ? "收起章节" : `展开全部章节（${orderedSummaryChapters.length}）`}</button>
-      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出章节。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
+      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="章节还在生成。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     {insightView === "speakers" && <section className="tingwu-speaker-summaries" aria-label="发言总结内容">
       {generatedSpeakerSummaries.length ? <><div className={speakersExpanded ? "expanded" : "collapsed"}>{generatedSpeakerSummaries.map((speaker, index) => <article key={`${firstString(speaker, ["asset_version_id"])}-${index}`}>
         <div className={`tingwu-speaker-label speaker-tone-${index % 4}`}><span className="speaker-avatar" aria-hidden="true"><Users /></span><span>{displaySpeakerLabel(speaker.speaker)}</span></div>
         <p>{firstString(speaker, ["summary"])}</p>
-      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="这次没整理出发言总结。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
+      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="发言总结还在生成。" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact().catch(() => undefined)} />}
     </section>}
 
     </SmoothResize>

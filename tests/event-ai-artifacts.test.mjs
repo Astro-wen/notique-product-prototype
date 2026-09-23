@@ -1953,9 +1953,11 @@ test("生成阅读总结按钮只重试失败的种类，不再传 summary", asy
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(page, /onRetryArtifact\(event\.id, "summary"\)/);
   const fn = page.slice(page.indexOf("async function retrySummaryArtifact"), page.indexOf("async function startAnalysisAndLoadArtifacts"));
-  for (const kind of ["readable_transcript", "chapters", "speakers", "key_points", "overview"]) {
+  for (const kind of ["chapters", "speakers", "key_points", "overview"]) {
     assert.ok(fn.includes(`"${kind}"`), `按钮必须考虑 ${kind}`);
   }
+  // 易读逐字稿删掉了，再传它服务端会 400。
+  assert.ok(!fn.includes('"readable_transcript"'));
   assert.match(fn, /status === "failed" \|\| status == null/);
   assert.match(fn, /if \(failed\.length\) await onRetryReading\(event\.id, failed\)/);
   const parent = page.slice(page.indexOf("async function retryReadingArtifacts"), page.indexOf("async function retryEventAiArtifact("));

@@ -205,7 +205,7 @@ test("a readable transcript can be chosen when Summary is unavailable without re
   apiFixture.completeReadableTranscript();
 
   // 概要那条任务失败了：说一句失败，原文照样能读。
-  await expect(page.locator(".tingwu-overview-copy p")).toContainText("这次没写出概要，可以先读下方原文。");
+  await expect(page.locator(".tingwu-overview-copy p")).toContainText("概要还在生成，可以先读原文。");
   await expect(page.getByTestId("transcript-turn").filter({ hasText: "预算上限是 120 万美元" }).first()).toBeVisible();
   await expect(page.locator("#transcript-document")).toBeVisible();
   expect(nonWakeWrites(apiFixture)).toEqual([]);
@@ -624,9 +624,9 @@ test("failed Summary and readable transcript fall back to Raw without exposing m
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
 
   await expect(page.getByTestId("transcript-turn").filter({ hasText: "预算上限是 120 万美元。" }).first()).toBeVisible();
-  await expect(page.locator(".tingwu-overview-copy p")).toContainText("这次没写出概要，可以先读下方原文。");
+  await expect(page.locator(".tingwu-overview-copy p")).toContainText("概要还在生成，可以先读原文。");
   await page.getByRole("button", { name: "要点回顾" }).click();
-  await expect(page.getByText("这次没整理出要点。", { exact: true })).toBeVisible();
+  await expect(page.getByText("要点还在生成。", { exact: true })).toBeVisible();
   await expect(page.getByText("MODEL_OUTPUT_INVALID", { exact: true })).toHaveCount(0);
   expect(nonWakeWrites(apiFixture)).toEqual([]);
 });

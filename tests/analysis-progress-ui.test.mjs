@@ -72,7 +72,7 @@ test("the workspace keeps analysis progress user-facing and hides internal diagn
   ]);
   // 概要还没写完显示「内容生成中」，不再根据事实线在不在跑来猜。
   assert.match(page, /overviewState === "generating" \? <ReadingGenerating \/>/);
-  assert.match(page, /这次没写出概要，可以先读下方原文。/);
+  assert.match(page, /概要还在生成，可以先读原文。/);
   assert.doesNotMatch(page, /data-testid="analysis-progress-journey"/);
   assert.doesNotMatch(page, /处理详情|测试版本·每秒更新|后端定期检查模型任务/);
   assert.match(page, /className="reader-intelligence-heading"/);
