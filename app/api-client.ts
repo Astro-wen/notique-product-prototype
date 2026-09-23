@@ -47,6 +47,7 @@ import type {
   DraftLinkVerdictResponse,
   ProjectActionsResponse,
   CompleteProjectActionResponse,
+  ReopenProjectActionResponse,
   PermanentProjectDeleteResponse,
   EventTrashPreviewResponse,
   ListTrashedEventsResponse,
@@ -1371,6 +1372,14 @@ export const api = {
       },
     );
     return body.data.completion;
+  },
+
+  async reopenProjectAction(claimId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<ReopenProjectActionResponse>(
+      `/api/v1/actions/${encodeURIComponent(claimId)}/reopen`,
+      { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: "{}" },
+    );
+    if (body.data.reopened?.actionClaimId !== claimId) invalidContract("The server reopened a different action.");
   },
 
   async getReviewSession(projectId: Id): Promise<ReviewSession | null> {

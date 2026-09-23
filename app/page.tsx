@@ -4289,6 +4289,25 @@ export default function Home() {
     }
   }
 
+  async function reopenAction(claimId: string) {
+    if (!project) return;
+    const fingerprint = `reopen-action:${claimId}`;
+    const idempotencyKey = mutationKeys.current.get(fingerprint) || crypto.randomUUID();
+    mutationKeys.current.set(fingerprint, idempotencyKey);
+    setBusyAction(fingerprint);
+    setEventIssue(null);
+    try {
+      await api.reopenProjectAction(claimId, idempotencyKey);
+      mutationKeys.current.delete(fingerprint);
+      await invalidateProjectReadModels(project.id);
+      flash("已撤销完成");
+    } catch (error) {
+      setEventIssue(toIssue(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function retryRunStatus() {
     if (!run || !event) return;
     setBusyAction("run-status");
@@ -4988,38 +5007,6 @@ export default function Home() {
    * steps — create, attest that the on-screen evidence was reviewed, confirm.
    * Every step is written under the same actor; nothing skips the ledger.
    */
-  async function createConfirmedAction(eventId: string, statement: string, segmentIds: string[], owner?: string, dueAt?: string): Promise<void> {
-    const created = await createMissingClaim(
-      { eventId, statement, type: "next_action", segmentIds, owner, dueAt },
-      true,
-    );
-    if (!created) return;
-    setBusyAction("manual-claim");
-    try {
-      const attestKey = mutationKeys.current.get(`attest:${created.versionId}`) || crypto.randomUUID();
-      mutationKeys.current.set(`attest:${created.versionId}`, attestKey);
-      await api.attestEvidenceReview(created, attestKey);
-      const verdictKey = mutationKeys.current.get(`confirm:${created.versionId}`) || crypto.randomUUID();
-      mutationKeys.current.set(`confirm:${created.versionId}`, verdictKey);
-      const confirmed = await api.saveVerdict(created, "confirm", { idempotencyKey: verdictKey, retainRelationIds: [] });
-      mutationKeys.current.delete(`attest:${created.versionId}`);
-      mutationKeys.current.delete(`confirm:${created.versionId}`);
-      setClaims((items) => sortClaimsForReview(items.map((item) => (item.id === confirmed.id ? confirmed : item))));
-      if (project) {
-        void invalidateProjectReadModels(project.id);
-        void queryClient.invalidateQueries({ queryKey: projectActionsQuery(project.id).queryKey });
-      }
-      flash("行动已确认，进入正式记录");
-    } catch (error) {
-      // The claim exists and stays pending — the reader loses nothing; the
-      // rail's 待确认 keeps the normal path open.
-      setClaimsIssue(toIssue(error));
-      flash("行动已保存到待确认，但自动确认没有完成，可在待确认中处理");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function restoreAppRoute(requestedRoute: AppRoute): Promise<void> {
     const restoreEpoch = routeRestoreEpoch.current + 1;
     routeRestoreEpoch.current = restoreEpoch;
@@ -5298,8 +5285,8 @@ export default function Home() {
             if (project) { void invalidateProjectReadModels(project.id); void queryClient.invalidateQueries({ queryKey: projectActionsQuery(project.id).queryKey }); }
             flash("记录已保存");
           }}
-          onCreateActionInline={(eventId, statement, segmentIds, verdictsLocked, owner, dueAt) => verdictsLocked ? createMissingClaim({ eventId, statement, type: "next_action", segmentIds, owner, dueAt }, true).then(() => undefined) : createConfirmedAction(eventId, statement, segmentIds, owner, dueAt)}
           onCompleteAction={(claimId) => void completeAction(claimId, true)}
+          onReopenAction={(claimId) => void reopenAction(claimId)}
           onRetryReading={retryReadingArtifacts}
           onStartAnalysis={async (targetEvent) => { await startExtractionForEvent(targetEvent); }}
           onFocusTranscriptArtifact={(eventId, tab) => {
@@ -5598,8 +5585,8 @@ type SimpleTestScreenProps = {
   ) => void;
   onCapturePoint: (eventId: string, statement: string, segmentIds: string[]) => void;
   onReviewSaved: (claim: Claim) => void;
-  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean, owner?: string, dueAt?: string) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
+  onReopenAction: (claimId: string) => void;
   onRetryReading: (eventId: string, kinds: ReadingArtifactKind[]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
   onFocusTranscriptArtifact: (eventId: string, tab: TranscriptArtifactTab) => void;
@@ -5702,9 +5689,9 @@ function TranscriptArtifactsPanel({
   onOpenFullReview,
   onQuickVerdict,
   onCapturePoint,
-  onCreateActionInline,
   onReviewSaved,
   onCompleteAction,
+  onReopenAction,
   onAddPhoto,
   onRetryReading,
   onStartAnalysis,
@@ -5731,8 +5718,8 @@ function TranscriptArtifactsPanel({
   ) => void;
   onCapturePoint: (eventId: string, statement: string, segmentIds: string[]) => void;
   onReviewSaved: (claim: Claim) => void;
-  onCreateActionInline: (eventId: string, statement: string, segmentIds: string[], verdictsLocked: boolean, owner?: string, dueAt?: string) => Promise<void>;
   onCompleteAction: (claimId: string) => void;
+  onReopenAction: (claimId: string) => void;
   onAddPhoto: () => void;
   onRetryReading: (eventId: string, kinds: ReadingArtifactKind[]) => Promise<void>;
   onStartAnalysis: (event: Event) => Promise<void>;
@@ -5753,13 +5740,8 @@ function TranscriptArtifactsPanel({
     revision: string;
     point: SelectedSummaryPoint;
   } | null>(null);
-  const [actionComposerOpen, setActionComposerOpen] = useState(false);
-  const [actionComposerRevision, setActionComposerRevision] = useState<string | null>(null);
-  const [actionStatement, setActionStatement] = useState("");
-  const actionDrafts = useRef(new Map<string, { statement: string }>());
   const [inlineReview, setInlineReview] = useState<{ id: string; edit: boolean } | null>(null);
   const pendingScroll = useRef(0);
-  const [actionComposerIssue, setActionComposerIssue] = useState<string | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [speakerFilter, setSpeakerFilter] = useState("all");
   const [onlyKeySources, setOnlyKeySources] = useState(false);
@@ -6398,25 +6380,6 @@ function TranscriptArtifactsPanel({
         : null;
   const selectedPoint = selectedPointOverride ?? defaultSelectedPoint;
   const selectedPointRevision = selectedPoint ? revisionForPoint(selectedPoint) : sourceSelectionRevision;
-  function currentActionDraftKey() {
-    const revision = actionComposerRevision ?? selectedPointRevision;
-    if (!revision) return null;
-    const pointKey = actionComposerRevision
-      ? selectedPointSelection?.point.key
-      : selectedPoint?.key;
-    return `${revision}::${pointKey ?? "default"}`;
-  }
-  function persistActionDraft(overrides: Partial<{ statement: string }> = {}) {
-    const key = currentActionDraftKey();
-    if (!key) return;
-    const draft = { statement: overrides.statement ?? actionStatement };
-    if (draft.statement.trim()) actionDrafts.current.set(key, draft);
-    else actionDrafts.current.delete(key);
-  }
-  function setActionDraftField(field: "statement", value: string) {
-    setActionStatement(value);
-    persistActionDraft({ [field]: value });
-  }
   // A Claim whose refs are still resolving has no segment ids yet. Saying its
   // source is "kept somewhere in the transcript" would be wrong a moment later.
   const selectedPointEvidenceLoading = Boolean(
@@ -6429,7 +6392,6 @@ function TranscriptArtifactsPanel({
       && !railEvidence[claim.id]),
   );
 
-  const actionComposerIsCurrent = actionComposerOpen && actionComposerRevision === selectedPointRevision;
   const selectedClaims = selectedPoint?.claimId
     ? claims.filter((claim) => claim.id === selectedPoint.claimId)
     : selectedPoint
@@ -6467,17 +6429,12 @@ function TranscriptArtifactsPanel({
   const previousSelectionRevision = useRef(sourceSelectionRevision);
   useEffect(() => {
     if (previousSelectionRevision.current === sourceSelectionRevision) return;
-    persistActionDraft();
     previousSelectionRevision.current = sourceSelectionRevision;
     pendingPlaybackTarget.current = null;
     audioRef.current?.pause();
     const frame = window.requestAnimationFrame(() => {
       setSelectedPointSelection(null);
       setSourceSelection(null);
-      setActionComposerOpen(false);
-      setActionComposerRevision(null);
-      setActionStatement("");
-      setActionComposerIssue(null);
       setActivePlaybackKey(null);
       setActiveAudioAssetId("");
       setAudioPlaying(false);
@@ -6485,10 +6442,6 @@ function TranscriptArtifactsPanel({
       setAudioDuration(0);
     });
     return () => window.cancelAnimationFrame(frame);
-  // The draft helper intentionally reads current fields only when the source
-  // revision changes; including it would make this reset effect run on every
-  // keystroke.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceSelectionRevision]);
 
   useEffect(() => {
@@ -6648,60 +6601,9 @@ function TranscriptArtifactsPanel({
   }
 
   function selectSummaryPoint(point: SelectedSummaryPoint, revealActions = true) {
-    persistActionDraft();
     setSelectedPointSelection({ revision: revisionForPoint(point), point });
     setActionView("source");
-    setActionComposerOpen(false);
-    setActionComposerRevision(null);
-    setActionStatement("");
-    setActionComposerIssue(null);
     if (revealActions) switchMobilePane("actions");
-  }
-
-  function beginActionCreation() {
-    if (!selectedPoint) return;
-    const draft = actionDrafts.current.get(`${selectedPointRevision}::${selectedPoint.key}`);
-    setActionStatement(draft?.statement ?? (selectedPoint.sectionKind === "next_step" ? selectedPoint.summaryText : ""));
-    setActionComposerIssue(null);
-    setActionComposerRevision(selectedPointRevision);
-    setActionComposerOpen(true);
-  }
-
-  function cancelActionComposer() {
-    const key = currentActionDraftKey();
-    if (key) actionDrafts.current.delete(key);
-    setActionComposerOpen(false);
-    setActionComposerRevision(null);
-    setActionComposerIssue(null);
-  }
-
-  async function submitInlineAction() {
-    if (!actionComposerIsCurrent || !selectedPoint || !actionStatement.trim() || selectedPoint.sourceIds.length === 0) return;
-    setActionComposerIssue(null);
-    try {
-      await onCreateActionInline(event.id, actionStatement.trim(), selectedPoint.sourceIds.slice(0, 8), verdictsLocked);
-      const key = currentActionDraftKey();
-      if (key) actionDrafts.current.delete(key);
-      setActionComposerOpen(false);
-      setActionComposerRevision(null);
-      setActionStatement("");
-    } catch {
-      setActionComposerIssue("没保存成功，再试一次");
-    }
-  }
-
-  function renderActionComposer() {
-    if (!actionComposerIsCurrent || !selectedPoint) return null;
-    return <form className="rail-action-composer" onSubmit={(submitEvent) => {
-      submitEvent.preventDefault();
-      void submitInlineAction();
-    }}>
-      <blockquote className="rail-action-context"><strong>关联内容</strong>{selectedPoint.summaryText}</blockquote>
-      <label><span>要完成什么</span><textarea autoFocus value={actionStatement} onChange={(change) => setActionDraftField("statement", change.target.value)} placeholder="例如：负责人周五前发送三份候选方案。" /></label>
-      <small>{verdictsLocked ? "分析完成后可在待确认中确认。" : "这是你亲自写下的行动，会直接进入正式记录。"}</small>
-      {actionComposerIssue && <p role="alert">{actionComposerIssue}</p>}
-      <div><button type="button" className="button secondary" disabled={busy === "manual-claim"} onClick={cancelActionComposer}>取消</button><button type="submit" className="button primary" disabled={busy === "manual-claim" || !actionStatement.trim()}>{busy === "manual-claim" ? "正在保存…" : verdictsLocked ? "加入待确认" : "确认并加入行动"}</button></div>
-    </form>;
   }
 
   function selectClaimInRail(claim: Claim) {
@@ -6996,7 +6898,6 @@ function TranscriptArtifactsPanel({
         {actionView === "source" && inlineReview && <div className="reader-action-body inline-review-view" id="reader-action-panel"><InlineClaimReview key={inlineReview.id} claimId={inlineReview.id} initialEdit={inlineReview.edit} projectId={event.projectId || null} verdictLocked={verdictsLocked} onClose={() => setInlineReview(null)} onSaved={(updated) => { onReviewSaved(updated); setInlineReview(null); setActionView("pending"); }} /></div>}
         {actionView === "source" && !inlineReview && <div className="reader-action-body source-view" id="reader-action-panel">
           {selectedPoint ? <>
-            <div className="source-readiness rail-source-readiness" aria-label="本次来源"><span className={hasPlayableAudio ? "ready" : ""}>录音</span><span className={availableRawSegments.length ? "ready" : ""}>逐字稿</span><span className={photoAssets.length ? "ready" : ""}>手写照片{photoAssets.length ? ` ${photoAssets.length}` : ""}</span></div>
             {/* The support quote reappears below inside its source segment, highlighted
                 in place. Printing it here as well made every point three near-identical
                 blocks of text, so the card keeps the statement only unless the
@@ -7012,7 +6913,6 @@ function TranscriptArtifactsPanel({
               {selectedPoint.sourceIds.length > 0 && <button className="text-button" onClick={() => locateRawSources(selectedPoint.sourceIds)}>在逐字稿中定位</button>}
             </section>
             <section className="rail-review-section">
-              <header><strong>核对记录</strong><span>{selectedClaims.length ? `${selectedClaims.length} 条记录` : "没保存"}</span></header>
               {verdictsLocked && selectedClaims.some((claim) => claim.reviewStatus === "pending") && <div className="rail-review-warning" id="rail-verdict-lock" role="status"><AlertTriangle aria-hidden="true" /><span>已加入待确认，整理完再处理</span></div>}
               {selectedClaims.map((claim) => {
                 const confirmNeedsDetail = claim.needsAdditionalEvidence
@@ -7020,7 +6920,7 @@ function TranscriptArtifactsPanel({
                   || !claimEvidenceFitsSourceRail(claimEvidence(claim), displayedSourceIds)
                   || claimEvidence(claim).flatMap((ref) => ref.segmentIds).some((id) => !rawSegmentIds.has(id));
                 return <div className="rail-review-row" key={claim.id}>
-                  <button className="rail-review-item" onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{selectedPoint.claimId === claim.id ? "核对这条记录" : claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>
+                  {selectedPoint.claimId !== claim.id && <button className="rail-review-item" onClick={() => openClaimFromSummary(claim.id)}><span><small>{typeLabel(claim.type)}</small><strong>{claim.statement}</strong></span><StatusBadge value={claim.reviewStatus} /></button>}
                   {claim.reviewStatus === "pending" && <div className="rail-quick-verdict" aria-label={`快速处理：${claim.statement}`}>
                     <button
                       className="confirm"
@@ -7030,13 +6930,12 @@ function TranscriptArtifactsPanel({
                       onClick={() => onQuickVerdict(claim.id, "confirm", displayedSourceIds, claimEvidence(claim))}
                     ><Check aria-hidden="true" />确认</button>
                     <button disabled={Boolean(busy) || verdictsLocked} onClick={() => onQuickVerdict(claim.id, "reject", displayedSourceIds, claimEvidence(claim))}><X aria-hidden="true" />不采纳</button>
-                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => openClaimFromSummary(claim.id, true)}>修改</button>
+                    <button disabled={Boolean(busy) || verdictsLocked} onClick={() => openClaimFromSummary(claim.id, true)}>改写这条</button>
                   </div>}
                   {claim.reviewStatus === "pending" && confirmNeedsDetail && <div className="rail-review-warning" id={`rail-review-warning-${claim.id}`}><AlertTriangle aria-hidden="true" /><span>这条还需补证据或判断与旧记录的关系。</span><button className="text-button" onClick={() => openClaimFromSummary(claim.id)}>打开详情核对</button></div>}
                 </div>;
               })}
               {selectedClaims.length === 0 && selectedPoint.sourceIds.length > 0 && <button className="button primary full rail-capture-point" disabled={Boolean(busy) || verdictsLocked} onClick={() => onCapturePoint(event.id, selectedPoint.summaryText, selectedPoint.sourceIds)}>核对并保存</button>}
-              {selectedPoint.sourceIds.length > 0 && (actionComposerIsCurrent ? renderActionComposer() : <button className="button secondary full rail-create-action" disabled={Boolean(busy)} onClick={beginActionCreation}><ListChecks aria-hidden="true" />添加跟进行动</button>)}
             </section>
             {/* Without any photo the section said, at length, that photos are
                 optional. A standing explanation of an absent feature is noise;
@@ -7089,7 +6988,7 @@ function TranscriptArtifactsPanel({
             {!projectActions.isLoading && !projectActions.isError && !trustedEventActionItems.length && <p className="rail-context-note">{suggestedActions.length ? "从上面勾选加入" : "这次沟通还没有要跟进的行动"}</p>}
           {trustedEventActionItems.length > 0 && <div className="rail-action-list">{trustedEventActionItems.map((action) => {
             const actionClaim = claims.find((claim) => claim.id === action.claim_id);
-            return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={action.status !== "confirmed" || busy === `complete-action:${action.claim_id}`} onClick={() => onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `${action.statement} 已完成` : `完成 ${action.statement}`}>{busy === `complete-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "已确认行动"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${/^\d{4}-\d{2}-\d{2}$/.test(action.due_at) ? action.due_at.replaceAll("-", "/") : formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>;
+            return <article className={action.status} key={action.claim_id}><button className="action-check" disabled={Boolean(busy)} onClick={() => action.status === "completed" ? onReopenAction(action.claim_id) : onCompleteAction(action.claim_id)} aria-label={action.status === "completed" ? `撤销完成 ${action.statement}` : `完成 ${action.statement}`} title={action.status === "completed" ? "点错了？再点一下撤销" : "标记完成"}>{busy === `complete-action:${action.claim_id}` || busy === `reopen-action:${action.claim_id}` ? <span className="spinner" /> : action.status === "completed" ? <Check aria-hidden="true" /> : null}</button><span><small>{action.status === "completed" ? "已完成" : "待完成"}</small><strong>{action.statement}</strong>{(action.owner || action.due_at) && <p>{action.owner ? `负责人：${action.owner}` : ""}{action.owner && action.due_at ? " · " : ""}{action.due_at ? `期限：${/^\d{4}-\d{2}-\d{2}$/.test(action.due_at) ? action.due_at.replaceAll("-", "/") : formatDate(action.due_at, true)}` : ""}</p>}<button className="text-button" onClick={() => actionClaim ? selectClaimInRail(actionClaim) : openClaimFromSummary(action.claim_id)}>查看来源</button></span></article>;
           })}</div>}
           </section>
         </div>}
@@ -7221,9 +7120,9 @@ function SimpleTestScreen({
   onOpenFullReview,
   onQuickVerdict,
   onCapturePoint,
-  onCreateActionInline,
   onReviewSaved,
   onCompleteAction,
+  onReopenAction,
   onRetryReading,
   onStartAnalysis,
   onFocusTranscriptArtifact,
@@ -7775,8 +7674,8 @@ function SimpleTestScreen({
                 onQuickVerdict={onQuickVerdict}
                 onCapturePoint={onCapturePoint}
                 onReviewSaved={onReviewSaved}
-                onCreateActionInline={onCreateActionInline}
                 onCompleteAction={onCompleteAction}
+                onReopenAction={onReopenAction}
                 onAddPhoto={() => onRequirePublicWorkspaceAcknowledgement(() => workspacePhotoFileRef.current?.click())}
                 onRetryReading={onRetryReading}
                 onStartAnalysis={onStartAnalysis}

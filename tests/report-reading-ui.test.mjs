@@ -166,7 +166,6 @@ test("a new artifact or transcript revision invalidates stale rail actions and p
   assert.match(page, /setSelectedPointSelection\(null\)/);
   assert.match(page, /setSourceSelection\(null\)/);
   assert.match(page, /pendingPlaybackTarget\.current = null/);
-  assert.match(page, /actionComposerRevision === selectedPointRevision/);
 });
 
 test("the workspace nav is flat and a project-scope entry opens the record in one click", () => {

@@ -84,6 +84,7 @@ import {
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
 import {
   completeProjectAction,
+  reopenProjectAction,
   applyDraftLinkVerdict,
   listProjectActions,
   listProjectDraftMemory,
@@ -573,6 +574,10 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       id,
       201,
     );
+  }
+  if (segments.length === 3 && segments[0] === "actions" && segments[2] === "reopen") {
+    await jsonObject(request);
+    return ok({ reopened: await reopenProjectAction(scope, segments[1], idempotencyKey(request)) }, id);
   }
   if (segments.length === 3 && segments[0] === "actions" && segments[2] === "complete") {
     await jsonObject(request);

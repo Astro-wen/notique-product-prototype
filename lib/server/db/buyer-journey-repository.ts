@@ -470,6 +470,76 @@ export async function listProjectActions(
   });
 }
 
+/**
+ * 撤销一次「已完成」。点错了要能改回来，不然一条做完的行动永远消不掉那个勾。
+ * 完成时建了一条「已完成：…」的人工结论和一条 resolves 关系，撤销就是把那条
+ * 结论撤回、关系停用、行动本身回到进行中。
+ */
+export async function reopenProjectAction(
+  scope: RequestScope,
+  claimId: string,
+  idempotencyKey: string,
+): Promise<{ actionClaimId: string }> {
+  const endpointScope = `actions/${claimId}/reopen`;
+  const input = { claimId };
+  const replay = await findMutationReplay<{ actionClaimId: string }>(scope, endpointScope, idempotencyKey, input);
+  if (replay.response) return replay.response;
+  const action = await first(
+    `SELECT c.id, c.current_version_id, c.project_id, p.context_version,
+            (SELECT rel.id FROM claim_relations rel
+              WHERE rel.target_claim_version_id = c.current_version_id
+                AND rel.type = 'resolves' AND rel.status = 'active'
+              ORDER BY rel.created_at DESC LIMIT 1) AS relation_id
+       FROM claims c
+       JOIN projects p ON p.id = c.project_id AND p.workspace_id = c.workspace_id
+      WHERE c.id = ? AND c.workspace_id = ? AND p.deleted_at IS NULL
+        AND c.type = 'next_action' AND c.review_status = 'verified'`,
+    [claimId, scope.workspaceId],
+  );
+  if (!action) throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Action was not found.");
+  if (!action.relation_id) {
+    throw new ApiFault(409, "CLAIM_VERSION_CONFLICT", "This action is not marked completed.");
+  }
+  const relationId = String(action.relation_id);
+  const guardId = id("guard");
+  const timestamp = now();
+  const response = { actionClaimId: claimId };
+  const db = getD1();
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM claim_relations WHERE id = ? AND status = 'active'
+         ) THEN 1 ELSE 0 END, ?`,
+      ).bind(guardId, relationId, timestamp),
+      db.prepare(`UPDATE claim_relations SET status = 'inactive' WHERE id = ?`).bind(relationId),
+      db.prepare(
+        `UPDATE claims SET lifecycle_status = 'withdrawn', withdraw_reason = 'action_reopened', updated_at = ?
+          WHERE workspace_id = ? AND current_version_id = (
+            SELECT source_claim_version_id FROM claim_relations WHERE id = ?
+          )`,
+      ).bind(timestamp, scope.workspaceId, relationId),
+      db.prepare(
+        `UPDATE claims SET lifecycle_status = 'active', resolved_at = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND lifecycle_status = 'resolved'`,
+      ).bind(timestamp, claimId, scope.workspaceId),
+      db.prepare(
+        `UPDATE projects SET ledger_version = ledger_version + 1,
+            context_version = context_version + 1, updated_at = ?
+          WHERE id = ? AND workspace_id = ?`,
+      ).bind(timestamp, action.project_id, scope.workspaceId),
+      mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, response, timestamp),
+      db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    const recovered = await findMutationReplay<typeof response>(scope, endpointScope, idempotencyKey, input);
+    if (recovered.response) return recovered.response;
+    throw error;
+  }
+  return response;
+}
+
 export async function completeProjectAction(
   scope: RequestScope,
   claimId: string,

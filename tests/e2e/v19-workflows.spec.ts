@@ -120,7 +120,6 @@ test("a Summary point opens source, verification, and action controls in the sam
   await expect(rail).toContainText("录音与原话");
   await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: "核对详情", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(rail.getByRole("button", { name: "确认", exact: true })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "添加跟进行动" })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 

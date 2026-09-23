@@ -917,6 +917,7 @@ export type ProjectActionRecord = {
   completed_by_claim_id: string | null;
 };
 export type ProjectActionsResponse = ApiSuccess<{ actions: ProjectActionRecord[] }>;
+export type ReopenProjectActionResponse = ApiSuccess<{ reopened: { actionClaimId: string } }>;
 export type CompleteProjectActionResponse = ApiSuccess<{
   completion: { actionClaimId: string; completionClaimId: string };
 }>;

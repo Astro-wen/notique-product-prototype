@@ -127,14 +127,12 @@ test("the reading rail supports guarded in-place decisions and source-seeded act
   assert.match(page, /onQuickVerdict\(claim\.id, "confirm", displayedSourceIds, claimEvidence\(claim\)\)/);
   assert.match(page, /action === "confirm" && proposedRelations\.length > 0/);
   assert.match(page, /claim\.needsAdditionalEvidence[\s\S]{0,180}relationsForReview/);
-  // 行动只填一句话，负责人和截止日期那套表单删了。
-  assert.match(page, /onCreateActionInline\(event\.id, actionStatement\.trim\(\), selectedPoint\.sourceIds\.slice\(0, 8\), verdictsLocked\)/);
-  assert.doesNotMatch(page, /负责人（可选）|截止日期（可选）/);
+  // 手写行动的表单删了：行动只来自模型建议，接受就进清单。
+  assert.doesNotMatch(page, /rail-action-composer|添加跟进行动|负责人（可选）/);
   // 行动页是清单：模型找出的下一步先列成建议，勾一下进自己的清单。
   assert.match(page, /const suggestedActions = claims\.filter\(\(claim\) =>[\s\S]{0,80}claim\.type === "next_action" && claim\.reviewStatus === "pending"/);
   assert.match(page, /aria-label="建议加入的行动"/);
   assert.match(page, /aria-label="我的清单"/);
-  assert.match(page, /className="rail-action-composer"/);
   assert.match(page, /function selectTranscriptGroup/);
   assert.match(page, /selectTranscriptGroup\(group, "raw"\)/);
   assert.match(page, /const trustedEventActionItems = eventActionItems\.filter/);
@@ -195,4 +193,25 @@ test("工作区顶栏是面包屑，不再重复侧栏和「项目管理」已�
   assert.match(bar, /aria-label="选择记录"/);
   assert.match(bar, /aria-label="添加记录"/);
   assert.match(bar, /className=\{`simple-session-status/);
+});
+
+test("a completed action can be reopened, and the check toggles it back", async () => {
+  const [repo, route, client, page] = await Promise.all([
+    readFile(new URL("../lib/server/db/buyer-journey-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  const reopen = repo.slice(repo.indexOf("export async function reopenProjectAction"), repo.indexOf("export async function completeProjectAction"));
+  // 撤回完成：完成时建的那条「已完成」结论撤回，关系停用，行动回到进行中。
+  assert.match(reopen, /UPDATE claim_relations SET status = 'inactive' WHERE id = \?/);
+  assert.match(reopen, /withdraw_reason = 'action_reopened'/);
+  assert.match(reopen, /SET lifecycle_status = 'active', resolved_at = NULL/);
+  assert.match(route, /segments\[2\] === "reopen"/);
+  assert.match(client, /\/reopen`/);
+  assert.match(page, /action\.status === "completed" \? onReopenAction\(action\.claim_id\) : onCompleteAction\(action\.claim_id\)/);
+  // 核对详情里不再有「核对记录」标题、修改按钮、来源三个小标签和手写行动的入口。
+  assert.doesNotMatch(page, /<strong>核对记录<\/strong>/);
+  assert.doesNotMatch(page, /rail-source-readiness/);
+  assert.doesNotMatch(page, /添加跟进行动/);
 });
