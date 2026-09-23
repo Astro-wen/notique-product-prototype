@@ -13,6 +13,10 @@ import {
   type TranscriptionDispatchResult,
   type TranscriptionSweepResult,
 } from "@/lib/server/jobs/transcription-outbox";
+import {
+  ensureAutomaticExtractionRuns,
+  type AutomaticExtractionEnsureResult,
+} from "@/lib/server/jobs/automatic-extraction";
 
 type Row = Record<string, unknown>;
 
@@ -309,6 +313,40 @@ async function prepareTargetedExtractionOutbox(
     )
     .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
     .run();
+  // The reset above only touches rows under the attempt cap; a run whose rows
+  // are all capped has nothing left to dispatch and must fail instead of
+  // reporting "queued" forever. Production reaches runs through exactly this
+  // targeted path, so the sweep-side closure alone is not enough.
+  const exhaustion = await first(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN attempt >= ? THEN 1 ELSE 0 END) AS capped
+       FROM queue_outbox WHERE run_id = ?`,
+    [MAX_OUTBOX_ATTEMPTS, target.runId],
+  );
+  const total = Number(exhaustion?.total ?? 0);
+  if (total > 0 && Number(exhaustion?.capped ?? 0) === total) {
+    const closure = now();
+    await getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+                next_attempt_at = '9999-12-31T23:59:59.999Z',
+                last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+          WHERE run_id = ? AND attempt >= ?`,
+      )
+      .bind(closure, target.runId, MAX_OUTBOX_ATTEMPTS)
+      .run();
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
+                error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
+          WHERE id = ? AND status = 'queued'`,
+      )
+      .bind(closure, closure, target.runId)
+      .run();
+    return "terminal";
+  }
   return "queued";
 }
 
@@ -554,6 +592,25 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
     )
     .bind(timestamp, timestamp, longQueuedThreshold)
     .run();
+  // Same zombie the transcription outbox had: a retry cycle ends with rows in
+  // 'pending' at the attempt cap while the run sits 'queued'. The dispatcher
+  // refuses capped rows and dead-lettering above only covers 'sending', so
+  // without this clause the run showed 正在启动分析 forever.
+  await db
+    .prepare(
+      `UPDATE queue_outbox
+          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = '9999-12-31T23:59:59.999Z',
+              last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+        WHERE status IN ('pending', 'failed') AND attempt >= ?
+          AND next_attempt_at < '9999-12-31T23:59:59.999Z'
+          AND EXISTS (
+            SELECT 1 FROM extraction_runs r
+             WHERE r.id = queue_outbox.run_id AND r.status = 'queued'
+          )`,
+    )
+    .bind(timestamp, MAX_OUTBOX_ATTEMPTS)
+    .run();
   const failedRuns = await db
     .prepare(
       `UPDATE extraction_runs
@@ -588,21 +645,115 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
   };
 }
 
+/**
+ * Runs a recovery stage without letting its failure silence the others.
+ *
+ * These stages used to share one Promise.all, so a single throwing statement
+ * took down every recovery behind it — including the automatic analysis that
+ * decides whether a finished transcript is ever read.
+ */
+async function stage<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    console.error("recovery_stage_failed", {
+      stage: name,
+      message: error instanceof Error ? error.message : "Unexpected error",
+    });
+    return fallback;
+  }
+}
+
+const EMPTY_SWEEP: SweepResult = {
+  recoveredOutbox: 0,
+  deadLetteredOutbox: 0,
+  failedExpiredRuns: 0,
+  failedUndeliverableRuns: 0,
+  requeuedLongRunningMessages: 0,
+};
+const EMPTY_TRANSCRIPTION_SWEEP: TranscriptionSweepResult = {
+  recoveredOutbox: 0,
+  deadLetteredOutbox: 0,
+  requeuedExpiredRuns: 0,
+  failedUndeliverableRuns: 0,
+  requeuedLongRunningMessages: 0,
+  deadLetteredExhaustedPending: 0,
+  failedChunkedParents: 0,
+};
+const EMPTY_DISPATCH: DispatchResult = { claimed: 0, sent: 0, deferred: 0, items: [] };
+const EMPTY_AUTOMATIC: AutomaticExtractionEnsureResult = {
+  scanned: 0,
+  created: 0,
+  reused: 0,
+  covered: 0,
+  deferred: 0,
+  items: [],
+};
+
+/**
+ * Everything the background recovery does except the long audio work.
+ *
+ * Production has no working Cron trigger: an extraction Run created while
+ * nothing was watching sat 'queued' and untouched for as long as it was left
+ * there, and Events whose transcripts had been ready for days had no Run at
+ * all. So the browser's own dispatch request carries this instead. It is all
+ * lease-guarded and idempotent, which is what makes it safe to run from any
+ * number of open tabs — and safe to keep running if the Cron ever does fire.
+ *
+ * The default commissions nothing. Recovery finishing work someone already
+ * asked for is free of surprises; recovery deciding on its own to analyse an
+ * Event costs money, and a browser running that across the workspace would
+ * mean opening the app spends money on projects the reader never looked at.
+ * So `commission` is explicit: the Cron may scan the workspace, a browser may
+ * only name the Event on its screen.
+ *
+ * Long audio transcription stays out: it takes minutes, and the page already
+ * drives it through the targeted streaming dispatch that holds a connection
+ * open for exactly that purpose.
+ */
+export async function recoverAndDispatch(input?: {
+  commission?: "workspace" | { eventId: string };
+}): Promise<{
+  sweep: SweepResult;
+  dispatch: DispatchResult;
+  transcription_sweep: TranscriptionSweepResult;
+  automatic_extraction: AutomaticExtractionEnsureResult;
+}> {
+  const [transcription_sweep, sweep] = await Promise.all([
+    stage("transcription_sweep", sweepTranscriptionJobs, EMPTY_TRANSCRIPTION_SWEEP),
+    stage("extraction_sweep", sweepJobs, EMPTY_SWEEP),
+  ]);
+  const commission = input?.commission;
+  const automatic_extraction = commission
+    ? await stage(
+      "automatic_extraction",
+      () => ensureAutomaticExtractionRuns(
+        commission === "workspace" ? undefined : { eventId: commission.eventId },
+      ),
+      EMPTY_AUTOMATIC,
+    )
+    : EMPTY_AUTOMATIC;
+  // Dispatching is not commissioning: these Runs exist because someone already
+  // asked for them, and leaving them queued is the stall this whole mechanism
+  // exists to end.
+  const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH);
+  return { sweep, dispatch, transcription_sweep, automatic_extraction };
+}
+
 export async function sweepAndDispatch(): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
   transcription_dispatch: TranscriptionDispatchResult;
+  automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
-  const [transcription_sweep, sweep] = await Promise.all([
-    sweepTranscriptionJobs(),
-    sweepJobs(),
-  ]);
-  const [transcription_dispatch, dispatch] = await Promise.all([
-    dispatchDueTranscriptionOutbox(),
-    dispatchDueOutbox(),
-  ]);
-  return { sweep, dispatch, transcription_sweep, transcription_dispatch };
+  const recovered = await recoverAndDispatch({ commission: "workspace" });
+  const transcription_dispatch = await stage(
+    "transcription_dispatch",
+    () => dispatchDueTranscriptionOutbox(),
+    { claimed: 0, sent: 0, deferred: 0, items: [] } as TranscriptionDispatchResult,
+  );
+  return { ...recovered, transcription_dispatch };
 }
 
 export async function dispatchAllDueOutbox(): Promise<{

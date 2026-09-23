@@ -26,6 +26,14 @@ export type TranscriptionRunStatus =
   | "succeeded"
   | "failed"
   | "cancelled";
+export type EventAiArtifactKind =
+  | "summary"
+  | "readable_transcript"
+  | "chapters"
+  | "speakers"
+  | "key_points"
+  | "overview";
+export type EventAiArtifactRunStatus = "queued" | "processing" | "succeeded" | "failed";
 export type ClaimReviewStatus = "pending" | "verified" | "rejected";
 export type ClaimLifecycleStatus =
   | "active"
@@ -64,6 +72,8 @@ export type ApiErrorCode =
   | "QUEUE_NOT_CONFIGURED"
   | "QUEUE_DISPATCH_DELAYED"
   | "SCENARIO_CONFIRMATION_REQUIRED"
+  | "PROJECT_VERSION_CONFLICT"
+  | "ASSET_ORDER_STALE"
   | "SCENARIO_VERSION_CONFLICT"
   | "CLAIM_VERSION_CONFLICT"
   | "CLAIM_STATE_CONFLICT"
@@ -94,6 +104,9 @@ export type ApiErrorResponse = {
 };
 
 export type ProjectRecord = {
+  folder_name?: string | null;
+  last_opened_at?: string | null;
+  name_source?: string;
   id: string;
   workspace_id: string;
   name: string;
@@ -107,6 +120,86 @@ export type ProjectRecord = {
   event_count: number;
   pending_claim_count: number;
   pending_occurrence_count: number;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** 删一条记录之前给界面看的：删掉会带走什么，有没有删不了的原因。 */
+export type EventTrashPreviewRecord = {
+  event_id: string;
+  event_title: string;
+  project_id: string;
+  material_count: number;
+  /** 这条记录里已经确认过的结论，删掉之后报告里也会少掉，恢复后回来。 */
+  confirmed_count: number;
+  /** 还在跑的任务，删的时候一起停下，不挡删除。 */
+  active_job_count: number;
+  can_trash: boolean;
+  blockers: string[];
+};
+
+/** 回收站里的一条记录。 */
+export type TrashedEventRecord = {
+  event_id: string;
+  event_title: string;
+  occurred_at: string | null;
+  created_at: string;
+  trashed_at: string;
+  project_id: string;
+  /** 原项目已经永久删除时为空。 */
+  project_name: string | null;
+  /** 原项目也在回收站里，要先恢复项目。 */
+  project_in_trash: boolean;
+  material_count: number;
+};
+
+export type ProjectDeletePreviewRecord = {
+  project_id: string;
+  project_name: string;
+  event_count: number;
+  material_count: number;
+  pending_count: number;
+  active_job_count: number;
+  can_delete: boolean;
+};
+
+export type EventAiArtifactRunRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  extraction_run_id: string;
+  kind: EventAiArtifactKind;
+  status: EventAiArtifactRunStatus;
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  prompt_version: string;
+  schema_version: string;
+  attempt_no: number;
+  provider_request_id: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  error_code: string | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EventAiArtifactRecord = {
+  id: string;
+  project_id: string;
+  event_id: string;
+  run_id: string;
+  kind: EventAiArtifactKind;
+  artifact_version: number;
+  input_hash: string;
+  content: unknown;
+  derived_asset_id: string | null;
+  derived_asset_version_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -240,6 +333,7 @@ export type AssetRecord = {
   captured_at: string | null;
   metadata: Record<string, unknown>;
   version?: AssetVersionRecord | null;
+  sort_order: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -267,12 +361,14 @@ export type TranscriptImportRecord = {
 };
 
 export type ExtractionRunRecord = {
+  omitted_statements?: string[];
   id: string;
   project_id: string;
   event_id: string;
   status: ExtractionRunStatus;
   idempotency_key: string;
   input_hash: string;
+  input_asset_version_ids: string[];
   context_version: number;
   provider: string | null;
   model: string | null;
@@ -344,6 +440,7 @@ export type ExtractionModelStageDebugRecord = Omit<
 
 export type ExtractionRunDebugRecord = Record<string, unknown> & {
   stages: ExtractionModelStageDebugRecord[];
+  artifact_runs: EventAiArtifactRunRecord[];
 };
 
 export type TranscriptionSegmentRecord = {
@@ -365,6 +462,13 @@ export type TranscriptionRunRecord = {
   provider: string;
   model: string;
   response_format: "diarized_json";
+  orchestration_mode: "single" | "chunked" | "chunk";
+  parent_run_id: string | null;
+  chunk_index: number | null;
+  chunk_start_ms: number | null;
+  chunk_end_ms: number | null;
+  chunk_count: number | null;
+  completed_chunk_count: number;
   derived_transcript_asset_id: string | null;
   derived_transcript_asset_version_id: string | null;
   segment_count: number | null;
@@ -383,6 +487,17 @@ export type TranscriptionRunRecord = {
   current_started_at: string | null;
   finished_at: string | null;
   segments?: TranscriptionSegmentRecord[];
+  segments_provisional?: boolean;
+  stable_until_ms?: number;
+  chunks?: Array<{
+    id: string;
+    index: number;
+    start_ms: number;
+    end_ms: number;
+    status: TranscriptionRunStatus;
+    processing_attempt_no: number;
+    error_code: string | null;
+  }>;
 };
 
 export type ClaimRecord = {
@@ -436,10 +551,13 @@ export type CreateManualClaimRequest = {
     | "person_role"
     | "timing"
     | "property_fact"
+    | "next_action"
     | "material"
     | "measurement"
     | "other";
   segment_ids: string[];
+  owner?: string;
+  due_at?: string;
 };
 
 export type AiDraftAssessmentRecord = {
@@ -542,6 +660,7 @@ export type OccurrenceConversionClaimInput = {
     | "person_role"
     | "timing"
     | "property_fact"
+    | "next_action"
     | "material"
     | "measurement"
     | "other";
@@ -587,6 +706,7 @@ export type ManualRelationTargetRecord = {
   event_title: string;
   occurred_at: string;
   has_uncertainty: boolean;
+  can_resolve?: boolean;
 };
 
 export type CreateManualRelationRequest = {
@@ -729,10 +849,79 @@ export type PreferenceViewItemRecord = {
 export type TimelineViewResponse = ApiSuccess<{ view: TimelineEventGroupRecord[] }>;
 export type PreferencesViewResponse = ApiSuccess<{ view: PreferenceViewItemRecord[] }>;
 
-export type CreateProjectRequest = { name: string; locale?: string };
+export type CreateProjectRequest = {
+  auto_name?: boolean;
+  name: string;
+  locale?: string;
+  profile?: "real_estate_buyer_journey";
+};
 export type CreateProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
 export type ListProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
 export type GetProjectResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type ListDeletedProjectsResponse = ApiSuccess<{ projects: ProjectRecord[] }>;
+export type ProjectDeletePreviewResponse = ApiSuccess<{ preview: ProjectDeletePreviewRecord }>;
+export type ProjectMutationResponse = ApiSuccess<{ project: ProjectRecord }>;
+export type EventTrashPreviewResponse = ApiSuccess<{ preview: EventTrashPreviewRecord }>;
+export type ListTrashedEventsResponse = ApiSuccess<{ events: TrashedEventRecord[] }>;
+export type EventTrashResponse = ApiSuccess<{ event_id: string; project_id: string }>;
+export type EventRestoreResponse = ApiSuccess<{ event: EventRecord }>;
+export type PermanentEventDeleteResponse = ApiSuccess<{ event_id: string; permanently_deleted: boolean }>;
+export type DraftMemoryRecord = {
+  claim_id: string;
+  claim_version_id: string;
+  event_id: string;
+  event_title: string;
+  event_sequence_no: number;
+  type: string;
+  statement: string;
+  confidence: number;
+  evidence_ref_ids: string[];
+  created_at: string;
+};
+export type DraftLinkRecord = {
+  id: string;
+  source_claim_id: string;
+  target_draft_claim_id: string;
+  type: "same" | "changed" | "conflicting" | "possibly_answered";
+  reason: string;
+  confidence: number;
+  status: "proposed" | "inactive" | "accepted" | "rejected";
+  source_statement: string;
+  target_statement: string;
+  source_review_status: string;
+  target_review_status: string;
+};
+export type DraftMemoryResponse = ApiSuccess<{
+  draft_memory: {
+    claims: DraftMemoryRecord[];
+    links: DraftLinkRecord[];
+  };
+}>;
+export type DraftLinkVerdictResponse = ApiSuccess<{
+  draft_link: {
+    draftLinkId: string;
+    status: "accepted" | "rejected";
+    formalRelationId: string | null;
+  };
+}>;
+export type ProjectActionRecord = {
+  claim_id: string;
+  claim_version_id: string;
+  statement: string;
+  owner: string | null;
+  due_at: string | null;
+  event_id: string;
+  event_title: string;
+  status: "ai_suggested" | "confirmed" | "completed" | "not_adopted";
+  evidence_ref_ids: string[];
+  completed_by_claim_id: string | null;
+};
+export type ProjectActionsResponse = ApiSuccess<{ actions: ProjectActionRecord[] }>;
+export type ReopenProjectActionResponse = ApiSuccess<{ reopened: { actionClaimId: string } }>;
+export type CompleteProjectActionResponse = ApiSuccess<{
+  completion: { actionClaimId: string; completionClaimId: string };
+}>;
+export type PermanentProjectDeleteResponse = ApiSuccess<{ project_id: string; permanently_deleted: true }>;
 
 export type CreateEventRequest = {
   event_type: EventRecord["event_type"];
@@ -773,6 +962,10 @@ export type CreateExtractionRunResponse = ApiSuccess<{
 export type GetExtractionRunResponse = ApiSuccess<{
   run: ExtractionRunRecord;
 }>;
+export type EventAiArtifactsResponse = ApiSuccess<{
+  runs: EventAiArtifactRunRecord[];
+  artifacts: EventAiArtifactRecord[];
+}>;
 
 export type WorkflowDisplayStatus =
   | "waiting_material"
@@ -787,6 +980,24 @@ export type WorkflowDisplayStatus =
   | "complete"
   | "needs_attention";
 
+/**
+ * Stable list-level state for one Event. This is derived by the workflow
+ * snapshot query, so the selected Event and every unselected Event consume the
+ * same server-owned counts and job states.
+ */
+export type WorkflowEventStatusSummaryRecord = {
+  material_count: number;
+  material_ready_count: number;
+  material_processing_count: number;
+  material_failed_count: number;
+  transcription_status: TranscriptionRunStatus | null;
+  extraction_status: ExtractionRunStatus | null;
+  pending_count: number;
+  candidate_count: number;
+  summary_status: EventAiArtifactRunStatus | null;
+  readable_transcript_status: EventAiArtifactRunStatus | null;
+};
+
 export type WorkflowSnapshotRecord = {
   project: ProjectRecord;
   workflow: {
@@ -798,9 +1009,13 @@ export type WorkflowSnapshotRecord = {
       | "empty_output"
       | "waiting_scenario"
       | "waiting_review"
+      | "draft_ready"
+      | "partially_reviewed"
       | "complete";
     total: number;
     completed: number;
+    trust_state: "draft_ready" | "partially_reviewed" | "trusted";
+    pending_total: number;
     current_position: number;
     current_event_id: string | null;
     current_run_id: string | null;
@@ -812,6 +1027,7 @@ export type WorkflowSnapshotRecord = {
         | "inspect_material"
         | "confirm_scenario"
         | "review"
+        | "open_draft"
         | "open_brief";
       event_id: string | null;
       run_id: string | null;
@@ -825,6 +1041,7 @@ export type WorkflowSnapshotRecord = {
     sequence_no: number;
     material_status: MaterialStatus;
     display_status: WorkflowDisplayStatus;
+    status_summary: WorkflowEventStatusSummaryRecord;
     materials: {
       total: number;
       ready: number;
@@ -855,6 +1072,10 @@ export type WorkflowSnapshotRecord = {
       finished_at: string | null;
       updated_at: string;
     } | null;
+    ai_artifacts: {
+      summary: EventAiArtifactRunRecord | null;
+      readable_transcript: EventAiArtifactRunRecord | null;
+    };
     pending_claim_count: number;
     pending_occurrence_count: number;
     candidate_count: number;

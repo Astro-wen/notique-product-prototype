@@ -13,6 +13,7 @@ import type {
   CreateManualRelationResponse,
   CreateEventRequest,
   CreateEventResponse,
+  EventRecord,
   CreateExtractionRunResponse,
   CreateProjectRequest,
   CreateProjectResponse,
@@ -39,6 +40,23 @@ import type {
   ListEventsResponse,
   ListGlossaryEntriesResponse,
   ListProjectsResponse,
+  ListDeletedProjectsResponse,
+  ProjectDeletePreviewResponse,
+  ProjectMutationResponse,
+  DraftMemoryResponse,
+  DraftLinkVerdictResponse,
+  ProjectActionsResponse,
+  CompleteProjectActionResponse,
+  ReopenProjectActionResponse,
+  PermanentProjectDeleteResponse,
+  EventTrashPreviewResponse,
+  ListTrashedEventsResponse,
+  EventTrashResponse,
+  EventRestoreResponse,
+  PermanentEventDeleteResponse,
+  EventAiArtifactsResponse,
+  EventAiArtifactRecord,
+  EventAiArtifactRunRecord,
   ManualRelationTargetRecord,
   ManualRelationType,
   OccurrenceCandidateRecord,
@@ -48,8 +66,10 @@ import type {
   ScenarioVerdictResponse,
   ReviewSessionResponse,
   WithdrawClaimRequest,
+  WorkflowEventStatusSummaryRecord,
   WorkflowSnapshotRecord,
 } from "../lib/shared/api-types";
+import type { RoutingSource } from "../lib/domain/material-routing";
 
 export type Id = string;
 
@@ -61,9 +81,55 @@ export type RelationTarget = ManualRelationTargetRecord;
 export type RelationType = ManualRelationType;
 export type TranscriptSegment = EventTranscriptSegmentRecord;
 export type AiDraftAssessment = AiDraftAssessmentRecord;
-export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project"> & {
-  project: Project;
+export type WorkflowEventStatusSummary = {
+  materialCount: number;
+  materialReadyCount: number;
+  materialProcessingCount: number;
+  materialFailedCount: number;
+  transcriptionStatus: WorkflowEventStatusSummaryRecord["transcription_status"];
+  extractionStatus: WorkflowEventStatusSummaryRecord["extraction_status"];
+  pendingCount: number;
+  candidateCount: number;
+  summaryStatus: WorkflowEventStatusSummaryRecord["summary_status"];
+  readableTranscriptStatus: WorkflowEventStatusSummaryRecord["readable_transcript_status"];
 };
+export type WorkflowEventSummary = WorkflowSnapshotRecord["events"][number] & {
+  statusSummary: WorkflowEventStatusSummary;
+};
+export type WorkflowSnapshot = Omit<WorkflowSnapshotRecord, "project" | "events"> & {
+  project: Project;
+  events: WorkflowEventSummary[];
+};
+export type EventAiArtifactRun = EventAiArtifactRunRecord;
+export type EventAiArtifact = EventAiArtifactRecord;
+export type { RoutingSource };
+
+/**
+ * 一条在手的归属建议。字段沿用服务端的下划线命名，因为它是直接从 JSON 里拿出来的，
+ * 中间没有 normalize 这一步可以改名。
+ */
+export type RoutingSuggestion = {
+  event_id: string;
+  suggested_project_id: string;
+  suggested_project_name: string | null;
+  probability: number;
+  judge: string;
+  created_at: string;
+  dismissed_at: string | null;
+};
+
+/** 搬之前的试算。blockers 里每一条都是可以直接念给人听的话。 */
+export type EventMovePreview = {
+  can_move: boolean;
+  blockers: string[];
+  source_project_id: string;
+  target_project_id: string;
+};
+export type ProjectDeletePreview = ProjectDeletePreviewResponse["data"]["preview"];
+export type EventTrashPreview = EventTrashPreviewResponse["data"]["preview"];
+export type TrashedEvent = ListTrashedEventsResponse["data"]["events"][number];
+export type DraftMemory = DraftMemoryResponse["data"]["draft_memory"];
+export type ProjectAction = ProjectActionsResponse["data"]["actions"][number];
 
 export type RunReview = {
   claims: Claim[];
@@ -107,6 +173,9 @@ export type ScenarioCandidate = {
 };
 
 export type Project = {
+  folderName?: string;
+  lastOpenedAt?: string;
+  nameSource?: string;
   id: Id;
   name: string;
   description?: string;
@@ -122,6 +191,7 @@ export type Project = {
   scenarioVersion?: number;
   scenario?: { key: string; label: string };
   scenarioCandidates?: ScenarioCandidate[];
+  deletedAt?: string;
 };
 
 export type ReviewSession = {
@@ -156,6 +226,8 @@ export type Asset = {
   sizeBytes?: number;
   status?: string;
   metadata: Record<string, unknown>;
+  transform?: Record<string, unknown>;
+  sortOrder?: number;
 };
 
 export type TranscriptionRun = {
@@ -164,6 +236,13 @@ export type TranscriptionRun = {
   audioAssetId: Id;
   status: string;
   model: string;
+  orchestrationMode: "single" | "chunked" | "chunk";
+  parentRunId?: Id;
+  chunkIndex?: number;
+  chunkStartMs?: number;
+  chunkEndMs?: number;
+  chunkCount?: number;
+  completedChunkCount: number;
   derivedTranscriptAssetId?: Id;
   segmentCount?: number;
   durationMs?: number;
@@ -179,6 +258,8 @@ export type TranscriptionRun = {
   finishedAt?: string;
   errorCode?: string;
   errorMessage?: string;
+  segmentsProvisional: boolean;
+  stableUntilMs?: number;
   segments: Array<{
     id: Id;
     ordinal: number;
@@ -187,11 +268,23 @@ export type TranscriptionRun = {
     endMs: number;
     text: string;
   }>;
+  chunks: Array<{
+    id: Id;
+    index: number;
+    startMs: number;
+    endMs: number;
+    status: string;
+    processingAttemptNo: number;
+    errorCode?: string;
+  }>;
 };
 
 export type ExtractionRun = {
+  omittedStatements?: string[];
   id: Id;
   eventId?: Id;
+  idempotencyKey?: string;
+  inputAssetVersionIds?: string[];
   status: string;
   warningCount?: number;
   claimCount?: number;
@@ -320,6 +413,8 @@ export type ImportSession = {
 };
 
 export type ProjectViewName =
+  | "client-progress"
+  | "actions"
   | "folder-summary"
   | "timeline"
   | "decisions"
@@ -404,6 +499,9 @@ export function normalizeProject(value: unknown): Project {
   return {
     id: asString(pick(source, ["id", "project_id", "projectId"])),
     name: asString(pick(source, ["name", "title"]), "Untitled project"),
+    folderName: asString(source.folder_name) || undefined,
+    lastOpenedAt: asString(source.last_opened_at) || undefined,
+    nameSource: asString(source.name_source) || undefined,
     description: asString(pick(source, ["description"]), undefined as unknown as string) || undefined,
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     updatedAt: asString(pick(source, ["updated_at", "updatedAt"]), undefined as unknown as string) || undefined,
@@ -417,6 +515,7 @@ export function normalizeProject(value: unknown): Project {
     scenarioVersion: asNumber(pick(source, ["scenario_version", "scenarioVersion"])),
     scenario: scenario?.key ? { key: scenario.key, label: scenario.label || scenario.key } : undefined,
     scenarioCandidates: rawCandidates.map(normalizeScenarioCandidate).filter((item): item is ScenarioCandidate => Boolean(item)),
+    deletedAt: asString(pick(source, ["deleted_at", "deletedAt"]), undefined as unknown as string) || undefined,
   };
 }
 
@@ -489,6 +588,10 @@ function normalizeAsset(value: unknown): Asset | null {
     metadata: isRecord(pick(value, ["metadata"]))
       ? pick(value, ["metadata"]) as Record<string, unknown>
       : {},
+    transform: isRecord(pick(version, ["transform"]))
+      ? pick(version, ["transform"]) as Record<string, unknown>
+      : undefined,
+    sortOrder: asNumber(pick(value, ["sort_order", "sortOrder"])),
   };
 }
 
@@ -496,12 +599,23 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
   const source = isRecord(unwrap(value)) ? unwrap(value) as JsonRecord : {};
   const segments = Array.isArray(source.segments) ? source.segments : [];
   const errorDetails = isRecord(source.error_details) ? source.error_details : {};
+  const chunks = Array.isArray(source.chunks) ? source.chunks : [];
   return {
     id: asString(pick(source, ["id", "run_id"])),
     eventId: asString(pick(source, ["event_id"])),
     audioAssetId: asString(pick(source, ["audio_asset_id"])),
     status: asString(pick(source, ["status"]), "unknown"),
     model: asString(pick(source, ["model"])),
+    orchestrationMode: asString(
+      pick(source, ["orchestration_mode", "orchestrationMode"]),
+      "single",
+    ) as TranscriptionRun["orchestrationMode"],
+    parentRunId: asString(pick(source, ["parent_run_id", "parentRunId"]), undefined as unknown as string) || undefined,
+    chunkIndex: asNumber(pick(source, ["chunk_index", "chunkIndex"])),
+    chunkStartMs: asNumber(pick(source, ["chunk_start_ms", "chunkStartMs"])),
+    chunkEndMs: asNumber(pick(source, ["chunk_end_ms", "chunkEndMs"])),
+    chunkCount: asNumber(pick(source, ["chunk_count", "chunkCount"])),
+    completedChunkCount: asNumber(pick(source, ["completed_chunk_count", "completedChunkCount"])) ?? 0,
     derivedTranscriptAssetId: asString(
       pick(source, ["derived_transcript_asset_id"]),
       undefined as unknown as string,
@@ -523,6 +637,8 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
       pick(errorDetails, ["message"]),
       undefined as unknown as string,
     ) || undefined,
+    segmentsProvisional: pick(source, ["segments_provisional", "segmentsProvisional"]) === true,
+    stableUntilMs: asNumber(pick(source, ["stable_until_ms", "stableUntilMs"])),
     segments: segments.flatMap((item): TranscriptionRun["segments"] => {
       if (!isRecord(item)) return [];
       const id = asString(pick(item, ["id"]));
@@ -534,6 +650,21 @@ function normalizeTranscriptionRun(value: unknown): TranscriptionRun {
         startMs: asNumber(pick(item, ["start_ms"])) ?? 0,
         endMs: asNumber(pick(item, ["end_ms"])) ?? 0,
         text: asString(pick(item, ["text"])),
+      }];
+    }),
+    chunks: chunks.flatMap((item): TranscriptionRun["chunks"] => {
+      if (!isRecord(item)) return [];
+      const id = asString(pick(item, ["id"]));
+      const index = asNumber(pick(item, ["index", "chunk_index"]));
+      if (!id || index === undefined) return [];
+      return [{
+        id,
+        index,
+        startMs: asNumber(pick(item, ["start_ms", "startMs", "chunk_start_ms"])) ?? 0,
+        endMs: asNumber(pick(item, ["end_ms", "endMs", "chunk_end_ms"])) ?? 0,
+        status: asString(pick(item, ["status"]), "unknown"),
+        processingAttemptNo: asNumber(pick(item, ["processing_attempt_no", "attempt_no"])) ?? 0,
+        errorCode: asString(pick(item, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
       }];
     }),
   };
@@ -566,7 +697,11 @@ export function normalizeRun(value: unknown): ExtractionRun {
   return {
     id: asString(pick(source, ["id", "run_id", "runId"])),
     eventId: asString(pick(source, ["event_id", "eventId"]), undefined as unknown as string) || undefined,
+    idempotencyKey: asString(pick(source, ["idempotency_key", "idempotencyKey"]), undefined as unknown as string) || undefined,
+    inputAssetVersionIds: (pick<unknown[]>(source, ["input_asset_version_ids", "inputAssetVersionIds"], []) ?? [])
+      .filter((item): item is string => typeof item === "string" && Boolean(item)),
     status: asString(pick(source, ["status"]), "unknown").toLowerCase(),
+    omittedStatements: (pick<unknown[]>(source, ["omitted_statements"], []) ?? []).filter((item): item is string => typeof item === "string"),
     warningCount: asNumber(pick(source, ["warning_count", "warningCount"])),
     claimCount: asNumber(pick(source, ["claim_count", "claimCount"])),
     errorCode: asString(pick(source, ["error_code", "errorCode"]), undefined as unknown as string) || undefined,
@@ -738,6 +873,57 @@ function requireId<T extends { id: string }>(value: T, label: string): T {
   return value;
 }
 
+export function normalizeWorkflowEventSummary(
+  event: WorkflowSnapshotRecord["events"][number],
+): WorkflowEventSummary {
+  const summary = event.status_summary;
+  if (!summary) invalidContract("The workflow snapshot is missing an Event status summary.");
+  const numericFields = [
+    summary.material_count,
+    summary.material_ready_count,
+    summary.material_processing_count,
+    summary.material_failed_count,
+    summary.pending_count,
+    summary.candidate_count,
+  ];
+  if (numericFields.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    invalidContract("The workflow snapshot contains an invalid Event status count.");
+  }
+  const transcriptionStatus = event.transcription?.status ?? null;
+  const extractionStatus = event.extraction?.status ?? null;
+  const summaryStatus = event.ai_artifacts.summary?.status ?? null;
+  const readableTranscriptStatus = event.ai_artifacts.readable_transcript?.status ?? null;
+  if (
+    summary.material_count !== event.materials.total ||
+    summary.material_ready_count !== event.materials.ready ||
+    summary.material_processing_count !== event.materials.processing ||
+    summary.material_failed_count !== event.materials.failed ||
+    summary.transcription_status !== transcriptionStatus ||
+    summary.extraction_status !== extractionStatus ||
+    summary.pending_count !== event.pending_claim_count + event.pending_occurrence_count ||
+    summary.candidate_count !== event.candidate_count ||
+    summary.summary_status !== summaryStatus ||
+    summary.readable_transcript_status !== readableTranscriptStatus
+  ) {
+    invalidContract("The workflow snapshot returned conflicting Event states.");
+  }
+  return {
+    ...event,
+    statusSummary: {
+      materialCount: summary.material_count,
+      materialReadyCount: summary.material_ready_count,
+      materialProcessingCount: summary.material_processing_count,
+      materialFailedCount: summary.material_failed_count,
+      transcriptionStatus: summary.transcription_status,
+      extractionStatus: summary.extraction_status,
+      pendingCount: summary.pending_count,
+      candidateCount: summary.candidate_count,
+      summaryStatus: summary.summary_status,
+      readableTranscriptStatus: summary.readable_transcript_status,
+    },
+  };
+}
+
 function dataValue(body: unknown, keys: string[]): unknown {
   const data = unwrap(body);
   if (!isRecord(data)) invalidContract("The server returned an invalid success envelope.");
@@ -747,31 +933,262 @@ function dataValue(body: unknown, keys: string[]): unknown {
   invalidContract(`The server response is missing ${keys[0]}.`);
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+type RequestOptions = RequestInit & {
+  /**
+   * Overrides the default control-plane deadline. The transcription dispatch
+   * endpoint deliberately holds its HTTP response open — sending whitespace
+   * heartbeats — while the audio provider works, because a Worker only keeps
+   * waitUntil alive for about thirty seconds after a response is sent. The
+   * blanket deadline below used to abort that stream at 25 seconds, which
+   * killed every chunk that needed longer than that and left the Run to
+   * expire its lease and retry until it ran out of attempts.
+   */
+  timeoutMs?: number;
+};
+
+const REQUEST_TIMEOUT_MS = 25_000;
+const TRANSCRIPTION_DISPATCH_TIMEOUT_MS = 10 * 60_000;
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestInit } = init;
+  init = requestInit;
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof Blob) && !(init.body instanceof ArrayBuffer) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   headers.set("accept", "application/json");
-  const response = await fetch(path, { ...init, headers });
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text().catch(() => "");
-  if (!response.ok) throw new ApiClientError(issueFrom(response.status, response.headers, body));
-  return body as T;
+  // A stalled read used to leave the entire workspace in a loading state with
+  // no recovery path. Large Blob uploads intentionally keep their own lifetime;
+  // all control-plane requests get a bounded wait and a user-retryable error.
+  const shouldTimeOut = !(init.body instanceof Blob) && !(init.body instanceof ArrayBuffer);
+  const controller = shouldTimeOut ? new AbortController() : null;
+  const upstreamSignal = init.signal;
+  let timedOut = false;
+  const forwardAbort = () => controller?.abort(upstreamSignal?.reason);
+  if (controller && upstreamSignal) {
+    if (upstreamSignal.aborted) forwardAbort();
+    else upstreamSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
+  const timeout = controller ? globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs) : null;
+  try {
+    const response = await fetch(path, {
+      ...init,
+      headers,
+      signal: controller?.signal ?? init.signal,
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text().catch(() => "");
+    if (!response.ok) throw new ApiClientError(issueFrom(response.status, response.headers, body));
+    return body as T;
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiClientError({
+        status: 0,
+        code: "REQUEST_TIMEOUT",
+        message: "读取时间过长。内容已经保留，可以重试这一部分。",
+      });
+    }
+    throw error;
+  } finally {
+    if (timeout != null) globalThis.clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+/**
+ * Starts the transcription dispatch and returns as soon as the server has
+ * accepted it, leaving the response streaming in the background.
+ *
+ * The endpoint keeps its response open — sending whitespace heartbeats — while
+ * the audio provider transcribes, because a Worker only keeps waitUntil alive
+ * for about thirty seconds after a response is sent. Reading that body through
+ * the control-plane deadline aborted the provider request at 25 seconds, so
+ * every chunk that needed longer than that died mid-flight and could only wait
+ * for its lease to expire and be tried again — for as many attempts as it had.
+ * Awaiting the body was wrong in the other direction too: it would have left
+ * "重新检查" spinning for minutes on a request whose result the page already
+ * polls for.
+ */
+const openTranscriptionDispatches = new Map<string, Promise<void>>();
+
+async function startTranscriptionDispatch(runId: Id, init: RequestInit): Promise<void> {
+  // The page wakes a chunked Run on every poll tick. That was self-limiting
+  // only because the deadline aborted the previous kick; with the stream held
+  // open for the whole transcription, one stream per Run is the limit.
+  if (openTranscriptionDispatches.has(runId)) return;
+  const controller = new AbortController();
+  const abort = globalThis.setTimeout(() => controller.abort(), TRANSCRIPTION_DISPATCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch("/api/v1/jobs/dispatch", {
+      ...init,
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    globalThis.clearTimeout(abort);
+    throw error;
+  }
+  if (!response.ok) {
+    globalThis.clearTimeout(abort);
+    const body = await response.json().catch(() => null);
+    throw new ApiClientError(issueFrom(response.status, response.headers, body));
+  }
+  // Drain in the background so the connection — and the transcription running
+  // inside it — stays open until the server closes it.
+  const streamed = response.text().then(() => undefined, () => undefined).finally(() => {
+    globalThis.clearTimeout(abort);
+    openTranscriptionDispatches.delete(runId);
+  });
+  openTranscriptionDispatches.set(runId, streamed);
+}
+
+const UPLOAD_STALL_TIMEOUT_MS = 120_000;
+const UPLOAD_HEARTBEAT_INTERVAL_MS = 60_000;
+
+async function uploadBlob(
+  path: string,
+  body: Blob,
+  contentType: string,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) {
+    throw new ApiClientError({
+      status: 0,
+      code: "UPLOAD_ABORTED",
+      message: "上传已取消。文件没有被当作已完成材料。",
+    });
+  }
+  if (typeof XMLHttpRequest === "undefined") {
+    await request<unknown>(path, {
+      method: "PUT",
+      headers: { "content-type": contentType },
+      body,
+      signal,
+    });
+    onProgress?.(body.size, body.size);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    let stalled = false;
+    let stallTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const abort = () => xhr.abort();
+    const cleanup = () => {
+      if (stallTimer != null) globalThis.clearTimeout(stallTimer);
+      stallTimer = null;
+      signal?.removeEventListener("abort", abort);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const resetStallTimer = () => {
+      if (stallTimer != null) globalThis.clearTimeout(stallTimer);
+      stallTimer = globalThis.setTimeout(() => {
+        stalled = true;
+        xhr.abort();
+      }, UPLOAD_STALL_TIMEOUT_MS);
+    };
+    xhr.open("PUT", path, true);
+    // A fixed total timeout would kill a healthy 100 MiB upload on a slow
+    // connection. Stop only when no byte-level progress or response arrives.
+    xhr.timeout = 0;
+    xhr.setRequestHeader("content-type", contentType);
+    xhr.setRequestHeader("accept", "application/json");
+    xhr.upload.onprogress = (progress) => {
+      resetStallTimer();
+      const total = progress.lengthComputable ? progress.total : body.size;
+      onProgress?.(Math.min(progress.loaded, total), total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finish(() => {
+          onProgress?.(body.size, body.size);
+          resolve();
+        });
+        return;
+      }
+      const headers = new Headers();
+      const requestId = xhr.getResponseHeader("x-request-id");
+      if (requestId) headers.set("x-request-id", requestId);
+      let responseBody: unknown = xhr.responseText;
+      try { responseBody = JSON.parse(xhr.responseText); } catch { /* keep text */ }
+      finish(() => reject(new ApiClientError(issueFrom(xhr.status, headers, responseBody))));
+    };
+    xhr.onerror = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: "UPLOAD_NETWORK_ERROR",
+        message: "上传连接中断。文件没有被当作已完成材料，可以重新选择后继续。",
+      })));
+    };
+    xhr.ontimeout = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: "UPLOAD_TIMEOUT",
+        message: "文件上传等待过久，已停止这次等待。文件没有被当作已完成材料，可以重试。",
+      })));
+    };
+    xhr.onabort = () => {
+      finish(() => reject(new ApiClientError({
+        status: 0,
+        code: stalled ? "UPLOAD_TIMEOUT" : "UPLOAD_ABORTED",
+        message: stalled
+          ? "上传超过 2 分钟没有任何进度，已停止等待。文件没有被当作已完成材料，可以重试。"
+          : "上传已取消。文件没有被当作已完成材料。",
+      })));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    onProgress?.(0, body.size);
+    resetStallTimer();
+    xhr.send(body);
+  });
 }
 
 function jsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
 
+async function renewAssetUploadLease(assetId: Id): Promise<void> {
+  await request<unknown>(
+    `/api/v1/assets/${encodeURIComponent(assetId)}/heartbeat`,
+    { method: "POST", body: jsonBody({}) },
+  );
+}
+
 export const api = {
+  async updateProjectIndex(project: Project, name: string, folderName: string, key: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(project.id)}`, {
+      method: "PUT", headers: { "idempotency-key": key },
+      body: jsonBody({ name, folder_name: folderName || null, base_updated_at: project.updatedAt }),
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+  async markProjectOpened(projectId: Id): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/opened`, {method: "POST", body: "{}"});
+    return requireId(normalizeProject(body.data.project), "project");
+  },
   async listProjects(): Promise<Project[]> {
     const body = await request<ListProjectsResponse>("/api/v1/projects", { cache: "no-store" });
     return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
   },
 
-  async createProject(input: { name: string; description?: string }, idempotencyKey: string): Promise<Project> {
-    const payload: CreateProjectRequest = { name: input.name };
+  async createProject(input: {
+    name: string;
+    autoName?: boolean;
+    description?: string;
+    profile?: "real_estate_buyer_journey";
+  }, idempotencyKey: string): Promise<Project> {
+    const payload: CreateProjectRequest = { name: input.name, profile: input.profile, ...(input.autoName ? {auto_name: true} : {}) };
     const body = await request<CreateProjectResponse>("/api/v1/projects", { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: jsonBody(payload) });
     return requireId(normalizeProject(body.data.project), "project");
   },
@@ -781,16 +1198,188 @@ export const api = {
     return requireId(normalizeProject(body.data.project), "project");
   },
 
-  async getWorkflowSnapshot(projectId: Id): Promise<WorkflowSnapshot> {
+  async listDeletedProjects(): Promise<Project[]> {
+    const body = await request<ListDeletedProjectsResponse>("/api/v1/projects/trash", { cache: "no-store" });
+    return body.data.projects.map((item) => requireId(normalizeProject(item), "project"));
+  },
+
+  async getProjectDeletePreview(projectId: Id) {
+    const body = await request<ProjectDeletePreviewResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/delete-preview`,
+      { cache: "no-store" },
+    );
+    return body.data.preview;
+  },
+
+  async moveProjectToTrash(projectId: Id, idempotencyKey: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async restoreProject(projectId: Id, idempotencyKey: string): Promise<Project> {
+    const body = await request<ProjectMutationResponse>(`/api/v1/projects/${encodeURIComponent(projectId)}/restore`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    return requireId(normalizeProject(body.data.project), "project");
+  },
+
+  async getEventTrashPreview(eventId: Id): Promise<EventTrashPreview> {
+    const body = await request<EventTrashPreviewResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/delete-preview`,
+      { cache: "no-store" },
+    );
+    return body.data.preview;
+  },
+
+  async moveEventToTrash(eventId: Id, idempotencyKey: string): Promise<{ eventId: Id; projectId: Id }> {
+    const body = await request<EventTrashResponse>(`/api/v1/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    if (body.data.event_id !== eventId) invalidContract("The server trashed a different record.");
+    return { eventId: body.data.event_id, projectId: body.data.project_id };
+  },
+
+  async listTrashedEvents(): Promise<TrashedEvent[]> {
+    const body = await request<ListTrashedEventsResponse>("/api/v1/events/trash", { cache: "no-store" });
+    return body.data.events;
+  },
+
+  async restoreEvent(eventId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<EventRestoreResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/restore`, {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    if (body.data.event?.id !== eventId) invalidContract("The server restored a different record.");
+  },
+
+  async permanentlyDeleteEvent(eventId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<PermanentEventDeleteResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/permanent`,
+      {
+        method: "DELETE",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    if (body.data.event_id !== eventId || body.data.permanently_deleted !== true) {
+      invalidContract("The server returned an invalid permanent deletion result.");
+    }
+  },
+
+  async permanentlyDeleteProject(projectId: Id, confirmName: string, idempotencyKey: string): Promise<void> {
+    const body = await request<PermanentProjectDeleteResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/permanent`,
+      {
+        method: "DELETE",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ confirm_name: confirmName }),
+      },
+    );
+    if (body.data.project_id !== projectId || body.data.permanently_deleted !== true) {
+      invalidContract("The server returned an invalid permanent deletion result.");
+    }
+  },
+
+  async getEventAiArtifacts(eventId: Id, signal?: AbortSignal): Promise<{
+    runs: EventAiArtifactRunRecord[];
+    artifacts: EventAiArtifactRecord[];
+  }> {
+    const body = await request<EventAiArtifactsResponse>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/ai-artifacts`,
+      { cache: "no-store", signal },
+    );
+    return body.data;
+  },
+
+  async retryEventAiArtifact(
+    eventId: Id,
+    kind: EventAiArtifactRunRecord["kind"],
+    idempotencyKey: string,
+  ): Promise<EventAiArtifactRunRecord> {
+    const body = await request<ApiSuccess<{ artifact_run: EventAiArtifactRunRecord }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/ai-artifacts/${encodeURIComponent(kind)}/retry`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    return body.data.artifact_run;
+  },
+
+  async getWorkflowSnapshot(projectId: Id, signal?: AbortSignal): Promise<WorkflowSnapshot> {
     const body = await request<GetWorkflowSnapshotResponse>(
       `/api/v1/projects/${encodeURIComponent(projectId)}/workflow-snapshot`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     const snapshot = body.data.workflow_snapshot;
     return {
       ...snapshot,
       project: requireId(normalizeProject(snapshot.project), "project"),
+      events: snapshot.events.map(normalizeWorkflowEventSummary),
     };
+  },
+
+  async getDraftMemory(projectId: Id, signal?: AbortSignal): Promise<DraftMemory> {
+    const body = await request<DraftMemoryResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/draft-memory`,
+      { cache: "no-store", signal },
+    );
+    return body.data.draft_memory;
+  },
+
+  async getProjectActions(projectId: Id, signal?: AbortSignal): Promise<ProjectAction[]> {
+    const body = await request<ProjectActionsResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/actions`,
+      { cache: "no-store", signal },
+    );
+    return body.data.actions;
+  },
+
+  async decideDraftLink(
+    linkId: Id,
+    action: "accept" | "reject",
+    baseContextVersion: number,
+    idempotencyKey: string,
+  ) {
+    const body = await request<DraftLinkVerdictResponse>(
+      `/api/v1/draft-links/${encodeURIComponent(linkId)}/verdict`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ action, base_context_version: baseContextVersion }),
+      },
+    );
+    return body.data.draft_link;
+  },
+
+  async completeProjectAction(claimId: Id, idempotencyKey: string) {
+    const body = await request<CompleteProjectActionResponse>(
+      `/api/v1/actions/${encodeURIComponent(claimId)}/complete`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    );
+    return body.data.completion;
+  },
+
+  async reopenProjectAction(claimId: Id, idempotencyKey: string): Promise<void> {
+    const body = await request<ReopenProjectActionResponse>(
+      `/api/v1/actions/${encodeURIComponent(claimId)}/reopen`,
+      { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: "{}" },
+    );
+    if (body.data.reopened?.actionClaimId !== claimId) invalidContract("The server reopened a different action.");
   },
 
   async getReviewSession(projectId: Id): Promise<ReviewSession | null> {
@@ -932,10 +1521,57 @@ export const api = {
     return event;
   },
 
-  async listEventTranscriptSegments(eventId: Id): Promise<TranscriptSegment[]> {
+  async getRoutingSuggestion(eventId: Id, signal?: AbortSignal): Promise<RoutingSuggestion | null> {
+    const body = await request<ApiSuccess<{ routing_suggestion: RoutingSuggestion | null }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-suggestion`,
+      { cache: "no-store", signal },
+    );
+    // 没有建议是常态，不是空数据。
+    return body.data.routing_suggestion ?? null;
+  },
+
+  async getEventMovePreview(eventId: Id, targetProjectId: Id): Promise<EventMovePreview> {
+    const body = await request<ApiSuccess<{ preview: EventMovePreview }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/move-preview?target=${encodeURIComponent(targetProjectId)}`,
+      { cache: "no-store" },
+    );
+    const preview = body.data.preview;
+    if (typeof preview?.can_move !== "boolean" || !Array.isArray(preview.blockers)) {
+      invalidContract("The server returned an invalid move preview.");
+    }
+    return preview;
+  },
+
+  async moveEvent(eventId: Id, targetProjectId: Id, idempotencyKey: string): Promise<Event> {
+    const body = await request<ApiSuccess<{ event: EventRecord }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/move`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({ target_project_id: targetProjectId }),
+      },
+    );
+    return requireId(normalizeEvent(body.data.event), "event");
+  },
+
+  async setEventRoutingSource(eventId: Id, source: RoutingSource): Promise<void> {
+    await request<ApiSuccess<{ ok: true }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-source`,
+      { method: "POST", body: jsonBody({ source }) },
+    );
+  },
+
+  async dismissRoutingSuggestion(eventId: Id): Promise<void> {
+    await request<ApiSuccess<{ ok: true }>>(
+      `/api/v1/events/${encodeURIComponent(eventId)}/routing-suggestion/dismiss`,
+      { method: "POST", body: "{}" },
+    );
+  },
+
+  async listEventTranscriptSegments(eventId: Id, signal?: AbortSignal): Promise<TranscriptSegment[]> {
     const body = await request<ApiSuccess<{ segments: TranscriptSegment[] }>>(
       `/api/v1/events/${encodeURIComponent(eventId)}/transcript-segments`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     if (!Array.isArray(body.data.segments)) {
       invalidContract("The server returned an invalid Transcript segment list.");
@@ -975,9 +1611,15 @@ export const api = {
     };
   },
 
-  async uploadTranscriptItem(session: ImportSession, item: ImportItem, file: File): Promise<void> {
+  async uploadTranscriptItem(
+    session: ImportSession,
+    item: ImportItem,
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const url = item.uploadUrl || `/api/v1/transcript-imports/${encodeURIComponent(session.id)}/items/${encodeURIComponent(item.id)}/content`;
-    await request<unknown>(url, { method: "PUT", headers: { "content-type": file.type || "text/plain" }, body: file });
+    await uploadBlob(url, file, file.type || "text/plain", onProgress, signal);
   },
 
   async finalizeTranscriptImport(sessionId: Id, orderedItems: Array<{ item_id: Id; title: string; occurred_at?: string; event_type: string }>): Promise<Event[]> {
@@ -996,29 +1638,120 @@ export const api = {
     return body.data.events.map((item) => requireId(normalizeEvent(item), "event"));
   },
 
-  async initAsset(eventId: Id, input: { kind: string; filename: string; content_type: string; size_bytes: number }, idempotencyKey: string): Promise<{ assetId: Id; uploadUrl?: string }> {
+  async initAsset(
+    eventId: Id,
+    input: { kind: string; filename: string; content_type: string; size_bytes: number; metadata?: Record<string, unknown> },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ assetId: Id; uploadUrl?: string; status?: string }> {
     const payload: AssetInitRequest = {
       kind: input.kind as AssetInitRequest["kind"],
       filename: input.filename,
       mime_type: input.content_type,
       size_bytes: input.size_bytes,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     };
-    const body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
-      method: "POST",
-      headers: { "idempotency-key": idempotencyKey },
-      body: jsonBody(payload),
-    });
+    let body: AssetResponse;
+    try {
+      body = await request<AssetResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/init`, {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody(payload),
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new ApiClientError({
+          status: 0,
+          code: "UPLOAD_ABORTED",
+          message: "上传已取消。文件没有被当作已完成材料。",
+        });
+      }
+      throw error;
+    }
     const source = body.data.asset;
+    const asset = normalizeAsset(source);
     const result = {
-      assetId: source.id,
+      assetId: asset?.id || source.id,
       uploadUrl: body.data.content_url,
+      status: asset?.status,
     };
     if (!result.assetId) invalidContract("The server response is missing asset_id.");
     return result;
   },
 
-  async uploadAsset(assetId: Id, uploadUrl: string | undefined, body: Blob, contentType: string): Promise<void> {
-    await request<unknown>(uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`, { method: "PUT", headers: { "content-type": contentType }, body });
+  async uploadAsset(
+    assetId: Id,
+    uploadUrl: string | undefined,
+    body: Blob,
+    contentType: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let heartbeatInFlight = false;
+    const heartbeat = globalThis.setInterval(() => {
+      if (heartbeatInFlight || signal?.aborted) return;
+      heartbeatInFlight = true;
+      // The byte upload remains authoritative. A transient control-plane
+      // heartbeat failure must not interrupt a healthy transfer; another pulse
+      // arrives well before the server's abandoned-upload lease expires.
+      void renewAssetUploadLease(assetId)
+        .catch(() => undefined)
+        .finally(() => { heartbeatInFlight = false; });
+    }, UPLOAD_HEARTBEAT_INTERVAL_MS);
+    try {
+      await uploadBlob(
+        uploadUrl || `/api/v1/assets/${encodeURIComponent(assetId)}/content`,
+        body,
+        contentType,
+        onProgress,
+        signal,
+      );
+    } finally {
+      globalThis.clearInterval(heartbeat);
+    }
+  },
+
+  async heartbeatAssetUpload(assetId: Id): Promise<void> {
+    await renewAssetUploadLease(assetId);
+  },
+
+  async abortAsset(assetId: Id): Promise<Asset> {
+    const body = await request<unknown>(
+      `/api/v1/assets/${encodeURIComponent(assetId)}/abort`,
+      { method: "POST", body: jsonBody({}) },
+    );
+    const result = normalizeAsset(dataValue(body, ["asset"]));
+    if (!result?.id) invalidContract("The server returned an invalid aborted asset.");
+    return result;
+  },
+
+  async downloadAsset(assetId: Id): Promise<Blob> {
+    const response = await fetch(`/api/v1/assets/${encodeURIComponent(assetId)}/evidence-view`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") ?? "";
+      const body = contentType.includes("application/json")
+        ? await response.json().catch(() => null)
+        : await response.text().catch(() => "");
+      throw new ApiClientError(issueFrom(response.status, response.headers, body));
+    }
+    return response.blob();
+  },
+
+  async renameAsset(assetId: Id, filename: string): Promise<Asset> {
+    const body = await request<unknown>(`/api/v1/assets/${encodeURIComponent(assetId)}`, { method: "PUT", body: jsonBody({ filename }) });
+    const result = normalizeAsset(dataValue(body, ["asset"]));
+    if (!result?.id) invalidContract("The server returned an invalid renamed asset.");
+    return result;
+  },
+
+  async reorderEventAssets(eventId: Id, assetIds: Id[]): Promise<Asset[]> {
+    const body = await request<unknown>(`/api/v1/events/${encodeURIComponent(eventId)}/assets/order`, { method: "PUT", body: jsonBody({ asset_ids: assetIds }) });
+    const raw = dataValue(body, ["assets"]);
+    if (!Array.isArray(raw)) invalidContract("The server returned an invalid asset order.");
+    return raw.map(normalizeAsset).filter((item): item is Asset => Boolean(item));
   },
 
   async finalizeAsset(assetId: Id): Promise<Asset> {
@@ -1028,13 +1761,28 @@ export const api = {
     return result;
   },
 
-  async startTranscription(assetId: Id, idempotencyKey: string): Promise<TranscriptionRun> {
+  async startTranscription(
+    assetId: Id,
+    idempotencyKey: string,
+    chunks: Array<{ assetId: Id; index: number; startMs: number; endMs: number }> = [],
+  ): Promise<TranscriptionRun> {
     const body = await request<CreateTranscriptionRunResponse>(
       `/api/v1/assets/${encodeURIComponent(assetId)}/transcription-runs`,
       {
         method: "POST",
         headers: { "idempotency-key": idempotencyKey },
-        body: "{}",
+        body: jsonBody({
+          ...(chunks.length
+            ? {
+                chunks: chunks.map((chunk) => ({
+                  asset_id: chunk.assetId,
+                  index: chunk.index,
+                  start_ms: chunk.startMs,
+                  end_ms: chunk.endMs,
+                })),
+              }
+            : {}),
+        }),
       },
     );
     return requireId(
@@ -1054,6 +1802,21 @@ export const api = {
     );
   },
 
+  async retryFailedTranscriptionChunks(runId: Id, idempotencyKey: string): Promise<TranscriptionRun> {
+    const body = await request<GetTranscriptionRunResponse>(
+      `/api/v1/transcription-runs/${encodeURIComponent(runId)}/retry-failed-chunks`,
+      {
+        method: "POST",
+        headers: { "idempotency-key": idempotencyKey },
+        body: jsonBody({}),
+      },
+    );
+    return requireId(
+      normalizeTranscriptionRun(body.data.transcription_run),
+      "transcription run",
+    );
+  },
+
   async startExtraction(eventId: Id, assetVersionIds: Id[], idempotencyKey: string): Promise<ExtractionRun> {
     const body = await request<CreateExtractionRunResponse>(`/api/v1/events/${encodeURIComponent(eventId)}/extraction-runs`, {
       method: "POST",
@@ -1063,16 +1826,33 @@ export const api = {
     return requireId(normalizeRun(body.data.run), "extraction run");
   },
 
-  async kickDispatcher(target?: {
-    kind: "extraction" | "transcription";
-    runId: Id;
-  }): Promise<void> {
+  /**
+   * Runs the workspace recovery the absent Cron trigger was supposed to run.
+   *
+   * Passing the Event on screen is what lets recovery also start the analysis
+   * that Event is waiting for. Without it, recovery only finishes work someone
+   * already asked for — so an open app never commissions paid work for a
+   * project nobody opened.
+   */
+  async wakeWorkspace(eventId: Id | null): Promise<void> {
     await request<unknown>("/api/v1/jobs/dispatch", {
       method: "POST",
-      ...(target
-        ? { body: jsonBody({ kind: target.kind, run_id: target.runId }) }
-        : {}),
+      ...(eventId ? { body: jsonBody({ event_id: eventId }) } : {}),
     });
+  },
+
+  async kickDispatcher(target?: {
+    kind: "extraction" | "transcription" | "artifact";
+    runId: Id;
+  }): Promise<void> {
+    const body = target
+      ? { body: jsonBody({ kind: target.kind, run_id: target.runId }) }
+      : {};
+    if (target?.kind === "transcription") {
+      await startTranscriptionDispatch(target.runId, body);
+      return;
+    }
+    await request<unknown>("/api/v1/jobs/dispatch", { method: "POST", ...body });
   },
 
   async getRun(runId: Id): Promise<ExtractionRun> {
@@ -1115,6 +1895,7 @@ export const api = {
     if (
       !isRecord(body.data.debug) ||
       !Array.isArray(body.data.debug.stages) ||
+      !Array.isArray(body.data.debug.artifact_runs) ||
       !body.request_id
     ) {
       invalidContract("The server returned an invalid run debug response.");
@@ -1150,21 +1931,21 @@ export const api = {
     };
   },
 
-  async getClaimHistory(claimId: Id): Promise<unknown> {
-    return unwrap(await request<unknown>(`/api/v1/claims/${encodeURIComponent(claimId)}/history`, { cache: "no-store" }));
+  async getClaimHistory(claimId: Id, signal?: AbortSignal): Promise<unknown> {
+    return unwrap(await request<unknown>(`/api/v1/claims/${encodeURIComponent(claimId)}/history`, { cache: "no-store", signal }));
   },
 
-  async getEvidence(refId: Id): Promise<EvidenceRef> {
-    const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store" });
+  async getEvidence(refId: Id, signal?: AbortSignal): Promise<EvidenceRef> {
+    const body = await request<unknown>(`/api/v1/evidence-refs/${encodeURIComponent(refId)}`, { cache: "no-store", signal });
     const result = normalizeEvidence(dataValue(body, ["evidence_ref", "evidence"]));
     if (!result) throw new ApiClientError({ status: 502, code: "INVALID_EVIDENCE_RESPONSE", message: "The server returned an invalid evidence record." });
     return result;
   },
 
-  async getEvidenceContext(refId: Id): Promise<EvidenceContext> {
+  async getEvidenceContext(refId: Id, signal?: AbortSignal): Promise<EvidenceContext> {
     const body = await request<EvidenceContextResponse>(
       `/api/v1/evidence-refs/${encodeURIComponent(refId)}/context`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     const result = body.data.evidence_context;
     if (
@@ -1402,11 +2183,11 @@ export const api = {
     return requireId(normalizeProject(body.data.project), "scenario verdict");
   },
 
-  async getView(projectId: Id, view: ProjectViewName): Promise<unknown> {
+  async getView(projectId: Id, view: ProjectViewName, signal?: AbortSignal): Promise<unknown> {
     const path = view.startsWith("folder-") || ["timeline", "decisions", "preferences", "open-questions", "risks"].includes(view)
       ? `/api/v1/projects/${encodeURIComponent(projectId)}/views/${view}`
       : `/api/v1/projects/${encodeURIComponent(projectId)}/${view}`;
-    const body = await request<GetVerifiedViewResponse | unknown>(path, { cache: "no-store" });
+    const body = await request<GetVerifiedViewResponse | unknown>(path, { cache: "no-store", signal });
     return dataValue(body, ["view", "gap_check", "agenda", "brief_card"]);
   },
 };

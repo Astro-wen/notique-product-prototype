@@ -19,7 +19,11 @@ export type ProjectWorkflowPhase =
   | "empty_output"
   | "waiting_scenario"
   | "waiting_review"
+  | "draft_ready"
+  | "partially_reviewed"
   | "complete";
+
+export type ProjectTrustState = "draft_ready" | "partially_reviewed" | "trusted";
 
 export type ProjectWorkflowPlan = {
   phase: ProjectWorkflowPhase;
@@ -30,6 +34,8 @@ export type ProjectWorkflowPlan = {
   currentEventTitle?: string;
   currentRunId?: string;
   ignoredEmptyCount: number;
+  pendingTotal: number;
+  trustState: ProjectTrustState;
 };
 
 export type ProjectWorkflowDisplayStatus =
@@ -123,6 +129,8 @@ export function planProjectWorkflow(input: {
   const ignoredEmptyCount = ordered.length - included.length;
   const total = included.length;
   let completed = 0;
+  let pendingTotal = 0;
+  let reviewedCandidateCount = 0;
 
   for (const current of included) {
     const currentPosition = completed + 1;
@@ -134,6 +142,10 @@ export function planProjectWorkflow(input: {
       currentEventTitle: current.title,
       currentRunId: current.runId,
       ignoredEmptyCount,
+      pendingTotal,
+      trustState: (pendingTotal > 0
+        ? reviewedCandidateCount > 0 ? "partially_reviewed" : "draft_ready"
+        : "trusted") as ProjectTrustState,
     };
     const runStatus = current.runStatus?.toLowerCase();
     if (runStatus && successfulRunStatuses.has(runStatus)) {
@@ -143,9 +155,8 @@ export function planProjectWorkflow(input: {
       if (input.needsScenarioConfirmation) {
         return { ...base, phase: "waiting_scenario" };
       }
-      if (current.pendingCount > 0) {
-        return { ...base, phase: "waiting_review" };
-      }
+      pendingTotal += current.pendingCount;
+      reviewedCandidateCount += Math.max(0, (current.candidateCount ?? 0) - current.pendingCount);
       completed += 1;
       continue;
     }
@@ -165,6 +176,22 @@ export function planProjectWorkflow(input: {
       completed: 0,
       currentPosition: 0,
       ignoredEmptyCount,
+      pendingTotal: 0,
+      trustState: "trusted",
+    };
+  }
+  if (pendingTotal > 0) {
+    const trustState: ProjectTrustState = reviewedCandidateCount > 0
+      ? "partially_reviewed"
+      : "draft_ready";
+    return {
+      phase: trustState,
+      total,
+      completed: total,
+      currentPosition: total,
+      ignoredEmptyCount,
+      pendingTotal,
+      trustState,
     };
   }
   return {
@@ -173,5 +200,7 @@ export function planProjectWorkflow(input: {
     completed: total,
     currentPosition: total,
     ignoredEmptyCount,
+    pendingTotal: 0,
+    trustState: "trusted",
   };
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile, readdir, stat } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -74,6 +76,7 @@ test("two-pass model stages are resumable, bounded, and safely exposed", async (
   const repository = await read("lib/server/db/extraction-stage-repository.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
+  const stageContract = await read("lib/server/jobs/model-stage-contract.ts");
   const provider = await read("lib/server/ai/model-provider.ts");
   const migration = await read("drizzle/0010_extraction_model_stages.sql");
 
@@ -104,13 +107,38 @@ test("two-pass model stages are resumable, bounded, and safely exposed", async (
   );
   assert.match(
     processor,
+    /canReuseSucceededModelStage\(existing, frozenInput\)/,
+    "succeeded output may be reused only after the processor checks its exact frozen input",
+  );
+  assert.match(
+    processor,
+    /canResumeProcessingModelStage\(existing, frozenInput\)/,
+    "processing resume and succeeded reuse must share the same frozen-input contract",
+  );
+  for (const field of [
+    "provider",
+    "model",
+    "reasoning_effort",
+    "prompt_version",
+    "schema_version",
+    "input_hash",
+  ]) {
+    assert.match(stageContract, new RegExp(`persisted\\.${field}`));
+  }
+  assert.doesNotMatch(
+    provider,
+    /server excludes every readable segment marked requiresAttention/i,
+    "Agent B prompt v9 must not silently acquire new filtered-readable wording",
+  );
+  assert.match(
+    processor,
     /MODEL_ESCALATION_OUTPUT_INVALID[\s\S]{0,250}fallback_stage:\s*["']verify["']/,
     "an invalid optional escalation must fall back to the already valid verification output",
   );
   assert.match(
     processor,
-    /const usage = completedUsage \?\?[\s\S]{0,180}error instanceof ModelOutputInvalidError/,
-    "a failed later stage must retain aggregate usage from all earlier paid stages",
+    /persistedExtractionUsage\(String\(run\.id\)\)[\s\S]{0,220}completedUsage \?\?[\s\S]{0,180}error instanceof ModelOutputInvalidError/,
+    "all persisted paid stage attempts must remain in aggregate usage accounting",
   );
   assert.match(
     provider,
@@ -173,10 +201,11 @@ test("reasoning effort is frozen per Run and Run Debug exposes execution limits"
   const core = await read("lib/server/db/core-repository.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const provider = await read("lib/server/ai/model-provider.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.doesNotMatch(modelConfig, /OPENAI_REASONING_EFFORTS\s*=\s*\[[\s\S]{0,200}["']max["']/);
-  assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']xhigh["']/);
+  // 没配置时清点默认 high：真实录音实测和 xhigh 出的事实一样，快一分钟以上。
+  assert.match(modelConfig, /value\?\.trim\(\)\.toLowerCase\(\) \|\| ["']high["']/);
   assert.match(modelConfig, /normalizeVerifierReasoningEffort[\s\S]{0,220}\|\| ["']high["']/);
 
   assert.match(
@@ -290,11 +319,9 @@ test("repository enforces input-hash idempotency, scenario state CAS, and canoni
     /lower\(c?\.?type\)\s*=\s*'open question'/i,
     "Open Question uses the canonical open_question enum value",
   );
-  assert.match(
-    core,
-    /scenario_status[\s\S]{0,300}sequence_no[\s\S]{0,300}SCENARIO_CONFIRMATION_REQUIRED/i,
-    "later events must wait for scenario confirmation",
-  );
+  // 项目类型不再挡后面的记录，分析时也不再要求先确认。
+  assert.doesNotMatch(core, /throw new ApiFault\([\s\S]{0,40}"SCENARIO_CONFIRMATION_REQUIRED"/,
+    "no record waits for a scenario confirmation any more");
 });
 
 test("all four resource-creation APIs require durable request-hash idempotency", async () => {
@@ -403,6 +430,719 @@ test("transcript finalization and extraction retries are race-safe", async () =>
     /catch[\s\S]{0,800}SELECT \* FROM extraction_runs[\s\S]{0,800}input_hash[\s\S]{0,800}IDEMPOTENCY_CONFLICT/i,
     "an extraction insert race must recover a same-input run and reject a different input",
   );
+});
+
+test("Asset abort is scoped, idempotent, cleans staged storage, and fences upload/finalize races", async () => {
+  const [core, route, schema, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("app/api/v1/[...segments]/route.ts"),
+    read("db/schema.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const abort = core.slice(
+    core.indexOf("export async function abandonAssetUpload"),
+    core.indexOf("export async function finalizeAsset"),
+  );
+  const finalize = core.slice(
+    core.indexOf("export async function finalizeAsset"),
+    core.indexOf("export async function getAsset"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+
+  assert.match(route, /abandonAssetUpload/);
+  assert.match(
+    route,
+    /segments\[0\] === ["']assets["'][\s\S]{0,100}segments\[2\] === ["']abort["'][\s\S]{0,140}abandonAssetUpload\(scope, segments\[1\]\)/,
+    "POST /assets/:id/abort must call the scoped repository operation",
+  );
+  assert.doesNotMatch(
+    schema.slice(schema.indexOf("export const mutationReplays"), schema.indexOf("export const projects")),
+    /assetId|asset_id|assets\.id/,
+    "retaining a terminal Asset must keep init mutation replay references resolvable",
+  );
+  assert.match(
+    upload,
+    /processing_status = 'uploading' AND staged_r2_key IS NULL/,
+    "content upload must CAS only from uploading",
+  );
+  assert.match(upload, /getEvidenceBucket\(\)\.delete\(key\)/);
+  assert.doesNotMatch(upload, /current\?\.staged_r2_key === key \|\| current\?\.current_version_id/);
+  assert.match(
+    upload,
+    /processing_status\) === "parsing"[\s\S]{0,180}staged_r2_key === key[\s\S]{0,100}staged_sha256 === sha[\s\S]{0,120}return getAsset/,
+    "only an identical parsing winner may replay a concurrent content PUT",
+  );
+  assert.match(
+    upload,
+    /current\?\.current_version_id[\s\S]{0,220}SELECT r2_original_key FROM asset_versions[\s\S]{0,200}owner\?\.r2_original_key === key[\s\S]{0,220}getEvidenceBucket\(\)\.delete\(key\)/,
+    "a late PUT after finalize may keep only the exact object owned by the immutable version",
+  );
+  assert.match(
+    upload,
+    /processing_status\) === "failed"[\s\S]{0,500}SET staged_r2_key = \?, staged_sha256 = \?[\s\S]{0,600}SET staged_r2_key = NULL/,
+    "a late PUT after abort must delete its object or leave durable cleanup work",
+  );
+  assert.match(
+    abort,
+    /workspace_id = \?[\s\S]{0,120}current_version_id IS NULL[\s\S]{0,120}processing_status IN \('uploading', 'parsing'\)/,
+  );
+  assert.match(abort, /processing_status = 'failed', failure_code = 'UPLOAD_ABORTED'/);
+  assert.match(
+    abort,
+    /if \(current\.current_version_id\) return getAsset\(scope, assetId\);[\s\S]{0,500}recomputeEventMaterialReadiness\(scope, String\(current\.event_id\)\)[\s\S]{0,260}getEvidenceBucket\(\)\.delete\(stagedKey\)/,
+    "abort must reread the winner before deleting staged storage",
+  );
+  assert.match(
+    abort,
+    /processing_status = 'failed' AND staged_r2_key = \?/,
+    "only the same terminal staged key may be cleared after R2 deletion",
+  );
+  assert.match(
+    finalize,
+    /INSERT INTO mutation_guards[\s\S]{0,500}processing_status = 'parsing'[\s\S]{0,180}staged_r2_key = \? AND staged_sha256 = \?/,
+    "finalize must atomically guard the exact parsing payload",
+  );
+  assert.match(
+    finalize,
+    /UPDATE assets[\s\S]{0,280}processing_status = 'parsing'[\s\S]{0,160}staged_r2_key = \? AND staged_sha256 = \?/,
+    "finalize may publish only the exact still-active staged payload",
+  );
+  assert.match(
+    readiness,
+    /material_status = CASE[\s\S]{0,180}material_status = 'archived'[\s\S]{0,1200}processing_status <> 'ready'/,
+    "a cancelled tombstone must not block a later successful Asset from making its Event ready",
+  );
+  assert.match(readiness, /analysis_source'[\s\S]*artifact_kind'[\s\S]*transcription_chunk'/);
+  assert.match(finalize, /eventMaterialReadinessStatement\(scope, String\(row\.event_id\), timestamp\)/);
+  assert.match(
+    workflow,
+    /WITH material_counts AS \([\s\S]{0,500}COALESCE\(failure_code, ''\) NOT IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)/,
+    "cancelled tombstones must not appear as failed or processing workflow material",
+  );
+  assert.match(
+    core.slice(core.indexOf("export async function getEvent"), core.indexOf("export async function createTranscriptImport")),
+    /COALESCE\(a\.failure_code, ''\) NOT IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)/,
+    "cancelled tombstones must not reappear as user-visible Event material",
+  );
+});
+
+test("Asset abort SQL prevents zombie processing rows under D1/SQLite race ordering", async () => {
+  const [core, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const abort = core.slice(
+    core.indexOf("export async function abandonAssetUpload"),
+    core.indexOf("export async function finalizeAsset"),
+  );
+  const finalize = core.slice(
+    core.indexOf("export async function finalizeAsset"),
+    core.indexOf("export async function getAsset"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const sql = (section, expression, label) => {
+    const match = section.match(expression);
+    assert.ok(match, `${label} SQL was not found in the repository`);
+    return match[1];
+  };
+  const uploadCasSql = sql(
+    upload,
+    /`(UPDATE assets[^`]*?processing_status = 'uploading' AND staged_r2_key IS NULL)`/,
+    "upload CAS",
+  );
+  const abortCasSql = sql(
+    abort,
+    /`(UPDATE assets\s+SET processing_status = 'failed'[^`]*?processing_status IN \('uploading', 'parsing'\))`/,
+    "abort CAS",
+  );
+  const cleanupSql = sql(
+    abort,
+    /`(UPDATE assets\s+SET staged_r2_key = NULL[^`]*?processing_status = 'failed' AND staged_r2_key = \?)`/,
+    "abort cleanup",
+  );
+  const finalizeGuardSql = sql(
+    finalize,
+    /`(INSERT INTO mutation_guards[^`]*?staged_r2_key = \? AND staged_sha256 = \?[^`]*?END, \?)`/,
+    "finalize guard",
+  );
+  const finalizeCasSql = sql(
+    finalize,
+    /`(UPDATE assets\s+SET current_version_id = \?[^`]*?staged_r2_key = \? AND staged_sha256 = \?)`/,
+    "finalize CAS",
+  );
+  const eventReadySql = sql(
+    readiness,
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+    "Event material readiness update",
+  );
+  const materialCountsSql = sql(
+    workflow,
+    /WITH material_counts AS \(\s*([\s\S]*?GROUP BY event_id)\s*\)\s*SELECT/,
+    "workflow material counts",
+  );
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE mutation_guards (
+        id TEXT PRIMARY KEY,
+        guard_value INTEGER NOT NULL CHECK (guard_value = 1),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        current_version_id TEXT,
+        staged_r2_key TEXT,
+        staged_sha256 TEXT,
+        staged_mime_type TEXT,
+        staged_size_bytes INTEGER,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE asset_versions (
+        id TEXT PRIMARY KEY,
+        asset_id TEXT NOT NULL,
+        r2_original_key TEXT NOT NULL
+      );
+      INSERT INTO events VALUES ('event-a', 'ws-a', 'draft', 't0');
+      INSERT INTO assets VALUES
+        ('uploading', 'ws-a', 'event-a', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', 't0'),
+        ('staged', 'ws-a', 'event-a', 'parsing', NULL, 'r2/staged', 'sha-staged', 'text/plain', 3, NULL, '{}', 't0'),
+        ('wrong-scope', 'ws-b', 'event-b', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', 't0'),
+        ('ready', 'ws-a', 'event-a', 'ready', 'av-ready', 'r2/ready', 'sha-ready', 'text/plain', 3, NULL, '{}', 't0'),
+        ('finalize-live', 'ws-a', 'event-a', 'parsing', NULL, 'r2/live', 'sha-live', 'text/plain', 3, NULL, '{}', 't0');
+      INSERT INTO asset_versions VALUES ('av-ready', 'ready', 'r2/ready');
+    `);
+
+    const abortCas = database.prepare(abortCasSql);
+    const uploadCas = database.prepare(uploadCasSql);
+    const cleanup = database.prepare(cleanupSql);
+
+    assert.equal(abortCas.run("t1", "uploading", "ws-a").changes, 1);
+    assert.equal(
+      uploadCas.run("r2/late", "sha-late", "text/plain", 3, "t2", "uploading", "ws-a").changes,
+      0,
+      "a content request that reaches D1 after abort must not advance to parsing",
+    );
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, failure_code FROM assets WHERE id = 'uploading'").get() },
+      { processing_status: "failed", failure_code: "UPLOAD_ABORTED" },
+    );
+    assert.equal(abortCas.run("t3", "uploading", "ws-a").changes, 0, "abort must be idempotent");
+
+    assert.equal(abortCas.run("t1", "staged", "ws-a").changes, 1);
+    const stagedKey = database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'staged'").get().staged_r2_key;
+    assert.equal(stagedKey, "r2/staged", "the key stays durable until object deletion succeeds");
+    const storedObjects = new Set([stagedKey]);
+    storedObjects.delete(stagedKey);
+    assert.equal(cleanup.run("t2", "staged", "ws-a", stagedKey).changes, 1);
+    assert.equal(storedObjects.size, 0);
+    assert.equal(database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'staged'").get().staged_r2_key, null);
+
+    assert.equal(abortCas.run("t1", "wrong-scope", "ws-a").changes, 0);
+    assert.equal(
+      database.prepare("SELECT processing_status FROM assets WHERE id = 'wrong-scope'").get().processing_status,
+      "uploading",
+    );
+    assert.equal(abortCas.run("t1", "ready", "ws-a").changes, 0);
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, current_version_id, staged_r2_key FROM assets WHERE id = 'ready'").get() },
+      { processing_status: "ready", current_version_id: "av-ready", staged_r2_key: "r2/ready" },
+      "abort must not mutate or delete finalized content",
+    );
+
+    assert.throws(() => {
+      database.exec("BEGIN");
+      try {
+        database.prepare(finalizeGuardSql).run(
+          "guard-aborted", "staged", "ws-a", "r2/staged", "sha-staged", "t4",
+        );
+        database.prepare("INSERT INTO asset_versions VALUES (?, ?, ?)").run(
+          "av-should-not-exist", "staged", "r2/staged",
+        );
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }, /CHECK constraint failed/);
+    assert.equal(
+      database.prepare("SELECT COUNT(*) AS count FROM asset_versions WHERE id = 'av-should-not-exist'").get().count,
+      0,
+      "an abort winner must make the whole finalize batch roll back",
+    );
+
+    database.exec("BEGIN");
+    database.prepare(finalizeGuardSql).run(
+      "guard-live", "finalize-live", "ws-a", "r2/live", "sha-live", "t5",
+    );
+    database.prepare("INSERT INTO asset_versions VALUES (?, ?, ?)").run(
+      "av-live", "finalize-live", "r2/live",
+    );
+    assert.equal(
+      database.prepare(finalizeCasSql).run(
+        "av-live", "t5", "finalize-live", "ws-a", "r2/live", "sha-live",
+      ).changes,
+      1,
+    );
+    database.prepare(eventReadySql).run(
+      "event-a", "ws-a", "event-a", "ws-a", "t5", "event-a", "ws-a",
+    );
+    database.prepare("DELETE FROM mutation_guards WHERE id = ?").run("guard-live");
+    database.exec("COMMIT");
+    assert.equal(abortCas.run("t6", "finalize-live", "ws-a").changes, 0);
+    assert.deepEqual(
+      { ...database.prepare("SELECT processing_status, current_version_id FROM assets WHERE id = 'finalize-live'").get() },
+      { processing_status: "ready", current_version_id: "av-live" },
+      "a finalize winner must remain immutable under a later abort",
+    );
+    assert.equal(
+      database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status,
+      "ready",
+      "old UPLOAD_ABORTED rows must not block a successful re-upload from making the Event ready",
+    );
+    const counts = database.prepare(materialCountsSql).get("ws-a");
+    assert.deepEqual(
+      { ...counts },
+      {
+        event_id: "event-a",
+        material_total: 2,
+        material_ready: 2,
+        material_processing: 0,
+        material_failed: 0,
+      },
+      "workflow material counts must contain only the two successful Assets",
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("Event material readiness is recomputed from live user sources", async () => {
+  const core = await read("lib/server/db/core-repository.ts");
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const match = readiness.match(
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+  );
+  assert.ok(match, "Event material readiness SQL was not found");
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL
+      );
+      INSERT INTO events VALUES
+        ('event-a', 'ws-a', 'draft', 't0'),
+        ('event-b', 'ws-a', 'ready', 't0'),
+        ('event-archived', 'ws-a', 'archived', 't0'),
+        ('event-other', 'ws-b', 'ready', 't0');
+      INSERT INTO assets VALUES
+        ('ready-a', 'ws-a', 'event-a', 'ready', NULL, '{}'),
+        ('parsing-b', 'ws-a', 'event-a', 'parsing', NULL, '{}'),
+        ('internal', 'ws-a', 'event-a', 'parsing', NULL, '{"analysis_source":false}'),
+        ('readable', 'ws-a', 'event-a', 'parsing', NULL, '{"artifact_kind":"readable_transcript"}'),
+        ('chunk', 'ws-a', 'event-a', 'parsing', NULL, '{"transcription_chunk":true}'),
+        ('internal-only', 'ws-a', 'event-b', 'ready', NULL, '{"analysis_source":false}'),
+        ('archived-ready', 'ws-a', 'event-archived', 'ready', NULL, '{}'),
+        ('other-ready', 'ws-b', 'event-other', 'ready', NULL, '{}');
+    `);
+    const recompute = database.prepare(match[1]);
+    const run = (eventId, workspaceId = "ws-a") => recompute.run(
+      eventId,
+      workspaceId,
+      eventId,
+      workspaceId,
+      "t1",
+      eventId,
+      workspaceId,
+    );
+
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "draft");
+    database.prepare("UPDATE assets SET processing_status='failed', failure_code='UPLOAD_ABORTED' WHERE id='parsing-b'").run();
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "ready");
+    database.prepare("INSERT INTO assets VALUES ('new-user-upload', 'ws-a', 'event-a', 'uploading', NULL, '{}')").run();
+    run("event-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-a'").get().material_status, "draft");
+
+    run("event-b");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-b'").get().material_status, "draft");
+    run("event-archived");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-archived'").get().material_status, "archived");
+    run("event-other", "ws-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-other'").get().material_status, "ready");
+  } finally {
+    database.close();
+  }
+});
+
+test("the durable repair creates extraction for every uncovered current source manifest", async () => {
+  const [automatic, outbox, worker] = await Promise.all([
+    read("lib/server/jobs/automatic-extraction.ts"),
+    read("lib/server/jobs/outbox.ts"),
+    read("worker/index.ts"),
+  ]);
+  const candidateMatch = automatic.match(
+    /const candidates = await all\(\s*`([^`]+)`/,
+  );
+  assert.ok(candidateMatch, "automatic extraction candidate SQL was not found");
+  assert.match(automatic, /WITH current_sources AS/);
+  assert.match(automatic, /a\.kind <> 'audio'/);
+  assert.match(automatic, /a\.processing_status = 'ready'/);
+  assert.match(automatic, /HAVING COUNT\(\*\) <= \?/);
+  // 任何一条就绪的记录都直接分析，不再等第一条定下项目类型。
+  assert.doesNotMatch(automatic, /sc\.sequence_no = 1 OR sc\.scenario_status = 'confirmed'/);
+  assert.match(automatic, /ORDER BY random\(\)/);
+  assert.match(automatic, /source_audio_asset_version_id/);
+  assert.match(automatic, /json_valid\(er\.input_manifest_json\)/);
+  assert.match(automatic, /SELECT COUNT\(\*\) FROM json_each\(er\.input_manifest_json\)/);
+  assert.match(automatic, /NOT EXISTS \([\s\S]*current_sources source[\s\S]*json_each\(er\.input_manifest_json\) manifest_item/);
+  assert.match(automatic, /TRANSCRIPTION_NOT_READY/);
+  assert.match(automatic, /MAX_EXTRACTION_ASSET_VERSIONS\s*=\s*25/);
+  assert.match(automatic, /MAX_AUTOMATIC_EXTRACTION_ATTEMPTS\s*=\s*2/);
+  assert.match(automatic, /COVERED_EXTRACTION_RUN_STATES = new Set\(\[[\s\S]*"completed_with_warnings"[\s\S]*"cancelled"/);
+  assert.match(automatic, /er\.status IN \([\s\S]{0,180}'completed_with_warnings', 'cancelled'/);
+  assert.match(automatic, /auto-manifest\.v1:\$\{digest\}/);
+  assert.match(automatic, /retryOrdinal > 0 \? `\$\{base\}:retry-\$\{retryOrdinal\}`/);
+  assert.match(automatic, /const exactRuns = previousRuns\.filter[\s\S]{0,300}sameIds/);
+  assert.match(automatic, /failedAttempts >= MAX_AUTOMATIC_EXTRACTION_ATTEMPTS/);
+  assert.match(automatic, /createExtractionRun\([\s\S]{0,300}assetVersionIds/);
+  assert.match(outbox, /ensureAutomaticExtractionRuns/);
+  assert.ok(
+    outbox.indexOf("await ensureAutomaticExtractionRuns()") <
+      outbox.indexOf("dispatchDueTranscriptionOutbox()"),
+    "the durable ensure must run before the Cron dispatch pass",
+  );
+  assert.match(worker, /sweepAndDispatch\(\)/);
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        deleted_at TEXT,
+        scenario_status TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        sequence_no INTEGER NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        current_version_id TEXT,
+        processing_status TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        failure_code TEXT
+      );
+      CREATE TABLE extraction_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        input_manifest_json TEXT NOT NULL,
+        error_code TEXT
+      );
+      INSERT INTO projects VALUES
+        ('project-a', 'ws-a', NULL, 'confirmed'),
+        ('project-b', 'ws-a', NULL, 'unassessed'),
+        ('project-c', 'ws-a', NULL, 'unassessed');
+      INSERT INTO events VALUES
+        ('event-new', 'ws-a', 'project-a', 'ready', 1),
+        ('event-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-added', 'ws-a', 'project-a', 'ready', 1),
+        ('event-photo', 'ws-a', 'project-a', 'ready', 1),
+        ('event-transcript', 'ws-a', 'project-a', 'ready', 1),
+        ('event-warning-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-cancelled-covered', 'ws-a', 'project-a', 'ready', 1),
+        ('event-draft', 'ws-a', 'project-a', 'draft', 1),
+        ('event-stale', 'ws-a', 'project-a', 'ready', 1),
+        ('event-unassessed-first', 'ws-a', 'project-b', 'ready', 1),
+        ('event-unassessed-later', 'ws-a', 'project-b', 'ready', 2),
+        ('event-retry-exhausted', 'ws-a', 'project-c', 'ready', 1),
+        ('event-restarted', 'ws-a', 'project-a', 'ready', 1);
+      INSERT INTO assets VALUES
+        ('audio-new', 'ws-a', 'event-new', 'audio', 'audio-version-new', 'ready', '{}', NULL),
+        ('derived-new', 'ws-a', 'event-new', 'transcript', 'transcript-version-new', 'ready', '{"source_audio_asset_version_id":"audio-version-new"}', NULL),
+        ('audio-covered', 'ws-a', 'event-covered', 'audio', 'audio-version-covered', 'ready', '{}', NULL),
+        ('derived-covered', 'ws-a', 'event-covered', 'transcript', 'transcript-version-covered', 'ready', '{"source_audio_asset_version_id":"audio-version-covered"}', NULL),
+        ('transcript-added', 'ws-a', 'event-added', 'transcript', 'transcript-version-added', 'ready', '{}', NULL),
+        ('photo-added', 'ws-a', 'event-added', 'photo', 'photo-version-added', 'ready', '{}', NULL),
+        ('photo-only', 'ws-a', 'event-photo', 'photo', 'photo-version-only', 'ready', '{}', NULL),
+        ('transcript-only', 'ws-a', 'event-transcript', 'transcript', 'transcript-version-only', 'ready', '{}', NULL),
+        ('warning-covered', 'ws-a', 'event-warning-covered', 'transcript', 'transcript-version-warning', 'ready', '{}', NULL),
+        ('cancelled-covered', 'ws-a', 'event-cancelled-covered', 'transcript', 'transcript-version-cancelled', 'ready', '{}', NULL),
+        ('draft-transcript', 'ws-a', 'event-draft', 'transcript', 'transcript-version-draft', 'ready', '{}', NULL),
+        ('audio-stale', 'ws-a', 'event-stale', 'audio', 'audio-version-current', 'ready', '{}', NULL),
+        ('derived-stale', 'ws-a', 'event-stale', 'transcript', 'transcript-version-old', 'ready', '{"source_audio_asset_version_id":"audio-version-old"}', NULL),
+        ('first-unassessed', 'ws-a', 'event-unassessed-first', 'transcript', 'transcript-version-first', 'ready', '{}', NULL),
+        ('later-unassessed', 'ws-a', 'event-unassessed-later', 'transcript', 'transcript-version-later', 'ready', '{}', NULL),
+        ('retry-exhausted', 'ws-a', 'event-retry-exhausted', 'transcript', 'transcript-version-exhausted', 'ready', '{}', NULL),
+        ('restarted', 'ws-a', 'event-restarted', 'transcript', 'transcript-version-restarted', 'ready', '{}', NULL);
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
+        'run-covered', 'ws-a', 'event-covered', 'succeeded',
+        '[{"asset_version_id":"transcript-version-covered"}]'
+      );
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
+        'run-added-old', 'ws-a', 'event-added', 'succeeded',
+        '[{"asset_version_id":"transcript-version-added"}]'
+      );
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES (
+        'run-first-failed', 'ws-a', 'event-unassessed-first', 'failed',
+        '[{"asset_version_id":"transcript-version-first"}]'
+      );
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json) VALUES
+        ('run-exhausted-1', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
+        ('run-exhausted-2', 'ws-a', 'event-retry-exhausted', 'failed', '[{"asset_version_id":"transcript-version-exhausted"}]'),
+        ('run-warning', 'ws-a', 'event-warning-covered', 'completed_with_warnings', '[{"asset_version_id":"transcript-version-warning"}]'),
+        ('run-cancelled', 'ws-a', 'event-cancelled-covered', 'cancelled', '[{"asset_version_id":"transcript-version-cancelled"}]');
+      -- 两次都是因上下文变化自动接班的旧任务，不算失败，还应该被补上。
+      INSERT INTO extraction_runs (id, workspace_id, event_id, status, input_manifest_json, error_code) VALUES
+        ('run-restarted-1', 'ws-a', 'event-restarted', 'failed', '[{"asset_version_id":"transcript-version-restarted"}]', 'CONTEXT_CHANGED_RESTARTED'),
+        ('run-restarted-2', 'ws-a', 'event-restarted', 'failed', '[{"asset_version_id":"transcript-version-restarted"}]', 'CONTEXT_CHANGED_RESTARTED');
+    `);
+    // The two nulls are the optional Event scope: a browser may only commission
+    // analysis for the Event on its screen, so opening the app cannot spend
+    // money on a project nobody opened. Unscoped is the Cron's whole-workspace
+    // scan.
+    const rows = database.prepare(candidateMatch[1]).all(25, null, null, 2, 50);
+    assert.deepEqual(
+      rows.map((row) => row.event_id).sort(),
+      ["event-added", "event-new", "event-photo", "event-restarted", "event-transcript", "event-unassessed-first", "event-unassessed-later"],
+      "transcript/photo-only, expanded manifests, and a once-failed unassessed first Event are repaired; successful, warning, cancelled, exhausted, draft, stale-lineage, and blocked later Events are skipped",
+    );
+    const scoped = database.prepare(candidateMatch[1]).all(25, "event-new", "event-new", 2, 50);
+    assert.deepEqual(
+      scoped.map((row) => row.event_id),
+      ["event-new"],
+      "a scoped repair touches only the named Event",
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("stale Asset upload leases self-heal after a lost abort without blocking ready material", async () => {
+  const [core, workflow] = await Promise.all([
+    read("lib/server/db/core-repository.ts"),
+    read("lib/server/db/workflow-repository.ts"),
+  ]);
+  const sweep = core.slice(
+    core.indexOf("export async function expireStaleAssetUploads"),
+    core.indexOf("export async function abandonAssetUpload"),
+  );
+  const heartbeat = core.slice(
+    core.indexOf("export async function heartbeatAssetUpload"),
+    core.indexOf("export async function expireStaleAssetUploads"),
+  );
+  const upload = core.slice(
+    core.indexOf("export async function uploadAssetContent"),
+    core.indexOf("export async function expireStaleAssetUploads"),
+  );
+  const readiness = core.slice(
+    core.indexOf("function eventMaterialReadinessStatement"),
+    core.indexOf("export async function initializeAsset"),
+  );
+  const sql = (section, expression, label) => {
+    const match = section.match(expression);
+    assert.ok(match, `${label} SQL was not found in the repository`);
+    return match[1];
+  };
+
+  assert.match(core, /STALE_ASSET_UPLOAD_TTL_MS\s*=\s*15 \* 60_000/);
+  assert.match(heartbeat, /workspace_id = \?/);
+  assert.match(heartbeat, /current_version_id IS NULL/);
+  assert.match(heartbeat, /processing_status = 'uploading'/);
+  assert.match(sweep, /workspace_id = \?/);
+  assert.match(sweep, /current_version_id IS NULL/);
+  assert.match(sweep, /updated_at < \?/);
+  assert.match(sweep, /STALE_ASSET_SWEEP_LIMIT/);
+  assert.match(sweep, /failure_code = 'UPLOAD_EXPIRED'/);
+  assert.match(sweep, /getEvidenceBucket\(\)\.delete\(stagedKey\)/);
+  assert.match(sweep, /const activeCandidates = await all[\s\S]*const cleanupCandidates = await all/);
+  assert.match(sweep, /catch \{[\s\S]{0,700}UPDATE assets SET updated_at = \?[\s\S]{0,500}continue;/);
+  assert.match(
+    core.slice(core.indexOf("export async function initializeAsset"), core.indexOf("function maxAssetBytes")),
+    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,300}findMutationReplay/,
+    "asset init must sweep before replaying an abandoned init response",
+  );
+  assert.match(
+    core.slice(core.indexOf("export async function getEvent"), core.indexOf("export async function createTranscriptImport")),
+    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,1600}eventRecord\(event\)/,
+  );
+  assert.match(
+    workflow,
+    /getProject\(scope, projectId\)[\s\S]{0,100}expireStaleAssetUploads\(scope, \{ projectId \}\)/,
+  );
+
+  const expireCasSql = sql(
+    sweep,
+    /`(UPDATE assets\s+SET processing_status = 'failed', failure_code = 'UPLOAD_EXPIRED'[^`]*?updated_at < \?)`/,
+    "stale upload CAS",
+  );
+  const heartbeatSql = sql(
+    heartbeat,
+    /`(UPDATE assets SET updated_at = \?[^`]*?processing_status = 'uploading')`/,
+    "upload heartbeat CAS",
+  );
+  const cleanupSql = sql(
+    sweep,
+    /`(UPDATE assets\s+SET staged_r2_key = NULL[^`]*?failure_code IN \('UPLOAD_ABORTED', 'UPLOAD_EXPIRED'\)[^`]*?staged_r2_key = \?)`/,
+    "stale object cleanup",
+  );
+  const eventRecoverySql = sql(
+    readiness,
+    /`(UPDATE events\s+SET material_status = CASE[^`]*?WHERE id = \? AND workspace_id = \?)`/,
+    "stale Event recovery",
+  );
+  const uploadCasSql = sql(
+    upload,
+    /`(UPDATE assets[^`]*?processing_status = 'uploading' AND staged_r2_key IS NULL)`/,
+    "content upload CAS",
+  );
+  const materialCountsMatch = workflow.match(
+    /WITH material_counts AS \(\s*([\s\S]*?GROUP BY event_id)\s*\)\s*SELECT/,
+  );
+  assert.ok(materialCountsMatch);
+
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processing_status TEXT NOT NULL,
+        current_version_id TEXT,
+        staged_r2_key TEXT,
+        staged_sha256 TEXT,
+        staged_mime_type TEXT,
+        staged_size_bytes INTEGER,
+        failure_code TEXT,
+        metadata_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        material_status TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO events VALUES
+        ('event-stale', 'ws-a', 'draft', 'old'),
+        ('event-staged', 'ws-a', 'draft', 'old'),
+        ('event-fresh', 'ws-a', 'draft', 'new');
+      INSERT INTO assets VALUES
+        ('ready-stale', 'ws-a', 'project-a', 'event-stale', 'ready', 'av-ready-stale', 'r2/ready-stale', 'sha-ready-stale', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('lost-upload', 'ws-a', 'project-a', 'event-stale', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('ready-staged', 'ws-a', 'project-a', 'event-staged', 'ready', 'av-ready-staged', 'r2/ready-staged', 'sha-ready-staged', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('lost-staged', 'ws-a', 'project-a', 'event-staged', 'parsing', NULL, 'r2/lost-staged', 'sha-lost-staged', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('fresh-upload', 'ws-a', 'project-a', 'event-fresh', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('other-scope', 'ws-b', 'project-b', 'event-other', 'uploading', NULL, NULL, NULL, 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z'),
+        ('already-final', 'ws-a', 'project-a', 'event-stale', 'ready', 'av-final', 'r2/final', 'sha-final', 'text/plain', 3, NULL, '{}', '2026-08-30T00:00:00.000Z');
+    `);
+    const heartbeatCas = database.prepare(heartbeatSql);
+    assert.equal(
+      heartbeatCas.run("2026-08-30T00:20:00.000Z", "fresh-upload", "ws-a").changes,
+      1,
+      "a healthy slow upload must renew its lease before the stale sweep",
+    );
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "other-scope", "ws-a").changes, 0);
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "already-final", "ws-a").changes, 0);
+    assert.equal(heartbeatCas.run("2026-08-30T00:20:00.000Z", "lost-staged", "ws-a").changes, 0);
+    const expireCas = database.prepare(expireCasSql);
+    const cutoff = "2026-08-30T00:05:00.000Z";
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "lost-upload", "ws-a", cutoff).changes, 1);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "lost-staged", "ws-a", cutoff).changes, 1);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "fresh-upload", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "other-scope", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:20:00.000Z", "already-final", "ws-a", cutoff).changes, 0);
+    assert.equal(expireCas.run("2026-08-30T00:21:00.000Z", "lost-upload", "ws-a", cutoff).changes, 0);
+    assert.equal(
+      database.prepare(uploadCasSql).run(
+        "r2/late", "sha-late", "text/plain", 3, "2026-08-30T00:21:00.000Z", "lost-upload", "ws-a",
+      ).changes,
+      0,
+      "an upload response arriving after lease expiry cannot revive the tombstone",
+    );
+
+    const stagedKey = database.prepare("SELECT staged_r2_key FROM assets WHERE id = 'lost-staged'").get().staged_r2_key;
+    const storedObjects = new Set([stagedKey]);
+    storedObjects.delete(stagedKey);
+    assert.equal(
+      database.prepare(cleanupSql).run(
+        "2026-08-30T00:21:00.000Z", "lost-staged", "ws-a", stagedKey,
+      ).changes,
+      1,
+    );
+    assert.equal(storedObjects.size, 0);
+
+    const recoverEvent = database.prepare(eventRecoverySql);
+    recoverEvent.run("event-stale", "ws-a", "event-stale", "ws-a", "2026-08-30T00:21:00.000Z", "event-stale", "ws-a");
+    recoverEvent.run("event-staged", "ws-a", "event-staged", "ws-a", "2026-08-30T00:21:00.000Z", "event-staged", "ws-a");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-stale'").get().material_status, "ready");
+    assert.equal(database.prepare("SELECT material_status FROM events WHERE id = 'event-staged'").get().material_status, "ready");
+
+    const counts = database.prepare(materialCountsMatch[1]).all("ws-a");
+    const byEvent = new Map(counts.map((row) => [row.event_id, row]));
+    assert.deepEqual(
+      { ...byEvent.get("event-stale") },
+      { event_id: "event-stale", material_total: 2, material_ready: 2, material_processing: 0, material_failed: 0 },
+    );
+    assert.deepEqual(
+      { ...byEvent.get("event-staged") },
+      { event_id: "event-staged", material_total: 1, material_ready: 1, material_processing: 0, material_failed: 0 },
+    );
+    assert.equal(byEvent.get("event-fresh").material_processing, 1, "a fresh upload must keep its active lease");
+  } finally {
+    database.close();
+  }
 });
 
 test("database verdict paths preserve the domain state and evidence rules", async () => {
@@ -523,12 +1263,12 @@ test("database verdict paths preserve the domain state and evidence rules", asyn
   );
 });
 
-test("batch confirmation requires an explicit server-side Evidence review attestation", async () => {
+test("legacy batch confirmation remains server-gated while the simplified UI stays single-record", async () => {
   const schema = await read("db/schema.ts");
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(schema, /claimEvidenceReviewAttestations[\s\S]{0,1000}actorId[\s\S]{0,500}claimVersionId/);
   assert.match(
@@ -538,12 +1278,8 @@ test("batch confirmation requires an explicit server-side Evidence review attest
   );
   assert.match(route, /evidence-review-attestations[\s\S]{0,400}attestClaimEvidenceReview[\s\S]{0,300}idempotencyKey\(request\)/i);
   assert.match(client, /async attestEvidenceReview[\s\S]{0,500}idempotency-key/);
-  assert.match(page, /我已核对证据，返回列表/);
-  assert.match(
-    page,
-    /batchEligible = claim\.reviewStatus === ["']pending["'] && claim\.batchReviewAttested && !hasProposedRelations[\s\S]{0,500}disabled=\{!batchEligible\}/,
-    "a list checkbox must stay disabled until Evidence is attested and no relationship remains undecided",
-  );
+  assert.doesNotMatch(page, /批量处理选项|确认所选|className="claim-select"/);
+  assert.match(page, /aria-label="确认并加入正式结果"[\s\S]{0,500}aria-label="修改后确认"[\s\S]{0,500}aria-label="不采纳这条记录"/);
   assert.doesNotMatch(
     page,
     /useState<Set<string>>\([^)]*reviewed|localStorage[\s\S]{0,300}batchReviewAttested/i,
@@ -556,7 +1292,7 @@ test("model-proposed Claim relations require explicit human decisions", async ()
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const confirmSection = repository.slice(
     repository.indexOf('if (input.action === "confirm")'),
     repository.indexOf('} else if (input.action === "reject")'),
@@ -606,7 +1342,7 @@ test("timeline repository loads historical claim versions used by relations and 
   );
 });
 
-test("first-event extraction owns one persisted scenario assessment lease", async () => {
+test("whichever record analyses first owns one persisted scenario assessment lease", async () => {
   const core = await read("lib/server/db/core-repository.ts");
   const extraction = core.slice(
     core.indexOf("export async function createExtractionRun"),
@@ -625,12 +1361,43 @@ test("first-event extraction owns one persisted scenario assessment lease", asyn
   );
   assert.match(
     extraction,
-    /INSERT INTO mutation_guards[\s\S]*?scenario_status\s*=\s*'unassessed'[\s\S]*?sequence_no\s*=\s*1[\s\S]*?UPDATE projects[\s\S]*?scenario_status\s*=\s*'assessing'/i,
-    "the first-event eligibility check and lease mutation must share the same atomic D1 batch",
+    /INSERT INTO mutation_guards[\s\S]*?scenario_status\s*=\s*'unassessed'[\s\S]*?UPDATE projects[\s\S]*?scenario_status\s*=\s*'assessing'/i,
+    "the eligibility check and lease mutation must share the same atomic D1 batch",
   );
+  // 不再限定第一条记录：哪条先分析哪条判类型，别的记录不等。
+  const guard = extraction.slice(extraction.indexOf("if (needsScenarioAssessment) {"), extraction.indexOf("UPDATE projects", extraction.indexOf("if (needsScenarioAssessment) {")));
+  assert.doesNotMatch(guard, /sequence_no = 1/);
+  // 两条记录同时来抢，输的那条重建一次，这回不判类型，照常分析。
+  assert.match(extraction, /return createExtractionRun\(scope, eventId, idempotencyKey, assetVersionIds, true\)/);
 });
 
-test("workspace run concurrency and token reservations are enforced before queueing", async () => {
+test("the budget a Run is accepted under is the budget it is processed under", async () => {
+  // A Run for two recordings was accepted (202), told the reader analysis had
+  // started, and was then killed by RUN_BUDGET_EXCEEDED at processing. The
+  // creation estimate counted normalized text only, while the processor
+  // enforces the limit against the serialized ContextPack — where every
+  // segment carries its raw text as well, plus ids, ordinal, speaker and both
+  // timestamps. It underestimated by more than half.
+  const core = await read("lib/server/db/core-repository.ts");
+  const processor = await read("lib/server/jobs/extraction-processor.ts");
+  const creation = core.slice(
+    core.indexOf("export async function createExtractionRun"),
+    core.indexOf("export async function getExtractionRun"),
+  );
+
+  assert.match(creation, /length\(text_normalized\) AS character_count,\s*length\(text_raw\) AS raw_character_count/,
+    "the estimate must see both texts the pack will carry");
+  assert.match(creation, /Number\(row\.raw_character_count \?\? 0\)\s*\+\s*SEGMENT_CONTEXT_ENVELOPE_CHARACTERS/);
+  assert.match(core, /const SEGMENT_CONTEXT_ENVELOPE_CHARACTERS = 280;/);
+  // Both sides still read the same configured ceiling, and the processor keeps
+  // its own check: the pack also carries project context and prior Claims, so
+  // the early estimate is deliberately conservative rather than exact.
+  assert.match(creation, /bindings\.MAX_RUN_INPUT_TOKENS/);
+  assert.match(processor, /configuredInteger\(bindings\.MAX_RUN_INPUT_TOKENS, 120_000\)/);
+  assert.match(processor, /throw new ProcessingFault\("RUN_BUDGET_EXCEEDED"/);
+});
+
+test("workspace run concurrency is enforced before queueing without a daily model ceiling", async () => {
   const schema = await read("db/schema.ts");
   const core = await read("lib/server/db/core-repository.ts");
   const extraction = core.slice(
@@ -648,16 +1415,99 @@ test("workspace run concurrency and token reservations are enforced before queue
     /MAX_CONCURRENT_RUNS_PER_WORKSPACE[\s\S]*?INSERT INTO mutation_guards[\s\S]*?COUNT\(\*\) FROM extraction_runs[\s\S]*?status IN \('queued', 'processing'\)[\s\S]*?<\s*\?/i,
     "queued and processing runs must be counted in the same guarded batch as the new run",
   );
-  assert.match(
-    extraction,
-    /MAX_DAILY_MODEL_TOKENS[\s\S]*?reserved_model_tokens[\s\S]*?INSERT INTO extraction_runs[\s\S]*?INSERT INTO queue_outbox/i,
-    "the atomic run/outbox mutation must reserve the model budget before the provider can be called",
-  );
+  assert.doesNotMatch(extraction, /MAX_DAILY_MODEL_TOKENS|max_daily_model_tokens|daily_tokens/i);
+  assert.match(extraction, /token_budget_policy:\s*"per-run-safety\.v1"/);
   assert.match(
     extraction,
     /activeCount\s*>=\s*maxConcurrentRuns[\s\S]*?429[\s\S]*?WORKSPACE_RUN_LIMIT/i,
     "a failed concurrency guard must be translated to the stable 429 WORKSPACE_RUN_LIMIT contract",
   );
+});
+
+test("one Event can own only one active paid Run across tabs and devices", async () => {
+  const core = await read("lib/server/db/core-repository.ts");
+  const extraction = core.slice(
+    core.indexOf("export async function createExtractionRun"),
+    core.indexOf("export async function getExtractionRun"),
+  );
+
+  assert.match(
+    extraction,
+    /const activeEventRun = await first[\s\S]{0,700}activeEventRun\.input_hash\) !== inputHash[\s\S]{0,180}RUN_STATE_CONFLICT[\s\S]{0,900}created: false/,
+    "the normal path must reuse an identical active Event Run and reject a different manifest",
+  );
+  assert.match(
+    extraction,
+    /NOT EXISTS \([\s\S]{0,220}FROM extraction_runs[\s\S]{0,180}event_id = \? AND workspace_id = \?[\s\S]{0,120}status IN \('queued', 'processing'\)/,
+    "the same-Event active check must be inside the Run/outbox transaction",
+  );
+  const raceAt = extraction.indexOf("const activeEventRace");
+  const quotaAt = extraction.indexOf("const quotaState", raceAt);
+  assert.ok(raceAt >= 0 && quotaAt > raceAt, "same-Event race recovery must run before workspace quota classification");
+  const raceSection = extraction.slice(raceAt, quotaAt);
+  assert.match(raceSection, /input_hash\) !== inputHash[\s\S]{0,180}RUN_STATE_CONFLICT/);
+  assert.match(raceSection, /created: false/);
+
+  const guardMatch = extraction.match(
+    /`(INSERT INTO mutation_guards \(id, guard_value, created_at\)\s+SELECT \?, CASE WHEN NOT EXISTS \([^`]*?status IN \('queued', 'processing'\)[^`]*?END, \?)`/,
+  );
+  assert.ok(guardMatch, "same-Event mutation guard SQL was not found");
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE mutation_guards (
+        id TEXT PRIMARY KEY,
+        guard_value INTEGER NOT NULL CHECK (guard_value = 1),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE extraction_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        input_hash TEXT NOT NULL
+      );
+      CREATE TABLE queue_outbox (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL
+      );
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        active_run_id TEXT
+      );
+      INSERT INTO events VALUES ('event-a', 'ws-a', NULL);
+    `);
+    const guard = database.prepare(guardMatch[1]);
+    const attempt = (runId, inputHash) => {
+      database.exec("BEGIN");
+      try {
+        guard.run(`guard-${runId}`, "event-a", "ws-a", `t-${runId}`);
+        database.prepare("INSERT INTO extraction_runs VALUES (?, 'ws-a', 'event-a', 'queued', ?)").run(runId, inputHash);
+        database.prepare("INSERT INTO queue_outbox VALUES (?, ?)").run(`out-${runId}`, runId);
+        database.prepare("UPDATE events SET active_run_id = ? WHERE id = 'event-a' AND workspace_id = 'ws-a'").run(runId);
+        database.prepare("DELETE FROM mutation_guards WHERE id = ?").run(`guard-${runId}`);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    };
+
+    attempt("run-a", "hash-a");
+    assert.throws(() => attempt("run-b", "hash-a"), /CHECK constraint failed/);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM extraction_runs").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM queue_outbox").get().count, 1);
+    assert.equal(database.prepare("SELECT active_run_id FROM events WHERE id = 'event-a'").get().active_run_id, "run-a");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM mutation_guards").get().count, 0);
+
+    database.prepare("UPDATE extraction_runs SET status = 'succeeded' WHERE id = 'run-a'").run();
+    attempt("run-b", "hash-b");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM extraction_runs").get().count, 2);
+    assert.equal(database.prepare("SELECT active_run_id FROM events WHERE id = 'event-a'").get().active_run_id, "run-b");
+  } finally {
+    database.close();
+  }
 });
 
 test("processor persists sanitized snapshots and binds transcript evidence to one asset version", async () => {
@@ -800,8 +1650,8 @@ test("provider schema and server validator share bounded output limits", async (
   assert.doesNotMatch(provider, /strict:\s*false|\boneOf\s*:|maxProperties\s*:/i);
   assert.match(
     provider,
-    /return no more than 10[\s\S]{0,260}Never combine propositions merely to fit the limit/i,
-    "the prompt must rank at most ten material propositions without combining them to fit the cap",
+    /preserve up to 24[\s\S]{0,260}Never combine propositions merely to fit the limit/i,
+    "the prompt must retain material propositions within the safety bound without combining them to fit the cap",
   );
   assert.match(
     provider,
@@ -996,8 +1846,8 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
-    "a visible browser kick must target one extraction Run for a short checkpoint",
+    /ctx\.waitUntil\(Promise\.all\(\[[\s\S]{0,300}dispatchExtractionRun\(workspaceId,\s*input\.runId\)[\s\S]{0,200}dispatchEventAiArtifactsForExtraction\(workspaceId,\s*input\.runId\)/,
+    "one visible browser kick must checkpoint the extraction and its independent reading artifacts",
   );
   assert.match(
     worker,
@@ -1006,7 +1856,7 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/,
+    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/,
     "the scheduled recovery path must continue sweeping stale leases",
   );
 });
@@ -1036,7 +1886,7 @@ test("verdict retries use a persisted idempotency key and replay one result", as
 
 test("frontend never auto-retains evidence for a factual edit and reuses extraction retry keys", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const verdictClient = client.slice(
     client.indexOf("async saveVerdict"),
     client.indexOf("async batchConfirm"),
@@ -1055,7 +1905,7 @@ test("frontend never auto-retains evidence for a factual edit and reuses extract
   assert.match(verdictClient, /normalized_value:\s*edit!\.normalizedValue/);
   assert.match(verdictClient, /uncertainty:\s*edit!\.uncertainty/);
   assert.match(verdictClient, /retain_relation_ids:\s*edit!\.retainRelationIds/);
-  assert.match(page, /这条记录与旧记录的关系[\s\S]*?只勾选修改后仍然成立的关系/);
+  assert.match(page, /这条记录与旧记录的关系[\s\S]*?只勾修改后还成立的关系/);
   assert.match(page, /verified\s*&&\s*!edit[\s\S]*?修改已确认记录/);
   assert.match(page, /记录类型[\s\S]*?<select[\s\S]*?occurrenceClaimTypeOptions/);
   assert.match(page, /editHasSupportingEvidence[\s\S]*?direct[\s\S]*?corroborating/);
@@ -1067,23 +1917,10 @@ test("frontend never auto-retains evidence for a factual edit and reuses extract
 });
 
 test("claim review stays locked until the exact complete evidence set is loaded", async () => {
-  const page = await read("app/page.tsx");
-  const readinessHelper = page.slice(
-    page.indexOf("function isCompleteEvidenceSet"),
-    page.indexOf("function uncertaintyParts"),
-  );
-  const evidenceLoader = page.slice(
-    page.indexOf("async function openClaim"),
-    page.indexOf("const pendingClaims"),
-  );
-  const verdictHandler = page.slice(
-    page.indexOf("async function runVerdict"),
-    page.indexOf("async function withdrawClaim"),
-  );
-  const claimScreen = page.slice(
-    page.indexOf("function ClaimScreen"),
-    page.indexOf("function ResultsScreen"),
-  );
+  const readinessHelper = declarationSource("isCompleteEvidenceSet");
+  const evidenceLoader = declarationSource("openClaim");
+  const verdictHandler = declarationSource("runVerdict");
+  const claimScreen = declarationSource("ClaimScreen");
 
   assert.match(readinessHelper, /!everyFetchSucceeded/,
     "one failed Evidence request must keep the Claim locked");
@@ -1095,20 +1932,20 @@ test("claim review stays locked until the exact complete evidence set is loaded"
   assert.match(evidenceLoader, /isCompleteEvidenceSet\(nextClaim\.evidenceRefIds,\s*refs,\s*everyFetchSucceeded\)/);
   assert.doesNotMatch(evidenceLoader, /setEvidenceState\(refs\.length\s*\?\s*["']ready["']/,
     "a non-empty partial response must never be treated as ready");
-  assert.match(verdictHandler, /\(action\s*===\s*["']confirm["']\s*\|\|\s*action\s*===\s*["']edit["']\)[\s\S]{0,120}evidenceState\s*!==\s*["']ready["']/,
+  assert.match(verdictHandler, /\(action\s*===\s*["']confirm["']\s*\|\|\s*action\s*===\s*["']edit["'](\s*\|\|\s*action\s*===\s*["']reject["'])?\)[\s\S]{0,120}evidenceState\s*!==\s*["']ready["']/,
     "event handlers must guard confirm and edit in addition to disabled buttons");
-  assert.match(verdictHandler, /attestSelectedClaimForBatch[\s\S]{0,180}evidenceState\s*!==\s*["']ready["']/,
-    "the attestation handler must reject an incomplete Evidence view");
-  assert.match(claimScreen, /证据未完整加载[\s\S]*确认、核对声明和修改功能已停用/);
+  assert.doesNotMatch(claimScreen, /批量处理选项|evidence-review-attestation/,
+    "the simplified review detail must not expose a second batch-attestation workflow");
+  assert.match(claimScreen, /证据未完整加载[\s\S]*暂时不能确认或修改/);
   assert.match(claimScreen, /const evidenceReady\s*=\s*evidenceState\s*===\s*["']ready["']/);
-  assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
+  assert.match(claimScreen, /disabled=\{Boolean\(busy\)\s*\|\|\s*verdictLocked\s*\|\|\s*!evidenceReady\}[\s\S]{0,160}修改后确认/);
   assert.match(claimScreen, /type=["']checkbox["']\s+disabled=\{!evidenceReady\}/,
     "Evidence selection for an edit must remain disabled on a partial load");
 });
 
 test("frontend preserves creation keys until the server returns and resumes multi-step uploads", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const clientMethods = [
     ["createProject", "getProject"],
     ["createEvent", "getEvent"],
@@ -1125,7 +1962,7 @@ test("frontend preserves creation keys until the server returns and resumes mult
     assert.match(section, /headers\s*:\s*\{\s*["']idempotency-key["']\s*:\s*idempotencyKey\s*\}/i,
       `${method} must send its key to the API`);
   }
-  for (const call of ["createProject", "createEvent", "initAsset"]) {
+  for (const call of ["createProject", "createEvent"]) {
     assert.match(
       page,
       new RegExp(`mutationKeys\\.current\\.set\\(fingerprint, idempotencyKey\\)[\\s\\S]{0,500}api\\.${call}\\([\\s\\S]{0,500}mutationKeys\\.current\\.delete\\(fingerprint\\)`, "i"),
@@ -1134,19 +1971,35 @@ test("frontend preserves creation keys until the server returns and resumes mult
   }
   assert.match(
     page,
-    /importCreateKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,500}api\.beginTranscriptImport\([\s\S]{0,300}importCreateKeys\.current\.delete\(fingerprint\)[\s\S]{0,200}activeSession\.current\s*=\s*\{\s*fingerprint,\s*session\s*\}/i,
-    "Transcript Import must retain the create key until a session exists and cache that session for upload/finalize retries",
+    /mutationKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,3500}initializeAssetUploadWithReplayRecovery\([\s\S]{0,5500}mutationKeys\.current\.delete\(fingerprint\)/i,
+    "Asset init must keep its key through replay recovery, byte upload, and finalize",
   );
   assert.match(
     page,
-    /activeSession\.current\?\.fingerprint\s*===\s*fingerprint[\s\S]{0,900}uploadTranscriptItem[\s\S]{0,500}finalizeTranscriptImport/i,
+    /!finalizeStarted && pendingAssetInit && \(initializedAssetId \|\| initCouldHaveCommitted\)[\s\S]{0,240}recoverAndAbortAssetUpload\(pendingAssetInit, initializedAssetId\)[\s\S]{0,240}uploadFingerprint && !finalizeStarted && cleanupResolved/i,
+    "an ambiguous Asset init must recover the idempotent server row before clearing its key",
+  );
+  assert.match(
+    page,
+    /importCreateKeys\.current\.set\(fingerprint, idempotencyKey\)[\s\S]{0,500}api\.beginTranscriptImport\([\s\S]{0,300}importCreateKeys\.current\.delete\(fingerprint\)[\s\S]{0,200}activeSession\.current\s*=\s*\{\s*fingerprint,\s*session\s*\}/i,
+    "Transcript Import must retain the create key until a session exists and cache that session for upload/finalize retries",
+  );
+  const importModalStart = page.indexOf("function ImportModal");
+  const resumeSessionAt = page.indexOf("activeSession.current?.fingerprint === fingerprint", importModalStart);
+  const uploadItemAt = page.indexOf("api.uploadTranscriptItem", resumeSessionAt);
+  const finalizeImportAt = page.indexOf("api.finalizeTranscriptImport", uploadItemAt);
+  assert.ok(
+    importModalStart >= 0
+      && resumeSessionAt > importModalStart
+      && uploadItemAt > resumeSessionAt
+      && finalizeImportAt > uploadItemAt,
     "a retry after partial transcript upload must reuse the existing server-side import session",
   );
 });
 
 test("frontend consumes the canonical evidence and deterministic view contracts", async () => {
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
   const evidenceNormalizer = client.slice(
     client.indexOf("function normalizeEvidence"),
     client.indexOf("export function normalizeClaim"),
@@ -1189,19 +2042,16 @@ test("frontend consumes the canonical evidence and deterministic view contracts"
 });
 
 test("Brief Card resolves deterministic IDs into readable source content", async () => {
-  const page = await read("app/page.tsx");
-  const loader = page.slice(
-    page.indexOf("async function loadBriefDisplayData"),
-    page.indexOf("function ViewItem"),
-  );
-  const briefRenderer = page.slice(
-    page.indexOf("type BriefItemKind"),
-    page.indexOf("export default function Home"),
-  );
+  const loader = declarationSource("loadBriefDisplayData");
+  const briefRenderer = ["briefItemText", "briefSourceId", "BriefGroup"]
+    .map(declarationSource)
+    .join("\n");
 
+  assert.match(loader, /loadVerifiedView:[\s\S]*?api\.getView\(id, view\)/,
+    "Brief Card's injectable cached loader must still default to the canonical View API");
   for (const view of ["brief-card", "folder-summary", "next-meeting-agenda"]) {
-    assert.match(loader, new RegExp(`api\\.getView\\(projectId, ["']${view}["']\\)`),
-      `Brief Card must read the existing ${view} endpoint`);
+    assert.match(loader, new RegExp(`loadVerifiedView\\(projectId, ["']${view}["']\\)`),
+      `Brief Card must read the existing ${view} endpoint through the cached loader`);
   }
   for (const idField of ["stateClaimId", "riskClaimId", "deltaItemIds", "agendaItemIds"]) {
     assert.match(loader, new RegExp(`\\b${idField}\\b`),
@@ -1276,7 +2126,7 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /scheduled[\s\S]{0,240}ctx\.waitUntil\(sweepAndDispatch\(\)\)/);
+  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(
     worker,
     /if\s*\(env\.APP_ENV\s*!==\s*["']local["']\)[\s\S]{0,900}sameOrigin[\s\S]{0,500}authenticated/,
@@ -1284,8 +2134,8 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   );
   assert.match(
     worker,
-    /ctx\.waitUntil\(dispatchExtractionRun\(workspaceId,\s*input\.runId\)\.catch/,
-    "targeted extraction may use HTTP waitUntil only for its short background checkpoint",
+    /ctx\.waitUntil\(Promise\.all\(\[[\s\S]{0,300}dispatchExtractionRun\(workspaceId,\s*input\.runId\)[\s\S]{0,200}dispatchEventAiArtifactsForExtraction\(workspaceId,\s*input\.runId\)/,
+    "targeted extraction and its reading artifacts may use HTTP waitUntil only for short background checkpoints",
   );
   assert.match(
     localAudioBranch,
@@ -1294,14 +2144,10 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   );
   assert.match(
     productionAudioBranch,
-    /await\s+wakeTranscriptionRun\(workspaceId,\s*input\.runId\)/,
-    "production HTTP dispatch must durably wake the existing transcription Run",
+    /return\s+streamTranscriptionDispatch\(workspaceId,\s*input\.runId,\s*requestId,\s*run\.status\)/,
+    "production HTTP dispatch must stream heartbeats while processing the existing transcription Run",
   );
-  assert.doesNotMatch(
-    productionAudioBranch,
-    /waitUntil|dispatchTranscriptionRun/,
-    "production HTTP dispatch must not put a long audio provider request in waitUntil",
-  );
+  assert.doesNotMatch(productionAudioBranch, /waitUntil\(dispatchTranscriptionRun/);
   assert.match(
     transcriptionOutbox,
     /wakeTranscriptionRun[\s\S]{0,360}prepareTargetedTranscriptionOutbox/,
@@ -1350,7 +2196,7 @@ test("glossary management is scoped, audited, idempotent, and context-safe", asy
   const route = await read("app/api/v1/[...segments]/route.ts");
   const processor = await read("lib/server/jobs/extraction-processor.ts");
   const contextPack = await read("lib/domain/context-pack.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(
     repository,
@@ -1405,7 +2251,7 @@ test("Project and Event review counts stay separate from verified-only views", a
   const records = await read("lib/server/db/records.ts");
   const types = await read("lib/shared/api-types.ts");
   const views = await read("lib/domain/views.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(types, /\bevent_count\b/, "Project API types must expose the Event count");
   assert.match(records, /event_count:\s*integer\(row, ["']event_count["']\)/, "Project records must map the Event count");
@@ -1462,15 +2308,37 @@ test("Project and Event review counts stay separate from verified-only views", a
   assert.match(page, /尚未进入本页结果/);
   assert.match(
     page,
-    /runComplete\.has\(latest\.status\)[\s\S]{0,700}api\.getProject\(project\.id\)[\s\S]{0,350}api\.getEvent\(event\.id\)/,
+    /runComplete\.has\(latest\.status\)[\s\S]{0,500}await loadClaimsForRun\(latest\.id\)/,
     "terminal Run polling must refresh Project scenario state and Event review counts",
+  );
+  assert.match(
+    page,
+    /Promise\.all\(\[[\s\S]{0,180}api\.getProject\(projectId\)[\s\S]{0,100}api\.getEvent\(eventId\)[\s\S]{0,180}pollIsCurrent\(\)[\s\S]{0,220}setProject\(refreshedProject\)[\s\S]{0,100}setEvent\(refreshedEvent\)[\s\S]{0,100}setRun\(latest\)/,
+    "terminal Run Project, Event, and Run refreshes must be fenced and committed together",
   );
   assert.match(page, /pendingClaimCount \+ event\.pendingOccurrenceCount/);
   assert.doesNotMatch(page, /accept=\{`[^`]*\.pdf/);
+  // 这条保证以前挂在 goSimple 一个按钮上：切回核心流程时手动核对
+  // event 是不是还属于当前 project。goSimple 已经删掉——它的名字最后
+  // 叫「首页」，做的事却是重开当前项目，这两件事本来就不该是一个函数，
+  // 这个函数拆没了，保证挪到了 loadSimpleProject 自己身上：它无条件清空
+  // event、重新拉这个 project 自己的记录列表，chooseRememberedSelection
+  // 只会从这份新列表里选，选不中就退回列表第一条，不会漏过一个跨项目的
+  // event。现在每个调用 loadSimpleProject 的入口都自带这层保证，不再
+  // 只靠一个按钮。
   assert.match(
     page,
-    /function goSimple\(\)[\s\S]{0,350}event\?\.projectId === project\.id[\s\S]{0,180}loadSimpleProject\(project\.id, preferredEventId\)/,
-    "switching from advanced tools must reload a Project-consistent Event before showing the core flow",
+    /const loadSimpleProject = useCallback\(async \([\s\S]{0,80}preferredEventId\?: string/,
+    "every entry into a Project's workspace goes through the one function that scopes its Event",
+  );
+  const guidedWorkflow = await readFile(
+    new URL("../lib/domain/guided-workflow.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    guidedWorkflow,
+    /items\.find\(\(item\) => item\.id === rememberedId\) \?\? items\[0\] \?\? null/,
+    "a remembered Event id that does not belong to the freshly fetched list is never used",
   );
 });
 
@@ -1478,7 +2346,7 @@ test("manual Claim relations are scoped, atomic, idempotent, and visible after c
   const repository = await read("lib/server/db/verdict-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(route, /segments\[2\] === ["']relation-targets["']/);
   assert.match(route, /segments\[0\] === ["']claim-relations["']/);
@@ -1502,7 +2370,7 @@ test("manual Claim relations are scoped, atomic, idempotent, and visible after c
   );
   assert.match(
     repository,
-    /input\.type === ["']resolves["'][\s\S]{0,300}\["open_question", "risk", "concern", "requirement"\]/,
+    /input\.type === ["']resolves["'][\s\S]{0,300}canResolveClaim/,
     "resolve must only close a genuine open or uncertain record",
   );
   assert.match(repository, /findMutationReplay[\s\S]{0,500}endpointScope[\s\S]{0,500}idempotencyKey/);
@@ -1523,7 +2391,7 @@ test("AI draft stays outside the ledger and human missed facts require canonical
   const repository = await read("lib/server/db/ai-draft-repository.ts");
   const route = await read("app/api/v1/[...segments]/route.ts");
   const client = await read("app/api-client.ts");
-  const page = await read("app/page.tsx");
+  const page = uiSource;
 
   assert.match(route, /segments\[2\] === ["']draft-assessment["']/);
   assert.match(route, /segments\[2\] === ["']transcript-segments["']/);
@@ -1548,13 +2416,13 @@ test("AI draft stays outside the ledger and human missed facts require canonical
   assert.match(repository, /review_status[\s\S]{0,300}'pending'/);
   assert.match(repository, /source[\s\S]{0,300}'human'/);
   assert.match(repository, /structural_validation_status[\s\S]{0,180}'valid'/);
+  // The standalone draft page is absorbed into the workspace; the ledger
+  // boundary is asserted through the surfaces that remain.
   for (const label of [
-    "AI 会议信息初稿",
-    "这份初稿基本可用",
-    "AI 漏掉了重要信息",
-    "开始核对和修正",
-    "本轮核对完成",
+    "从第一条开始确认",
+    "本轮确认完成",
   ]) {
-    assert.match(page, new RegExp(label), `guided draft UI is missing ${label}`);
+    assert.match(page, new RegExp(label), `guided review UI is missing ${label}`);
   }
+  assert.doesNotMatch(page, /AiDraftScreen/, "the draft page must stay retired");
 });

@@ -70,6 +70,9 @@ export const projects = sqliteTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    folderName: text("folder_name"),
+    lastOpenedAt: text("last_opened_at"),
+    nameSource: text("name_source").notNull().default("manual"),
     scenario: text("scenario"),
     scenarioStatus: text("scenario_status", {
       enum: ["unassessed", "assessing", "pending_confirmation", "confirmed"],
@@ -117,6 +120,12 @@ export const events = sqliteTable(
       .notNull()
       .default("draft"),
     activeRunId: text("active_run_id"),
+    /**
+     * 这条记录落进当前项目是谁定的："user" 表示用户在选择器里选过，
+     * "skipped" 表示他跳过了选择器。空表示选择器上线之前的记录。
+     * 见 lib/domain/material-routing.ts：选过的材料，归属建议必须闭嘴。
+     */
+    routingSource: text("routing_source", { enum: ["user", "skipped"] }),
     metadataJson: text("metadata_json").notNull().default("{}"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -154,12 +163,15 @@ export const assets = sqliteTable(
     stagedMimeType: text("staged_mime_type"),
     stagedSizeBytes: integer("staged_size_bytes"),
     failureCode: text("failure_code"),
+    // 用户手动排定的顺序。新上传的材料留空，列表里排在已排序的之后。
+    sortOrder: integer("sort_order"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => [
     index("idx_assets_event_status").on(table.eventId, table.processingStatus),
     index("idx_assets_workspace_project").on(table.workspaceId, table.projectId),
+    index("idx_assets_event_order").on(table.eventId, table.sortOrder),
   ],
 );
 
@@ -472,6 +484,15 @@ export const transcriptionRuns = sqliteTable(
     model: text("model").notNull(),
     responseFormat: text("response_format").notNull().default("diarized_json"),
     requestTimeoutMs: integer("request_timeout_ms").notNull(),
+    orchestrationMode: text("orchestration_mode", {
+      enum: ["single", "chunked", "chunk"],
+    }).notNull().default("single"),
+    parentRunId: text("parent_run_id"),
+    chunkIndex: integer("chunk_index"),
+    chunkStartMs: integer("chunk_start_ms"),
+    chunkEndMs: integer("chunk_end_ms"),
+    chunkCount: integer("chunk_count"),
+    completedChunkCount: integer("completed_chunk_count").notNull().default(0),
     stagedResultR2Key: text("staged_result_r2_key"),
     stagedResultSha256: text("staged_result_sha256"),
     derivedTranscriptAssetId: text("derived_transcript_asset_id"),
@@ -508,6 +529,10 @@ export const transcriptionRuns = sqliteTable(
       table.createdAt,
     ),
     index("idx_transcription_runs_lease").on(table.status, table.leaseExpiresAt),
+    index("idx_transcription_runs_parent_chunk").on(table.parentRunId, table.chunkIndex),
+    uniqueIndex("uq_transcription_runs_parent_chunk")
+      .on(table.parentRunId, table.chunkIndex)
+      .where(sql`${table.parentRunId} IS NOT NULL`),
   ],
 );
 
@@ -539,6 +564,157 @@ export const transcriptionQueueOutbox = sqliteTable(
       table.nextAttemptAt,
       table.leaseExpiresAt,
     ),
+  ],
+);
+
+export const eventAiArtifactRuns = sqliteTable(
+  "event_ai_artifact_runs",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    extractionRunId: text("extraction_run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    // summary 是旧的四合一产物，不再生产但历史行还在。列本身是纯 TEXT，
+    // 没有 CHECK 约束，所以加种类不需要迁移。
+    kind: text("kind", {
+      enum: ["summary", "readable_transcript", "chapters", "speakers", "key_points", "overview"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["queued", "processing", "succeeded", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    inputHash: text("input_hash").notNull(),
+    inputManifestJson: text("input_manifest_json").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    reasoningEffort: text("reasoning_effort").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    providerRequestId: text("provider_request_id"),
+    validatedOutputJson: text("validated_output_json"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cachedTokens: integer("cached_tokens"),
+    attemptNo: integer("attempt_no").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    errorCode: text("error_code"),
+    errorDetailsJson: text("error_details_json"),
+    queuedAt: text("queued_at").notNull(),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifact_runs_idempotency").on(
+      table.eventId,
+      table.kind,
+      table.idempotencyKey,
+    ),
+    index("idx_event_ai_artifact_runs_dispatch").on(
+      table.status,
+      table.nextAttemptAt,
+      table.leaseExpiresAt,
+    ),
+    index("idx_event_ai_artifact_runs_extraction").on(table.extractionRunId, table.kind),
+  ],
+);
+
+export const eventAiArtifacts = sqliteTable(
+  "event_ai_artifacts",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => eventAiArtifactRuns.id, { onDelete: "cascade" }),
+    // summary 是旧的四合一产物，不再生产但历史行还在。列本身是纯 TEXT，
+    // 没有 CHECK 约束，所以加种类不需要迁移。
+    kind: text("kind", {
+      enum: ["summary", "readable_transcript", "chapters", "speakers", "key_points", "overview"],
+    }).notNull(),
+    artifactVersion: integer("artifact_version").notNull(),
+    inputHash: text("input_hash").notNull(),
+    contentJson: text("content_json").notNull(),
+    derivedAssetId: text("derived_asset_id"),
+    derivedAssetVersionId: text("derived_asset_version_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifacts_input").on(table.eventId, table.kind, table.inputHash),
+    uniqueIndex("uq_event_ai_artifacts_run").on(table.runId),
+    index("idx_event_ai_artifacts_event_kind").on(table.eventId, table.kind, table.createdAt),
+  ],
+);
+
+export const eventAiArtifactChunks = sqliteTable(
+  "event_ai_artifact_chunks",
+  {
+    id: text("id").primaryKey(),
+    artifactRunId: text("artifact_run_id")
+      .notNull()
+      .references(() => eventAiArtifactRuns.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    inputHash: text("input_hash").notNull(),
+    status: text("status", { enum: ["queued", "processing", "succeeded", "failed"] })
+      .notNull()
+      .default("queued"),
+    providerRequestId: text("provider_request_id"),
+    validatedOutputJson: text("validated_output_json"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cachedTokens: integer("cached_tokens"),
+    attemptNo: integer("attempt_no").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_event_ai_artifact_chunks_order").on(table.artifactRunId, table.chunkIndex),
+    index("idx_event_ai_artifact_chunks_status").on(table.artifactRunId, table.status),
+  ],
+);
+
+export const readableSegmentSources = sqliteTable(
+  "readable_segment_sources",
+  {
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => eventAiArtifacts.id, { onDelete: "cascade" }),
+    readableSegmentId: text("readable_segment_id")
+      .notNull()
+      .references(() => textSegments.id, { onDelete: "cascade" }),
+    sourceSegmentId: text("source_segment_id")
+      .notNull()
+      .references(() => textSegments.id, { onDelete: "cascade" }),
+    sourceOrder: integer("source_order").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_readable_segment_sources_mapping").on(
+      table.artifactId,
+      table.readableSegmentId,
+      table.sourceSegmentId,
+    ),
+    index("idx_readable_segment_sources_source").on(table.sourceSegmentId),
   ],
 );
 
@@ -789,6 +965,51 @@ export const aiDraftAssessments = sqliteTable(
       table.projectId,
       table.createdAt,
     ),
+  ],
+);
+
+// A draft link is an intentionally non-authoritative hint between two
+// unverified/partially verified memories. It never participates in lifecycle
+// calculation; a formal claim_relations row still requires explicit review.
+export const draftLinkCandidates = sqliteTable(
+  "draft_link_candidates",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    extractionRunId: text("extraction_run_id")
+      .notNull()
+      .references(() => extractionRuns.id, { onDelete: "cascade" }),
+    sourceClaimId: text("source_claim_id")
+      .notNull()
+      .references(() => claims.id, { onDelete: "cascade" }),
+    sourceClaimVersionId: text("source_claim_version_id").notNull(),
+    targetDraftClaimId: text("target_draft_claim_id")
+      .notNull()
+      .references(() => claims.id, { onDelete: "cascade" }),
+    targetDraftClaimVersionId: text("target_draft_claim_version_id").notNull(),
+    type: text("type", {
+      enum: ["same", "changed", "conflicting", "possibly_answered"],
+    }).notNull(),
+    reason: text("reason").notNull(),
+    confidence: real("confidence").notNull(),
+    status: text("status", {
+      enum: ["proposed", "inactive", "accepted", "rejected"],
+    }).notNull().default("proposed"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("uq_draft_link_candidate_pair").on(
+      table.extractionRunId,
+      table.sourceClaimVersionId,
+      table.targetDraftClaimVersionId,
+      table.type,
+    ),
+    index("idx_draft_link_candidates_project_status").on(table.projectId, table.status),
+    index("idx_draft_link_candidates_target").on(table.targetDraftClaimId, table.status),
   ],
 );
 
@@ -1091,5 +1312,36 @@ export const gapChecks = sqliteTable(
       table.scenarioVersion,
       table.overlayVersion,
     ),
+  ],
+);
+
+/**
+ * 归属建议（第三层）。只读的数据，没有任何搬动动作：把材料从一个项目移到另一个
+ * 项目这件事今天并不存在，所以建议只是一条摆在那里的提示。
+ *
+ * 每条记录最多一条在手的建议，所以 event_id 直接做主键：重跑覆盖，不堆历史。
+ */
+export const eventRoutingSuggestions = sqliteTable(
+  "event_routing_suggestions",
+  {
+    eventId: text("event_id")
+      .primaryKey()
+      .references(() => events.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull(),
+    suggestedProjectId: text("suggested_project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    probability: real("probability").notNull(),
+    judge: text("judge").notNull(),
+    createdAt: createdAt(),
+    /** 用户划掉之后填上。填了就不再展示，也不会因为重算再弹一次。 */
+    dismissedAt: text("dismissed_at"),
+  },
+  (table) => [
+    check(
+      "ck_event_routing_suggestions_probability",
+      sql`${table.probability} >= 0 AND ${table.probability} <= 1`,
+    ),
+    index("idx_event_routing_suggestions_project").on(table.suggestedProjectId),
   ],
 );

@@ -29,6 +29,8 @@ test("model image policy accepts only JPEG, PNG, and WebP", async () => {
   assert.equal(policy.isSupportedModelImageMime("image/heif"), false);
   assert.equal(policy.isSupportedModelImageMime("image/gif"), false);
   assert.equal(policy.MODEL_IMAGE_FILE_ACCEPT.includes("image/*"), false);
+  assert.equal(policy.MODEL_IMAGE_FILE_ACCEPT.includes(".heic"), true);
+  assert.equal(policy.MODEL_IMAGE_FILE_ACCEPT.includes("image/heif"), true);
 });
 
 test("HEIC and HEIF are recognized even when the browser omits or spoofs MIME", async () => {
@@ -58,7 +60,10 @@ test("frontend, upload repository, run creation, and processor share the boundar
   ]);
 
   assert.doesNotMatch(page, /accept=["'][^"']*image\/\*/);
-  assert.match(page, /photoUploadIssue\(file\.name, file\.type, file\.size\)/);
+  assert.match(page, /async function normalizeHandwrittenPhoto\(file: File\)/);
+  assert.match(page, /uploadFile = await normalizeHandwrittenPhoto\(file\)/);
+  assert.match(page, /capture="environment"/);
+  assert.match(page, /photoUploadIssue\(uploadFile\.name, uploadFile\.type, uploadFile\.size\)/);
   assert.match(repository, /isHeifLike\(input\.filename, mimeType\)/);
   assert.match(repository, /Combined image size exceeds the extraction limit/);
   assert.match(repository, /max_total_image_bytes: maxRunImageBytes/);

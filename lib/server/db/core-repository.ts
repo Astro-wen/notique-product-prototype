@@ -3,6 +3,7 @@ import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
   normalizeAiTimeoutMs,
   normalizeOpenAiReasoningEffort,
+  escalatedReasoningEffort,
   normalizeVerifierReasoningEffort,
   twoPassPipelineEnabled,
 } from "@/lib/domain/model-config";
@@ -35,6 +36,15 @@ import {
 } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import {
+  activeProviderRequestIds,
+  cancelRemoteResponses,
+  runCancellationBatch,
+} from "@/lib/server/db/run-cancellation-repository";
+import {
+  recordPurgePlan,
+  trashedEventIdsForProject,
+} from "@/lib/server/db/record-purge-repository";
+import {
   assetRecord,
   claimRecord,
   eventRecord,
@@ -51,6 +61,10 @@ import {
   listExtractionModelStageDebug,
   listExtractionModelStageTimings,
 } from "@/lib/server/db/extraction-stage-repository";
+import {
+  ensureEventAiArtifactRuns,
+  listEventAiArtifactRunDebug,
+} from "@/lib/server/db/event-ai-artifact-repository";
 import type {
   AssetKind,
   AssetRecord,
@@ -58,6 +72,7 @@ import type {
   EventRecord,
   ExtractionRunRecord,
   OccurrenceCandidateRecord,
+  ProjectDeletePreviewRecord,
   ProjectRecord,
   TranscriptImportRecord,
   VerifiedViewResponse,
@@ -153,6 +168,27 @@ const EVENT_WITH_REVIEW_COUNTS_SELECT = `
          ), 0) AS pending_occurrence_count
     FROM events e`;
 
+// The browser stops a byte upload after two minutes without progress. Keep a
+// wider server lease so a healthy slow upload cannot be reaped, while ensuring
+// a client that disappears before /abort can never block an Event forever.
+const STALE_ASSET_UPLOAD_TTL_MS = 15 * 60_000;
+/**
+ * What one transcript segment costs in the serialized ContextPack, beyond its
+ * text: the segment, asset-version and event ids, the ordinal, speaker and
+ * both timestamps, plus JSON punctuation.
+ *
+ * The processor enforces MAX_RUN_INPUT_TOKENS against the serialized pack,
+ * where each segment also carries its raw text *and* its normalized text.
+ * Estimating from normalized text alone therefore underestimated by more than
+ * half, so a Run near the limit was accepted, told the reader analysis had
+ * started, and was then killed by the same limit with a bare failure instead
+ * of the message they could have acted on. This still cannot be exact — the
+ * pack also carries project context and prior Claims — so the processor keeps
+ * its own check as the backstop; this one exists to fail early and honestly.
+ */
+const SEGMENT_CONTEXT_ENVELOPE_CHARACTERS = 280;
+const STALE_ASSET_SWEEP_LIMIT = 50;
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -229,7 +265,12 @@ async function assertEvent(scope: RequestScope, eventId: string): Promise<Row> {
 
 export async function createProject(
   scope: RequestScope,
-  input: { name: string; locale: string },
+  input: {
+    name: string;
+    auto_name?: boolean;
+    locale: string;
+    profile?: "real_estate_buyer_journey";
+  },
   idempotencyKey: string,
 ): Promise<ProjectRecord> {
   const endpointScope = "projects";
@@ -248,10 +289,24 @@ export async function createProject(
       db.prepare(
       `INSERT INTO projects (
         id, workspace_id, name, scenario_status, scenario_candidates_json,
-        scenario_version, locale, ledger_version, context_version,
-        next_event_sequence, created_at, updated_at
-      ) VALUES (?, ?, ?, 'unassessed', '[]', 0, ?, 0, 0, 1, ?, ?)`,
-      ).bind(projectId, scope.workspaceId, input.name, input.locale, timestamp, timestamp),
+        scenario, scenario_version, scenario_confirmed_at, scenario_confirmed_by,
+        locale, ledger_version, context_version,
+        next_event_sequence, created_at, updated_at, name_source
+      ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, ?)`,
+      ).bind(
+        projectId,
+        scope.workspaceId,
+        input.name,
+        input.profile ? "confirmed" : "unassessed",
+        input.profile ?? null,
+        input.profile ? 1 : 0,
+        input.profile ? timestamp : null,
+        input.profile ? scope.actorId : null,
+        input.locale,
+        timestamp,
+        timestamp,
+        input.auto_name ? "pending" : "manual",
+      ),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -271,6 +326,36 @@ export async function createProject(
     if (recovered.response) return getProject(scope, recovered.response.projectId);
     throw error;
   }
+  return getProject(scope, projectId);
+}
+
+// Index-only metadata never changes the project's evidence or review state.
+export async function updateProjectIndex(scope: RequestScope, projectId: string,
+  input: { name: string; folder_name: string | null; base_updated_at: string }, key: string,
+): Promise<ProjectRecord> {
+  const endpoint = `projects/${projectId}/index`;
+  const replay = await findMutationReplay<{ projectId: string }>(scope, endpoint, key, input);
+  if (replay.response) return getProject(scope, projectId);
+  const current = await getProject(scope, projectId);
+  if (current.updated_at !== input.base_updated_at) throw new ApiFault(409, "PROJECT_VERSION_CONFLICT", "项目已更新，请刷新后重试。");
+  const timestamp = now();
+  const result = await getD1().batch([
+    getD1().prepare(`UPDATE projects SET name_source = CASE WHEN name <> ? THEN 'manual' ELSE name_source END, name = ?, folder_name = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND updated_at = ?`)
+      .bind(input.name, input.name, input.folder_name, timestamp, projectId, scope.workspaceId, input.base_updated_at),
+    // Only record the replay if the compare-and-swap actually succeeded.
+    getD1().prepare(`INSERT INTO mutation_replays (id, workspace_id, actor_id, endpoint_scope, idempotency_key, request_hash, response_json, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
+      .bind(id("mutation"), scope.workspaceId, scope.actorId, endpoint, key, replay.requestHash, JSON.stringify({projectId}), timestamp),
+  ]);
+  if (!result[0].meta.changes) throw new ApiFault(409, "PROJECT_VERSION_CONFLICT", "项目已更新，请刷新后重试。");
+  return getProject(scope, projectId);
+}
+
+export async function markProjectOpened(scope: RequestScope, projectId: string): Promise<ProjectRecord> {
+  await getProject(scope, projectId);
+  await getD1().prepare(`UPDATE projects SET last_opened_at = ? WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`)
+    .bind(now(), projectId, scope.workspaceId).run();
   return getProject(scope, projectId);
 }
 
@@ -297,6 +382,249 @@ export async function getProject(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Project was not found.");
   }
   return projectRecord(row);
+}
+
+async function getDeletedProject(
+  scope: RequestScope,
+  projectId: string,
+): Promise<ProjectRecord> {
+  const row = await first(
+    `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
+      WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NOT NULL
+        AND p.system_role IS NULL`,
+    [projectId, scope.workspaceId],
+  );
+  // 收容单条记录的隐藏项目也在回收站里，但它不是用户的项目，不能恢复也不能删。
+  if (!row) throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Deleted project was not found.");
+  return projectRecord(row);
+}
+
+export async function listDeletedProjects(scope: RequestScope): Promise<ProjectRecord[]> {
+  const rows = await all(
+    `${PROJECT_WITH_REVIEW_COUNTS_SELECT}
+      WHERE p.workspace_id = ? AND p.deleted_at IS NOT NULL
+        AND p.system_role IS NULL
+      ORDER BY p.deleted_at DESC`,
+    [scope.workspaceId],
+  );
+  return rows.map(projectRecord);
+}
+
+export async function getProjectDeletePreview(
+  scope: RequestScope,
+  projectId: string,
+): Promise<ProjectDeletePreviewRecord> {
+  const project = await getProject(scope, projectId);
+  const row = await first(
+    `SELECT
+       (SELECT COUNT(*) FROM assets WHERE project_id = ? AND workspace_id = ?
+          AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+          AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+          AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1) AS material_count,
+       (SELECT COUNT(*) FROM extraction_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) +
+       (SELECT COUNT(*) FROM transcription_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) +
+       (SELECT COUNT(*) FROM event_ai_artifact_runs
+         WHERE project_id = ? AND workspace_id = ? AND status IN ('queued','processing')) AS active_job_count`,
+    [
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+    ],
+  );
+  const activeJobCount = Number(row?.active_job_count ?? 0);
+  // 在跑的任务不再挡删除：删的时候一起停下，见 lib/domain/run-cancellation.ts。
+  // 之前一条卡住的转写就能把整个项目永久锁住。字段留着，老客户端照样能读。
+  return {
+    project_id: project.id,
+    project_name: project.name,
+    event_count: project.event_count,
+    material_count: Number(row?.material_count ?? 0),
+    pending_count: project.pending_claim_count + project.pending_occurrence_count,
+    active_job_count: activeJobCount,
+    can_delete: true,
+  };
+}
+
+export async function moveProjectToTrash(
+  scope: RequestScope,
+  projectId: string,
+  idempotencyKey: string,
+): Promise<ProjectRecord> {
+  const endpointScope = `projects/${projectId}/trash`;
+  const replay = await findMutationReplay<{ projectId: string }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    {},
+  );
+  if (replay.response) return getDeletedProject(scope, replay.response.projectId);
+  await getProject(scope, projectId);
+  const timestamp = now();
+  const guardId = id("guard");
+  // 先记下交给供应商的后台响应，删除提交之后再逐个取消。
+  const providerRequests = await activeProviderRequestIds("project", projectId, scope.workspaceId);
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM projects p
+          WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
+       ) THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, projectId, scope.workspaceId, timestamp),
+    ...runCancellationBatch("project", {
+      timestamp,
+      scopeId: projectId,
+      workspace: scope.workspaceId,
+      reason: "project_trashed",
+    }),
+    getD1().prepare(
+      `UPDATE projects SET deleted_at = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    ).bind(timestamp, timestamp, projectId, scope.workspaceId),
+    mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { projectId }, timestamp),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  await cancelRemoteResponses(providerRequests);
+  return getDeletedProject(scope, projectId);
+}
+
+export async function restoreProject(
+  scope: RequestScope,
+  projectId: string,
+  idempotencyKey: string,
+): Promise<ProjectRecord> {
+  const endpointScope = `projects/${projectId}/restore`;
+  const replay = await findMutationReplay<{ projectId: string }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    {},
+  );
+  if (replay.response) return getProject(scope, replay.response.projectId);
+  await getDeletedProject(scope, projectId);
+  const timestamp = now();
+  const guardId = id("guard");
+  const purgeLockId = `project-purge:${projectId}`;
+  try {
+    await getD1().batch([
+      getD1().prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)
+         ) THEN 1 ELSE 0 END, ?`,
+      ).bind(guardId, projectId, scope.workspaceId, purgeLockId, timestamp),
+      getD1().prepare(
+        `UPDATE projects SET deleted_at = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)`,
+      ).bind(timestamp, projectId, scope.workspaceId, purgeLockId),
+      mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { projectId }, timestamp),
+      getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch {
+    const purgeLocked = await first(`SELECT id FROM mutation_guards WHERE id = ?`, [purgeLockId]);
+    if (purgeLocked) {
+      throw new ApiFault(409, "RUN_STATE_CONFLICT", "Permanent deletion is in progress or needs to be retried before this project can be restored.");
+    }
+    throw new ApiFault(409, "CLAIM_VERSION_CONFLICT", "Project state changed. Refresh the recycle bin before restoring it.");
+  }
+  return getProject(scope, projectId);
+}
+
+export async function permanentlyDeleteProject(
+  scope: RequestScope,
+  projectId: string,
+  confirmName: string,
+  idempotencyKey: string,
+): Promise<{ projectId: string; permanentlyDeleted: true }> {
+  const endpointScope = `projects/${projectId}/permanent`;
+  const input = { confirmName };
+  const replay = await findMutationReplay<{ projectId: string; permanentlyDeleted: true }>(
+    scope,
+    endpointScope,
+    idempotencyKey,
+    input,
+  );
+  if (replay.response) return replay.response;
+  const project = await getDeletedProject(scope, projectId);
+  if (confirmName !== project.name) {
+    throw new ApiFault(400, "BAD_REQUEST", "Project name confirmation does not match.", { field: "confirm_name" });
+  }
+  const purgeLockId = `project-purge:${projectId}`;
+  const timestamp = now();
+  await getD1()
+    .prepare(
+      `INSERT OR IGNORE INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, 1, ? WHERE EXISTS (
+         SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+       )`,
+    )
+    .bind(purgeLockId, timestamp, projectId, scope.workspaceId)
+    .run();
+  const purgeLock = await first(
+    `SELECT id FROM mutation_guards WHERE id = ?`,
+    [purgeLockId],
+  );
+  if (!purgeLock) {
+    throw new ApiFault(409, "RUN_STATE_CONFLICT", "Project deletion could not be locked. Refresh the recycle bin and retry.");
+  }
+  const keyRows = await all(
+    `SELECT key FROM (
+       SELECT av.r2_original_key AS key FROM asset_versions av
+         JOIN assets a ON a.id = av.asset_id WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT av.r2_model_key AS key FROM asset_versions av
+         JOIN assets a ON a.id = av.asset_id WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT a.staged_r2_key AS key FROM assets a WHERE a.project_id = ? AND a.workspace_id = ?
+       UNION SELECT tii.r2_key AS key FROM transcript_import_items tii
+         JOIN transcript_imports ti ON ti.id = tii.import_id WHERE ti.project_id = ? AND ti.workspace_id = ?
+       UNION SELECT tr.staged_result_r2_key AS key FROM transcription_runs tr
+         WHERE tr.project_id = ? AND tr.workspace_id = ?
+     ) WHERE key IS NOT NULL`,
+    [
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+      projectId, scope.workspaceId,
+    ],
+  );
+  // 这个项目里单独删掉、还躺在回收站的记录已经搬进收容项目，不会跟着项目级联，
+  // 要一起清掉，不然它们在回收站里会一直指着一个不存在的项目。
+  const trashedRecords = await recordPurgePlan(
+    await trashedEventIdsForProject(projectId, scope.workspaceId),
+    scope.workspaceId,
+  );
+  try {
+    await Promise.all([
+      ...keyRows.map((row) => String(row.key)),
+      ...trashedRecords.keys,
+    ].map((key) => getEvidenceBucket().delete(key)));
+  } catch {
+    throw new ApiFault(503, "R2_BINDING_UNAVAILABLE", "Stored project files could not be fully deleted. The project remains locked in the recycle bin so permanent deletion can be retried safely.");
+  }
+  const response = { projectId, permanentlyDeleted: true as const };
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+           AND EXISTS (SELECT 1 FROM mutation_guards WHERE id = ?)
+       ) THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, projectId, scope.workspaceId, purgeLockId, timestamp),
+    ...trashedRecords.statements,
+    getD1().prepare(
+      `DELETE FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL`,
+    ).bind(projectId, scope.workspaceId),
+    mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, response, timestamp),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(purgeLockId),
+  ]);
+  return response;
 }
 
 export async function confirmScenario(
@@ -507,6 +835,19 @@ export async function getEvent(
   scope: RequestScope,
   eventId: string,
 ): Promise<{ event: EventRecord; assets: AssetRecord[] }> {
+  const existing = await first(
+    `${EVENT_WITH_REVIEW_COUNTS_SELECT}
+      JOIN projects p ON p.id = e.project_id
+     WHERE e.id = ? AND e.workspace_id = ? AND p.deleted_at IS NULL`,
+    [eventId, scope.workspaceId],
+  );
+  if (!existing) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Event was not found.");
+  }
+  await expireStaleAssetUploads(scope, { eventId });
+  // The sweep can make a previously blocked Event ready. Return the row after
+  // that recovery write instead of leaking the stale pre-sweep material state
+  // for one extra poll.
   const event = await first(
     `${EVENT_WITH_REVIEW_COUNTS_SELECT}
       JOIN projects p ON p.id = e.project_id
@@ -519,7 +860,9 @@ export async function getEvent(
   const rows = await all(
     `${ASSET_SELECT}
       WHERE a.event_id = ? AND a.workspace_id = ?
-      ORDER BY a.created_at ASC`,
+        AND COALESCE(a.failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+      -- 未排序的材料（刚上传的）排在已排序的之后，同组内仍按上传先后。
+      ORDER BY COALESCE(a.sort_order, 2147483647) ASC, a.created_at ASC`,
     [eventId, scope.workspaceId],
   );
   return { event: eventRecord(event), assets: rows.map(assetRecord) };
@@ -1070,6 +1413,56 @@ export async function finalizeTranscriptImport(
   };
 }
 
+function eventMaterialReadinessStatement(
+  scope: RequestScope,
+  eventId: string,
+  timestamp = now(),
+): D1PreparedStatement {
+  return getD1()
+    .prepare(
+      `UPDATE events
+          SET material_status = CASE
+                WHEN material_status = 'archived' THEN 'archived'
+                WHEN EXISTS (
+                  SELECT 1 FROM assets
+                   WHERE event_id = ? AND workspace_id = ?
+                     AND COALESCE(failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+                     AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+                     AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+                     AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1
+                     AND processing_status = 'ready'
+                ) AND NOT EXISTS (
+                  SELECT 1 FROM assets
+                   WHERE event_id = ? AND workspace_id = ?
+                     AND COALESCE(failure_code, '') NOT IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+                     AND COALESCE(json_extract(metadata_json, '$.analysis_source'), 1) <> 0
+                     AND COALESCE(json_extract(metadata_json, '$.artifact_kind'), '') <> 'readable_transcript'
+                     AND COALESCE(json_extract(metadata_json, '$.transcription_chunk'), 0) <> 1
+                     AND processing_status <> 'ready'
+                ) THEN 'ready'
+                ELSE 'draft'
+              END,
+              updated_at = ?
+        WHERE id = ? AND workspace_id = ?`,
+    )
+    .bind(
+      eventId,
+      scope.workspaceId,
+      eventId,
+      scope.workspaceId,
+      timestamp,
+      eventId,
+      scope.workspaceId,
+    );
+}
+
+async function recomputeEventMaterialReadiness(
+  scope: RequestScope,
+  eventId: string,
+): Promise<void> {
+  await eventMaterialReadinessStatement(scope, eventId).run();
+}
+
 export async function initializeAsset(
   scope: RequestScope,
   eventId: string,
@@ -1107,13 +1500,25 @@ export async function initializeAsset(
   }
   const validatedInput = { ...input, mimeType };
   const endpointScope = `events/${eventId}/assets/init`;
+  await expireStaleAssetUploads(scope, { eventId });
   const replay = await findMutationReplay<{ assetId: string }>(
     scope,
     endpointScope,
     idempotencyKey,
     validatedInput,
   );
-  if (replay.response) return getAsset(scope, replay.response.assetId);
+  if (replay.response) {
+    const replayed = await getAsset(scope, replay.response.assetId);
+    if (replayed.processing_status === "failed") {
+      throw new ApiFault(
+        409,
+        "EVENT_NOT_READY",
+        "The previous upload is no longer active. Start a new upload to attach the file.",
+      );
+    }
+    await recomputeEventMaterialReadiness(scope, eventId);
+    return replayed;
+  }
   const event = await assertEvent(scope, eventId);
   const assetId = id("ast");
   const timestamp = now();
@@ -1148,6 +1553,7 @@ export async function initializeAsset(
         { assetId },
         timestamp,
       ),
+      eventMaterialReadinessStatement(scope, eventId, timestamp),
     ]);
   } catch (error) {
     const recovered = await findMutationReplay<{ assetId: string }>(
@@ -1156,7 +1562,10 @@ export async function initializeAsset(
       idempotencyKey,
       validatedInput,
     );
-    if (recovered.response) return getAsset(scope, recovered.response.assetId);
+    if (recovered.response) {
+      await recomputeEventMaterialReadiness(scope, eventId);
+      return getAsset(scope, recovered.response.assetId);
+    }
     throw error;
   }
   return getAsset(scope, assetId);
@@ -1206,7 +1615,7 @@ function unsupportedAssetFormat(
   const photoMessage =
     "Photos must be JPEG, PNG, or WebP. HEIC/HEIF conversion is not available in this POC.";
   const audioMessage =
-    "Audio must be MP3, MP4, MPEG, MPGA, M4A, WAV, or WebM and no larger than 25 MB.";
+    "Audio must be MP3, MP4, MPEG, MPGA, M4A, WAV, or WebM and no larger than 100 MB.";
   return new ApiFault(
     415,
     "ASSET_UNSUPPORTED_FORMAT",
@@ -1258,6 +1667,13 @@ export async function uploadAssetContent(
   if (row.current_version_id) {
     throw new ApiFault(409, "BAD_REQUEST", "Finalized asset content is immutable.");
   }
+  if (String(row.processing_status) === "failed") {
+    throw new ApiFault(
+      409,
+      "EVENT_NOT_READY",
+      "This asset upload was cancelled. Start a new upload to attach the file.",
+    );
+  }
   const kind = String(row.kind) as AssetKind;
   const mime = normalizeMimeType(
     request.headers.get("content-type") || String(row.staged_mime_type),
@@ -1305,7 +1721,7 @@ export async function uploadAssetContent(
           SET staged_r2_key = ?, staged_sha256 = ?, staged_mime_type = ?,
               staged_size_bytes = ?, processing_status = 'parsing', updated_at = ?
         WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
-          AND staged_r2_key IS NULL`,
+          AND processing_status = 'uploading' AND staged_r2_key IS NULL`,
     )
     .bind(key, sha, mime, bytes.byteLength, now(), assetId, scope.workspaceId)
     .run();
@@ -1314,13 +1730,302 @@ export async function uploadAssetContent(
       `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
       [assetId, scope.workspaceId],
     );
-    if (current?.staged_r2_key === key || current?.current_version_id) {
+    if (
+      String(current?.processing_status) === "parsing"
+      && current?.staged_r2_key === key
+      && current?.staged_sha256 === sha
+    ) {
       return getAsset(scope, assetId);
     }
-    if (current?.staged_r2_key !== key) {
-      await getEvidenceBucket().delete(key).catch(() => undefined);
+
+    if (current?.current_version_id) {
+      const owner = await first(
+        `SELECT r2_original_key FROM asset_versions WHERE id = ? AND asset_id = ?`,
+        [current.current_version_id, assetId],
+      );
+      if (owner?.r2_original_key === key) return getAsset(scope, assetId);
+    }
+
+    try {
+      await getEvidenceBucket().delete(key);
+    } catch (error) {
+      // A terminal row can carry the losing key as durable cleanup work. This
+      // covers the abort-vs-late-PUT race even if object storage is briefly
+      // unavailable; the scoped stale sweep will retry deletion later.
+      if (
+        String(current?.processing_status) === "failed"
+        && !current?.current_version_id
+        && (!current?.staged_r2_key || current.staged_r2_key === key)
+      ) {
+        await getD1()
+          .prepare(
+            `UPDATE assets
+                SET staged_r2_key = ?, staged_sha256 = ?, updated_at = ?
+              WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+                AND processing_status = 'failed'
+                AND (staged_r2_key IS NULL OR staged_r2_key = ?)`,
+          )
+          .bind(key, sha, now(), assetId, scope.workspaceId, key)
+          .run();
+      }
+      throw error;
+    }
+    if (
+      String(current?.processing_status) === "failed"
+      && current?.staged_r2_key === key
+    ) {
+      await getD1()
+        .prepare(
+          `UPDATE assets
+              SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'failed' AND staged_r2_key = ?`,
+        )
+        .bind(now(), assetId, scope.workspaceId, key)
+        .run();
     }
     throw new ApiFault(409, "BAD_REQUEST", "Asset upload was already completed by another request.");
+  }
+  return getAsset(scope, assetId);
+}
+
+/**
+ * Renews the lease for an Asset whose bytes are still moving through the
+ * browser. A heartbeat never advances upload state; it only prevents a
+ * healthy, slow request from being mistaken for an abandoned upload.
+ */
+export async function heartbeatAssetUpload(
+  scope: RequestScope,
+  assetId: string,
+): Promise<AssetRecord> {
+  const updated = await getD1()
+    .prepare(
+      `UPDATE assets SET updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+          AND processing_status = 'uploading'`,
+    )
+    .bind(now(), assetId, scope.workspaceId)
+    .run();
+  if (Number(updated.meta.changes ?? 0) > 0) {
+    return getAsset(scope, assetId);
+  }
+
+  const current = await first(
+    `SELECT current_version_id, processing_status, failure_code
+       FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!current) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (
+    current.current_version_id ||
+    ["uploading", "parsing", "ready"].includes(String(current.processing_status))
+  ) {
+    // Content upload/finalize may win immediately before this heartbeat. That
+    // is a successful, idempotent heartbeat rather than an error.
+    return getAsset(scope, assetId);
+  }
+  throw new ApiFault(
+    409,
+    "EVENT_NOT_READY",
+    String(current.failure_code) === "UPLOAD_EXPIRED"
+      ? "This asset upload expired after the browser stopped responding."
+      : "This asset upload is no longer active.",
+  );
+}
+
+/**
+ * Lazily expires unfinished uploads whose browser stopped responding.
+ *
+ * The status CAS races safely with content upload and finalization: whichever
+ * write reaches D1 first wins, and the losing content path removes its own R2
+ * object. Failed cleanup keeps the staged key so the next scoped read retries
+ * deletion without making that read fail.
+ */
+export async function expireStaleAssetUploads(
+  scope: RequestScope,
+  filter: { projectId?: string; eventId?: string } = {},
+): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_ASSET_UPLOAD_TTL_MS).toISOString();
+  const scopeClauses = ["workspace_id = ?", "current_version_id IS NULL"];
+  const scopeBindings: unknown[] = [scope.workspaceId];
+  if (filter.projectId) {
+    scopeClauses.push("project_id = ?");
+    scopeBindings.push(filter.projectId);
+  }
+  if (filter.eventId) {
+    scopeClauses.push("event_id = ?");
+    scopeBindings.push(filter.eventId);
+  }
+
+  // Active expiration and terminal object cleanup have independent budgets.
+  // A storage outage can therefore never let old cleanup tombstones starve a
+  // newly abandoned upload from being expired.
+  const activeCandidates = await all(
+    `SELECT id, event_id FROM assets
+      WHERE ${scopeClauses.join(" AND ")}
+        AND processing_status IN ('uploading', 'parsing')
+        AND updated_at < ?
+      ORDER BY updated_at ASC
+      LIMIT ?`,
+    [...scopeBindings, cutoff, STALE_ASSET_SWEEP_LIMIT],
+  );
+
+  let expiredCount = 0;
+  const affectedEventIds = new Set<string>();
+  for (const candidate of activeCandidates) {
+    const assetId = String(candidate.id);
+    const expired = await getD1()
+      .prepare(
+        `UPDATE assets
+            SET processing_status = 'failed', failure_code = 'UPLOAD_EXPIRED', updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status IN ('uploading', 'parsing') AND updated_at < ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, cutoff)
+      .run();
+    const changed = Number(expired.meta.changes ?? 0);
+    expiredCount += changed;
+    if (changed > 0) affectedEventIds.add(String(candidate.event_id));
+  }
+
+  // Readiness recovery is independent from object deletion. Even when R2 is
+  // temporarily unavailable, an expired companion upload must stop blocking
+  // already-finalized material in the same Event.
+  for (const eventId of affectedEventIds) {
+    await recomputeEventMaterialReadiness(scope, eventId);
+  }
+
+  const cleanupCandidates = await all(
+    `SELECT id, event_id, staged_r2_key FROM assets
+      WHERE ${scopeClauses.join(" AND ")}
+        AND processing_status = 'failed'
+        AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+        AND staged_r2_key IS NOT NULL
+      ORDER BY updated_at ASC
+      LIMIT ?`,
+    [...scopeBindings, STALE_ASSET_SWEEP_LIMIT],
+  );
+
+  const cleanupEventIds = new Set<string>();
+  for (const candidate of cleanupCandidates) {
+    const assetId = String(candidate.id);
+    const stagedKey = String(candidate.staged_r2_key);
+    cleanupEventIds.add(String(candidate.event_id));
+
+    const current = await first(
+      `SELECT current_version_id, processing_status, failure_code, staged_r2_key
+         FROM assets WHERE id = ? AND workspace_id = ?`,
+      [assetId, scope.workspaceId],
+    );
+    if (
+      current?.current_version_id ||
+      String(current?.processing_status) !== "failed" ||
+      !["UPLOAD_ABORTED", "UPLOAD_EXPIRED"].includes(String(current?.failure_code)) ||
+      !current?.staged_r2_key
+    ) continue;
+
+    try {
+      await getEvidenceBucket().delete(stagedKey);
+    } catch {
+      // Keep the durable key and move this item behind older work. A permanent
+      // failure for one object cannot starve the next cleanup candidate.
+      await getD1()
+        .prepare(
+          `UPDATE assets SET updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'failed'
+              AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+              AND staged_r2_key = ?`,
+        )
+        .bind(now(), assetId, scope.workspaceId, stagedKey)
+        .run();
+      continue;
+    }
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'failed'
+            AND failure_code IN ('UPLOAD_ABORTED', 'UPLOAD_EXPIRED')
+            AND staged_r2_key = ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, stagedKey)
+      .run();
+  }
+
+  for (const eventId of cleanupEventIds) {
+    if (!affectedEventIds.has(eventId)) {
+      await recomputeEventMaterialReadiness(scope, eventId);
+    }
+  }
+  return expiredCount;
+}
+
+/**
+ * Stops an unfinished Asset upload without invalidating its init replay.
+ *
+ * The failed row is intentionally retained: mutation_replays has no Asset FK,
+ * so deleting the row would make a valid retry of /assets/init point at a 404.
+ * Keeping a terminal row also lets a repeated abort finish an R2 cleanup that
+ * previously failed. The active-state CAS is the serialization point shared
+ * with content upload and finalization.
+ */
+export async function abandonAssetUpload(
+  scope: RequestScope,
+  assetId: string,
+): Promise<AssetRecord> {
+  const existing = await first(
+    `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!existing) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (existing.current_version_id) return getAsset(scope, assetId);
+
+  const timestamp = now();
+  await getD1()
+    .prepare(
+      `UPDATE assets
+          SET processing_status = 'failed', failure_code = 'UPLOAD_ABORTED', updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+          AND processing_status IN ('uploading', 'parsing')`,
+    )
+    .bind(timestamp, assetId, scope.workspaceId)
+    .run();
+
+  // Reread after the CAS. If finalize won, its immutable version owns the
+  // object and must not be deleted. If abort won, no content/finalize CAS can
+  // advance the row again, so its staged key is safe to remove.
+  const current = await first(
+    `SELECT * FROM assets WHERE id = ? AND workspace_id = ?`,
+    [assetId, scope.workspaceId],
+  );
+  if (!current) {
+    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
+  }
+  if (current.current_version_id) return getAsset(scope, assetId);
+
+  // Restore the Event from the complete set of live user material before any
+  // best-effort object cleanup. An R2 outage must not leave the visible
+  // workflow stuck in draft after this upload has been cancelled.
+  await recomputeEventMaterialReadiness(scope, String(current.event_id));
+
+  const stagedKey = current.staged_r2_key ? String(current.staged_r2_key) : null;
+  if (String(current.processing_status) === "failed" && stagedKey) {
+    await getEvidenceBucket().delete(stagedKey);
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET staged_r2_key = NULL, staged_sha256 = NULL, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'failed' AND staged_r2_key = ?`,
+      )
+      .bind(now(), assetId, scope.workspaceId, stagedKey)
+      .run();
   }
   return getAsset(scope, assetId);
 }
@@ -1337,6 +2042,15 @@ export async function finalizeAsset(
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
   }
   if (row.current_version_id) return getAsset(scope, assetId);
+  if (String(row.processing_status) !== "parsing") {
+    throw new ApiFault(
+      409,
+      "EVENT_NOT_READY",
+      String(row.failure_code) === "UPLOAD_ABORTED"
+        ? "This asset upload was cancelled. Start a new upload to attach the file."
+        : "Asset content is not ready to finalize.",
+    );
+  }
   if (!row.staged_r2_key || !row.staged_sha256 || !row.staged_mime_type) {
     throw new ApiFault(409, "EVENT_NOT_READY", "Asset content has not been uploaded.");
   }
@@ -1348,7 +2062,26 @@ export async function finalizeAsset(
   const timestamp = now();
   const kind = String(row.kind) as AssetKind;
   const db = getD1();
+  const guardId = id("guard");
   const statements = [
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM assets
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'parsing'
+              AND staged_r2_key = ? AND staged_sha256 = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        assetId,
+        scope.workspaceId,
+        row.staged_r2_key,
+        row.staged_sha256,
+        timestamp,
+      ),
     db
       .prepare(
         `INSERT INTO asset_versions (
@@ -1380,13 +2113,32 @@ export async function finalizeAsset(
         format: transcriptFormat(String(row.filename), String(row.staged_mime_type)),
       });
     } catch (error) {
-      await getD1()
+      const failed = await getD1()
         .prepare(
           `UPDATE assets SET processing_status = 'failed', failure_code = 'TRANSCRIPT_PARSE_FAILED',
-                             updated_at = ? WHERE id = ? AND workspace_id = ?`,
+                             updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+              AND processing_status = 'parsing'`,
         )
         .bind(timestamp, assetId, scope.workspaceId)
         .run();
+      if (Number(failed.meta.changes ?? 0) > 0) {
+        await recomputeEventMaterialReadiness(scope, String(row.event_id));
+      }
+      if (Number(failed.meta.changes ?? 0) === 0) {
+        const current = await first(
+          `SELECT current_version_id, failure_code FROM assets WHERE id = ? AND workspace_id = ?`,
+          [assetId, scope.workspaceId],
+        );
+        if (current?.current_version_id) return getAsset(scope, assetId);
+        if (String(current?.failure_code) === "UPLOAD_ABORTED") {
+          throw new ApiFault(
+            409,
+            "EVENT_NOT_READY",
+            "This asset upload was cancelled. Start a new upload to attach the file.",
+          );
+        }
+      }
       throw new ApiFault(
         422,
         "TRANSCRIPT_PARSE_FAILED",
@@ -1426,28 +2178,36 @@ export async function finalizeAsset(
         `UPDATE assets
             SET current_version_id = ?, processing_status = 'ready', failure_code = NULL,
                 updated_at = ?
-          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL`,
+          WHERE id = ? AND workspace_id = ? AND current_version_id IS NULL
+            AND processing_status = 'parsing'
+            AND staged_r2_key = ? AND staged_sha256 = ?`,
       )
-      .bind(versionId, timestamp, assetId, scope.workspaceId),
-    db
-      .prepare(
-        `UPDATE events SET material_status = 'ready', updated_at = ?
-          WHERE id = ? AND workspace_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM assets
-               WHERE event_id = ? AND id <> ? AND processing_status <> 'ready'
-            )`,
-      )
-      .bind(timestamp, row.event_id, scope.workspaceId, row.event_id, assetId),
+      .bind(
+        versionId,
+        timestamp,
+        assetId,
+        scope.workspaceId,
+        row.staged_r2_key,
+        row.staged_sha256,
+      ),
+    eventMaterialReadinessStatement(scope, String(row.event_id), timestamp),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   );
   try {
     await db.batch(statements);
   } catch (error) {
     const current = await first(
-      `SELECT current_version_id FROM assets WHERE id = ? AND workspace_id = ?`,
+      `SELECT current_version_id, failure_code FROM assets WHERE id = ? AND workspace_id = ?`,
       [assetId, scope.workspaceId],
     );
     if (current?.current_version_id) return getAsset(scope, assetId);
+    if (String(current?.failure_code) === "UPLOAD_ABORTED") {
+      throw new ApiFault(
+        409,
+        "EVENT_NOT_READY",
+        "This asset upload was cancelled. Start a new upload to attach the file.",
+      );
+    }
     throw error;
   }
   return getAsset(scope, assetId);
@@ -1462,6 +2222,42 @@ export async function getAsset(scope: RequestScope, assetId: string): Promise<As
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Asset was not found.");
   }
   return assetRecord(row);
+}
+
+export async function renameAsset(
+  scope: RequestScope,
+  assetId: string,
+  filename: string,
+): Promise<AssetRecord> {
+  // getAsset 本身带 workspace 过滤，找不到就是越权或不存在，两种都按 404 回。
+  await getAsset(scope, assetId);
+  await getD1()
+    .prepare(`UPDATE assets SET filename = ?, updated_at = ? WHERE id = ? AND workspace_id = ?`)
+    .bind(filename, now(), assetId, scope.workspaceId)
+    .run();
+  return getAsset(scope, assetId);
+}
+
+export async function reorderEventAssets(
+  scope: RequestScope,
+  eventId: string,
+  assetIds: string[],
+): Promise<AssetRecord[]> {
+  const { assets } = await getEvent(scope, eventId);
+  const visible = assets.map((asset) => asset.id);
+  // 只接受"整份列表的新顺序"。收到子集就拒绝，否则漏掉的材料会保留旧的
+  // sort_order，和新排定的名次混在一起，列表顺序变得无法预测。
+  const sameSet = assetIds.length === visible.length
+    && new Set(assetIds).size === assetIds.length
+    && assetIds.every((assetId) => visible.includes(assetId));
+  if (!sameSet) {
+    throw new ApiFault(409, "ASSET_ORDER_STALE", "材料列表已变化，请刷新后重试。");
+  }
+  const timestamp = now();
+  await getD1().batch(assetIds.map((assetId, index) => getD1()
+    .prepare(`UPDATE assets SET sort_order = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND event_id = ?`)
+    .bind(index, timestamp, assetId, scope.workspaceId, eventId)));
+  return (await getEvent(scope, eventId)).assets;
 }
 
 export async function getAssetEvidenceObject(
@@ -1495,6 +2291,7 @@ export async function createExtractionRun(
   eventId: string,
   idempotencyKey: string,
   assetVersionIds: string[],
+  retriedAfterScenarioRace = false,
 ): Promise<{ run: ExtractionRunRecord; created: boolean }> {
   const bindings = getBindings();
   const providerHasEndpoint =
@@ -1519,13 +2316,9 @@ export async function createExtractionRun(
   }
   const project = await assertProject(scope, String(event.project_id));
   const scenarioStatus = String(project.scenario_status);
-  if (scenarioStatus !== "confirmed" && Number(event.sequence_no) !== 1) {
-    throw new ApiFault(
-      409,
-      "SCENARIO_CONFIRMATION_REQUIRED",
-      "Confirm the scenario from the first event before extracting later events.",
-    );
-  }
+  // 项目类型不再要人确认，也不再挡后面的记录：哪条记录先分析，就顺带判出类型并
+  // 直接采用（见 extraction-processor 的 persistModelOutput）。以前第二条起要等人
+  // 在卡片上点确认，整条流程卡在那里。
   if (assetVersionIds.length === 0) {
     throw new ApiFault(400, "BAD_REQUEST", "asset_version_ids must not be empty.");
   }
@@ -1534,7 +2327,7 @@ export async function createExtractionRun(
   }
   const versions = await all(
     `SELECT av.id, av.content_sha256, av.parser_version, av.mime_type,
-            av.size_bytes, a.kind, a.filename
+            av.size_bytes, a.kind, a.filename, a.metadata_json
        FROM asset_versions av
        JOIN assets a ON a.id = av.asset_id
       WHERE a.event_id = ? AND a.workspace_id = ?
@@ -1543,6 +2336,18 @@ export async function createExtractionRun(
   );
   if (versions.length !== assetVersionIds.length) {
     throw new ApiFault(400, "BAD_REQUEST", "Every asset_version_id must belong to the event.");
+  }
+  const derivedReadable = versions.find((row) => {
+    const metadata = parseJson<Record<string, unknown>>(String(row.metadata_json ?? "{}"), {});
+    return metadata.analysis_source === false || metadata.artifact_kind === "readable_transcript";
+  });
+  if (derivedReadable) {
+    throw new ApiFault(
+      400,
+      "BAD_REQUEST",
+      "AI-readable transcripts cannot replace raw source material for fact extraction.",
+      { asset_version_id: derivedReadable.id },
+    );
   }
   const photoVersions = versions.filter((row) => String(row.kind) === "photo");
   const directAudio = versions.find((row) => String(row.kind) === "audio");
@@ -1596,7 +2401,8 @@ export async function createExtractionRun(
     };
   });
   const selectedSegmentRows = await all(
-    `SELECT id, length(text_normalized) AS character_count
+    `SELECT id, length(text_normalized) AS character_count,
+            length(text_raw) AS raw_character_count
        FROM text_segments
       WHERE asset_version_id IN (${assetVersionIds.map(() => "?").join(",")})
       ORDER BY asset_version_id, ordinal`,
@@ -1607,7 +2413,11 @@ export async function createExtractionRun(
     2_000 +
     Math.ceil(
       selectedSegmentRows.reduce(
-        (total, row) => total + Number(row.character_count ?? 0),
+        (total, row) =>
+          total
+          + Number(row.character_count ?? 0)
+          + Number(row.raw_character_count ?? 0)
+          + SEGMENT_CONTEXT_ENVELOPE_CHARACTERS,
         0,
       ) / 4,
     ) +
@@ -1618,7 +2428,58 @@ export async function createExtractionRun(
   );
   const timeoutMs = normalizeAiTimeoutMs(bindings.AI_TIMEOUT_MS);
   const pipelineEnabled = twoPassPipelineEnabled(bindings.AI_TWO_PASS_PIPELINE);
-  const maxModelStages = pipelineEnabled ? 3 : 1;
+  const draftContextEnabled = bindings.AI_DRAFT_CONTEXT === "1";
+  const draftContextManifest = draftContextEnabled
+    ? (await all(
+        `SELECT recent_claims.claim_id, recent_claims.claim_version_id
+           FROM (
+             SELECT c.id AS claim_id,
+                    c.current_version_id AS claim_version_id,
+                    source_event.sequence_no AS event_sequence_no,
+                    c.created_at
+               FROM claims c
+               JOIN events source_event ON source_event.id = c.event_id
+              WHERE c.project_id = ? AND c.workspace_id = ?
+                AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
+                AND c.source = 'ai' AND source_event.sequence_no < ?
+                AND source_event.id IN (
+                  SELECT recent_event.id FROM events recent_event
+                   WHERE recent_event.project_id = ? AND recent_event.workspace_id = ?
+                     AND recent_event.sequence_no < ?
+                   ORDER BY recent_event.sequence_no DESC, recent_event.id DESC
+                   LIMIT 10
+                )
+                AND source_event.active_run_id = c.extraction_run_id
+                AND EXISTS (
+                  SELECT 1 FROM evidence_refs er
+                   WHERE er.claim_version_id = c.current_version_id
+                     AND er.structural_validation_status = 'valid'
+                )
+              ORDER BY source_event.sequence_no DESC, c.created_at DESC, c.id DESC
+              LIMIT 100
+           ) AS recent_claims
+          ORDER BY recent_claims.event_sequence_no,
+                   recent_claims.created_at,
+                   recent_claims.claim_id`,
+        [
+          project.id,
+          scope.workspaceId,
+          event.sequence_no,
+          project.id,
+          scope.workspaceId,
+          event.sequence_no,
+        ],
+      )).map((row) => ({
+        claim_id: String(row.claim_id),
+        claim_version_id: String(row.claim_version_id),
+      }))
+    : [];
+  const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
+  const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
+  // 易读逐字稿已经删掉，冻结参数里如实记成 false。
+  const readableTranscriptEnabled = false;
+  const artifactStageCount = Number(eventSummaryEnabled) + Number(readableTranscriptEnabled);
+  const maxModelStages = (pipelineEnabled ? 3 : 1) + artifactStageCount;
   const reservedModelTokens =
     estimatedInputTokens * maxModelStages + maxOutputTokens * maxModelStages;
   const maxRunInputTokens = configuredPositiveInteger(
@@ -1629,15 +2490,14 @@ export async function createExtractionRun(
     bindings.MAX_CONCURRENT_RUNS_PER_WORKSPACE,
     2,
   );
-  const maxDailyModelTokens = configuredPositiveInteger(
-    bindings.MAX_DAILY_MODEL_TOKENS,
-    1_000_000,
-  );
   const maxImageUnits = configuredPositiveInteger(bindings.MAX_RUN_IMAGE_UNITS, 12);
   const reasoningEffort = normalizeOpenAiReasoningEffort(bindings.AI_REASONING_EFFORT);
   const verifierReasoningEffort = normalizeVerifierReasoningEffort(
     bindings.AI_VERIFIER_REASONING_EFFORT,
   );
+  // 升级那一趟比基础 verify 高一档，并且和其他参数一起冻结在 Run 上：
+  // 冻结参数要能说清这次 Run 最多花到什么程度，不能运行时临时抬价。
+  const escalationReasoningEffort = escalatedReasoningEffort(verifierReasoningEffort);
   const imageUnits = manifest.filter((item) => item.kind === "photo").length;
   if (estimatedInputTokens > maxRunInputTokens) {
     throw new ApiFault(422, "RUN_BUDGET_EXCEEDED", "Run exceeds the configured input token limit.", {
@@ -1663,7 +2523,10 @@ export async function createExtractionRun(
       model: bindings.AI_MODEL,
       reasoning_effort: reasoningEffort,
       verifier_reasoning_effort: verifierReasoningEffort,
+      escalation_reasoning_effort: escalationReasoningEffort,
       two_pass_pipeline: pipelineEnabled,
+      draft_context: draftContextEnabled,
+      draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
       max_output_tokens: maxOutputTokens,
       timeout_ms: timeoutMs,
@@ -1688,22 +2551,48 @@ export async function createExtractionRun(
         { existing_run_id: existing.id },
       );
     }
+    await ensureEventAiArtifactRuns({
+      workspaceId: scope.workspaceId,
+      projectId: String(existing.project_id),
+      eventId,
+      extractionRunId: String(existing.id),
+      inputManifestJson: String(existing.input_manifest_json),
+      provider: String(existing.provider),
+      model: String(existing.model),
+    });
     return { run: extractionRunRecord(existing), created: false };
   }
 
-  const needsScenarioAssessment = scenarioStatus === "unassessed";
-  if (
-    Number(event.sequence_no) === 1 &&
-    scenarioStatus !== "confirmed" &&
-    !needsScenarioAssessment
-  ) {
-    throw new ApiFault(
-      409,
-      "SCENARIO_CONFIRMATION_REQUIRED",
-      "The first event is already assessing a scenario or awaiting confirmation.",
-      { scenario_status: scenarioStatus },
-    );
+  const activeEventRun = await first(
+    `SELECT * FROM extraction_runs
+      WHERE event_id = ? AND workspace_id = ?
+        AND status IN ('queued', 'processing')
+      ORDER BY created_at DESC LIMIT 1`,
+    [eventId, scope.workspaceId],
+  );
+  if (activeEventRun) {
+    if (String(activeEventRun.input_hash) !== inputHash) {
+      throw new ApiFault(
+        409,
+        "RUN_STATE_CONFLICT",
+        "This communication already has an active analysis for different source versions.",
+        { existing_run_id: activeEventRun.id },
+      );
+    }
+    await ensureEventAiArtifactRuns({
+      workspaceId: scope.workspaceId,
+      projectId: String(activeEventRun.project_id),
+      eventId,
+      extractionRunId: String(activeEventRun.id),
+      inputManifestJson: String(activeEventRun.input_manifest_json),
+      provider: String(activeEventRun.provider),
+      model: String(activeEventRun.model),
+    });
+    return { run: extractionRunRecord(activeEventRun), created: false };
   }
+
+  // 还没判过类型就由这次分析顺带判；别的记录正在判，这次就照常分析，不等它。
+  const needsScenarioAssessment = scenarioStatus === "unassessed";
 
   const runId = id("run");
   const outboxId = id("out");
@@ -1712,21 +2601,25 @@ export async function createExtractionRun(
   const payloadHash = await shaText(payloadJson);
   const db = getD1();
   const quotaGuardId = id("guard");
+  const eventRunGuardId = id("guard");
   const scenarioGuardId = needsScenarioAssessment ? id("guard") : null;
   const scenarioLeaseExpiresAt = new Date(Date.now() + 35 * 60_000).toISOString();
-  const dailyWindow = new Date(timestamp);
-  dailyWindow.setUTCHours(0, 0, 0, 0);
-  const dailyWindowStart = dailyWindow.toISOString();
   const modelParamsJson = JSON.stringify({
     max_output_tokens: maxOutputTokens,
     timeout_ms: timeoutMs,
     reasoning_effort: reasoningEffort,
     verifier_reasoning_effort: verifierReasoningEffort,
+    escalation_reasoning_effort: escalationReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
+    draft_context: draftContextEnabled,
+    draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,
+    event_summary: eventSummaryEnabled,
+    readable_transcript: readableTranscriptEnabled,
+    verification_uses_readable: bindings.AI_VERIFICATION_USES_READABLE !== "0",
     reserved_input_tokens: estimatedInputTokens,
     reserved_model_tokens: reservedModelTokens,
-    token_budget_policy: "token-reservation.v1",
+    token_budget_policy: "per-run-safety.v1",
   });
   const statements = [
     db
@@ -1735,28 +2628,24 @@ export async function createExtractionRun(
          SELECT ?, CASE WHEN (
            SELECT COUNT(*) FROM extraction_runs
             WHERE workspace_id = ? AND status IN ('queued', 'processing')
-         ) < ? AND (
-           SELECT COALESCE(SUM(
-             CASE
-               WHEN status IN ('queued', 'processing')
-                 THEN CAST(COALESCE(json_extract(model_params_json, '$.reserved_model_tokens'), 0) AS INTEGER)
-               ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-             END
-           ), 0)
-             FROM extraction_runs
-            WHERE workspace_id = ? AND created_at >= ?
-         ) + ? <= ? THEN 1 ELSE 0 END, ?`,
+         ) < ? THEN 1 ELSE 0 END, ?`,
       )
       .bind(
         quotaGuardId,
         scope.workspaceId,
         maxConcurrentRuns,
-        scope.workspaceId,
-        dailyWindowStart,
-        reservedModelTokens,
-        maxDailyModelTokens,
         timestamp,
       ),
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN NOT EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE event_id = ? AND workspace_id = ?
+              AND status IN ('queued', 'processing')
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(eventRunGuardId, eventId, scope.workspaceId, timestamp),
   ] as D1PreparedStatement[];
   if (needsScenarioAssessment) {
     statements.push(
@@ -1768,7 +2657,6 @@ export async function createExtractionRun(
              JOIN events e ON e.project_id = p.id
               WHERE p.id = ? AND p.workspace_id = ? AND p.deleted_at IS NULL
                 AND p.scenario_status = 'unassessed' AND e.id = ?
-                AND e.sequence_no = 1
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(
@@ -1849,6 +2737,7 @@ export async function createExtractionRun(
   if (scenarioGuardId) {
     statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(scenarioGuardId));
   }
+  statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(eventRunGuardId));
   statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(quotaGuardId));
   try {
     await db.batch(statements);
@@ -1859,6 +2748,15 @@ export async function createExtractionRun(
       [eventId, idempotencyKey, scope.workspaceId],
     );
     if (raced && String(raced.input_hash) === inputHash) {
+      await ensureEventAiArtifactRuns({
+        workspaceId: scope.workspaceId,
+        projectId: String(raced.project_id),
+        eventId,
+        extractionRunId: String(raced.id),
+        inputManifestJson: String(raced.input_manifest_json),
+        provider: String(raced.provider),
+        model: String(raced.model),
+      });
       return { run: extractionRunRecord(raced), created: false };
     }
     if (raced) {
@@ -1869,20 +2767,39 @@ export async function createExtractionRun(
         { existing_run_id: raced.id },
       );
     }
+    const activeEventRace = await first(
+      `SELECT * FROM extraction_runs
+        WHERE event_id = ? AND workspace_id = ?
+          AND status IN ('queued', 'processing')
+        ORDER BY created_at DESC LIMIT 1`,
+      [eventId, scope.workspaceId],
+    );
+    if (activeEventRace) {
+      if (String(activeEventRace.input_hash) !== inputHash) {
+        throw new ApiFault(
+          409,
+          "RUN_STATE_CONFLICT",
+          "This communication already has an active analysis for different source versions.",
+          { existing_run_id: activeEventRace.id },
+        );
+      }
+      await ensureEventAiArtifactRuns({
+        workspaceId: scope.workspaceId,
+        projectId: String(activeEventRace.project_id),
+        eventId,
+        extractionRunId: String(activeEventRace.id),
+        inputManifestJson: String(activeEventRace.input_manifest_json),
+        provider: String(activeEventRace.provider),
+        model: String(activeEventRace.model),
+      });
+      return { run: extractionRunRecord(activeEventRace), created: false };
+    }
     const quotaState = await first(
-      `SELECT
-         SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS active_count,
-         SUM(CASE WHEN created_at >= ? THEN
-           CASE
-             WHEN status IN ('queued', 'processing')
-               THEN CAST(COALESCE(json_extract(model_params_json, '$.reserved_model_tokens'), 0) AS INTEGER)
-             ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-           END ELSE 0 END) AS daily_tokens
-       FROM extraction_runs WHERE workspace_id = ?`,
-      [dailyWindowStart, scope.workspaceId],
+      `SELECT SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS active_count
+         FROM extraction_runs WHERE workspace_id = ?`,
+      [scope.workspaceId],
     );
     const activeCount = Number(quotaState?.active_count ?? 0);
-    const dailyTokens = Number(quotaState?.daily_tokens ?? 0);
     if (activeCount >= maxConcurrentRuns) {
       throw new ApiFault(
         429,
@@ -1891,27 +2808,29 @@ export async function createExtractionRun(
         { active_runs: activeCount, max_concurrent_runs: maxConcurrentRuns },
       );
     }
-    if (dailyTokens + reservedModelTokens > maxDailyModelTokens) {
-      throw new ApiFault(
-        422,
-        "RUN_BUDGET_EXCEEDED",
-        "Workspace daily model token budget was reached.",
-        {
-          used_or_reserved_tokens: dailyTokens,
-          requested_reservation_tokens: reservedModelTokens,
-          max_daily_model_tokens: maxDailyModelTokens,
-        },
-      );
-    }
     if (needsScenarioAssessment) {
+      // 另一条记录刚抢到判类型的活。这次不判类型，照常分析：再建一次，这回读到的
+      // 状态已经不是未判定，不会再去抢。只重来一次，免得和失败重置来回打转。
+      if (!retriedAfterScenarioRace) {
+        return createExtractionRun(scope, eventId, idempotencyKey, assetVersionIds, true);
+      }
       throw new ApiFault(
         409,
         "SCENARIO_VERSION_CONFLICT",
-        "Another request acquired the first-event scenario assessment lease.",
+        "Another request acquired the scenario assessment lease.",
       );
     }
     throw error;
   }
+  await ensureEventAiArtifactRuns({
+    workspaceId: scope.workspaceId,
+    projectId: String(project.id),
+    eventId,
+    extractionRunId: runId,
+    inputManifestJson,
+    provider: String(bindings.AI_PROVIDER),
+    model: String(bindings.AI_MODEL),
+  });
   return { run: await getExtractionRun(scope, runId), created: true };
 }
 
@@ -2207,7 +3126,10 @@ export async function debugRun(scope: RequestScope, runId: string) {
     throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Extraction run was not found.");
   }
   const validatedOutputJson = row.validated_output_json;
-  const stages = await listExtractionModelStageDebug(runId, scope.workspaceId);
+  const [stages, artifactRuns] = await Promise.all([
+    listExtractionModelStageDebug(runId, scope.workspaceId),
+    listEventAiArtifactRunDebug(runId, scope.workspaceId),
+  ]);
   const debugRow = { ...row };
   for (const key of [
     "idempotency_key",
@@ -2225,5 +3147,6 @@ export async function debugRun(scope: RequestScope, runId: string) {
     validated_output: parseJson(String(validatedOutputJson ?? "null"), null),
     error_details: parseJson(String(row.error_details_json ?? "null"), null),
     stages,
+    artifact_runs: artifactRuns,
   };
 }

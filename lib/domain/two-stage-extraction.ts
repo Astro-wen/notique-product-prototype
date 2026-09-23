@@ -6,20 +6,22 @@ import type {
   ModelProvider,
   ModelUsage,
 } from "./model-contract";
-// @ts-expect-error Node's native TypeScript runner requires the explicit extension;
-// the application bundler resolves this same source module without emitting it.
+// The explicit extension keeps Node's native TypeScript runner and the
+// application bundler resolving this same source module identically.
 import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
+import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 
-export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v8.2" as const;
+export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
-export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v3" as const;
+export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
 
 export const TWO_STAGE_EXTRACTION_LIMITS = {
   inventoryCandidates: 24,
   finalClaims: MODEL_CONTRACT_LIMITS.claims,
   dispositionReasonLength: MODEL_CONTRACT_LIMITS.explanationLength,
   qualityFlags: 24,
+  draftLinks: 24,
 } as const;
 
 export type InventoryCandidate = {
@@ -55,12 +57,24 @@ export type InventoryDisposition = {
   reason: string;
 };
 
+export type DraftLinkType = "same" | "changed" | "conflicting" | "possibly_answered";
+
+export type DraftLinkCandidate = {
+  final_claim_key: string;
+  target_draft_claim_id: string;
+  target_draft_claim_version_id: string;
+  type: DraftLinkType;
+  reason: string;
+  confidence: number;
+};
+
 export type VerificationOutput = {
   schema_version: typeof VERIFICATION_SCHEMA_VERSION;
   event_id: string;
   scenario_assessment: ExtractClaimsOutput["scenario_assessment"];
   claims: ExtractClaimsOutput["claims"];
   candidate_dispositions: InventoryDisposition[];
+  draft_link_candidates: DraftLinkCandidate[];
   quality_review: {
     unresolved_conflict_keys: string[];
     compound_claim_keys: string[];
@@ -69,6 +83,24 @@ export type VerificationOutput = {
 };
 
 export interface TwoStageModelProvider extends ModelProvider {
+  summarizeEvent(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
+    output: EventSummaryOutput;
+    usage: ModelUsage;
+  }>;
+  /** 单个阅读视图。返回的仍是完整信封形状，只有自己那个字段有内容。 */
+  summarizeReadingView(
+    kind: "chapters" | "speakers" | "key_points" | "overview",
+    input: ContextPack,
+    upstream: { chapters?: unknown[]; speaker_summaries?: unknown[]; key_points?: unknown[] },
+    options?: ModelStageRequestOptions,
+  ): Promise<{
+    output: EventSummaryOutput;
+    usage: ModelUsage;
+  }>;
+  refineTranscript(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
+    output: ReadableTranscriptOutput;
+    usage: ModelUsage;
+  }>;
   inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions): Promise<{
     output: InventoryOutput;
     usage: ModelUsage;
@@ -94,6 +126,11 @@ export type ModelStageRequestOptions = {
    */
   resumeProviderResponseId?: string;
   /**
+   * 恢复后台响应时的卡住预算（毫秒）。超过仍未开始出结果就取消并要求重发。
+   * 阅读产物用五分钟，抽取阶段用自己的超时。
+   */
+  backgroundStallMs?: number;
+  /**
    * Called as soon as OpenAI returns a durable Response ID, before a queued or
    * in-progress result is yielded back to the job runner.
    */
@@ -111,6 +148,8 @@ export type ContractValidation<T> = {
   valid: boolean;
   issues: ModelContractIssue[];
   output: T | null;
+  /** 校验前做过的确定性修复，供上层记成警告，不静默吞掉。 */
+  repairs?: string[];
 };
 
 export type VerificationEscalationReason =
@@ -281,14 +320,68 @@ export function validateInventoryOutput(value: unknown): ContractValidation<Inve
   return { valid: issues.length === 0, issues, output: issues.length ? null : value as InventoryOutput };
 }
 
+/**
+ * 校验前的确定性修复。
+ *
+ * 线上两次 MODEL_OUTPUT_INVALID 都不是内容判断错误，是模型把表格填错了：
+ * 同一个 inventory_key 列了两遍，或者给了结构化不确定性却把
+ * needs_additional_evidence 留成 false。这类自相矛盾能机械消解，不值得
+ * 整份丢掉再花一次钱重跑。修复一律取保守的那一边，并把动作记下来。
+ *
+ * 只改这两类。内容层面的问题（漏掉候选、矛盾没解决）交给
+ * assessVerificationEscalation，那边本来就在看。
+ */
+export function repairVerificationOutput(value: unknown): { value: unknown; repairs: string[] } {
+  if (!record(value)) return { value, repairs: [] };
+  const repairs: string[] = [];
+  const repaired: Record<string, unknown> = { ...value };
+
+  if (Array.isArray(value.candidate_dispositions)) {
+    const seen = new Set<string>();
+    const kept = value.candidate_dispositions.filter((disposition) => {
+      if (!record(disposition) || typeof disposition.inventory_key !== "string") return true;
+      // 保留先出现的那条。两条不一致时不去猜哪条对；留下的结果照样
+      // 要过下面的完整校验，内容层面的问题也照样会被升级判断看到。
+      if (seen.has(disposition.inventory_key)) {
+        repairs.push(`dropped duplicate disposition for ${disposition.inventory_key}`);
+        return false;
+      }
+      seen.add(disposition.inventory_key);
+      return true;
+    });
+    if (kept.length !== value.candidate_dispositions.length) repaired.candidate_dispositions = kept;
+  }
+
+  if (Array.isArray(value.claims)) {
+    let changed = false;
+    const claims = value.claims.map((claim) => {
+      if (!record(claim)) return claim;
+      // 给了不确定性就是需要补证据，模型把标志位留成 false 属于自相矛盾。
+      // true 是保守的一边：它只会让这条进人工核对，不会让它更容易通过。
+      if (claim.uncertainty != null && claim.needs_additional_evidence !== true) {
+        changed = true;
+        const key = typeof claim.client_claim_key === "string" ? claim.client_claim_key : "claim";
+        repairs.push(`set needs_additional_evidence for ${key}`);
+        return { ...claim, needs_additional_evidence: true };
+      }
+      return claim;
+    });
+    if (changed) repaired.claims = claims;
+  }
+
+  return { value: repaired, repairs };
+}
+
 export function validateVerificationOutput(
-  value: unknown,
+  rawValue: unknown,
   inventory: InventoryOutput,
   context?: ContextPack,
 ): ContractValidation<VerificationOutput> {
   const issues: ModelContractIssue[] = [];
-  if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
-  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "quality_review"], "$", issues);
+  if (!record(rawValue)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
+  const { value: repairedValue, repairs } = repairVerificationOutput(rawValue);
+  const value = repairedValue as Record<string, unknown>;
+  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review"], "$", issues);
   if (value.schema_version !== VERIFICATION_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
   }
@@ -311,12 +404,14 @@ export function validateVerificationOutput(
   }
   const claims = Array.isArray(value.claims) ? value.claims : [];
   const finalKeys = new Set<string>();
+  const newFinalKeys = new Set<string>();
   claims.forEach((claim, index) => {
     if (!record(claim) || typeof claim.client_claim_key !== "string") return;
     if (finalKeys.has(claim.client_claim_key)) {
       issues.push({ path: `$.claims[${index}].client_claim_key`, message: "Duplicate final claim key." });
     }
     finalKeys.add(claim.client_claim_key);
+    if (claim.disposition === "new") newFinalKeys.add(claim.client_claim_key);
   });
 
   const inventoryKeys = new Set(inventory.candidates.map((candidate) => candidate.inventory_key));
@@ -368,11 +463,57 @@ export function validateVerificationOutput(
     }
     });
   }
-  inventory.candidates.forEach((candidate) => {
-    if (!mappedKeys.has(candidate.inventory_key)) {
-      issues.push({ path: "$.candidate_dispositions", message: `Missing disposition for inventory key ${candidate.inventory_key}.` });
-    }
-  });
+  // 漏掉某个候选的处置不在这里硬拒绝。assessVerificationEscalation 本来就
+  // 把它算作 inventory_candidate_unmapped，关键候选还会进
+  // droppedCriticalInventoryKeys。在校验层整份丢掉，等于让升级路径永远
+  // 看不到这个信号，同一件事被两套机制处理，结果是重跑而不是重核。
+  const unmappedCandidateKeys = inventory.candidates
+    .filter((candidate) => !mappedKeys.has(candidate.inventory_key))
+    .map((candidate) => candidate.inventory_key);
+
+  const availableDraftTargets = new Map(
+    (context?.draft_context?.claims ?? []).map((claim) => [claim.claimId, claim]),
+  );
+  if (!Array.isArray(value.draft_link_candidates) || value.draft_link_candidates.length > TWO_STAGE_EXTRACTION_LIMITS.draftLinks) {
+    issues.push({
+      path: "$.draft_link_candidates",
+      message: `Expected an array with at most ${TWO_STAGE_EXTRACTION_LIMITS.draftLinks} draft links.`,
+    });
+  } else {
+    const seenDraftLinks = new Set<string>();
+    value.draft_link_candidates.forEach((link, index) => {
+      const path = `$.draft_link_candidates[${index}]`;
+      if (!record(link)) {
+        issues.push({ path, message: "Expected an object." });
+        return;
+      }
+      exactKeys(link, ["final_claim_key", "target_draft_claim_id", "target_draft_claim_version_id", "type", "reason", "confidence"], path, issues);
+      boundedString(link.final_claim_key, `${path}.final_claim_key`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.target_draft_claim_id, `${path}.target_draft_claim_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.target_draft_claim_version_id, `${path}.target_draft_claim_version_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
+      boundedString(link.reason, `${path}.reason`, issues, MODEL_CONTRACT_LIMITS.explanationLength);
+      if (!new Set<DraftLinkType>(["same", "changed", "conflicting", "possibly_answered"]).has(link.type as DraftLinkType)) {
+        issues.push({ path: `${path}.type`, message: "Unsupported draft link type." });
+      }
+      if (typeof link.confidence !== "number" || !Number.isFinite(link.confidence) || link.confidence < 0 || link.confidence > 1) {
+        issues.push({ path: `${path}.confidence`, message: "Expected a confidence from 0 to 1." });
+      }
+      if (typeof link.final_claim_key === "string" && !finalKeys.has(link.final_claim_key)) {
+        issues.push({ path: `${path}.final_claim_key`, message: "Unknown final claim key." });
+      } else if (typeof link.final_claim_key === "string" && !newFinalKeys.has(link.final_claim_key)) {
+        issues.push({ path: `${path}.final_claim_key`, message: "A draft link must originate from a new final claim." });
+      }
+      const target = typeof link.target_draft_claim_id === "string"
+        ? availableDraftTargets.get(link.target_draft_claim_id)
+        : undefined;
+      if (!target || target.claimVersionId !== link.target_draft_claim_version_id) {
+        issues.push({ path: `${path}.target_draft_claim_id`, message: "Draft link target is not present in draft_context." });
+      }
+      const uniqueKey = `${link.final_claim_key}\u0000${link.target_draft_claim_id}\u0000${link.type}`;
+      if (seenDraftLinks.has(uniqueKey)) issues.push({ path, message: "Duplicate draft link candidate." });
+      seenDraftLinks.add(uniqueKey);
+    });
+  }
 
   if (!record(value.quality_review)) {
     issues.push({ path: "$.quality_review", message: "Expected an object." });
@@ -387,7 +528,10 @@ export function validateVerificationOutput(
     }
   }
 
-  return { valid: issues.length === 0, issues, output: issues.length ? null : value as VerificationOutput };
+  const allRepairs = unmappedCandidateKeys.length
+    ? [...repairs, `left ${unmappedCandidateKeys.length} inventory candidate(s) unmapped for the escalation assessment`]
+    : repairs;
+  return { valid: issues.length === 0, issues, output: issues.length ? null : value as VerificationOutput, repairs: allRepairs };
 }
 
 export function toFinalExtractClaimsOutput(verification: VerificationOutput): FinalExtractClaimsOutput {
@@ -398,6 +542,16 @@ export function toFinalExtractClaimsOutput(verification: VerificationOutput): Fi
     claims: verification.claims,
   };
 }
+
+/**
+ * 只有这些理由时不值得多跑一趟复核。
+ *
+ * 复合结论（一条里塞了两件事）实测六次复核里只有两次被拆得更好，其余没改善或
+ * 输出无效，且从没补回过一条事实；每次却要多等一两分钟。它们本来就进人工核对，
+ * 人在屏幕上看得见、改得了。所以只因为这个就不复核，改记一条提示。
+ * 丢了关键事实、有没对上的清单、有冲突、低置信关系、重复确认有问题，照旧复核。
+ */
+export const REVIEW_ONLY_ESCALATION_REASONS: ReadonlySet<VerificationEscalationReason> = new Set(["compound_claim"]);
 
 export function assessVerificationEscalation(
   inventory: InventoryOutput,
@@ -445,7 +599,7 @@ export function assessVerificationEscalation(
   }
 
   return {
-    required: reasons.size > 0,
+    required: [...reasons].some((reason) => !REVIEW_ONLY_ESCALATION_REASONS.has(reason)),
     reasons: [...reasons],
     unmappedInventoryKeys,
     droppedCriticalInventoryKeys,
@@ -457,13 +611,16 @@ function reviewIssueVector(
   output: VerificationOutput,
   assessment: VerificationEscalation,
 ): number[] {
+  // Lexicographic priority. Coverage loss comes first: a dropped critical fact
+  // is invisible to the reviewer and unrecoverable, whereas a compound or
+  // questionable-reaffirmed claim is still on screen and editable.
   return [
+    assessment.droppedCriticalInventoryKeys.length,
+    assessment.unmappedInventoryKeys.length,
+    output.quality_review.unresolved_conflict_keys.length,
+    assessment.lowConfidenceRelationClaimKeys.length,
     output.quality_review.compound_claim_keys.length +
       output.quality_review.reaffirmed_issue_claim_keys.length,
-    assessment.unmappedInventoryKeys.length,
-    assessment.lowConfidenceRelationClaimKeys.length,
-    assessment.droppedCriticalInventoryKeys.length,
-    output.quality_review.unresolved_conflict_keys.length,
   ];
 }
 

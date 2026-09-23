@@ -16,6 +16,7 @@ export type ClaimType =
   | "person_role"
   | "timing"
   | "property_fact"
+  | "next_action"
   | "material"
   | "measurement"
   | "other";

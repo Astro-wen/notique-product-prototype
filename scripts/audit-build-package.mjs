@@ -6,6 +6,7 @@ import process from "node:process";
 import {
   auditBuildPackage,
   cleanForbiddenPackagePaths,
+  sanitizeGeneratedWranglerConfig,
 } from "./lib/build-secret-audit.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -26,6 +27,12 @@ if (clean) {
   const removed = await cleanForbiddenPackagePaths(packageDirectory);
   if (removed.length > 0) {
     console.log(`Removed ${removed.length} forbidden file(s) from the build package.`);
+  }
+  const removedWranglerFields = await sanitizeGeneratedWranglerConfig(packageDirectory);
+  if (removedWranglerFields.length > 0) {
+    console.log(
+      `Removed generated Wrangler build metadata: ${removedWranglerFields.join(", ")}.`,
+    );
   }
 }
 

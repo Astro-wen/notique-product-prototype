@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   OpenAiBackgroundPending,
   OpenAiBackgroundRequestFailed,
+  OpenAiBackgroundStalled,
   requestOpenAiBackgroundResponse,
 } from "../lib/server/ai/openai-background.ts";
 
@@ -163,5 +164,48 @@ test("processor persists a Response ID before yielding and reuses the same stage
   assert.match(
     processor,
     /Release the Run and requeue its durable outbox message atomically[\s\S]*UPDATE queue_outbox/,
+  );
+});
+
+
+test("恢复时后台响应超过预算仍无进展：取消并要求重发；预算内照旧等待", async () => {
+  const requests = [];
+  const tenMinutesAgo = Math.floor(Date.now() / 1000) - 600;
+  const fetcher = async (url, init = {}) => {
+    requests.push({ url: String(url), method: init.method ?? "GET" });
+    if (String(url).endsWith("/cancel")) return jsonResponse({ id: "resp_stuck", status: "cancelled" });
+    return jsonResponse({ id: "resp_stuck", status: "in_progress", created_at: tenMinutesAgo });
+  };
+  // 线上见过：同批三块一分钟完，一块 in_progress 十二分钟没吐一个字。
+  await assert.rejects(
+    requestOpenAiBackgroundResponse({
+      apiKey: "k", baseUrl: "https://api.example.test/v1", requestBody: {},
+      resumeResponseId: "resp_stuck", stallBudgetMs: 5 * 60_000, fetcher,
+    }),
+    (error) => error instanceof OpenAiBackgroundStalled && error.responseId === "resp_stuck" && error.ageMs > 5 * 60_000,
+  );
+  assert.deepEqual(requests.map((r) => r.method + " " + r.url.split("/v1")[1]), [
+    "GET /responses/resp_stuck",
+    "POST /responses/resp_stuck/cancel",
+  ]);
+
+  const justNow = Math.floor(Date.now() / 1000) - 30;
+  await assert.rejects(
+    requestOpenAiBackgroundResponse({
+      apiKey: "k", baseUrl: "https://api.example.test/v1", requestBody: {},
+      resumeResponseId: "resp_fresh", stallBudgetMs: 5 * 60_000,
+      fetcher: async () => jsonResponse({ id: "resp_fresh", status: "in_progress", created_at: justNow }),
+    }),
+    OpenAiBackgroundPending,
+  );
+
+  // 不传预算：永远不取消，行为和以前一样。
+  await assert.rejects(
+    requestOpenAiBackgroundResponse({
+      apiKey: "k", baseUrl: "https://api.example.test/v1", requestBody: {},
+      resumeResponseId: "resp_stuck",
+      fetcher: async () => jsonResponse({ id: "resp_stuck", status: "in_progress", created_at: tenMinutesAgo }),
+    }),
+    OpenAiBackgroundPending,
   );
 });

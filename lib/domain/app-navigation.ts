@@ -1,5 +1,6 @@
 export type AppView =
   | "simple"
+  | "how-it-works"
   | "projects"
   | "project"
   | "event"
@@ -11,6 +12,8 @@ export type AppView =
   | "run-debug";
 
 export type AppResultTab =
+  | "client-progress"
+  | "actions"
   | "folder-summary"
   | "timeline"
   | "decisions"
@@ -21,6 +24,8 @@ export type AppResultTab =
   | "next-meeting-agenda"
   | "brief-card";
 
+export type AppReadingTab = "summary" | "readable" | "raw";
+
 export type AppRouteOrigin = "simple" | "projects" | "project" | "event" | "draft" | "review" | "results";
 
 export type AppRoute = {
@@ -30,14 +35,45 @@ export type AppRoute = {
   claimId?: string;
   runId?: string;
   tab?: AppResultTab;
+  readingTab?: AppReadingTab;
   origin?: AppRouteOrigin;
   originTab?: AppResultTab;
+  originReadingTab?: AppReadingTab;
 };
+
+/**
+ * Identifies the project/event selection that owned an asynchronous request.
+ * Epochs protect against selecting the same ID twice while an older request is
+ * still in flight; IDs protect against a response landing on another route.
+ */
+export type RequestOwner = {
+  projectId: string;
+  projectEpoch: number;
+  eventId?: string;
+  eventEpoch?: number;
+};
+
+export type CurrentRequestSelection = {
+  projectId?: string;
+  projectEpoch: number;
+  eventId?: string;
+  eventEpoch: number;
+};
+
+export function requestOwnerIsCurrent(
+  owner: RequestOwner,
+  current: CurrentRequestSelection,
+): boolean {
+  if (owner.projectId !== current.projectId || owner.projectEpoch !== current.projectEpoch) return false;
+  if (owner.eventEpoch == null) return true;
+  return owner.eventEpoch === current.eventEpoch && owner.eventId === current.eventId;
+}
 
 export const defaultAppRoute: AppRoute = { view: "simple" };
 
 const appViews = new Set<AppView>([
   "simple",
+  "how-it-works",
   "projects",
   "project",
   "event",
@@ -50,6 +86,8 @@ const appViews = new Set<AppView>([
 ]);
 
 const resultTabs = new Set<AppResultTab>([
+  "client-progress",
+  "actions",
   "folder-summary",
   "timeline",
   "decisions",
@@ -60,6 +98,8 @@ const resultTabs = new Set<AppResultTab>([
   "next-meeting-agenda",
   "brief-card",
 ]);
+
+const readingTabs = new Set<AppReadingTab>(["summary", "readable", "raw"]);
 
 const routeOrigins = new Set<AppRouteOrigin>([
   "simple",
@@ -76,18 +116,37 @@ function optionalParam(params: URLSearchParams, key: string): string | undefined
   return value || undefined;
 }
 
+/**
+ * Views the workspace has absorbed. The AI-draft page duplicated the summary
+ * and the rail's pending list; the event page duplicated the workspace with
+ * less on it. Old URLs stay valid and land on the workspace with the same
+ * project and communication selected.
+ */
+const absorbedViews = new Set<AppView>(["draft", "event"]);
+
 export function normalizeAppRoute(route: AppRoute): AppRoute {
+  const requestedView = appViews.has(route.view) ? route.view : "simple";
   const next: AppRoute = {
-    view: appViews.has(route.view) ? route.view : "simple",
+    view: absorbedViews.has(requestedView) ? "simple" : requestedView,
     ...(route.projectId && route.view !== "projects" ? { projectId: route.projectId } : {}),
   };
 
   if (route.eventId && !["projects", "project"].includes(next.view)) next.eventId = route.eventId;
+  if (next.view === "simple" && route.readingTab && readingTabs.has(route.readingTab)) {
+    next.readingTab = route.readingTab;
+  }
   if (next.view === "results") next.tab = resultTabs.has(route.tab ?? "folder-summary") ? route.tab ?? "folder-summary" : "folder-summary";
   if (next.view === "claim" && route.claimId) {
     next.claimId = route.claimId;
     if (route.origin && routeOrigins.has(route.origin)) next.origin = route.origin;
     if (route.originTab && resultTabs.has(route.originTab)) next.originTab = route.originTab;
+    if (
+      route.origin === "simple"
+      && route.originReadingTab
+      && readingTabs.has(route.originReadingTab)
+    ) {
+      next.originReadingTab = route.originReadingTab;
+    }
   }
   if (next.view === "run-debug" && route.runId) next.runId = route.runId;
   if (next.view !== "claim" && route.origin && routeOrigins.has(route.origin)) next.origin = route.origin;
@@ -100,6 +159,8 @@ export function parseAppRoute(search: string): AppRoute {
   const tab = optionalParam(params, "tab") as AppResultTab | undefined;
   const origin = optionalParam(params, "origin") as AppRouteOrigin | undefined;
   const originTab = optionalParam(params, "originTab") as AppResultTab | undefined;
+  const readingTab = optionalParam(params, "readingTab") as AppReadingTab | undefined;
+  const originReadingTab = optionalParam(params, "originReadingTab") as AppReadingTab | undefined;
   return normalizeAppRoute({
     view: requestedView && appViews.has(requestedView) ? requestedView : "simple",
     projectId: optionalParam(params, "project"),
@@ -107,8 +168,12 @@ export function parseAppRoute(search: string): AppRoute {
     claimId: optionalParam(params, "claim"),
     runId: optionalParam(params, "run"),
     tab: tab && resultTabs.has(tab) ? tab : undefined,
+    readingTab: readingTab && readingTabs.has(readingTab) ? readingTab : undefined,
     origin: origin && routeOrigins.has(origin) ? origin : undefined,
     originTab: originTab && resultTabs.has(originTab) ? originTab : undefined,
+    originReadingTab: originReadingTab && readingTabs.has(originReadingTab)
+      ? originReadingTab
+      : undefined,
   });
 }
 
@@ -119,10 +184,12 @@ export function serializeAppRoute(route: AppRoute): string {
   if (normalized.eventId) params.set("event", normalized.eventId);
   params.set("view", normalized.view);
   if (normalized.tab) params.set("tab", normalized.tab);
+  if (normalized.readingTab) params.set("readingTab", normalized.readingTab);
   if (normalized.claimId) params.set("claim", normalized.claimId);
   if (normalized.runId) params.set("run", normalized.runId);
   if (normalized.origin) params.set("origin", normalized.origin);
   if (normalized.originTab) params.set("originTab", normalized.originTab);
+  if (normalized.originReadingTab) params.set("originReadingTab", normalized.originReadingTab);
   return `?${params.toString()}`;
 }
 
@@ -138,31 +205,33 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
       if (route.origin === "results") {
         return normalizeAppRoute({ view: "results", ...project, ...event, tab: route.originTab ?? "folder-summary", origin: "project" });
       }
-      if (route.origin === "draft") return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
-      if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
-      if (route.origin === "event") return normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" });
+      if (route.origin === "simple") {
+        return normalizeAppRoute({
+          view: "simple",
+          ...project,
+          ...event,
+          ...(route.originReadingTab ? { readingTab: route.originReadingTab } : {}),
+        });
+      }
+      if (route.origin === "draft") return normalizeAppRoute({ view: "simple", ...project, ...event });
+      if (route.origin === "review") return normalizeAppRoute({ view: "review", ...project, ...event, origin: "simple" });
+      if (route.origin === "event") return normalizeAppRoute({ view: "simple", ...project, ...event });
       return route.eventId
-        ? normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" })
+        ? normalizeAppRoute({ view: "simple", ...project, ...event })
         : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
     }
     case "run-debug":
-      return route.eventId
-        ? normalizeAppRoute({ view: "event", ...project, ...event, origin: "project" })
-        : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
-    case "event":
-      return normalizeAppRoute({ view: "project", ...project, origin: "projects" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "project":
       return { view: "projects" };
-    case "draft":
-      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "review":
-      return normalizeAppRoute({ view: "draft", ...project, ...event, origin: "simple" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "results":
       return route.origin === "simple"
         ? normalizeAppRoute({ view: "simple", ...project, ...event })
         : normalizeAppRoute({ view: "project", ...project, origin: "projects" });
     case "review-summary":
-      return normalizeAppRoute({ view: "review", ...project, ...event, origin: "draft" });
+      return normalizeAppRoute({ view: "simple", ...project, ...event });
     case "projects":
       return { view: "simple" };
     default:
@@ -172,23 +241,43 @@ export function fallbackBackRoute(route: AppRoute): AppRoute {
 
 export function backLabelForRoute(route: AppRoute): string {
   const destination = fallbackBackRoute(route);
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "summary"
+  ) return "返回记录";
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "readable"
+  ) return "返回记录";
+  if (
+    route.view === "claim"
+    && route.origin === "simple"
+    && route.originReadingTab === "raw"
+  ) return "返回原始逐字稿";
   if (destination.view === "results") {
     if (destination.tab === "timeline") return "返回时间线";
     if (destination.tab === "brief-card") return "返回会前速览";
     return "返回已确认结果";
   }
-  if (destination.view === "review") return "返回审核列表";
-  if (destination.view === "draft") return "返回 AI 初稿";
-  if (destination.view === "event") return "返回本次沟通";
+  if (destination.view === "review") return "返回待确认";
   if (destination.view === "project") return "返回项目";
   if (destination.view === "projects") return "返回项目列表";
-  return "返回核心工作台";
+  return "返回工作台";
 }
 
 export function isCoreWorkflowRoute(route: AppRoute): boolean {
   return route.view === "simple";
 }
 
-export function isReadonlyClaimRoute(route: AppRoute): boolean {
-  return route.view === "claim" && route.origin === "results";
+export function isReadonlyClaimRoute(
+  route: AppRoute,
+  reviewStatus?: string,
+): boolean {
+  if (route.view !== "claim") return false;
+  if (route.origin === "results") return true;
+  return route.origin === "simple"
+    && route.originReadingTab === "summary"
+    && (reviewStatus === "verified" || reviewStatus === "rejected");
 }

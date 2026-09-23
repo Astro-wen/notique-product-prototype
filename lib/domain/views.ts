@@ -126,7 +126,7 @@ function readableEventSummary(claims: readonly ClaimWithVersion[]): string {
     .map((claim) => claim.version.statement.trim())
     .filter(Boolean)
     .map((statement) => /[.!?。！？]$/u.test(statement) ? statement : `${statement}。`);
-  return statements.length ? statements.join(" ") : "本次沟通暂无已确认记录。";
+  return statements.length ? statements.join(" ") : "这条记录还没有已确认要点";
 }
 
 export type TimelineDelta =
@@ -767,9 +767,14 @@ export function buildRisks(ledger: ProjectLedger) {
 export const RE_BUYER_SLOTS = [
   "budget",
   "financing",
+  "target_areas",
   "timeline",
   "decision_makers",
   "must_haves",
+  "preferences",
+  "dealbreakers",
+  "property_feedback",
+  "next_actions",
 ] as const;
 export type ReBuyerSlot = (typeof RE_BUYER_SLOTS)[number];
 
@@ -778,7 +783,7 @@ function normalizedSlot(claim: ClaimWithVersion) {
   return typeof value === "string" ? value : null;
 }
 
-function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot) {
+function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot): boolean {
   if (
     claim.type === "risk" ||
     claim.type === "concern" ||
@@ -789,7 +794,29 @@ function matchesSlot(claim: ClaimWithVersion, slot: ReBuyerSlot) {
   if (slot === "budget") return claim.type === "budget";
   if (slot === "timeline") return claim.type === "timing";
   if (slot === "decision_makers") return claim.type === "person_role";
-  if (slot === "must_haves") return claim.type === "requirement";
+  if (slot === "preferences") return claim.type === "preference";
+  if (slot === "next_actions") return claim.type === "next_action";
+  if (slot === "target_areas") {
+    return /\b(?:area|neighbou?rhood|location|district|school district|city|town)\b|区域|地段|学区|城市|社区/i.test(
+      claim.version.statement,
+    );
+  }
+  if (slot === "dealbreakers") {
+    return /\b(?:deal\s*breaker|must not|cannot accept|won't accept|would not accept|exclude)\b|绝不|不能接受|无法接受|排除/i.test(
+      claim.version.statement,
+    );
+  }
+  if (slot === "must_haves") {
+    return claim.type === "requirement" && !matchesSlot(claim, "dealbreakers");
+  }
+  if (slot === "property_feedback") {
+    return (
+      (claim.type === "preference" || claim.type === "property_fact") &&
+      /\b(?:property|home|house|listing|unit|apartment|condo|viewing|tour)\b|房源|房子|住宅|公寓|看房/i.test(
+        claim.version.statement,
+      )
+    );
+  }
   if (slot === "financing") {
     return /financ|mortgage|pre.?approv|贷款|融资|按揭/i.test(claim.version.statement);
   }
@@ -929,23 +956,17 @@ export function buildDeterministicBrief(ledger: ProjectLedger) {
   const current = currentVerifiedClaims(ledger.claims);
   const changes = buildTimeline(ledger).flatMap((event) => event.deltas).slice(-2).reverse();
   const agenda = buildNextMeetingAgenda(ledger).slice(0, 2);
-  const warning =
-    current.find((claim) => claim.type === "risk" || claim.type === "concern") ??
-    current.find(
-      (claim) =>
-        claim.type === "open_question" ||
-        claim.needsAdditionalEvidence ||
-        claim.version.uncertainty !== null,
-    ) ??
-    null;
-  const state = current.find((claim) => claim.id !== warning?.id) ?? current[0] ?? null;
-  const uniqueWarning = warning?.id === state?.id ? null : warning;
-  const slots = [state, ...changes, ...agenda, uniqueWarning];
+  const risks = buildRisks(ledger);
+  const warning = risks.claims[0] ?? null;
+  const contradiction = warning ? null : risks.contradictions[0] ?? null;
+  const state = current.find((claim) => claim.id !== warning?.id) ?? null;
+  const slots = [state, ...changes, ...agenda, warning ?? contradiction];
   return {
     stateClaimId: state?.id ?? null,
     deltaItemIds: changes.map((item) => item.id),
     agendaItemIds: agenda.map((item) => item.id),
-    riskClaimId: uniqueWarning?.id ?? null,
+    riskClaimId: warning?.id ?? null,
+    riskRelationId: contradiction?.relationId ?? null,
     missingSlotCount: slots.filter((item) => item == null).length + Math.max(0, 2 - changes.length) + Math.max(0, 2 - agenda.length),
     source: "deterministic_fallback" as const,
   };

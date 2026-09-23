@@ -20,9 +20,14 @@ const text = (row: Row, key: string): string => String(row[key] ?? "");
 const nullableText = (row: Row, key: string): string | null =>
   row[key] === null || row[key] === undefined ? null : String(row[key]);
 const integer = (row: Row, key: string): number => Number(row[key] ?? 0);
+const nullableInteger = (row: Row, key: string): number | null =>
+  row[key] === null || row[key] === undefined ? null : integer(row, key);
 
 export function projectRecord(row: Row): ProjectRecord {
   return {
+    folder_name: nullableText(row, "folder_name"),
+    last_opened_at: nullableText(row, "last_opened_at"),
+    name_source: text(row, "name_source"),
     id: text(row, "id"),
     workspace_id: text(row, "workspace_id"),
     name: text(row, "name"),
@@ -39,6 +44,7 @@ export function projectRecord(row: Row): ProjectRecord {
     event_count: integer(row, "event_count"),
     pending_claim_count: integer(row, "pending_claim_count"),
     pending_occurrence_count: integer(row, "pending_occurrence_count"),
+    deleted_at: nullableText(row, "deleted_at"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   };
@@ -96,6 +102,7 @@ export function assetRecord(row: Row): AssetRecord {
     captured_at: nullableText(row, "captured_at"),
     metadata: parseJson<Record<string, unknown>>(nullableText(row, "metadata_json"), {}),
     version: assetVersionRecord(row),
+    sort_order: nullableInteger(row, "sort_order"),
     created_at: text(row, "created_at"),
     updated_at: text(row, "updated_at"),
   };
@@ -137,12 +144,22 @@ export function extractionRunRecord(
   stages: ExtractionRunRecord["stages"] = [],
 ): ExtractionRunRecord {
   return {
+    omitted_statements: parseJson<{ warnings?: Array<{ code?: string; statement?: string; omitted_statements?: string[] }> }>(nullableText(row, "error_details_json"), {})?.warnings
+      ?.flatMap((warning) => warning.code === "CLAIM_WITHOUT_VALID_EVIDENCE" && typeof warning.statement === "string"
+        ? [warning.statement] : warning.code === "MODEL_QUALITY_GATE_UNRESOLVED" && Array.isArray(warning.omitted_statements)
+          ? warning.omitted_statements.filter((statement) => typeof statement === "string") : []) ?? [],
     id: text(row, "id"),
     project_id: text(row, "project_id"),
     event_id: text(row, "event_id"),
     status: text(row, "status") as ExtractionRunRecord["status"],
     idempotency_key: text(row, "idempotency_key"),
     input_hash: text(row, "input_hash"),
+    input_asset_version_ids: parseJson<Array<{ asset_version_id?: unknown }>>(
+      nullableText(row, "input_manifest_json"),
+      [],
+    ).flatMap((item) => typeof item.asset_version_id === "string" && item.asset_version_id
+      ? [item.asset_version_id]
+      : []),
     context_version: integer(row, "context_version"),
     provider: nullableText(row, "provider"),
     model: nullableText(row, "model"),
@@ -209,6 +226,15 @@ export function transcriptionRunRecord(row: Row): TranscriptionRunRecord {
     provider: text(row, "provider"),
     model: text(row, "model"),
     response_format: "diarized_json",
+    orchestration_mode: (nullableText(row, "orchestration_mode") ?? "single") as TranscriptionRunRecord["orchestration_mode"],
+    parent_run_id: nullableText(row, "parent_run_id"),
+    chunk_index: row.chunk_index === null || row.chunk_index === undefined ? null : integer(row, "chunk_index"),
+    chunk_start_ms: row.chunk_start_ms === null || row.chunk_start_ms === undefined ? null : integer(row, "chunk_start_ms"),
+    chunk_end_ms: row.chunk_end_ms === null || row.chunk_end_ms === undefined ? null : integer(row, "chunk_end_ms"),
+    chunk_count: row.chunk_count === null || row.chunk_count === undefined ? null : integer(row, "chunk_count"),
+    completed_chunk_count: row.completed_chunk_count === null || row.completed_chunk_count === undefined
+      ? 0
+      : integer(row, "completed_chunk_count"),
     derived_transcript_asset_id: nullableText(row, "derived_transcript_asset_id"),
     derived_transcript_asset_version_id: nullableText(
       row,

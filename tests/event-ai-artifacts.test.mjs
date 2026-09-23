@@ -1,0 +1,2028 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+
+import { uiSource } from "./helpers/ui-source.mjs";
+import {
+  EVENT_AI_ARTIFACT_REASONING_EFFORTS,
+  chunkReadableTranscriptSource,
+  downgradeRecoverableEventSummaryProviderSpans,
+  eventAiArtifactContractMismatch,
+  mergeReadableTranscriptChunks,
+  readableTranscriptSegmentsForVerification,
+  validateEventSummaryOutput,
+  validateEventSummaryProviderOutput,
+  validateReadableTranscriptOutput,
+} from "../lib/domain/event-ai-artifacts.ts";
+
+const raw = [
+  {
+    id: "seg_1", assetVersionId: "av_1", eventId: "evt_1", ordinal: 0,
+    speaker: "Alex", startMs: 1_000, endMs: 4_000,
+    textRaw: "we cannot spend more than $12,500", textNormalized: "we cannot spend more than $12,500",
+    parserVersion: "test.v1",
+  },
+  {
+    id: "seg_2", assetVersionId: "av_1", eventId: "evt_1", ordinal: 1,
+    speaker: "Alex", startMs: 4_100, endMs: 8_000,
+    textRaw: "and it needs approval on September 8", textNormalized: "and it needs approval on September 8",
+    parserVersion: "test.v1",
+  },
+];
+
+function readable(overrides = {}) {
+  return {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [
+      {
+        readable_key: "read_1",
+        source_segment_ids: ["seg_1", "seg_2"],
+        speaker: "Alex",
+        start_ms: 1_000,
+        end_ms: 8_000,
+        readable_text: "We cannot spend more than $12,500, and it needs approval on September 8.",
+        edits: [{ kind: "punctuation", original: "$12,500 and", replacement: "$12,500, and", reason: "Sentence punctuation.", confidence: 0.99 }],
+        needs_human_check: false,
+        ...overrides,
+      },
+    ],
+  };
+}
+
+function validateSingleReadable({
+  rawText,
+  readableText,
+  edits,
+  needsHumanCheck = false,
+  speaker = "Alex",
+  assetVersionId = "av_1",
+}) {
+  const source = [{
+    ...raw[0],
+    assetVersionId,
+    speaker,
+    textRaw: rawText,
+    textNormalized: rawText,
+  }];
+  return validateReadableTranscriptOutput({
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_safety_case",
+      source_segment_ids: ["seg_1"],
+      speaker,
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: readableText,
+      edits: edits.map((edit) => ({
+        reason: "Safety regression case.",
+        confidence: 1,
+        ...edit,
+      })),
+      needs_human_check: needsHumanCheck,
+    }],
+  }, { eventId: "evt_1", segments: source });
+}
+
+function assertReadableWithheld(result, label) {
+  assert.equal(result.valid, true, `${label}: ${JSON.stringify(result.issues)}`);
+  assert.equal(result.output.segments[0].needs_human_check, true, label);
+  assert.deepEqual(readableTranscriptSegmentsForVerification(result.output), [], label);
+}
+
+test("readable transcript covers every raw segment once and keeps lineage", () => {
+  const result = validateReadableTranscriptOutput(readable(), { eventId: "evt_1", segments: raw });
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.output.segments[0].source_segment_ids, ["seg_1", "seg_2"]);
+  assert.equal(result.output.segments[0].start_ms, 1_000);
+  assert.equal(result.output.segments[0].end_ms, 8_000);
+});
+
+test("readable transcript fails closed when money or negation changes", () => {
+  const result = validateReadableTranscriptOutput(readable({
+    readable_text: "We can spend more than $15,000, and it needs approval on September 8.",
+  }), { eventId: "evt_1", segments: raw });
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => issue.path.endsWith(".readable_text")));
+});
+
+test("readable transcript preserves protected-token order and local meaning", () => {
+  const orderedRaw = [{
+    ...raw[0],
+    textRaw: "The cap is $500 not $600",
+    textNormalized: "The cap is $500 not $600",
+  }];
+  const swappedValues = validateReadableTranscriptOutput({
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_order_swap",
+      source_segment_ids: ["seg_1"],
+      speaker: "Alex",
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: "The cap is $600, not $500.",
+      edits: [{
+        kind: "context_correction",
+        original: "$500 not $600",
+        replacement: "$600, not $500",
+        reason: "Unsafe value swap.",
+        confidence: 1,
+      }],
+      needs_human_check: true,
+    }],
+  }, { eventId: "evt_1", segments: orderedRaw });
+  assert.equal(swappedValues.valid, false);
+
+  const changedNamedDate = validateReadableTranscriptOutput(readable({
+    readable_text: "We cannot spend more than $12,500, and it needs approval on Tuesday 8.",
+    edits: [{
+      kind: "context_correction",
+      original: "September",
+      replacement: "Tuesday",
+      reason: "Unsafe date change.",
+      confidence: 1,
+    }],
+    needs_human_check: true,
+  }), { eventId: "evt_1", segments: raw });
+  assert.equal(changedNamedDate.valid, false);
+
+  const semanticRaw = [{
+    ...raw[0],
+    textRaw: "The inspection budget is $500 and the repair deposit is $600",
+    textNormalized: "The inspection budget is $500 and the repair deposit is $600",
+  }];
+  const semanticSwap = {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_swap",
+      source_segment_ids: ["seg_1"],
+      speaker: "Alex",
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: "The repair deposit is $500, and the inspection budget is $600.",
+      edits: [{
+        kind: "context_correction",
+        original: "The inspection budget is $500 and the repair deposit is $600",
+        replacement: "The repair deposit is $500, and the inspection budget is $600.",
+        reason: "Unsafe semantic swap.",
+        confidence: 1,
+      }],
+      needs_human_check: true,
+    }],
+  };
+  const semanticResult = validateReadableTranscriptOutput(semanticSwap, {
+    eventId: "evt_1",
+    segments: semanticRaw,
+  });
+  assert.equal(semanticResult.valid, true, JSON.stringify(semanticResult.issues));
+  assert.equal(semanticResult.output.segments[0].needs_human_check, true);
+  assert.deepEqual(readableTranscriptSegmentsForVerification(semanticResult.output), []);
+});
+
+test("readable transcript treats ASCII and Unicode apostrophes as the same negation", () => {
+  const apostropheRaw = [{
+    ...raw[0],
+    textRaw: "we can't exceed $500",
+    textNormalized: "we can't exceed $500",
+  }];
+  const typographyOnly = {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_apostrophe",
+      source_segment_ids: ["seg_1"],
+      speaker: "Alex",
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: "We can’t exceed $500.",
+      edits: [{
+        kind: "punctuation",
+        original: "can't",
+        replacement: "can’t",
+        reason: "Typographic punctuation.",
+        confidence: 1,
+      }],
+      needs_human_check: false,
+    }],
+  };
+  assert.equal(validateReadableTranscriptOutput(typographyOnly, {
+    eventId: "evt_1",
+    segments: apostropheRaw,
+  }).valid, true);
+
+  typographyOnly.segments[0].readable_text = "We can exceed $500.";
+  typographyOnly.segments[0].edits[0].replacement = "can";
+  assert.equal(validateReadableTranscriptOutput(typographyOnly, {
+    eventId: "evt_1",
+    segments: apostropheRaw,
+  }).valid, false);
+});
+
+test("readable transcript protects English number-word money and duration phrases", () => {
+  const validatePhrase = (rawText, readableText, original, replacement) => {
+    const source = [{ ...raw[0], textRaw: rawText, textNormalized: rawText }];
+    return validateReadableTranscriptOutput({
+      schema_version: "readable-transcript.v1",
+      event_id: "evt_1",
+      segments: [{
+        readable_key: "read_words",
+        source_segment_ids: ["seg_1"],
+        speaker: "Alex",
+        start_ms: 1_000,
+        end_ms: 4_000,
+        readable_text: readableText,
+        edits: [{
+          kind: "context_correction",
+          original,
+          replacement,
+          reason: "Number-word regression case.",
+          confidence: 1,
+        }],
+        needs_human_check: true,
+      }],
+    }, { eventId: "evt_1", segments: source });
+  };
+
+  assert.equal(validatePhrase(
+    "The budget is one million one hundred fifty thousand dollars",
+    "The budget is one million five hundred thousand dollars.",
+    "one million one hundred fifty thousand dollars",
+    "one million five hundred thousand dollars",
+  ).valid, false);
+  assert.equal(validatePhrase(
+    "The HOA is three hundred fifty dollars",
+    "The HOA is three hundred dollars.",
+    "three hundred fifty dollars",
+    "three hundred dollars",
+  ).valid, false);
+  assert.equal(validatePhrase(
+    "the commute is forty-five minutes",
+    "The commute is forty five minutes.",
+    "forty-five",
+    "forty five",
+  ).valid, true);
+  assert.equal(validatePhrase(
+    "Our top price is one point ... [audio drops] ... five million.",
+    "Our top price is one point one five million.",
+    "one point ... [audio drops] ... five million",
+    "one point one five million",
+  ).valid, false);
+  assert.equal(validatePhrase(
+    "We need at least three bedrooms.",
+    "We need at least four bedrooms.",
+    "three bedrooms",
+    "four bedrooms",
+  ).valid, false);
+});
+
+test("readable transcript may remove the filler phrase I mean without loosening amount binding", () => {
+  const fillerRaw = [{
+    ...raw[0],
+    textRaw: "the inspection budget is, I mean, $500",
+    textNormalized: "the inspection budget is, I mean, $500",
+  }];
+  const fillerOutput = {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_filler",
+      source_segment_ids: ["seg_1"],
+      speaker: "Alex",
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: "The inspection budget is $500.",
+      edits: [{
+        kind: "filler",
+        original: "I mean, ",
+        replacement: "",
+        reason: "Remove a discourse filler.",
+        confidence: 1,
+      }],
+      needs_human_check: false,
+    }],
+  };
+  const fillerResult = validateReadableTranscriptOutput(fillerOutput, {
+    eventId: "evt_1",
+    segments: fillerRaw,
+  });
+  assert.equal(fillerResult.valid, true);
+  assert.equal(fillerResult.output.segments[0].needs_human_check, true);
+  assert.deepEqual(readableTranscriptSegmentsForVerification(fillerResult.output), []);
+  fillerOutput.segments[0].readable_text = "The repair deposit is $500.";
+  assert.equal(validateReadableTranscriptOutput(fillerOutput, {
+    eventId: "evt_1",
+    segments: fillerRaw,
+  }).valid, false);
+});
+
+test("readable transcript cannot omit, repeat, or reorder raw segments", () => {
+  const output = readable();
+  output.segments[0].source_segment_ids = ["seg_2"];
+  const result = validateReadableTranscriptOutput(output, { eventId: "evt_1", segments: raw });
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => issue.message.includes("Every raw segment")));
+});
+
+test("readable transcript exposes every change and flags semantic corrections", () => {
+  assert.equal(
+    validateReadableTranscriptOutput(readable({ edits: [] }), { eventId: "evt_1", segments: raw }).valid,
+    false,
+  );
+  const silentCorrection = readable({
+    edits: [{
+      kind: "context_correction",
+      original: "needs approval",
+      replacement: "requires approval",
+      reason: "Context cleanup.",
+      confidence: 0.95,
+    }],
+    readable_text: "We cannot spend more than $12,500, and it requires approval on September 8.",
+    needs_human_check: false,
+  });
+  const result = validateReadableTranscriptOutput(silentCorrection, { eventId: "evt_1", segments: raw });
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => issue.path.endsWith("needs_human_check")));
+});
+
+test("readable provider may fall back only an invalid text/edit group to its exact raw source", () => {
+  const candidate = readable();
+  candidate.segments[0].readable_text = "";
+  candidate.segments[0].edits = [{
+    kind: "filler",
+    original: "cannot spend",
+    replacement: "",
+    reason: "unsafe model cleanup",
+    confidence: 0.9,
+  }];
+  const strict = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strict.valid, false);
+
+  const repaired = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repaired.valid, true);
+  assert.equal(
+    repaired.output.segments[0].readable_text,
+    raw.map((segment) => segment.textRaw).join(" "),
+  );
+  assert.deepEqual(repaired.output.segments[0].edits, []);
+  assert.equal(repaired.output.segments[0].needs_human_check, false);
+  assert.match(repaired.output.segments[0].readable_key, /^raw_fallback_/);
+});
+
+test("readable provider replaces wrong timing and cross-speaker grouping with raw-safe rows", () => {
+  const crossSpeakerRaw = [raw[0], { ...raw[1], speaker: "Blair" }];
+  const candidate = readable({ end_ms: 7_999 });
+  const strictTiming = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strictTiming.valid, false);
+  const repairedTiming = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repairedTiming.valid, true);
+  assert.equal(repairedTiming.output.segments[0].end_ms, 8_000);
+  assert.equal(repairedTiming.output.segments[0].readable_text, raw.map((segment) => segment.textRaw).join(" "));
+  assert.match(repairedTiming.output.segments[0].readable_key, /^raw_fallback_/);
+
+  const crossSpeaker = readable({ speaker: "Alex" });
+  const repairedSpeakers = validateReadableTranscriptOutput(
+    crossSpeaker,
+    { eventId: "evt_1", segments: crossSpeakerRaw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repairedSpeakers.valid, true);
+  assert.deepEqual(
+    repairedSpeakers.output.segments.map((segment) => segment.source_segment_ids),
+    [["seg_1"], ["seg_2"]],
+  );
+  assert.deepEqual(
+    repairedSpeakers.output.segments.map((segment) => segment.speaker),
+    ["Alex", "Blair"],
+  );
+  assert.ok(repairedSpeakers.output.segments.every((segment) => segment.readable_key.startsWith("raw_fallback_")));
+});
+
+test("readable provider falls back to exact raw rows when its source coverage is malformed", () => {
+  const candidate = readable();
+  candidate.segments[0].source_segment_ids = [raw[1].id, raw[0].id];
+  const strict = validateReadableTranscriptOutput(candidate, { eventId: "evt_1", segments: raw });
+  assert.equal(strict.valid, false);
+
+  const repaired = validateReadableTranscriptOutput(
+    candidate,
+    { eventId: "evt_1", segments: raw },
+    { allowRawFallback: true },
+  );
+  assert.equal(repaired.valid, true);
+  assert.deepEqual(
+    repaired.output.segments.map((segment) => segment.source_segment_ids),
+    raw.map((segment) => [segment.id]),
+  );
+  assert.deepEqual(
+    repaired.output.segments.map((segment) => segment.readable_text),
+    raw.map((segment) => segment.textRaw),
+  );
+  assert.ok(repaired.output.segments.every((segment) => segment.readable_key.startsWith("raw_fallback_")));
+});
+
+test("readable transcript rejects a responsible-party swap disguised as punctuation", () => {
+  const responsibilityRaw = [{
+    ...raw[0],
+    textRaw: "Alice is responsible for the inspection and Bob approves the offer",
+    textNormalized: "Alice is responsible for the inspection and Bob approves the offer",
+  }];
+  const result = validateReadableTranscriptOutput({
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_responsibility_swap",
+      source_segment_ids: ["seg_1"],
+      speaker: "Alex",
+      start_ms: 1_000,
+      end_ms: 4_000,
+      readable_text: "Bob is responsible for the inspection, and Alice approves the offer.",
+      edits: [{
+        kind: "punctuation",
+        original: "Alice is responsible for the inspection and Bob approves the offer",
+        replacement: "Bob is responsible for the inspection, and Alice approves the offer.",
+        reason: "Incorrectly labelled as punctuation.",
+        confidence: 1,
+      }],
+      needs_human_check: false,
+    }],
+  }, { eventId: "evt_1", segments: responsibilityRaw });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) =>
+    issue.path.endsWith(".kind") && issue.message.includes("cannot add, remove, reorder, or replace")));
+  assert.ok(result.issues.some((issue) =>
+    issue.path.endsWith("needs_human_check") && issue.message.includes("responsibility")));
+});
+
+test("high-risk responsibility changes are retained for UI but excluded from Agent B", () => {
+  const responsibilityRaw = [
+    {
+      ...raw[0],
+      id: "seg_owner",
+      ordinal: 0,
+      textRaw: "Alice is responsible for the inspection",
+      textNormalized: "Alice is responsible for the inspection",
+    },
+    {
+      ...raw[1],
+      id: "seg_timing",
+      ordinal: 1,
+      textRaw: "the meeting starts tomorrow",
+      textNormalized: "the meeting starts tomorrow",
+    },
+  ];
+  const artifact = {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [
+      {
+        readable_key: "read_owner_flagged",
+        source_segment_ids: ["seg_owner"],
+        speaker: "Alex",
+        start_ms: 1_000,
+        end_ms: 4_000,
+        readable_text: "Bob is responsible for the inspection.",
+        edits: [{
+          kind: "context_correction",
+          original: "Alice",
+          replacement: "Bob",
+          reason: "Possible speaker correction requiring review.",
+          confidence: 0.7,
+        }],
+        needs_human_check: true,
+      },
+      {
+        readable_key: "read_timing_safe",
+        source_segment_ids: ["seg_timing"],
+        speaker: "Alex",
+        start_ms: 4_100,
+        end_ms: 8_000,
+        readable_text: "The meeting starts tomorrow.",
+        edits: [{
+          kind: "punctuation",
+          original: "the meeting starts tomorrow",
+          replacement: "The meeting starts tomorrow.",
+          reason: "Sentence casing and punctuation.",
+          confidence: 1,
+        }],
+        needs_human_check: false,
+      },
+    ],
+  };
+  const validated = validateReadableTranscriptOutput(artifact, {
+    eventId: "evt_1",
+    segments: responsibilityRaw,
+  });
+  assert.equal(validated.valid, true);
+  assert.equal(validated.output.segments.length, 2, "the flagged row remains in the UI artifact");
+
+  const verificationSegments = readableTranscriptSegmentsForVerification(validated.output);
+  assert.deepEqual(verificationSegments.map((segment) => segment.readableSegmentKey), ["read_timing_safe"]);
+  assert.equal(verificationSegments[0].requiresAttention, false);
+  assert.doesNotMatch(JSON.stringify(verificationSegments), /Bob is responsible/);
+  assert.deepEqual(
+    responsibilityRaw.map((segment) => segment.textRaw),
+    ["Alice is responsible for the inspection", "the meeting starts tomorrow"],
+    "filtering the readability aid never mutates or removes raw evidence",
+  );
+
+  const allFlagged = {
+    ...validated.output,
+    segments: validated.output.segments.map((segment) => ({
+      ...segment,
+      needs_human_check: true,
+    })),
+  };
+  assert.deepEqual(readableTranscriptSegmentsForVerification(allFlagged), []);
+});
+
+test("unflagged readability aid permits layout only and withholds lexical cleanup", () => {
+  const cases = [
+    {
+      rawText: "hello there",
+      readableText: "Hello\nthere.",
+      edit: { kind: "paragraphing", original: "hello there", replacement: "Hello\nthere." },
+    },
+    {
+      rawText: "we will um need a yard",
+      readableText: "We will need a yard.",
+      edit: { kind: "filler", original: "um ", replacement: "" },
+    },
+    {
+      rawText: "we we need a yard",
+      readableText: "We need a yard.",
+      edit: { kind: "repetition", original: "we we", replacement: "We" },
+    },
+    {
+      rawText: "the company is Open AI",
+      readableText: "The company is OpenAI.",
+      edit: { kind: "glossary", original: "Open AI", replacement: "OpenAI" },
+    },
+  ];
+  for (const [index, example] of cases.entries()) {
+    const source = [{
+      ...raw[0],
+      textRaw: example.rawText,
+      textNormalized: example.rawText,
+    }];
+    const result = validateReadableTranscriptOutput({
+      schema_version: "readable-transcript.v1",
+      event_id: "evt_1",
+      segments: [{
+        readable_key: `read_safe_${index}`,
+        source_segment_ids: ["seg_1"],
+        speaker: "Alex",
+        start_ms: 1_000,
+        end_ms: 4_000,
+        readable_text: example.readableText,
+        edits: [{ ...example.edit, reason: "Safe readability edit.", confidence: 1 }],
+        needs_human_check: false,
+      }],
+    }, { eventId: "evt_1", segments: source });
+    assert.equal(result.valid, true, `${example.edit.kind}: ${JSON.stringify(result.issues)}`);
+    const expectedAttention = ["filler", "repetition", "glossary"].includes(example.edit.kind);
+    assert.equal(result.output.segments[0].needs_human_check, expectedAttention, example.edit.kind);
+    assert.equal(readableTranscriptSegmentsForVerification(result.output).length, expectedAttention ? 0 : 1);
+  }
+});
+
+test("lexical cleanup near unchanged number words stays visible but cannot aid Agent B", () => {
+  const cases = [
+    {
+      label: "adjacent repetition beside a protected quantity",
+      rawText: "we we need three bedrooms",
+      readableText: "We need three bedrooms.",
+      edit: { kind: "repetition", original: "we we", replacement: "We" },
+    },
+    {
+      label: "glossary spelling beside protected money words",
+      rawText: "Open AI budget is five hundred dollars",
+      readableText: "OpenAI budget is five hundred dollars.",
+      edit: { kind: "glossary", original: "Open AI", replacement: "OpenAI" },
+    },
+  ];
+  for (const example of cases) {
+    const result = validateSingleReadable({
+      rawText: example.rawText,
+      readableText: example.readableText,
+      edits: [example.edit],
+    });
+    assertReadableWithheld(result, example.label);
+  }
+});
+
+test("untrusted glossary edits cannot swap roles, polarity, conditions, or concerns into Agent B", () => {
+  const cases = [
+    {
+      label: "role swap",
+      rawText: "Alice handles inspection and Bob handles financing",
+      readableText: "Bob handles inspection and Alice handles financing.",
+      original: "Alice handles inspection and Bob handles financing",
+      replacement: "Bob handles inspection and Alice handles financing",
+    },
+    {
+      label: "preference polarity",
+      rawText: "the client likes Beverly Hills",
+      readableText: "The client dislikes Beverly Hills.",
+      original: "likes",
+      replacement: "dislikes",
+    },
+    {
+      label: "condition subject",
+      rawText: "If inspection is clean we can proceed",
+      readableText: "If appraisal is clean, we can proceed.",
+      original: "inspection",
+      replacement: "appraisal",
+    },
+    {
+      label: "concern polarity",
+      rawText: "water damage is a concern",
+      readableText: "Water damage is acceptable.",
+      original: "a concern",
+      replacement: "acceptable",
+    },
+  ];
+  for (const example of cases) {
+    const result = validateSingleReadable({
+      rawText: example.rawText,
+      readableText: example.readableText,
+      edits: [{ kind: "glossary", original: example.original, replacement: example.replacement }],
+    });
+    assertReadableWithheld(result, example.label);
+  }
+});
+
+test("semantic punctuation, numeric sign/range, and non-initial casing never enter Agent B", () => {
+  const cases = [
+    ["declarative to question", "Alice will submit the offer", "Alice will submit the offer?"],
+    ["approval to question", "the offer is approved", "The offer is approved?"],
+    ["split negation scope", "Do not approve", "Do not? Approve."],
+    ["currency sign removed", "-$500 is the adjustment", "$500 is the adjustment."],
+    ["quantity sign removed", "-500 dollars is the adjustment", "500 dollars is the adjustment."],
+    ["range changed to list", "$500-$600 is expected", "$500, $600 is expected."],
+    ["modal changed to month casing", "We may submit", "We May submit."],
+    ["comma changes attachment", "Alice said Bob is responsible", "Alice, said Bob, is responsible."],
+    ["comma changes negation reading", "No price is too high", "No, price is too high."],
+    ["comma changes addressee", "Let us eat grandma", "Let us eat, grandma."],
+    ["ellipsis changes certainty", "The buyer agreed", "The buyer agreed..."],
+  ];
+  for (const [label, rawText, readableText] of cases) {
+    const result = validateSingleReadable({
+      rawText,
+      readableText,
+      edits: [{
+        kind: label.includes("casing") ? "capitalization" : "punctuation",
+        original: rawText,
+        replacement: readableText,
+      }],
+    });
+    assertReadableWithheld(result, label);
+  }
+});
+
+test("filler, repetition, empty insertion, and chained glossary tricks fail closed", () => {
+  const lexicalCases = [
+    {
+      label: "semantic I mean",
+      rawText: "I mean business",
+      readableText: "Business.",
+      edits: [{ kind: "filler", original: "I mean ", replacement: "" }],
+    },
+    {
+      label: "AH is a name",
+      rawText: "AH approves",
+      readableText: "Approves.",
+      edits: [{ kind: "filler", original: "AH ", replacement: "" }],
+    },
+    {
+      label: "non-adjacent repetition",
+      rawText: "we need we need a yard",
+      readableText: "We need a yard.",
+      edits: [{ kind: "repetition", original: "we need we need a yard", replacement: "We need a yard" }],
+    },
+    {
+      label: "empty glossary insertion",
+      rawText: "budget discussed",
+      readableText: "OpenAI budget discussed.",
+      edits: [{ kind: "glossary", original: "", replacement: "OpenAI " }],
+    },
+  ];
+  for (const example of lexicalCases) {
+    assertReadableWithheld(validateSingleReadable(example), example.label);
+  }
+
+  const chained = validateSingleReadable({
+    rawText: "Open AI discussed the budget",
+    readableText: "OpenAI discussed the budget.",
+    edits: [
+      { kind: "glossary", original: "Open AI", replacement: "OpenAI" },
+      { kind: "glossary", original: "OpenAI", replacement: "OpenAI" },
+    ],
+  });
+  assert.equal(chained.valid, false, "a second edit cannot use model-created text as raw source");
+});
+
+test("readable groups cannot cross Asset Versions or Speakers, while same-source fragments may merge", () => {
+  const source = [
+    {
+      ...raw[0], id: "seg_a", ordinal: 0, assetVersionId: "av_1", speaker: "Alice",
+      textRaw: "will you approve", textNormalized: "will you approve",
+    },
+    {
+      ...raw[1], id: "seg_b", ordinal: 1, assetVersionId: "av_1", speaker: "Bob",
+      textRaw: "yes", textNormalized: "yes",
+    },
+  ];
+  const grouped = {
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: [{
+      readable_key: "read_group",
+      source_segment_ids: ["seg_a", "seg_b"],
+      speaker: null,
+      start_ms: 1_000,
+      end_ms: 8_000,
+      readable_text: "Will you approve? Yes.",
+      edits: [{
+        kind: "punctuation",
+        original: "will you approve yes",
+        replacement: "Will you approve? Yes.",
+        reason: "Unsafe merge.",
+        confidence: 1,
+      }],
+      needs_human_check: false,
+    }],
+  };
+  const mixedSpeaker = validateReadableTranscriptOutput(grouped, { eventId: "evt_1", segments: source });
+  assert.equal(mixedSpeaker.valid, false);
+  assert.ok(mixedSpeaker.issues.some((issue) => issue.message.includes("different Speakers")));
+
+  const mixedAssetSource = source.map((segment, index) => ({
+    ...segment,
+    speaker: "Alice",
+    assetVersionId: `av_${index + 1}`,
+  }));
+  const mixedAsset = validateReadableTranscriptOutput({
+    ...grouped,
+    segments: [{ ...grouped.segments[0], speaker: "Alice" }],
+  }, { eventId: "evt_1", segments: mixedAssetSource });
+  assert.equal(mixedAsset.valid, false);
+  assert.ok(mixedAsset.issues.some((issue) => issue.message.includes("different raw Asset Versions")));
+
+  const sameSource = mixedAssetSource.map((segment, index) => ({
+    ...segment,
+    assetVersionId: "av_1",
+    speaker: "Alice",
+    textRaw: index === 0 ? "we should" : "submit tomorrow",
+    textNormalized: index === 0 ? "we should" : "submit tomorrow",
+  }));
+  const sameSourceResult = validateReadableTranscriptOutput({
+    ...grouped,
+    segments: [{
+      ...grouped.segments[0],
+      speaker: "Alice",
+      readable_text: "We should submit tomorrow.",
+      edits: [{
+        kind: "punctuation",
+        original: "we should submit tomorrow",
+        replacement: "We should submit tomorrow.",
+        reason: "Safe same-source merge.",
+        confidence: 1,
+      }],
+    }],
+  }, { eventId: "evt_1", segments: sameSource });
+  assert.equal(sameSourceResult.valid, true, JSON.stringify(sameSourceResult.issues));
+  assert.equal(sameSourceResult.output.segments[0].needs_human_check, false);
+  assert.equal(readableTranscriptSegmentsForVerification(sameSourceResult.output).length, 1);
+});
+
+test("long readable transcripts split deterministically and merge in raw order", () => {
+  const segments = Array.from({ length: 7 }, (_, index) => ({
+    ...raw[index % raw.length],
+    id: `seg_${index}`,
+    ordinal: index,
+    textRaw: `segment ${index}`,
+    textNormalized: `segment ${index}`,
+  }));
+  const chunks = chunkReadableTranscriptSource(segments, { segments: 3, characters: 10_000 });
+  assert.deepEqual(chunks.map((chunk) => chunk.segments.map((segment) => segment.id)), [
+    ["seg_0", "seg_1", "seg_2"],
+    ["seg_3", "seg_4", "seg_5"],
+    ["seg_6"],
+  ]);
+  assert.deepEqual(
+    chunkReadableTranscriptSource(segments, { segments: 3, characters: 10_000 }),
+    chunks,
+  );
+  const merged = mergeReadableTranscriptChunks("evt_1", chunks.map((chunk) => ({
+    schema_version: "readable-transcript.v1",
+    event_id: "evt_1",
+    segments: chunk.segments.map((segment) => ({
+      readable_key: "local_key",
+      source_segment_ids: [segment.id],
+      speaker: segment.speaker,
+      start_ms: segment.startMs,
+      end_ms: segment.endMs,
+      readable_text: segment.textRaw,
+      edits: [],
+      needs_human_check: false,
+    })),
+  })));
+  assert.deepEqual(
+    merged.segments.flatMap((segment) => segment.source_segment_ids),
+    segments.map((segment) => segment.id),
+  );
+  assert.equal(new Set(merged.segments.map((segment) => segment.readable_key)).size, 7);
+});
+
+test("artifact backlog prefers readable work without allowing it to starve Summary", async () => {
+  const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(jobs, /kind <> 'summary'[\s\S]*readable\.status IN \('queued', 'processing'\)/);
+  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
+  assert.match(jobs, /input\?\.extractionRunId \? 2 : 2/);
+  assert.match(jobs, /await Promise\.all\(\(rows\.results \?\? \[\]\)\.map/);
+  assert.equal((jobs.match(/allowRawFallback: true/g) ?? []).length, 2);
+});
+
+test("readable transcript chunks run concurrently behind one bounded coordinator", async () => {
+  const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.match(jobs, /const READABLE_CHUNK_CONCURRENCY = 4/);
+  assert.match(
+    jobs,
+    /const outcomes = await Promise\.all\(nextStoredChunks\.map\(\(chunk\) =>\s*processReadableChunkAttempt/,
+  );
+  assert.match(jobs, /\.slice\(0, READABLE_CHUNK_CONCURRENCY\)/);
+  assert.match(jobs, /parkReadableChunkPending/);
+  assert.doesNotMatch(
+    jobs.slice(
+      jobs.indexOf("async function parkReadableChunkPending"),
+      jobs.indexOf("async function releaseForNextReadableChunk"),
+    ),
+    /lease_owner = NULL/,
+    "one pending chunk must not release the shared Run while sibling chunks are still writing",
+  );
+});
+
+test("summary provider output gets a deterministic raw quote before persistence", () => {
+  const valid = validateEventSummaryProviderOutput({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "decision",
+      title: "Decisions",
+      items: [{
+        item_key: "sum_1",
+        text: "The budget cannot exceed $12,500.",
+        source_segment_ids: ["seg_1"],
+        source_character_span: null,
+      }],
+    }],
+  }, { eventId: "evt_1", segments: raw });
+  assert.equal(valid.valid, true);
+  assert.equal(valid.output.sections[0].items[0].support_quote, raw[0].textRaw);
+  assert.equal(valid.output.sections[0].items[0].support_status, "source_linked_unverified");
+
+  // The enriched artifact contract is checked again immediately before it is
+  // persisted. The raw quote must match byte-for-byte, not just semantically.
+  assert.equal(validateEventSummaryOutput(valid.output, { eventId: "evt_1", segments: raw }).valid, true);
+  const tamperedArtifact = structuredClone(valid.output);
+  tamperedArtifact.sections[0].items[0].support_quote = "The buyer's budget is $12,500.";
+  const tampered = validateEventSummaryOutput(tamperedArtifact, { eventId: "evt_1", segments: raw });
+  assert.equal(tampered.valid, false);
+  assert.ok(tampered.issues.some((issue) => issue.path.endsWith(".support_quote")));
+  const falselyVerifiedArtifact = structuredClone(valid.output);
+  falselyVerifiedArtifact.sections[0].items[0].support_status = "verified";
+  const falselyVerified = validateEventSummaryOutput(falselyVerifiedArtifact, { eventId: "evt_1", segments: raw });
+  assert.equal(falselyVerified.valid, false);
+  assert.ok(falselyVerified.issues.some((issue) => issue.path.endsWith(".support_status")));
+
+  const multiSegment = validateEventSummaryProviderOutput({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "decision",
+      title: "Decisions",
+      items: [{
+        item_key: "sum_2",
+        text: "Budget and approval remain linked.",
+        source_segment_ids: ["seg_1", "seg_2"],
+        source_character_span: null,
+      }],
+    }],
+  }, { eventId: "evt_1", segments: raw });
+  assert.equal(multiSegment.valid, true);
+  assert.equal(multiSegment.output.sections[0].items[0].support_quote, `${raw[0].textRaw}\n${raw[1].textRaw}`);
+});
+
+test("summary provider no longer authors a support quote", () => {
+  const paraphrasedProviderOutput = validateEventSummaryProviderOutput({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "decision",
+      title: "Decisions",
+      items: [{
+        item_key: "sum_1",
+        text: "The budget cannot exceed $12,500.",
+        support_quote: "The buyer's budget is $12,500.",
+        source_segment_ids: ["seg_1"],
+        source_character_span: null,
+      }],
+    }],
+  }, { eventId: "evt_1", segments: raw });
+  assert.equal(paraphrasedProviderOutput.valid, false);
+  assert.ok(paraphrasedProviderOutput.issues.some((issue) =>
+    issue.path.endsWith(".support_quote") && issue.message === "Unexpected field."));
+});
+
+test("summary source spans preserve ordered raw excerpts but fail closed for missing, cross-Event, duplicate, unordered, and cross-Asset IDs", () => {
+  const segments = [
+    raw[0],
+    raw[1],
+    { ...raw[1], id: "seg_3", ordinal: 2, startMs: 8_100, endMs: 9_000, textRaw: "the closing date remains open", textNormalized: "the closing date remains open" },
+    { ...raw[1], id: "seg_4", assetVersionId: "av_2", ordinal: 0, startMs: 9_100, endMs: 10_000, textRaw: "a pasted note from the same meeting", textNormalized: "a pasted note from the same meeting" },
+  ];
+  const providerOutput = (source_segment_ids) => ({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "key_fact",
+      title: "Facts",
+      items: [{ item_key: "sum_1", text: "Summary", source_segment_ids, source_character_span: null }],
+    }],
+  });
+
+  for (const ids of [
+    ["seg_missing"],
+    ["seg_1", "seg_1"],
+    ["seg_2", "seg_1"],
+    ["seg_3", "seg_4"],
+  ]) {
+    const result = validateEventSummaryProviderOutput(providerOutput(ids), { eventId: "evt_1", segments });
+    assert.equal(result.valid, false, `expected ${ids.join(",")} to fail closed`);
+  }
+
+  const skippedBackchannel = validateEventSummaryProviderOutput(
+    providerOutput(["seg_1", "seg_3"]),
+    { eventId: "evt_1", segments },
+  );
+  assert.equal(skippedBackchannel.valid, true);
+  assert.deepEqual(
+    skippedBackchannel.output.sections[0].items[0].source_segment_ids,
+    ["seg_1", "seg_3"],
+  );
+  assert.equal(
+    skippedBackchannel.output.sections[0].items[0].support_quote,
+    `${segments[0].textRaw}\n…\n${segments[2].textRaw}`,
+  );
+
+  const crossEvent = validateEventSummaryProviderOutput(providerOutput(["seg_1"]), {
+    eventId: "evt_1",
+    segments: [{ ...segments[0], eventId: "evt_other" }, ...segments.slice(1)],
+  });
+  assert.equal(crossEvent.valid, false);
+  assert.ok(crossEvent.issues.some((issue) => issue.message.includes("different Event")));
+});
+
+test("summary resolves a bounded Unicode code-point span from a raw Segment longer than 12k", () => {
+  const prefix = "😀".repeat(12_001);
+  const longSegment = {
+    ...raw[0],
+    textRaw: `${prefix}TARGET raw suffix`,
+    textNormalized: `${prefix}TARGET raw suffix`,
+  };
+  const base = {
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "key_fact",
+      title: "Facts",
+      items: [{
+        item_key: "sum_long",
+        text: "Target fact.",
+        source_segment_ids: ["seg_1"],
+        source_character_span: {
+          segment_id: "seg_1",
+          start_codepoint: 12_001,
+          end_codepoint: 12_007,
+        },
+      }],
+    }],
+  };
+  const valid = validateEventSummaryProviderOutput(base, {
+    eventId: "evt_1",
+    segments: [longSegment],
+  });
+  assert.equal(valid.valid, true);
+  assert.equal(valid.output.sections[0].items[0].support_quote, "TARGET");
+  assert.deepEqual(valid.output.sections[0].items[0].source_character_span, {
+    segment_id: "seg_1",
+    start_codepoint: 12_001,
+    end_codepoint: 12_007,
+  });
+  assert.equal(validateEventSummaryOutput(valid.output, {
+    eventId: "evt_1",
+    segments: [longSegment],
+  }).valid, true);
+
+  const withoutSpan = structuredClone(base);
+  withoutSpan.sections[0].items[0].source_character_span = null;
+  const oversized = validateEventSummaryProviderOutput(withoutSpan, {
+    eventId: "evt_1",
+    segments: [longSegment],
+  });
+  assert.equal(oversized.valid, false);
+  assert.ok(oversized.issues.some((issue) => issue.message.includes("12000 Unicode code points")));
+});
+
+test("summary character spans reject empty, reversed, out-of-bounds, mismatched, and multi-Segment ranges", () => {
+  const segments = [
+    raw[0],
+    raw[1],
+  ];
+  const providerOutput = (sourceSegmentIds, span) => ({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "key_fact",
+      title: "Facts",
+      items: [{
+        item_key: "sum_span",
+        text: "Summary",
+        source_segment_ids: sourceSegmentIds,
+        source_character_span: span,
+      }],
+    }],
+  });
+  for (const [ids, span] of [
+    [["seg_1"], { segment_id: "seg_1", start_codepoint: 2, end_codepoint: 2 }],
+    [["seg_1"], { segment_id: "seg_1", start_codepoint: 3, end_codepoint: 2 }],
+    [["seg_1"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 10_000 }],
+    [["seg_1"], { segment_id: "seg_1", start_codepoint: "0", end_codepoint: 2 }],
+    [["seg_1"], { segment_id: "seg_2", start_codepoint: 0, end_codepoint: 2 }],
+    [["seg_1", "seg_2"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }],
+  ]) {
+    const result = validateEventSummaryProviderOutput(providerOutput(ids, span), {
+      eventId: "evt_1",
+      segments,
+    });
+    assert.equal(result.valid, false, `expected ${JSON.stringify({ ids, span })} to fail closed`);
+  }
+});
+
+test("summary provider safely downgrades only invalid optional spans with bounded valid raw citations", () => {
+  const providerOutput = (sourceSegmentIds, span) => ({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "key_fact",
+      title: "Facts",
+      items: [{
+        item_key: "sum_span_fallback",
+        text: "Summary",
+        source_segment_ids: sourceSegmentIds,
+        source_character_span: span,
+      }],
+    }],
+  });
+  for (const candidate of [
+    providerOutput(["seg_1"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 10_000 }),
+    providerOutput(["seg_1", "seg_2"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }),
+  ]) {
+    assert.equal(validateEventSummaryProviderOutput(candidate, { eventId: "evt_1", segments: raw }).valid, false);
+    const downgraded = downgradeRecoverableEventSummaryProviderSpans(
+      candidate,
+      { eventId: "evt_1", segments: raw },
+    );
+    assert.equal(downgraded.sections[0].items[0].source_character_span, null);
+    const validated = validateEventSummaryProviderOutput(downgraded, { eventId: "evt_1", segments: raw });
+    assert.equal(validated.valid, true);
+    assert.ok(raw.some((segment) => validated.output.sections[0].items[0].support_quote.includes(segment.textRaw)));
+  }
+
+  const validSpan = providerOutput(["seg_1"], {
+    segment_id: "seg_1",
+    start_codepoint: 0,
+    end_codepoint: 2,
+  });
+  assert.equal(
+    downgradeRecoverableEventSummaryProviderSpans(validSpan, { eventId: "evt_1", segments: raw }),
+    validSpan,
+    "an already-valid precise span stays intact",
+  );
+
+  const crossAssetSegments = [raw[0], { ...raw[1], assetVersionId: "av_2" }];
+  const unsafeCandidates = [
+    [providerOutput(["seg_missing"], { segment_id: "seg_missing", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_1", "seg_1"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_2", "seg_1"], { segment_id: "seg_2", start_codepoint: 0, end_codepoint: 2 }), raw],
+    [providerOutput(["seg_1", "seg_2"], { segment_id: "seg_1", start_codepoint: 0, end_codepoint: 2 }), crossAssetSegments],
+  ];
+  for (const [candidate, segments] of unsafeCandidates) {
+    assert.equal(
+      downgradeRecoverableEventSummaryProviderSpans(candidate, { eventId: "evt_1", segments }),
+      candidate,
+      "unsafe source IDs must not be normalized",
+    );
+    assert.equal(validateEventSummaryProviderOutput(candidate, { eventId: "evt_1", segments }).valid, false);
+  }
+
+  const longSegment = {
+    ...raw[0],
+    textRaw: "x".repeat(12_001),
+    textNormalized: "x".repeat(12_001),
+  };
+  const oversized = providerOutput(["seg_1"], {
+    segment_id: "seg_1",
+    start_codepoint: 0,
+    end_codepoint: 20_000,
+  });
+  assert.equal(
+    downgradeRecoverableEventSummaryProviderSpans(oversized, { eventId: "evt_1", segments: [longSegment] }),
+    oversized,
+    "an oversized full quote still fails closed",
+  );
+  assert.equal(validateEventSummaryProviderOutput(oversized, {
+    eventId: "evt_1",
+    segments: [longSegment],
+  }).valid, false);
+});
+
+test("summary rejects an unknown raw segment instead of fabricating a quote", () => {
+  const unsupported = validateEventSummaryProviderOutput({
+    schema_version: "event-summary.v2",
+    event_id: "evt_1",
+    sections: [{
+      kind: "decision",
+      title: "Decisions",
+      items: [{
+        item_key: "sum_1",
+        text: "Unsupported",
+        source_segment_ids: ["seg_other"],
+        source_character_span: null,
+      }],
+    }],
+  }, { eventId: "evt_1", segments: raw });
+  assert.equal(unsupported.valid, false);
+});
+
+test("artifact jobs use durable Background Responses and independent retries", async () => {
+  const [jobs, worker, repository] = await Promise.all([
+    readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(jobs, /resumeProviderResponseId/);
+  assert.match(jobs, /ModelBackgroundPendingError/);
+  assert.match(jobs, /provider_request_id = \?/);
+  assert.match(worker, /dispatchEventAiArtifactsForExtraction/);
+  assert.match(worker, /kind === "artifact"/);
+  assert.match(repository, /createEventAiArtifactRetry/);
+  assert.match(repository, /Only a failed or outdated AI artifact can be regenerated/);
+  assert.match(repository, /Start this event's analysis first/);
+  assert.match(repository, /409,[\s\S]*"EVENT_NOT_READY"/);
+  assert.match(repository, /reason: "analysis_required"/);
+  assert.match(repository, /er\.status IN \('succeeded','completed','completed_with_warnings'\)/);
+  assert.match(repository, /listEventAiArtifactRunDebug/);
+  assert.match(repository, /SELECT canonical_value, aliases_json, category/);
+  assert.doesNotMatch(repository, /variants_json/);
+  assert.match(repository, /mutation_guards[\s\S]*event_ai_artifact_runs[\s\S]*lease_owner/);
+  assert.match(repository, /status = 'processing' AND lease_owner = \?/);
+  assert.match(jobs, /chunkReadableTranscriptSource/);
+  assert.match(jobs, /readable_transcript:chunk:\$\{chunk\.chunk_index\}/);
+  assert.match(jobs, /listReadableTranscriptChunks/);
+  assert.match(repository, /event_ai_artifact_chunks/);
+  assert.match(repository, /READABLE_TRANSCRIPT_CHUNK_INPUT_CHANGED/);
+  assert.match(repository, /persistReadableTranscriptChunk/);
+});
+
+test("new and retried reading artifacts use low effort while existing Runs keep their frozen effort", async () => {
+  // 四个视图拆开各自一次调用后，每个种类都各有一档；现在都是 low。
+  assert.deepEqual(EVENT_AI_ARTIFACT_REASONING_EFFORTS, {
+    summary: "low",
+    readable_transcript: "low",
+    chapters: "low",
+    speakers: "low",
+    key_points: "low",
+    overview: "low",
+  });
+  const [repository, jobs] = await Promise.all([
+    readFile(new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8"),
+  ]);
+  const initialCreation = repository.slice(
+    repository.indexOf("export async function ensureEventAiArtifactRuns"),
+    repository.indexOf("export async function listEventAiArtifacts"),
+  );
+  const retryCreation = repository.slice(
+    repository.indexOf("export async function createEventAiArtifactRetry"),
+    repository.indexOf("export async function persistSummaryArtifact"),
+  );
+
+  assert.match(
+    initialCreation,
+    /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[definition\.kind\]/,
+  );
+  assert.match(initialCreation, /effort: reasoningEffort/);
+  assert.match(initialCreation, /input\.model,\s*reasoningEffort,\s*definition\.prompt/);
+  assert.doesNotMatch(initialCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
+  assert.match(
+    retryCreation,
+    /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[kind\]/,
+  );
+  assert.match(retryCreation, /effort: reasoningEffort/);
+  assert.match(retryCreation, /source\.model,\s*reasoningEffort,\s*promptVersion/);
+  assert.doesNotMatch(retryCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
+  assert.match(
+    jobs,
+    /reasoningEffort: String\(run\.reasoning_effort\)/,
+    "dispatch must resume an old Run with its persisted effort instead of replacing it",
+  );
+});
+
+test("new fact Runs use the production low-latency reasoning profile without dropping two-pass verification", async () => {
+  const [exampleEnvironment, workerConfig] = await Promise.all([
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+  ]);
+  assert.match(exampleEnvironment, /^AI_REASONING_EFFORT=low$/m);
+  assert.match(exampleEnvironment, /^AI_VERIFIER_REASONING_EFFORT=low$/m);
+  assert.match(exampleEnvironment, /^AI_TWO_PASS_PIPELINE=1$/m);
+  assert.match(workerConfig, /"AI_REASONING_EFFORT"\s*:\s*"low"/);
+  assert.match(workerConfig, /"AI_VERIFIER_REASONING_EFFORT"\s*:\s*"low"/);
+  assert.match(workerConfig, /"AI_TWO_PASS_PIPELINE"\s*:\s*"1"/);
+});
+
+test("inventory safely discards explanations attached to non-critical candidates", async () => {
+  const provider = await readFile(
+    new URL("../lib/server/ai/model-provider.ts", import.meta.url),
+    "utf8",
+  );
+  const inventoryMethod = provider.slice(
+    provider.indexOf("async inventoryClaims"),
+    provider.indexOf("async verifyClaims"),
+  );
+  assert.match(inventoryMethod, /critical === false/);
+  assert.match(inventoryMethod, /critical_reason: null/);
+  assert.ok(
+    inventoryMethod.indexOf("critical_reason: null") < inventoryMethod.indexOf("validateInventoryOutput(candidateValue)"),
+    "the harmless provider normalization must happen before strict validation",
+  );
+  // 标了关键却没写理由：保留关键标记，补一句说明，不让整次分析作废。
+  assert.match(inventoryMethod, /item\.critical === true && \(typeof item\.critical_reason !== "string" \|\| !item\.critical_reason\.trim\(\)\)/);
+  assert.match(inventoryMethod, /critical_reason: "Marked critical without a stated reason\."/);
+  assert.ok(
+    inventoryMethod.indexOf("Marked critical without a stated reason.") < inventoryMethod.indexOf("validateInventoryOutput(candidateValue)"),
+  );
+});
+
+test("verification safely removes dangling bookkeeping without weakening evidence validation", async () => {
+  const provider = await readFile(
+    new URL("../lib/server/ai/model-provider.ts", import.meta.url),
+    "utf8",
+  );
+  const verificationMethod = provider.slice(
+    provider.indexOf("async verifyClaims"),
+    provider.indexOf("async extractClaims"),
+  );
+  assert.match(verificationMethod, /const finalClaimKeys = new Set/);
+  assert.match(verificationMethod, /finalClaimKeys\.has\(key\)/);
+  assert.match(verificationMethod, /included && referencedKeys\.length === 0 \? "lower_priority"/);
+  assert.match(verificationMethod, /final_claim_keys: included \? referencedKeys : \[\]/);
+  assert.ok(
+    verificationMethod.indexOf("candidate_dispositions: source.candidate_dispositions.map") <
+      verificationMethod.indexOf("validateVerificationOutput(candidateValue, inventory, input)"),
+    "provider bookkeeping normalization must happen before strict evidence-aware verification",
+  );
+});
+
+test("escalation shares the base verifier effort, with the stronger notch frozen and ready", async () => {
+  const [processor, repository, config] = await Promise.all([
+    readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/domain/model-config.ts", import.meta.url), "utf8"),
+  ]);
+  // 用质量门当结束标记：它在两条升级路径之后，而 if (!acceptedVerification)
+  // 在降级守卫里也出现，拿它切会把后半段截掉。
+  const twoPass = processor.slice(
+    processor.indexOf("if (pipelineEnabled)"),
+    processor.indexOf('code: "MODEL_QUALITY_GATE_UNRESOLVED"'),
+  );
+  // 现在两趟同强度：没有评估数据之前不给升级加钱加时延。
+  assert.match(processor, /const escalationEffort = verifierEffort;/);
+  const escalatedStages = twoPass.match(/stage: "verify_escalated",\n\s+provider: providerName,\n\s+model: modelName,\n\s+reasoningEffort: escalationEffort,/g) ?? [];
+  assert.equal(escalatedStages.length, 2, "both escalation paths read the same effort knob");
+  assert.doesNotMatch(twoPass, /reasoningEffort: "xhigh"/);
+  // 更高的那一档已经随 Run 冻结好了：要提只需把 escalationEffort 换成读它，
+  // 冻结参数仍然说得清这次 Run 的成本上限。
+  assert.match(repository, /escalation_reasoning_effort: escalationReasoningEffort/);
+  assert.match(config, /export function escalatedReasoningEffort/);
+});
+
+test("a failed escalation never discards a verification that already succeeded", async () => {
+  const processor = await readFile(
+    new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url),
+    "utf8",
+  );
+  // 用质量门当结束标记：它在两条升级路径之后，而 if (!acceptedVerification)
+  // 在降级守卫里也出现，拿它切会把后半段截掉。
+  const twoPass = processor.slice(
+    processor.indexOf("if (pipelineEnabled)"),
+    processor.indexOf('code: "MODEL_QUALITY_GATE_UNRESOLVED"'),
+  );
+  // 背景响应下，升级几乎必然要跨调用取回，走的是 escalationInFlight 那条路径。
+  // 它此前没有 try/catch，升级输出不合格就把整个 Run 连同一次成功的 verify
+  // 一起作废（线上 run_...35a802fc 就是这么挂的）。两条路径现在都会降级。
+  const guards = twoPass.match(/if \(!acceptedVerification\) throw error;/g) ?? [];
+  assert.equal(guards.length, 2, "both escalation paths must fall back to a succeeded base verification");
+  const fallbacks = twoPass.match(/code: "MODEL_ESCALATION_OUTPUT_INVALID"/g) ?? [];
+  assert.equal(fallbacks.length, 2);
+  const resumed = twoPass.slice(twoPass.indexOf("const storedEscalationReasons"));
+  assert.match(resumed.slice(0, 400), /try \{/);
+});
+
+test("Summary v2 provider schema and prompt request locations, never model-authored quotes", async () => {
+  const provider = await readFile(
+    new URL("../lib/server/ai/model-provider.ts", import.meta.url),
+    "utf8",
+  );
+  const schemaBlock = provider.slice(
+    provider.indexOf("function eventSummaryJsonSchema"),
+    provider.indexOf("function readableTranscriptJsonSchema"),
+  );
+  assert.match(schemaBlock, /required: \["item_key", "text", "source_segment_ids", "source_character_span"\]/);
+  assert.doesNotMatch(schemaBlock, /support_quote/);
+  assert.match(provider, /Do not return support_quote/);
+  assert.match(provider, /start_codepoint and exclusive end_codepoint offsets counted in Unicode code points/);
+  assert.match(provider, /validateEventSummaryProviderOutput\(orderedReadingOutput/);
+});
+
+test("artifact dispatch accepts only the exact frozen provider contract for each kind", async () => {
+  assert.equal(eventAiArtifactContractMismatch({
+    kind: "summary",
+    reasoning_effort: "high",
+    prompt_version: "event-summary-prompt.v3.1",
+    schema_version: "event-summary.v2",
+  }), null);
+  assert.equal(eventAiArtifactContractMismatch({
+    kind: "readable_transcript",
+    reasoning_effort: "high",
+    prompt_version: "readable-transcript-prompt.v2",
+    schema_version: "readable-transcript.v1",
+  }), null);
+  for (const legacy of [
+    { kind: "summary", prompt_version: "event-summary-prompt.v1", schema_version: "event-summary.v1" },
+    { kind: "summary", prompt_version: "event-summary-prompt.v2", schema_version: "event-summary.v1" },
+    { kind: "readable_transcript", prompt_version: "readable-transcript-prompt.v1", schema_version: "readable-transcript.v1" },
+    { kind: "readable_transcript", prompt_version: "readable-transcript-prompt.v0", schema_version: "readable-transcript.v1" },
+    { kind: "unknown", prompt_version: "v1", schema_version: "v1" },
+  ]) {
+    assert.ok(eventAiArtifactContractMismatch(legacy), `${legacy.kind} legacy contract must fail closed`);
+  }
+
+  const jobs = await readFile(
+    new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url),
+    "utf8",
+  );
+  const processing = jobs.slice(
+    jobs.indexOf("async function processLeasedRun"),
+    jobs.indexOf("export async function dispatchDueEventAiArtifactRuns"),
+  );
+  assert.ok(
+    processing.indexOf("eventAiArtifactContractMismatch(run)") <
+      processing.indexOf("sourceSegmentsForArtifactRun"),
+    "frozen contract must be checked before loading input or selecting a provider",
+  );
+  assert.ok(
+    processing.indexOf("eventAiArtifactContractMismatch(run)") <
+      processing.indexOf("createModelProvider"),
+    "legacy runs must fail before any provider path can be used",
+  );
+  assert.match(jobs, /STALE_ARTIFACT_MODEL_CONTRACT/);
+  assert.match(jobs, /retry the single artifact to create the current contract/);
+  assert.match(
+    jobs,
+    /"status IN \('queued', 'processing'\)"/,
+    "succeeded legacy artifacts remain read-only and are never re-dispatched",
+  );
+});
+
+test("artifact prompt cache keys stay within the OpenAI 64-character limit", async () => {
+  const jobs = await readFile(
+    new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url),
+    "utf8",
+  );
+  const extractionRunId = `run_${"a".repeat(32)}`;
+  const summaryKey = `notique:${extractionRunId}:event-artifacts`;
+  const readableKey = `notique:${extractionRunId}:readable:0`;
+
+  assert.match(
+    jobs,
+    /promptCacheKey: `notique:\$\{run\.extraction_run_id\}:event-artifacts`/,
+  );
+  assert.match(
+    jobs,
+    /promptCacheKey: `notique:\$\{run\.extraction_run_id\}:readable:\$\{chunk\.chunk_index\}`/,
+  );
+  assert.equal(summaryKey.length, 60);
+  assert.equal(readableKey.length, 55);
+  assert.ok(summaryKey.length <= 64);
+  assert.ok(readableKey.length <= 64);
+});
+
+test("artifact retry refreshes the panel and dispatches once for the batch", async () => {
+  // 以前这里钉的是 onRetryArtifact(event.id, "summary")，那正是四个阅读视图
+  // 重新生成点不通的原因：summary 是不再生产的旧种类。现在按钮只重试失败
+  // 的种类，重试完刷新面板，派发器只叫一次。
+  assert.match(uiSource, /if \(failed\.length\) await onRetryReading\(event\.id, failed\);\s*await load\(true\);/);
+  assert.doesNotMatch(uiSource, /className="transcript-subtabs"/);
+  assert.match(uiSource, /retryReadingArtifacts[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: last\.id \}\)/);
+});
+
+test("fact extraction defaults to raw-only while readable remains an optional mapped aid", async () => {
+  const [processor, provider, context, coreRepository, exampleEnvironment, workerConfig] = await Promise.all([
+    readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/ai/model-provider.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/domain/context-pack.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+  ]);
+  assert.match(exampleEnvironment, /^AI_VERIFICATION_USES_READABLE=0$/m);
+  assert.match(workerConfig, /"AI_VERIFICATION_USES_READABLE": "0"/);
+  assert.match(processor, /frozen\.verification_uses_readable === false \|\| getBindings\(\)\.AI_VERIFICATION_USES_READABLE === "0"[\s\S]{0,80}return base/);
+  assert.match(processor, /inventoryProvider\.inventoryClaims\(\s*inventoryContext/);
+  assert.match(processor, /draft_context: \{ enabled: false, claims: \[\] \}/);
+  assert.match(processor, /contextWithReadableTranscript/);
+  assert.match(
+    processor,
+    /ORDER BY ar\.created_at ASC, ar\.id ASC LIMIT 1/,
+    "Agent B must stay bound to the first Readable Run created for this Extraction Run",
+  );
+  assert.doesNotMatch(
+    processor,
+    /ORDER BY ar\.attempt_no/,
+    "mutable dispatch attempts cannot choose which Readable Run belongs to Agent B",
+  );
+  assert.doesNotMatch(
+    processor,
+    /WHERE ar\.extraction_run_id = \? AND ar\.kind = 'readable_transcript'[\s\S]{0,300}ORDER BY ar\.created_at DESC/,
+    "a later UI-only Readable retry must not replace an in-flight Agent B input",
+  );
+  assert.match(processor, /readableTranscriptSegmentsForVerification\(validation\.output\)/);
+  assert.match(processor, /if \(safeSegments\.length === 0\) return base/);
+  assert.match(processor, /readable_transcript_segments: safeSegments/);
+  assert.match(processor, /\["queued", "processing"\][\s\S]*ReadableTranscriptPendingError/);
+  assert.match(processor, /releaseRunForReadableTranscriptPoll/);
+  assert.match(processor, /last_error_code = 'READABLE_TRANSCRIPT_PENDING'/);
+  assert.match(processor, /attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END/);
+  assert.match(processor, /verifierProvider\.verifyClaims\(\s*verificationContext/);
+  assert.match(provider, /not Evidence[\s\S]*authoritative raw transcript_segments IDs/i);
+  assert.match(processor, /readable_transcript_segments: verificationContext\.new_event\.readable_transcript_segments[\s\S]*stage: "verify"/);
+  assert.match(context, /readable_transcript_segments/);
+  assert.match(coreRepository, /metadata\.analysis_source === false \|\| metadata\.artifact_kind === "readable_transcript"/);
+  assert.match(coreRepository, /AI-readable transcripts cannot replace raw source material for fact extraction/);
+});
+
+test("Agent B keeps the first Readable Run when a later retry has a lower mutable attempt", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE event_ai_artifact_runs (
+      id TEXT PRIMARY KEY,
+      extraction_run_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error_code TEXT,
+      attempt_no INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE event_ai_artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      content_json TEXT
+    );
+    INSERT INTO event_ai_artifact_runs VALUES
+      ('earun-original', 'run-frozen', 'readable_transcript', 'failed', 'MODEL_OUTPUT_INVALID', 1, '2026-08-15T10:00:00.000Z'),
+      ('earun-retry', 'run-frozen', 'readable_transcript', 'succeeded', NULL, 0, '2026-08-15T10:05:00.000Z');
+    INSERT INTO event_ai_artifacts VALUES
+      ('artifact-retry', 'earun-retry', '{"schema_version":"readable-transcript.v1"}');
+  `);
+  const selected = database.prepare(`
+    SELECT ar.id, ar.status, ar.attempt_no, a.content_json
+      FROM event_ai_artifact_runs ar
+      LEFT JOIN event_ai_artifacts a ON a.run_id = ar.id
+     WHERE ar.extraction_run_id = ? AND ar.kind = 'readable_transcript'
+     ORDER BY ar.created_at ASC, ar.id ASC LIMIT 1
+  `).get("run-frozen");
+  assert.equal(selected.id, "earun-original");
+  assert.equal(selected.status, "failed");
+  assert.equal(selected.attempt_no, 1);
+  assert.equal(selected.content_json, null);
+});
+
+test("raw Transcript listing and human-added Evidence exclude readable derived segments", async () => {
+  const repository = await readFile(
+    new URL("../lib/server/db/ai-draft-repository.ts", import.meta.url),
+    "utf8",
+  );
+  const predicateMatch = repository.match(
+    /const RAW_TRANSCRIPT_ASSET_PREDICATE = `([\s\S]*?)`;/,
+  );
+  assert.ok(predicateMatch, "the raw Transcript boundary must be a shared SQL predicate");
+  const predicate = predicateMatch[1];
+
+  assert.match(predicate, /a\.kind IN \('transcript', 'text'\)/);
+  assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.analysis_source'\)/);
+  assert.match(predicate, /<> 0/);
+  assert.match(predicate, /json_extract\(a\.metadata_json, '\$\.artifact_kind'\)/);
+  assert.match(predicate, /<> 'readable_transcript'/);
+
+  const listBlock = repository.slice(
+    repository.indexOf("export async function listEventTranscriptSegments"),
+    repository.indexOf("export async function createManualClaim"),
+  );
+  const manualBlock = repository.slice(
+    repository.indexOf("export async function createManualClaim"),
+  );
+  for (const block of [listBlock, manualBlock]) {
+    assert.match(block, /JOIN assets a[\s\S]{0,180}a\.id = ts\.asset_id/);
+    assert.match(block, /\$\{RAW_TRANSCRIPT_ASSET_PREDICATE\}/);
+  }
+  assert.match(manualBlock, /selected passages are not raw Transcript evidence/);
+
+  // D1 uses SQLite semantics. Execute the exact production predicate against
+  // raw, readable, legacy-marked, and non-Transcript segment owners.
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE assets (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      metadata_json TEXT NOT NULL
+    );
+    CREATE TABLE text_segments (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL
+    );
+    INSERT INTO assets VALUES
+      ('raw-default', 'transcript', '{}'),
+      ('raw-explicit', 'transcript', '{"analysis_source":true}'),
+      ('readable-false', 'transcript', '{"analysis_source":false,"artifact_kind":"readable_transcript"}'),
+      ('readable-kind', 'transcript', '{"analysis_source":true,"artifact_kind":"readable_transcript"}'),
+      ('text-file', 'text', '{}'),
+      ('photo-file', 'photo', '{}');
+    INSERT INTO text_segments VALUES
+      ('seg-raw-default', 'raw-default', 'evt', 'ws', 0),
+      ('seg-raw-explicit', 'raw-explicit', 'evt', 'ws', 1),
+      ('seg-readable-false', 'readable-false', 'evt', 'ws', 2),
+      ('seg-readable-kind', 'readable-kind', 'evt', 'ws', 3),
+      ('seg-text-file', 'text-file', 'evt', 'ws', 4),
+      ('seg-photo-file', 'photo-file', 'evt', 'ws', 5);
+  `);
+  const rows = database.prepare(`
+    SELECT ts.id
+      FROM text_segments ts
+      JOIN assets a ON a.id = ts.asset_id
+     WHERE ts.event_id = ? AND ts.workspace_id = ?
+       AND ${predicate}
+     ORDER BY ts.ordinal
+  `).all("evt", "ws");
+  assert.deepEqual(rows.map((row) => row.id), [
+    "seg-raw-default",
+    "seg-raw-explicit",
+    "seg-text-file",
+  ]);
+});
+
+test("source-backed actions can precede fact completion without weakening Event scope", async () => {
+  const [repository, route] = await Promise.all([
+    readFile(new URL("../lib/server/db/ai-draft-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+  ]);
+  const manualBlock = repository.slice(
+    repository.indexOf("export async function createManualClaim"),
+  );
+
+  assert.match(
+    manualBlock,
+    /isEarlySourceBackedAction[\s\S]{0,100}input\.type === "next_action"/,
+    "only a next_action may use the Summary-first exception",
+  );
+  assert.match(
+    manualBlock,
+    /!uniqueSegmentIds\.length[\s\S]{0,180}EVIDENCE_SCOPE_INVALID/,
+    "the repository must reject an unbacked action even if a route is bypassed",
+  );
+  assert.match(
+    manualBlock,
+    /a\.workspace_id = ts\.workspace_id[\s\S]{0,120}a\.project_id = ts\.project_id[\s\S]{0,120}a\.event_id = ts\.event_id/,
+    "raw Evidence ownership must match the selected Segment at every scope level",
+  );
+  assert.match(
+    manualBlock,
+    /av\.id = ts\.asset_version_id AND av\.asset_id = a\.id/,
+    "the selected Segment's Asset Version must belong to its scoped Asset",
+  );
+  assert.match(
+    manualBlock,
+    /activeSummarySourceSegmentIds\([\s\S]{0,700}uniqueSegmentIds\.every\(\(segmentId\) => summarySegmentIds\.has\(segmentId\)\)/,
+    "an early action must cite source passages exposed by the active Summary",
+  );
+  assert.match(
+    route,
+    /segment_ids:\s*stringArray\(body\.segment_ids, "segment_ids", \{ min: 1, max: 8 \}\)/,
+    "the HTTP contract must also reject an action with no source",
+  );
+
+  const summaryQueryMatch = repository.match(
+    /async function activeSummarySourceSegmentIds[\s\S]*?\.prepare\(\s*`([\s\S]*?)`,\s*\)/,
+  );
+  assert.ok(summaryQueryMatch, "the active Summary query must remain inspectable");
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT
+    );
+    CREATE TABLE event_ai_artifact_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      extraction_run_id TEXT, kind TEXT, status TEXT
+    );
+    CREATE TABLE event_ai_artifacts (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      run_id TEXT, kind TEXT, artifact_version INTEGER, content_json TEXT, created_at TEXT
+    );
+    INSERT INTO extraction_runs VALUES
+      ('run-active', 'ws-a', 'project-a', 'event-a'),
+      ('run-other', 'ws-a', 'project-a', 'event-other');
+    INSERT INTO event_ai_artifact_runs VALUES
+      ('summary-active', 'ws-a', 'project-a', 'event-a', 'run-active', 'summary', 'succeeded'),
+      ('summary-other-event', 'ws-a', 'project-a', 'event-other', 'run-other', 'summary', 'succeeded'),
+      ('summary-wrong-scope', 'ws-b', 'project-a', 'event-a', 'run-active', 'summary', 'succeeded');
+    INSERT INTO event_ai_artifacts VALUES
+      ('artifact-active', 'ws-a', 'project-a', 'event-a', 'summary-active', 'summary', 1,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-active"]}]}]}', '2026-08-30T01:00:00.000Z'),
+      ('artifact-other-event', 'ws-a', 'project-a', 'event-other', 'summary-other-event', 'summary', 1,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-other"]}]}]}', '2026-08-30T01:00:00.000Z'),
+      ('artifact-wrong-scope', 'ws-b', 'project-a', 'event-a', 'summary-wrong-scope', 'summary', 2,
+       '{"sections":[{"items":[{"source_segment_ids":["seg-wrong"]}]}]}', '2026-08-30T02:00:00.000Z');
+  `);
+  const active = database.prepare(summaryQueryMatch[1]).get(
+    "ws-a",
+    "project-a",
+    "event-a",
+    "run-active",
+  );
+  assert.match(active.content_json, /seg-active/);
+  assert.doesNotMatch(active.content_json, /seg-other|seg-wrong/);
+  assert.equal(
+    database.prepare(summaryQueryMatch[1]).get("ws-a", "project-a", "event-a", "run-other"),
+    undefined,
+    "a Summary from another Event cannot unlock the early-action exception",
+  );
+});
+
+test("a human action can coexist with the later AI batch while a repeated AI batch stays blocked", async () => {
+  const processor = await readFile(
+    new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url),
+    "utf8",
+  );
+  const aiClaimGuard = processor.match(
+    /AND NOT EXISTS \(\s*(SELECT 1 FROM claims\s+WHERE extraction_run_id = r\.id AND source = 'ai')\s*\)/,
+  );
+  assert.ok(aiClaimGuard, "fact persistence must distinguish human actions from an existing AI batch");
+
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE claims (id TEXT PRIMARY KEY, extraction_run_id TEXT, source TEXT);
+    INSERT INTO claims VALUES ('human-action', 'run-active', 'human');
+  `);
+  const canPersist = database.prepare(
+    `SELECT NOT EXISTS (${aiClaimGuard[1].replaceAll("r.id", "?")}) AS allowed`,
+  );
+  assert.equal(canPersist.get("run-active").allowed, 1, "a source-backed human action must not block facts");
+  database.exec("INSERT INTO claims VALUES ('ai-fact', 'run-active', 'ai')");
+  assert.equal(canPersist.get("run-active").allowed, 0, "a repeated AI persistence batch must remain blocked");
+  assert.equal(canPersist.get("run-other").allowed, 1, "AI claims from another Run must not interfere");
+});
+
+test("source-backed action verdicts wait for terminal facts across single and batch endpoints", async () => {
+  const [verdicts, route] = await Promise.all([
+    readFile(new URL("../lib/server/db/verdict-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+  ]);
+  const fromSql = verdicts.match(
+    /const RUNNING_SOURCE_BACKED_ACTION_FROM_SQL = `([\s\S]*?)`;/,
+  );
+  const predicateSql = verdicts.match(
+    /const RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL = `([\s\S]*?)`;/,
+  );
+  assert.ok(fromSql && predicateSql, "the verdict lock must have one shared, inspectable scope predicate");
+
+  const singleVerdictBlock = verdicts.slice(
+    verdicts.indexOf("export async function applyClaimVerdict"),
+    verdicts.indexOf("export async function withdrawClaim"),
+  );
+  const batchVerdictBlock = verdicts.slice(
+    verdicts.indexOf("export async function applyBatchVerdicts"),
+    verdicts.indexOf("export async function applyOccurrenceVerdict"),
+  );
+  assert.match(
+    singleVerdictBlock,
+    /assertSourceBackedActionVerdictsReady\(scope, \[claimId\]\)[\s\S]*if \(input\.action === "confirm"\)/,
+    "the shared preflight must run before confirm, reject, or edit branches",
+  );
+  assert.equal(
+    [...singleVerdictBlock.matchAll(/sourceBackedActionVerdictGuardSql\(\)/g)].length,
+    3,
+    "confirm, reject, and edit must each repeat the lock inside their atomic D1 guard",
+  );
+  assert.match(batchVerdictBlock, /assertSourceBackedActionVerdictsReady\(/);
+  assert.match(batchVerdictBlock, /sourceBackedActionVerdictGuardSql\(\)/);
+  assert.match(verdicts, /assertSourceBackedActionVerdictsReady[\s\S]{0,1600}"RUN_STATE_CONFLICT"/);
+  assert.match(route, /segments\[0\] === "claims"[\s\S]{0,500}applyClaimVerdict\(/);
+  assert.match(route, /segments\[1\] === "batch-verdicts"[\s\S]{0,1600}applyBatchVerdicts\(/);
+
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE claims (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT,
+      extraction_run_id TEXT, source TEXT, type TEXT
+    );
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, active_run_id TEXT
+    );
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, workspace_id TEXT, project_id TEXT, event_id TEXT, status TEXT
+    );
+    INSERT INTO events VALUES
+      ('event-a', 'ws-a', 'project-a', 'run-a'),
+      ('event-b', 'ws-a', 'project-a', 'run-b');
+    INSERT INTO extraction_runs VALUES
+      ('run-a', 'ws-a', 'project-a', 'event-a', 'processing'),
+      ('run-b', 'ws-a', 'project-a', 'event-b', 'processing'),
+      ('run-cross-scope', 'ws-b', 'project-a', 'event-a', 'processing');
+    INSERT INTO claims VALUES
+      ('early-action', 'ws-a', 'project-a', 'event-a', 'run-a', 'human', 'next_action'),
+      ('ai-action', 'ws-a', 'project-a', 'event-a', 'run-a', 'ai', 'next_action'),
+      ('human-fact', 'ws-a', 'project-a', 'event-a', 'run-a', 'human', 'budget'),
+      ('other-event-action', 'ws-a', 'project-a', 'event-a', 'run-b', 'human', 'next_action'),
+      ('cross-scope-action', 'ws-a', 'project-a', 'event-a', 'run-cross-scope', 'human', 'next_action');
+  `);
+  const blocked = database.prepare(`
+    SELECT EXISTS (
+      SELECT 1
+      ${fromSql[1]}
+      WHERE protected_claim.workspace_id = ? AND protected_claim.id = ?
+        AND ${predicateSql[1]}
+    ) AS blocked
+  `);
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1);
+  assert.equal(blocked.get("ws-a", "ai-action").blocked, 0, "AI Claims keep their existing verdict contract");
+  assert.equal(blocked.get("ws-a", "human-fact").blocked, 0, "the exception remains narrow to next_action");
+  assert.equal(blocked.get("ws-a", "other-event-action").blocked, 0, "another Event's Run cannot lock this Claim");
+  assert.equal(blocked.get("ws-a", "cross-scope-action").blocked, 0, "a Run from another workspace cannot lock this Claim");
+
+  for (const terminal of ["succeeded", "completed_with_warnings", "failed", "cancelled"]) {
+    database.prepare("UPDATE extraction_runs SET status = ? WHERE id = 'run-a'").run(terminal);
+    assert.equal(blocked.get("ws-a", "early-action").blocked, 0, `${terminal} must unlock verdicts`);
+  }
+  database.prepare("UPDATE extraction_runs SET status = 'queued' WHERE id = 'run-a'").run();
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1, "queued facts are still non-terminal");
+  database.prepare("UPDATE extraction_runs SET status = 'unexpected' WHERE id = 'run-a'").run();
+  assert.equal(blocked.get("ws-a", "early-action").blocked, 1, "an unknown non-terminal state must fail closed");
+});
+
+test("Summary source loading accepts raw Transcript and pasted text but excludes readable derived segments", async () => {
+  const repository = await readFile(
+    new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url),
+    "utf8",
+  );
+  const predicateMatch = repository.match(
+    /const RAW_ARTIFACT_SOURCE_ASSET_PREDICATE = `([\s\S]*?)`;/,
+  );
+  assert.ok(predicateMatch, "Summary source loading must have an explicit raw-only predicate");
+  const predicate = predicateMatch[1];
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE assets (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      metadata_json TEXT NOT NULL
+    );
+    INSERT INTO assets VALUES
+      ('raw-transcript', 'transcript', '{}'),
+      ('pasted-text', 'text', '{}'),
+      ('raw-explicit', 'transcript', '{"analysis_source":true}'),
+      ('readable-false', 'transcript', '{"analysis_source":false,"artifact_kind":"readable_transcript"}'),
+      ('readable-kind', 'transcript', '{"analysis_source":true,"artifact_kind":"readable_transcript"}'),
+      ('photo', 'photo', '{}');
+  `);
+  const rows = database.prepare(`SELECT id FROM assets a WHERE ${predicate} ORDER BY id`).all();
+  assert.deepEqual(rows.map((row) => row.id), ["pasted-text", "raw-explicit", "raw-transcript"]);
+  assert.match(repository, /ts\.event_id = \? AND ts\.workspace_id = \?/);
+  assert.match(repository, /AND \$\{RAW_ARTIFACT_SOURCE_ASSET_PREDICATE\}/);
+  assert.match(repository, /expectedInputHash[\s\S]*ARTIFACT_INPUT_HASH_CHANGED/);
+  assert.match(repository, /JOIN extraction_runs er[\s\S]*er\.event_id = ar\.event_id/);
+  assert.match(repository, /av\.content_sha256[\s\S]*a\.workspace_id = \?[\s\S]*a\.project_id = \?[\s\S]*a\.event_id = \?/);
+  assert.match(repository, /ARTIFACT_INPUT_MANIFEST_CHANGED/);
+});
+
+test("project deletion is reversible, stops active jobs instead of refusing, and deletes R2 before D1", async () => {
+  const [repository, route, uiSource] = await Promise.all([
+    readFile(new URL("../lib/server/db/core-repository.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  // 预览仍然数在跑的任务，但只是告知；删的时候在同一批里把它们停下。
+  assert.match(repository, /event_ai_artifact_runs[\s\S]*AS active_job_count/);
+  assert.match(repository, /\.\.\.runCancellationBatch\("project"[\s\S]*UPDATE projects SET deleted_at/);
+  assert.match(repository, /INSERT INTO mutation_guards[\s\S]*UPDATE projects SET deleted_at/);
+  assert.match(repository, /Promise\.all\(\[\s*\.\.\.keyRows\.map[\s\S]*DELETE FROM projects/);
+  assert.match(repository, /project-purge:\$\{projectId\}[\s\S]*NOT EXISTS \(SELECT 1 FROM mutation_guards WHERE id = \?\)/);
+  assert.match(repository, /Stored project files could not be fully deleted[\s\S]*remains locked in the recycle bin/);
+  assert.match(route, /segments\[1\] === "trash"/);
+  assert.match(route, /segments\[2\] === "restore"/);
+  assert.match(route, /segments\[2\] === "permanent"/);
+  // 永久删除不再要求手打项目名，名字由界面带给服务端核对。
+  assert.doesNotMatch(uiSource, /输入完整项目名称确认/);
+  assert.match(uiSource, /onPermanentDelete\(permanentTarget, permanentTarget\.name\)/);
+  assert.match(uiSource, /已移到回收站[\s\S]*撤销/);
+});
+
+test("an invalid model output is retried under the attempt cap, not failed on sight", async () => {
+  // Observed in production: the summary for a real recording failed schema
+  // validation on attempt 1 and succeeded on an identical retry — but the run
+  // had already been failed terminally, so the reader had to notice it and
+  // press 单独重新生成 for work the system could have redone itself.
+  const jobs = await readFile("lib/server/jobs/event-ai-artifacts.ts", "utf8");
+  assert.match(jobs, /if \(error instanceof ModelOutputInvalidError && await retryInvalidOutput\(run, owner, error\)\) \{/,
+    "an invalid run output must get a bounded retry before failRun");
+  assert.match(jobs, /Number\(run\.attempt_no\) < MAX_CREATE_ATTEMPTS/,
+    "the retry is capped by the same attempt budget as every other create");
+  // Resuming the same provider response returns the same invalid output, so
+  // the retry has to ask for a new one — and that is also what makes the
+  // lease count the attempt.
+  assert.match(jobs, /SET status = 'queued', provider_request_id = NULL/);
+  assert.match(jobs, /transient\(error\) \|\| error instanceof ModelOutputInvalidError,/,
+    "readable chunks get the same bounded retry");
+  // 无效输出和被取消的卡住响应都要从新响应重做，两者都计入上限。
+  assert.match(jobs, /const attemptsExpired = \(chunk\.provider_request_id == null \|\| invalidOutput \|\| stalled\)/,
+    "an invalid chunk retry still counts against the cap");
+});
+
+test("reading uses one original document even when a readable artifact exists", () => {
+  assert.match(uiSource, /const readerTab = "raw"/);
+  assert.doesNotMatch(uiSource, /className="artifact-panel readable-artifact"/);
+});
+
+test("产物指纹在创建、校验、重试三处算得完全一样", async () => {
+  const source = await readFile(
+    new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url),
+    "utf8",
+  );
+  // 这三处各自 JSON.stringify 一个对象再哈希，字段顺序和取值必须逐字一致。
+  // 其中任意一处多带一个字段，那条路径产出的产物就会在另一条路径上被判定
+  // 输入已变。线上表现是每一个新建的阅读产物一领取就失败，五个视图全灭。
+  const bodies = [...source.matchAll(/hashText\(JSON\.stringify\(\{([\s\S]*?)\}\)\)/g)]
+    .map((match) => match[1])
+    .filter((body) => body.includes("input_manifest"));
+  assert.equal(bodies.length, 3, "创建、校验、重试三处，少一处说明有人删了或加了第四处");
+
+  const shape = (body) => body
+    .split("\n")
+    .map((line) => line.trim())
+    // 只留真正的字段行：空行和注释不算。`kind,` 这种简写属性没有冒号，
+    // 但它同样是一个字段，不能漏掉。
+    .filter((line) => line && !line.startsWith("//") && !line.startsWith("*"))
+    .map((line) => line.split(":")[0].replace(/,$/, "").trim())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  const [first, ...rest] = bodies.map(shape);
+  for (const other of rest) assert.equal(other, first, "三处的字段集合必须相同");
+
+  // extraction_run_id 绝不能回来：抽取重试会换 id，带上它等于退回按
+  // run 取身份，已经成功的产物会被整份重做一遍。
+  for (const body of bodies) {
+    assert.ok(!body.includes("extraction_run_id"), "指纹里不该有 extraction_run_id");
+  }
+});
+
+test("重试按种类取契约版本，不再把四个阅读视图当成易读稿", async () => {
+  const source = await readFile(
+    new URL("../lib/server/db/event-ai-artifact-repository.ts", import.meta.url),
+    "utf8",
+  );
+  // 旧写法是 kind === "summary" ? 摘要版本 : 易读稿版本，只认两种；
+  // 章节、发言总结、要点回顾、概要重试一次就会被写上易读稿的契约版本。
+  assert.doesNotMatch(source, /kind === "summary" \? EVENT_SUMMARY_PROMPT_VERSION/);
+  assert.match(source, /const contract = EVENT_AI_ARTIFACT_CONTRACTS\[kind\]/);
+});
+
+
+test("重试路由认全部可生产的阅读种类，不认旧的 summary", async () => {
+  const route = await readFile(new URL("../app/api/v1/[...segments]/route.ts", import.meta.url), "utf8");
+  // 曾手写成两种，四个阅读视图拆出来后没跟上，界面上的重新生成对它们一直 400。
+  assert.doesNotMatch(route, /const ARTIFACT_KINDS = \["summary", "readable_transcript"\]/);
+  assert.match(route, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)/);
+  const { READING_ARTIFACT_DEFINITIONS } = await import("../lib/domain/reading-pipeline.ts");
+  const kinds = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind);
+  for (const kind of ["chapters", "speakers", "key_points", "overview"]) {
+    assert.ok(kinds.includes(kind), `${kind} 必须可重试`);
+  }
+  assert.ok(!kinds.includes("summary"));
+  // 易读逐字稿已经删掉，不再生产，也就没有重试。
+  assert.ok(!kinds.includes("readable_transcript"));
+});
+
+test("生成阅读总结按钮只重试失败的种类，不再传 summary", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /onRetryArtifact\(event\.id, "summary"\)/);
+  const fn = page.slice(page.indexOf("async function retrySummaryArtifact"), page.indexOf("async function startAnalysisAndLoadArtifacts"));
+  for (const kind of ["chapters", "speakers", "key_points", "overview"]) {
+    assert.ok(fn.includes(`"${kind}"`), `按钮必须考虑 ${kind}`);
+  }
+  // 易读逐字稿删掉了，再传它服务端会 400。
+  assert.ok(!fn.includes('"readable_transcript"'));
+  assert.match(fn, /status === "failed" \|\| status == null/);
+  assert.match(fn, /if \(failed\.length\) await onRetryReading\(event\.id, failed\)/);
+  const parent = page.slice(page.indexOf("async function retryReadingArtifacts"), page.indexOf("async function retryEventAiArtifact("));
+  assert.match(parent, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)\.filter/);
+});
+
+
+test("被模型抄坏尾巴的段落 id 会被拉回真实 id，其它损坏照旧无效", async () => {
+  const { repairSegmentId } = await import("../lib/domain/event-ai-artifacts.ts");
+  const known = new Set(["seg_av_bde464811f9f48b58f6db609665c3319_00104", "seg_av_x_00105"]);
+  // 线上见过的形态：尾巴多一个字符。修回来。
+  assert.equal(repairSegmentId("seg_av_bde464811f9f48b58f6db609665c3319_00104タ", known), "seg_av_bde464811f9f48b58f6db609665c3319_00104");
+  assert.equal(repairSegmentId("seg_av_x_00105 ", known), "seg_av_x_00105");
+  assert.equal(repairSegmentId("seg_av_x_00105.", known), "seg_av_x_00105");
+  // 已经合法的原样返回。
+  assert.equal(repairSegmentId("seg_av_x_00105", known), "seg_av_x_00105");
+  // 去掉尾巴后不是任何真实 id：不修，让严格校验去拒绝。掉字、换字都属于这类。
+  assert.equal(repairSegmentId("seg_av_x_0010タ", known), "seg_av_x_0010タ");
+  assert.equal(repairSegmentId("seg_av_x_00106", known), "seg_av_x_00106");
+  // 绝不能把一个 id 修成另一个真实 id 的前缀之外的东西：只允许去尾，不允许截断合法字符。
+  assert.equal(repairSegmentId("seg_av_x_001059", known), "seg_av_x_001059");
+});
+
+test("概要条目的引用校验会先做去尾修复，再严格校验", async () => {
+  const source = await readFile(new URL("../lib/domain/event-ai-artifacts.ts", import.meta.url), "utf8");
+  // 修复只在拿到 rawById 的那条校验路径上生效，其它调用 segmentIds 的地方不受影响。
+  assert.match(source, /segmentIds\(item\.source_segment_ids, `\$\{itemPath\}\.source_segment_ids`, issues, 24, rawById\)/);
+  assert.match(source, /const id = known \? repairSegmentId\(raw, known\) : raw;/);
+});
+
+
+test("等上游或等下一批分块时放回队列，不消耗尝试次数", async () => {
+  const job = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  // leaseRun 领取时加一，放回时对称地减一；否则下游等易读稿那几分钟里被领
+  // 十来次，attempt_no 越过上限，模型第一次抄错就被判死。
+  assert.match(job, /attempt_no = attempt_no \+ CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END/);
+  const release = job.slice(job.indexOf("async function releaseForNextReadableChunk"), job.indexOf("async function parkReadableChunkFailure"));
+  assert.match(release, /attempt_no = MAX\(0, attempt_no - CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END\)/);
+  // 等上游的放回走的就是这个函数，且延时不再是十五秒。
+  assert.match(job, /readiness\.state === "wait"[\s\S]{0,260}releaseForNextReadableChunk\(run, owner, 0, 0, 5_000\)/);
+});
+
+test("阅读区在整理期间显示五步进度，只看每种最新一次运行", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const block = page.slice(page.indexOf("const readingProgress = useMemo"), page.indexOf("}, [runs, artifactRunning]);"));
+  assert.match(block, /READING_ARTIFACT_DEFINITIONS\.map/);
+  assert.match(block, /run\.created_at > best\.created_at \? run : best/);
+  // 全部完成后进度条收起，不留一个 5/5 挂在那里。
+  assert.match(block, /active: artifactRunning && done < steps\.length/);
+  assert.match(page, /readingProgress\.active && <div className="reading-progress"/);
+});
+
+
+test("后台响应卡住：产物和分块都丢掉旧 id 重发，抽取阶段标失败后开新尝试", async () => {
+  const job = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
+  assert.match(job, /const ARTIFACT_BACKGROUND_STALL_MS = 5 \* 60_000;/);
+  assert.equal((job.match(/backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS/g) || []).length, 2);
+  assert.match(job, /error instanceof ModelBackgroundStalledError \|\|/);
+  assert.match(job, /provider_request_id = CASE WHEN \? THEN NULL ELSE provider_request_id END[\s\S]{0,700}error instanceof ModelBackgroundStalledError \? 1 : 0/);
+  assert.match(job, /!terminal && \(invalidOutput \|\| stalled\) \? 1 : 0/);
+
+  const processor = await readFile(new URL("../lib/server/jobs/extraction-processor.ts", import.meta.url), "utf8");
+  const stalledBranch = processor.slice(processor.indexOf("if (error instanceof ModelBackgroundStalledError) {"), processor.indexOf("if (isTransientModelError(error)) {"));
+  assert.match(stalledBranch, /status: "failed"/);
+  assert.match(stalledBranch, /providerRequestId: null/);
+  // 清点、核对、两处重核，四个阶段调用点都带预算。
+  assert.equal((processor.match(/backgroundStallMs: timeoutMs \?\? MAX_AI_TIMEOUT_MS/g) || []).length, 4);
+});

@@ -2,21 +2,25 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import {
-  dispatchDueOutbox,
   dispatchExtractionRun,
+  recoverAndDispatch,
   sweepAndDispatch,
 } from "@/lib/server/jobs/outbox";
 import {
   dispatchTranscriptionRun,
-  wakeTranscriptionRun,
 } from "@/lib/server/jobs/transcription-outbox";
+import {
+  dispatchEventAiArtifactRun,
+  dispatchEventAiArtifactsForExtraction,
+  sweepAndDispatchEventAiArtifacts,
+} from "@/lib/server/jobs/event-ai-artifacts";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   EVIDENCE: R2Bucket;
   APP_ENV?: string;
-  AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
+  AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
   INTERNAL_WORKSPACE_ID?: string;
   IMAGES: {
     input(stream: ReadableStream): {
@@ -54,13 +58,75 @@ function dispatchError(
   });
 }
 
-type DispatchKind = "extraction" | "transcription";
+function streamTranscriptionDispatch(
+  workspaceId: string,
+  runId: string,
+  requestId: string,
+  runStatus: string,
+): Response {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const write = (value: unknown) => controller.enqueue(
+        encoder.encode(JSON.stringify(value)),
+      );
+      // Send whitespace immediately and every ten seconds. This keeps the
+      // browser/proxy connection active while the long audio request runs;
+      // the final JSON remains valid because JSON permits surrounding space.
+      controller.enqueue(encoder.encode("\n"));
+      heartbeat = setInterval(() => controller.enqueue(encoder.encode("\n")), 10_000);
+      void dispatchTranscriptionRun(workspaceId, runId)
+        .then(() => {
+          if (heartbeat) clearInterval(heartbeat);
+          write({
+            data: { accepted: true, kind: "transcription", run_id: runId, run_status: runStatus },
+            request_id: requestId,
+          });
+          controller.close();
+        })
+        .catch((error) => {
+          if (heartbeat) clearInterval(heartbeat);
+          write({
+            error: {
+              code: "INTERNAL_ERROR",
+              message: error instanceof Error ? error.message : "The background task could not be accepted.",
+            },
+            request_id: requestId,
+          });
+          controller.close();
+        });
+    },
+    cancel() {
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    status: 202,
+    headers: {
+      "cache-control": "private, no-store",
+      "content-type": "application/json; charset=utf-8",
+      "x-request-id": requestId,
+      "x-notique-dispatch-stream": "transcription",
+    },
+  });
+}
 
-async function dispatchInput(
-  request: Request,
-): Promise<{ kind: DispatchKind; runId: string } | null> {
+type DispatchKind = "extraction" | "transcription" | "artifact";
+
+type DispatchInput =
+  | { kind: DispatchKind; runId: string }
+  /**
+   * The workspace recovery heartbeat. `eventId` is the Event on screen, and
+   * the only scope in which a browser may commission new paid analysis: an
+   * unscoped heartbeat finishes work already asked for and commissions
+   * nothing, so opening the app cannot spend money on projects nobody opened.
+   */
+  | { heartbeatEventId: string | null };
+
+async function dispatchInput(request: Request): Promise<DispatchInput> {
   const text = await request.text();
-  if (!text.trim()) return null;
+  if (!text.trim()) return { heartbeatEventId: null };
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -71,8 +137,14 @@ async function dispatchInput(
     throw new Error("BAD_REQUEST");
   }
   const body = value as Record<string, unknown>;
+  if (body.kind === undefined && body.run_id === undefined) {
+    const eventId = typeof body.event_id === "string" && body.event_id.trim() && body.event_id.length <= 128
+      ? body.event_id
+      : null;
+    return { heartbeatEventId: eventId };
+  }
   if (
-    (body.kind !== "extraction" && body.kind !== "transcription") ||
+    (body.kind !== "extraction" && body.kind !== "transcription" && body.kind !== "artifact") ||
     typeof body.run_id !== "string" ||
     !body.run_id.trim() ||
     body.run_id.length > 128
@@ -116,7 +188,9 @@ const worker = {
       if (env.APP_ENV !== "local") {
         const origin = request.headers.get("origin");
         const sameOrigin = origin === url.origin && request.headers.get("sec-fetch-site") === "same-origin";
-        const authenticated = env.AUTH_GATEWAY === "cloudflare-access"
+        const authenticated = env.AUTH_GATEWAY === "public"
+          ? true
+          : env.AUTH_GATEWAY === "cloudflare-access"
           ? Boolean(
               request.headers.get("cf-access-jwt-assertion") &&
               request.headers.get("cf-access-authenticated-user-email"),
@@ -126,23 +200,47 @@ const worker = {
               request.headers.get("oai-authenticated-user-email"),
             );
         if (!sameOrigin || !authenticated) {
-          return dispatchError(401, "UNAUTHORIZED", "A signed-in same-origin request is required.", requestId);
+          return dispatchError(401, "UNAUTHORIZED", "A same-origin browser request is required.", requestId);
         }
       }
       try {
         const input = await dispatchInput(request);
-        if (!input) {
-          // Compatibility for older clients. New callers always provide a
-          // target so one user's click cannot be delayed by an unrelated job.
-          // Only Responses background polling is safe in an HTTP waitUntil;
-          // long audio transcription is owned by the one-minute Cron trigger.
-          ctx.waitUntil(dispatchDueOutbox());
+        if ("heartbeatEventId" in input) {
+          // An untargeted kick is the workspace's recovery heartbeat. It used
+          // to dispatch the extraction outbox and nothing else, because the
+          // rest was "owned by the one-minute Cron trigger" — which does not
+          // fire here: an extraction Run created while nothing watched stayed
+          // 'queued' and untouched indefinitely, and Events whose transcripts
+          // had been ready for days had no Run at all. Every stage is
+          // lease-guarded and idempotent, so any number of open tabs can run
+          // it, and the Cron may still run it too. It finishes work someone
+          // already asked for; new analysis is commissioned only for the Event
+          // the heartbeat names, so opening the app never spends money on a
+          // project nobody opened. Long audio stays out: the page drives that
+          // through the targeted streaming dispatch.
+          ctx.waitUntil(Promise.allSettled([
+            recoverAndDispatch(input.heartbeatEventId
+              ? { commission: { eventId: input.heartbeatEventId } }
+              : undefined),
+            sweepAndDispatchEventAiArtifacts(),
+          ]).then((results) => {
+            for (const result of results) {
+              if (result.status === "rejected") {
+                console.error("recovery_heartbeat_failed", {
+                  request_id: requestId,
+                  message: result.reason instanceof Error ? result.reason.message : "Unexpected error",
+                });
+              }
+            }
+          }));
           return dispatchResponse({ accepted: true, kind: "all" }, requestId, 202);
         }
         const workspaceId = env.INTERNAL_WORKSPACE_ID || "ws_internal";
         const table = input.kind === "extraction"
           ? "extraction_runs"
-          : "transcription_runs";
+          : input.kind === "transcription"
+            ? "transcription_runs"
+            : "event_ai_artifact_runs";
         const run = await env.DB
           .prepare(`SELECT status FROM ${table} WHERE id = ? AND workspace_id = ?`)
           .bind(input.runId, workspaceId)
@@ -151,7 +249,19 @@ const worker = {
           return dispatchError(404, "PROJECT_SCOPE_VIOLATION", "Run was not found.", requestId);
         }
         if (input.kind === "extraction") {
-          ctx.waitUntil(dispatchExtractionRun(workspaceId, input.runId).catch((error) => {
+          ctx.waitUntil(Promise.all([
+            dispatchExtractionRun(workspaceId, input.runId),
+            dispatchEventAiArtifactsForExtraction(workspaceId, input.runId),
+          ]).catch((error) => {
+            console.error("targeted_dispatch_failed", {
+              request_id: requestId,
+              kind: input.kind,
+              run_id: input.runId,
+              message: error instanceof Error ? error.message : "Unexpected error",
+            });
+          }));
+        } else if (input.kind === "artifact") {
+          ctx.waitUntil(dispatchEventAiArtifactRun(workspaceId, input.runId).catch((error) => {
             console.error("targeted_dispatch_failed", {
               request_id: requestId,
               kind: input.kind,
@@ -171,10 +281,11 @@ const worker = {
             });
           }));
         } else {
-          // The audio endpoint has no OpenAI Background Response ID. Keep its
-          // durable outbox due and let the every-minute scheduled invocation,
-          // which has a 15-minute wall-time budget, perform the provider call.
-          await wakeTranscriptionRun(workspaceId, input.runId);
+          // Audio transcription has no OpenAI Background Response ID. Keep
+          // this HTTP invocation open with heartbeats while the existing Run
+          // is processed; the browser can then wait without an idle proxy
+          // timeout, and the outbox lease prevents duplicate providers.
+          return streamTranscriptionDispatch(workspaceId, input.runId, requestId, run.status);
         }
         return dispatchResponse({
           accepted: true,
@@ -190,7 +301,7 @@ const worker = {
           return dispatchError(
             400,
             "BAD_REQUEST",
-            "kind and run_id must identify an extraction or transcription Run.",
+            "kind and run_id must identify an extraction, transcription, or AI artifact Run.",
             requestId,
           );
         }
@@ -205,7 +316,7 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
   scheduled(_controller: unknown, _env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(sweepAndDispatch());
+    ctx.waitUntil(Promise.all([sweepAndDispatch(), sweepAndDispatchEventAiArtifacts()]));
   },
 };
 

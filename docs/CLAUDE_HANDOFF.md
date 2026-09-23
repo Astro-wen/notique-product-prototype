@@ -1,18 +1,28 @@
 # Notique 交接文档：给 Claude
 
-更新日期：2026 年 8 月 12 日
+> **历史归档：不要作为当前产品或发布基线。** 当前接手入口是 `docs/CODEX_PROJECT_HANDOFF.md`；下文保留 v23 和早期买方场景记录，仅用于追溯。
+
+更新日期：2026 年 8 月 16 日
+
+## 当前发布基线（优先于下文历史 v18 记录）
+
+Sites v23 已发布到原有公开 URL，精确源码提交为 `db556104ef1a58da38c08ad3c1fab697f5405f02`。发布包由该提交重新构建并通过 343/343 自动化、空库迁移、生产构建和敏感信息审计；生产 `AI_DRAFT_CONTEXT=0`。公开站已完成桌面与 390px 浏览器走查，控制台和最近 Worker 错误日志为空。
+
+本轮隔离 Realtor A/B 的目的首先是验证编排安全。Control 完成，Treatment 在最后一场遇到基础 Verify 与唯一升级 Verify 均合同无效后按停止门结束；没有可比较的 Precision/Recall 质量结论，也没有切换生产草稿开关。失败和升级调用的用量均已落库，未留下 processing 孤儿。下一步是修复该模型合同/样本问题后，从新的干净提交重新跑完整双臂，并由人工完成裁决。
+
+GitHub 当前仍因本机登录失效未同步；这不影响 Sites v23 已发布。恢复登录后必须把完全相同的提交和文档同步到 GitHub，再更新这里的 SHA。
 
 读完这份文档后，接手者应当可以继续当前工作，不需要从聊天记录重新猜项目目标。
 
 ## 1. 项目一句话说明
 
-Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、录音、照片和文件中生成 AI 初稿；人确认后，内容才进入长期记忆、变化时间线和会前报告。
+Notique 是一个面向买方经纪人的“带证据客户旅程记忆”MVP：它从同一买家的多次 Transcript、录音、照片和文件中生成可立即使用的 AI 初稿；人确认后，内容才进入可信记忆、变化时间线、行动和会前报告。
 
 项目不是一般的会议摘要器。最关键的产品边界是：
 
 1. AI 初稿与人工确认后的正式结果必须分开。
 2. 每条正式事实必须可以回到原始 Evidence。
-3. 后续沟通只能继承已经确认的内容。
+3. 默认后续沟通只继承已经确认的内容。灰度双层记忆只能把旧草稿作为 Agent B 的不可信提示，不能污染 Verified Ledger。
 4. Relation 必须由人接受或拒绝，不能因为确认 Claim 就自动生效。
 5. 报告只读 Verified Ledger，不允许 Pending 或 Rejected 泄漏。
 
@@ -29,15 +39,21 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 7. Preference 当前状态与历史变化。
 8. 使用一段公开许可的业务会议音频做小规模真实验证。
 9. 更新 Eric 可读文档、用户说明和验收清单。
+10. 原始 Transcript、易读 Transcript 和 AI Summary 三层分离。
+11. Project soft delete、回收站、恢复和 R2-first 永久删除。
+12. 买方客户固定场景、十类客户旅程覆盖字段和“客户进展”双层页面。
+13. Pending 不再阻止下一次沟通；上传、导入和整组流程中的下一条材料就绪后自动分析，失败时才需要用户重试。
+14. `next_action` 站内行动、负责人、期限和人工完成记录。
+15. Context Pack v3 / Verification v4 / Prompt v9 的 Draft Link 安全边界；`AI_DRAFT_CONTEXT=0` 默认关闭。
 
 ### 2.2 保留不动的核心规则
 
 1. Agent A 使用 Luna `xhigh`。
 2. Agent B 使用 Luna `high`，仅在确定性条件触发时升级 `xhigh`。
 3. 两个 Agent 共用一个 OpenAI API Key。
-4. 不取消 Claim、Occurrence、Evidence 或 Relation 人工审核。
+4. 不取消 Claim、Occurrence、Evidence 或 Relation 的人工决定，但不再强迫用户在继续下一场前全部处理完。
 5. 不重写 Ledger、模型合同和核心数据层。
-6. 不增加“文案整理 Agent”。
+6. 不增加会改写正式报告的“文案整理 Agent”；Summary 与 Transcript Refiner 只生成阅读辅助，不能写入 Verified Ledger。
 7. 不以降低 reasoning effort 换速度。
 
 ### 2.3 这轮不做
@@ -62,8 +78,18 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 8. Evidence context 合同默认返回目标句前两段和后两段，并支持精确高亮与音频定位。
 9. Timeline moments 表达新增、取代、解决、矛盾、再次确认和撤回。
 10. Preference 数据提供当前值、条件、决策人、首次出现、最近确认和历史变化。
+11. Summary Agent 与 Transcript Refiner 均使用 Luna `high` 和 OpenAI Background Responses；它们与事实识别并行、独立失败和独立重试。
+12. 易读稿对原始 Segment 做 100% 映射，长会议按最多 120 段或约 45,000 字符分块续跑；最终全局校验遗漏、重复、顺序、金额、日期、数量和否定词。
+13. Agent A 继续 raw-only；Agent A 与 readable 并行启动，Agent B 在 inventory 成功后等待 readable terminal，复用 inventory 而不重复付费。Readable failed 才 raw-only fallback；正式 Evidence 仍引用原始 Segment。
+14. 项目支持 soft delete、回收站恢复和永久删除。永久删除使用持久 purge lock，并先删 R2 再删 D1，避免恢复和清理并发造成半删除状态。
 
-上述代码已经发布为 Sites v17。桌面端已用现有 Verified 数据完成线上只读验收：
+Summary、Transcript Refiner 和项目回收站已经发布为 Sites v18：当次空库迁移、生产构建、敏感信息审计和 `npm test` 259/259 通过；正式站已验证桌面与 390px 布局、Transcript 三视图，以及空项目删除、恢复和永久删除。尚未付费生成真实 Summary/易读稿，因此只能写成“live 工程与交互通过、模型质量待验收”。
+
+第 12–15 项中与买方旅程、可选核对、站内行动和双层记忆有关的新增代码，是 **Sites v18 之后的本地未发布改动**。当前 `npm test` 为 265/265，类型、Lint、生产 Build、空库 Migration 和发布包敏感信息检查均通过。不要把这段写成已经上线；也不要把自动化通过写成 Realtor 质量门通过。
+
+新 Run 的版本锁定为：Prompt v9、Context Pack v3、Inventory v3、Verification v4、最终 Claim Extraction v3。Agent A 仍为 Luna `xhigh`，Agent B 仍为 Luna `high`。旧 v8.2 和 v7 Run 只作为历史证据，不能与 v9 分数直接合并。
+
+上述代码已经更新为 Sites v18。桌面端继续使用现有 Verified 数据完成线上只读验收：
 
 1. Timeline 显示纵向轨道、节点、Speaker 和 `mm:ss` 时间点。
 2. 从 Timeline 打开已确认 Claim 后，URL 保留 `origin=results` 和 `originTab=timeline`，页面显示“返回时间线”，且不出现连续审核队列。
@@ -72,11 +98,11 @@ Notique 是一个“带证据的长期项目记忆”MVP：它从 Transcript、�
 5. Evidence 精确标记目标句，默认展示前两段和后两段；音频从目标时间前约 3 秒开始播放。
 6. 本轮桌面检查期间浏览器控制台为 0 error。
 
-手机样式和自动化合同已通过，但内置浏览器的 viewport override 实际仍保持 1280px 宽，因此这不是手机真人验收。必须在真实手机浏览器补测，相关项目不能提前勾选。独立代码审计没有发现 P0/P1，工程测试 250 项全绿。
+手机样式和自动化合同已通过，但内置浏览器的 viewport override 实际仍保持 1280px 宽，因此这不是手机真人验收。必须在真实手机浏览器补测，相关项目不能提前勾选。当前本地代码工程测试为 265/265；这不替代手机真人验收。
 
 Extraction 的长模型请求已经改用 OpenAI Responses Background mode。每个阶段先以 `background: true` 创建 Response，把 Response ID 持久化，再由同一 Outbox 任务通过 `GET /responses/:id` 恢复查询；`queued` 或 `in_progress` 不会再次 POST 一个付费 Response。这样不会要求一次 Cloudflare 请求一直等待完整的 Luna `xhigh` 推理，也不会因为重复唤醒创建第二个模型任务。每分钟 Cron 仍是最后兜底。
 
-Sites v17 发布后尚未通过这套新 Background 架构发起新的付费 Run。当前只能写“代码、自动测试和桌面只读线上验收通过”，不能写成“线上付费处理已通过”。
+Sites v18 发布后尚未通过这套新 Background 架构发起新的付费 Run。当前只能写“v18 代码、自动测试、三层 Transcript UI、项目管理和桌面只读线上验收通过”；买方旅程 v9 改动仍未发布，不能写成“线上付费处理或双层记忆质量已通过”。
 
 ### 3.2 速度问题的准确解释
 
@@ -103,7 +129,7 @@ AMI `ES2002a` 已经跑完一次完整 Notique 流程，且 8 条 Ground Truth �
 - 完整应用：[https://notique-evidence-workspace.uclae2e12.chatgpt.site/](https://notique-evidence-workspace.uclae2e12.chatgpt.site/)
 - GitHub：[https://github.com/Astro-wen/notique-product-prototype](https://github.com/Astro-wen/notique-product-prototype)
 - GitHub Pages 静态入口：[https://astro-wen.github.io/notique-product-prototype/](https://astro-wen.github.io/notique-product-prototype/)
-- 线上代码基线：GitHub `main` 提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`
+- Sites v18 源码基线：`1202a5d2778157e11571e3deb752a65007d5087b`。GitHub `main` 仍为 `9751edfb7fd4ab8193cb9aa72134a5c9296d57b1`，本机 GitHub 登录失效后尚未同步。
 
 GitHub Pages 只是跳转页，不能处理上传、数据库或 AI 请求。完整交互必须在 ChatGPT Sites 运行。
 
@@ -200,7 +226,7 @@ Verified Ledger
 - 时长：约 21 分钟
 - 许可：CC BY 4.0
 - 原始音频：`ES2002a.Mix-Headset.wav`
-- 产品输入：AAC M4A，小于 25 MB
+- 产品输入：AAC M4A，小于 100 MB
 - 官方来源：<https://groups.inf.ed.ac.uk/ami/>
 - 官方音频：<https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2002a/audio/ES2002a.Mix-Headset.wav>
 
@@ -244,7 +270,7 @@ Raw final 10 的另外四条也能在 Transcript 找到依据，但不在预先�
 ### 7.4 下一次付费复跑注意
 
 1. Ground Truth 和原始历史分数保持冻结，不能根据第一次输出改题。
-2. 使用同一 AMI 音频、Prompt v8.2、Schema v3 和同样的 `xhigh/high` 配置。
+2. 若验证当前产品，使用同一 AMI 音频和当前 Prompt v9 / Context v3 / Inventory v3 / Verification v4；历史 v8.2 分数保留为旧合同结果，不能直接改写。
 3. 单独判断省略号修复是否保住成本上限、Andrew 任务和 David/Craig 的直接 Evidence。
 4. 新 Run 单独记录，不覆盖 `run_603f383e77264fafa9c773b1cda18149`。
 5. 只有实际付费复跑后才能更新新 Recall；代码和自动测试通过不等于模型成绩已经改善。
@@ -253,7 +279,7 @@ Raw final 10 的另外四条也能在 Transcript 找到依据，但不在预先�
 
 1. 查看 `git status`，保留其他 Agent 或 Aaron 的未提交改动。
 2. 在真实手机浏览器完成导航、Evidence、Timeline、Preference、刷新和连续审核验收；不要再用未生效的 viewport override 代替真人手机结果。
-3. 在有明确预算时，通过 Sites v17 发起一次新的付费 Run，验证 Background Response 创建、ID 持久化、恢复查询、重复唤醒和阶段计时；不能用只读 QA 代替。
+3. 在有明确预算时，通过 Sites v18 发起一次新的付费 Run，验证 Summary、易读稿、Background Response 创建、ID 持久化、恢复查询、重复唤醒和阶段计时；不能用只读 QA 代替。
 4. 使用同一 AMI 样本做付费复跑时，保持 Ground Truth 冻结，并单独记录新结果，不覆盖历史分数。
 5. 找一名未看过 Ground Truth 的用户完成整套审核，记录用时、修改、拒绝和补漏。
 6. 每次后续改动继续完成 typecheck、lint、build、全量测试、Migration、`git diff --check` 和发布包敏感信息审计。
@@ -261,10 +287,10 @@ Raw final 10 的另外四条也能在 Transcript 找到依据，但不在预先�
 
 ## 9. 当前发布记录与后续检查
 
-1. GitHub `main` 已发布提交 `9187cdb8608b9ba8815fd8d8774d117aa1e80abe`。
-2. Sites v17 已发布到原有 URL，没有创建第二个站点。
-3. 工程测试 250 项全绿，独立审计没有发现 P0/P1。
-4. 桌面只读线上 QA 已通过；手机真人 QA 和 v17 新付费 Run 仍未完成。
+1. Sites v18 已保存并发布源码提交 `1202a5d2778157e11571e3deb752a65007d5087b`；GitHub `main` 尚待重新登录后同步。
+2. Sites v18 已发布到原有 URL，没有创建第二个站点。
+3. Sites v18 发布时的工程门已通过；当前本地买方旅程改动为 265/265，仍需一次独立发布前审查。
+4. 桌面与 390px 正式站 QA 已通过；实体手机真人 QA 和 v18 新付费 Run 仍未完成。
 
 后续改动继续执行：
 
@@ -298,10 +324,10 @@ npm test
 ## 11. 当前最重要的诚实结论
 
 1. Verified-only、证据追溯和人工审核链路已经是可靠的工程底座。
-2. Sites v17 已上线原有公开地址；桌面只读导航、Evidence、Timeline、报告返回和刷新恢复已经通过线上验收。
+2. Sites v18 已上线原有公开地址；桌面只读导航、Transcript 三视图、项目回收站、Evidence、Timeline、报告返回和刷新恢复已经通过线上验收。
 3. 10 分 47 秒主要不是 Luna 思考时间；真正模型阶段约 1 分 36 秒。
 4. Claim/Relation 准确率、同输入稳定性和真人两分钟审核仍未通过完整验收。
 5. AMI 已完成第一次真实多人音频运行：关键事实转写 8/8，但 raw AI 初稿只命中 6/8、Critical 2/4，历史 Evidence 安全门后为 4/8、Critical 1/4；没有进行人工确认。
-6. 省略号 Evidence 修复已经实现，但尚未做付费 AMI 复跑；v17 也尚未用新 Background 架构发起新付费 Run，不能宣称 Recall 或线上付费处理已通过。
+6. 省略号 Evidence 修复已经实现，但尚未做付费 AMI 复跑；v18 也尚未用新 Summary/Refiner/Background 架构发起新付费 Run，不能宣称 Recall、易读质量或线上付费处理已通过。
 7. 手机只有样式与自动化结果，真实手机浏览器验收未完成。
 8. 当前产品可以称为“可继续测试的 MVP”，不能称为“已经完成 Concept Validation”。

@@ -1,3 +1,4 @@
+import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { getD1 } from "@/db";
 import { validatePhotoBbox } from "@/lib/domain/evidence";
 import {
@@ -11,7 +12,7 @@ import {
   planRelationCarryForward,
   validateExplicitClaimEditProjection,
 } from "@/lib/domain/claim-state";
-import { ApiFault } from "@/lib/server/http/api";
+import { ApiFault, parseJson } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import { claimRecord } from "@/lib/server/db/records";
 import {
@@ -40,6 +41,30 @@ const CLAIM_SELECT = `
     FROM claims c
     JOIN claim_versions cv ON cv.id = c.current_version_id`;
 
+// A Summary-first human action is attached to the same Extraction Run that is
+// still producing facts. Any verdict changes project.context_version, so it
+// must wait until that Run is terminal or the fact persistence lease will be
+// invalidated. Keep the ownership joins here and in every atomic verdict guard.
+const RUNNING_SOURCE_BACKED_ACTION_FROM_SQL = `
+  FROM claims protected_claim
+  JOIN events protected_event
+    ON protected_event.id = protected_claim.event_id
+   AND protected_event.workspace_id = protected_claim.workspace_id
+   AND protected_event.project_id = protected_claim.project_id
+  JOIN extraction_runs protected_run
+    ON protected_run.id = protected_claim.extraction_run_id
+   AND protected_run.workspace_id = protected_claim.workspace_id
+   AND protected_run.project_id = protected_claim.project_id
+   AND protected_run.event_id = protected_claim.event_id`;
+
+const RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL = `
+  protected_claim.source = 'human'
+  AND protected_claim.type = 'next_action'
+  AND protected_event.active_run_id = protected_run.id
+  AND protected_run.status NOT IN (
+    'succeeded', 'completed', 'completed_with_warnings', 'failed', 'cancelled'
+  )`;
+
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
@@ -54,6 +79,46 @@ async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
 
 async function all(sql: string, bindings: unknown[]): Promise<Row[]> {
   return (await getD1().prepare(sql).bind(...bindings).all<Row>()).results ?? [];
+}
+
+async function assertSourceBackedActionVerdictsReady(
+  scope: RequestScope,
+  claimIds: string[],
+): Promise<void> {
+  if (!claimIds.length) return;
+  const blocked = await first(
+    `SELECT protected_claim.id AS claim_id,
+            protected_run.id AS extraction_run_id,
+            protected_run.status AS extraction_run_status
+       ${RUNNING_SOURCE_BACKED_ACTION_FROM_SQL}
+      WHERE protected_claim.workspace_id = ?
+        AND protected_claim.id IN (${claimIds.map(() => "?").join(",")})
+        AND ${RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL}
+      ORDER BY protected_claim.id
+      LIMIT 1`,
+    [scope.workspaceId, ...claimIds],
+  );
+  if (!blocked) return;
+  throw new ApiFault(
+    409,
+    "RUN_STATE_CONFLICT",
+    "Wait for fact extraction to finish before reviewing this source-backed action.",
+    {
+      claim_id: String(blocked.claim_id),
+      extraction_run_id: String(blocked.extraction_run_id),
+      extraction_run_status: String(blocked.extraction_run_status),
+    },
+  );
+}
+
+function sourceBackedActionVerdictGuardSql(): string {
+  return `NOT EXISTS (
+    SELECT 1
+      ${RUNNING_SOURCE_BACKED_ACTION_FROM_SQL}
+     WHERE protected_claim.workspace_id = ?
+       AND protected_claim.id = ?
+       AND ${RUNNING_SOURCE_BACKED_ACTION_PREDICATE_SQL}
+  )`;
 }
 
 async function claimRow(scope: RequestScope, claimId: string): Promise<Row> {
@@ -314,6 +379,7 @@ export async function applyClaimVerdict(
   }
   const existing = await claimRow(scope, claimId);
   if (String(existing.current_version_id) !== input.base_version_id) throw conflict();
+  await assertSourceBackedActionVerdictsReady(scope, [claimId]);
   const verdictId = id("vdt");
   const guardId = id("guard");
   const timestamp = now();
@@ -346,11 +412,19 @@ export async function applyClaimVerdict(
     if (new Set(input.retain_relation_ids).size !== input.retain_relation_ids.length) {
       throw new ApiFault(400, "BAD_REQUEST", "A relationship can be retained only once.");
     }
+    // Same visibility predicate as getClaim. A proposed relation the review
+    // screen never rendered must not be recorded as a user "reject".
     const proposedRelations = await all(
       `SELECT r.id
          FROM claim_relations r
+         JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
+         JOIN claims target_claim ON target_claim.id = target_version.claim_id
         WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
           AND r.status = 'proposed'
+          AND target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open')
         ORDER BY r.created_at, r.id`,
       [scope.workspaceId, input.base_version_id],
     );
@@ -372,16 +446,29 @@ export async function applyClaimVerdict(
       verdictId: id("rvdt"),
       action: retainedRelationIds.has(String(row.id)) ? "confirm" as const : "reject" as const,
     }));
-    const targetConflict = await first(
+    // Relations to a withdrawn target are retired below without a user verdict;
+    // everything else the user could not see blocks confirmation.
+    const hiddenRelation = await first(
       `SELECT r.id FROM claim_relations r
         JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
         JOIN claims target_claim ON target_claim.id = target_version.claim_id
        WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-         AND target_claim.current_version_id <> r.target_claim_version_id
+         AND target_claim.lifecycle_status <> 'withdrawn'
+         AND NOT (target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open'))
        LIMIT 1`,
       [input.base_version_id],
     );
-    if (targetConflict) throw conflict();
+    if (hiddenRelation) {
+      throw new ApiFault(
+        409,
+        "RELATION_REVIEW_INVALID",
+        "A proposed relationship points at a record that is not confirmed yet or has changed.",
+        { relation_id: String(hiddenRelation.id) },
+      );
+    }
 
     try {
       await db.batch([
@@ -402,12 +489,23 @@ export async function applyClaimVerdict(
                ON target_version.id = r.target_claim_version_id
              JOIN claims target_claim ON target_claim.id = target_version.claim_id
               WHERE r.source_claim_version_id = ? AND r.status = 'proposed'
-                AND target_claim.current_version_id <> r.target_claim_version_id
+                AND target_claim.lifecycle_status <> 'withdrawn'
+                AND NOT (target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open'))
            ) AND (
              SELECT COUNT(*) FROM claim_relations r
+              JOIN claim_versions target_version ON target_version.id = r.target_claim_version_id
+              JOIN claims target_claim ON target_claim.id = target_version.claim_id
               WHERE r.workspace_id = ? AND r.source_claim_version_id = ?
                 AND r.status = 'proposed'
+                AND target_claim.current_version_id = r.target_claim_version_id
+          AND target_claim.review_status = 'verified'
+          AND target_claim.lifecycle_status <> 'withdrawn'
+          AND (r.contradiction_status IS NULL OR r.contradiction_status = 'open')
            ) = ?
+           AND ${sourceBackedActionVerdictGuardSql()}
            `,
           [
             claimId,
@@ -418,6 +516,8 @@ export async function applyClaimVerdict(
             scope.workspaceId,
             input.base_version_id,
             proposedRelations.length,
+            scope.workspaceId,
+            claimId,
           ],
           timestamp,
         ),
@@ -504,6 +604,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   } else if (input.action === "reject") {
@@ -515,11 +616,17 @@ export async function applyClaimVerdict(
         guardStatement(
           guardId,
           `EXISTS (
-             SELECT 1 FROM claims
+           SELECT 1 FROM claims
               WHERE id = ? AND workspace_id = ? AND current_version_id = ?
                 AND review_status = 'pending'
-           )`,
-          [claimId, scope.workspaceId, input.base_version_id],
+           ) AND ${sourceBackedActionVerdictGuardSql()}`,
+          [
+            claimId,
+            scope.workspaceId,
+            input.base_version_id,
+            scope.workspaceId,
+            claimId,
+          ],
           timestamp,
         ),
         db
@@ -534,6 +641,13 @@ export async function applyClaimVerdict(
               WHERE source_claim_version_id = ? AND status = 'proposed'`,
           )
           .bind(input.base_version_id),
+        db
+          .prepare(
+            `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+              WHERE status = 'proposed'
+                AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+          )
+          .bind(timestamp, input.base_version_id, input.base_version_id),
         db
           .prepare(
             `INSERT INTO verdicts
@@ -553,7 +667,9 @@ export async function applyClaimVerdict(
           ),
         db
           .prepare(
-            `UPDATE projects SET ledger_version = ledger_version + 1, updated_at = ?
+            `UPDATE projects
+                SET ledger_version = ledger_version + 1,
+                    context_version = context_version + 1, updated_at = ?
               WHERE id = ? AND workspace_id = ?`,
           )
           .bind(timestamp, existing.project_id, scope.workspaceId),
@@ -580,6 +696,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   } else {
@@ -807,7 +924,7 @@ export async function applyClaimVerdict(
                 AND target.current_version_id = r.target_claim_version_id
                 AND target.review_status = 'verified'
                 AND target.lifecycle_status <> 'withdrawn'
-           )`).join("")}`,
+           )`).join("")} AND ${sourceBackedActionVerdictGuardSql()}`,
           [
             claimId,
             scope.workspaceId,
@@ -828,6 +945,8 @@ export async function applyClaimVerdict(
               relation.id,
               input.base_version_id,
             ]),
+            scope.workspaceId,
+            claimId,
           ],
           timestamp,
         ),
@@ -872,10 +991,25 @@ export async function applyClaimVerdict(
         db
           .prepare(
             `UPDATE claim_relations SET status = 'inactive'
-              WHERE status = 'active'
-                AND (source_claim_version_id = ? OR target_claim_version_id = ?)`,
+              WHERE status = 'active' AND source_claim_version_id = ?`,
           )
-          .bind(input.base_version_id, input.base_version_id),
+          .bind(input.base_version_id),
+        // Incoming relations follow the claim to its new version. Inactivating
+        // them orphaned an active supersedes/resolves on the old version, and
+        // lifecycle recalculation then resurrected the superseded claim.
+        db
+          .prepare(
+            `UPDATE claim_relations SET target_claim_version_id = ?
+              WHERE target_claim_version_id = ? AND status IN ('active', 'proposed')`,
+          )
+          .bind(newVersionId, input.base_version_id),
+        db
+          .prepare(
+            `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+              WHERE status = 'proposed'
+                AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+          )
+          .bind(timestamp, input.base_version_id, input.base_version_id),
         ...relationMutations.map(({ row, retained, replacementId }) =>
           db
             .prepare(
@@ -984,6 +1118,7 @@ export async function applyClaimVerdict(
           verdictId: recovered.response.verdictId,
         };
       }
+      await assertSourceBackedActionVerdictsReady(scope, [claimId]);
       throw conflict();
     }
   }
@@ -1046,8 +1181,15 @@ export async function withdrawClaim(
           `UPDATE claim_relations SET status = 'inactive'
             WHERE status = 'active'
               AND (source_claim_version_id = ? OR target_claim_version_id = ?)`,
+          )
+          .bind(input.baseVersionId, input.baseVersionId),
+      db
+        .prepare(
+          `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+            WHERE status = 'proposed'
+              AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
         )
-        .bind(input.baseVersionId, input.baseVersionId),
+        .bind(timestamp, input.baseVersionId, input.baseVersionId),
       db
         .prepare(
           `INSERT INTO verdicts
@@ -1128,6 +1270,10 @@ export async function applyBatchVerdicts(
   const rows = await Promise.all(
     input.verdicts.map((item) => claimRow(scope, item.claim_id)),
   );
+  await assertSourceBackedActionVerdictsReady(
+    scope,
+    input.verdicts.map((item) => item.claim_id),
+  );
   for (const item of input.verdicts) {
     if (item.action !== "confirm") continue;
     const reviewAttestation = await first(
@@ -1183,8 +1329,15 @@ export async function applyBatchVerdicts(
   const guardBindings: unknown[] = [];
   input.verdicts.forEach((item) => {
     let clause = `EXISTS (SELECT 1 FROM claims WHERE id = ? AND workspace_id = ?
-                            AND current_version_id = ? AND review_status = 'pending')`;
-    guardBindings.push(item.claim_id, scope.workspaceId, item.base_version_id);
+                            AND current_version_id = ? AND review_status = 'pending')
+                  AND ${sourceBackedActionVerdictGuardSql()}`;
+    guardBindings.push(
+      item.claim_id,
+      scope.workspaceId,
+      item.base_version_id,
+      scope.workspaceId,
+      item.claim_id,
+    );
     if (item.action === "confirm") {
       clause += ` AND EXISTS (
         SELECT 1 FROM evidence_refs WHERE claim_version_id = ?
@@ -1233,6 +1386,18 @@ export async function applyBatchVerdicts(
                       AND status = 'proposed'`,
                 )
                 .bind(scope.workspaceId, item.base_version_id),
+              db
+                .prepare(
+                  `UPDATE draft_link_candidates SET status = 'inactive', updated_at = ?
+                    WHERE workspace_id = ? AND status = 'proposed'
+                      AND (source_claim_version_id = ? OR target_draft_claim_version_id = ?)`,
+                )
+                .bind(
+                  timestamp,
+                  scope.workspaceId,
+                  item.base_version_id,
+                  item.base_version_id,
+                ),
             ]
           : []),
         db
@@ -1255,20 +1420,16 @@ export async function applyBatchVerdicts(
           ),
       ]),
       ...[...new Set(rows.map((row) => String(row.project_id)))].flatMap((projectId) => {
-        const changesContext = input.verdicts.some(
-          (item, index) =>
-            String(rows[index].project_id) === projectId && item.action === "confirm",
-        );
         return [
           ...lifecycleRecalculationStatements(projectId, timestamp),
           db
             .prepare(
               `UPDATE projects
                   SET ledger_version = ledger_version + 1,
-                      context_version = context_version + ?, updated_at = ?
+                      context_version = context_version + 1, updated_at = ?
                 WHERE id = ? AND workspace_id = ?`,
             )
-            .bind(changesContext ? 1 : 0, timestamp, projectId, scope.workspaceId),
+            .bind(timestamp, projectId, scope.workspaceId),
         ];
       }),
       mutationReplayStatement(
@@ -1298,6 +1459,10 @@ export async function applyBatchVerdicts(
         })),
       );
     }
+    await assertSourceBackedActionVerdictsReady(
+      scope,
+      input.verdicts.map((item) => item.claim_id),
+    );
     throw conflict();
   }
   return Promise.all(
@@ -1343,7 +1508,7 @@ export async function applyOccurrenceVerdict(
   }
   const allowedClaimTypes = new Set([
     "budget", "preference", "requirement", "decision", "concern", "risk",
-    "open_question", "person_role", "timing", "property_fact", "material",
+    "open_question", "person_role", "timing", "property_fact", "next_action", "material",
     "measurement", "other",
   ]);
   const conversionClaims = input.action === "convert_to_new_claim" ? input.newClaims ?? [] : [];
@@ -1775,7 +1940,7 @@ export async function listManualRelationTargets(
   const rows = await all(
     `SELECT c.id AS claim_id, c.current_version_id AS claim_version_id,
             c.type, cv.statement, c.event_id, e.title AS event_title,
-            e.occurred_at, cv.uncertainty_json
+            e.occurred_at, cv.uncertainty_json, cv.normalized_value_json
        FROM claims c
        JOIN claim_versions cv ON cv.id = c.current_version_id
        JOIN events e ON e.id = c.event_id
@@ -1793,6 +1958,11 @@ export async function listManualRelationTargets(
     event_title: String(row.event_title),
     occurred_at: String(row.occurred_at),
     has_uncertainty: row.uncertainty_json !== null && row.uncertainty_json !== undefined,
+    can_resolve: canResolveClaim({
+      type: String(row.type), statement: String(row.statement),
+      normalizedValue: parseJson<Record<string, unknown> | null>(row.normalized_value_json == null ? null : String(row.normalized_value_json), null),
+      uncertainty: parseJson(row.uncertainty_json == null ? null : String(row.uncertainty_json), null),
+    }),
   }));
 }
 
@@ -1845,8 +2015,12 @@ export async function createManualRelation(
   }
   if (
     input.type === "resolves" &&
-    !["open_question", "risk", "concern", "requirement"].includes(String(target.type)) &&
-    target.uncertainty_json == null
+    !canResolveClaim({
+      type: String(target.type),
+      statement: String(target.statement),
+      normalizedValue: parseJson<Record<string, unknown> | null>(target.normalized_value_json == null ? null : String(target.normalized_value_json), null),
+      uncertainty: parseJson(target.uncertainty_json == null ? null : String(target.uncertainty_json), null),
+    })
   ) {
     throw new ApiFault(
       422,

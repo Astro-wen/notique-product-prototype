@@ -42,6 +42,8 @@ export default defineConfig(async ({ command }) => {
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
+  const localStatePath = process.env.NOTIQUE_LOCAL_STATE_PATH?.trim();
+  const localDraftContext = process.env.AI_DRAFT_CONTEXT === "1" ? "1" : "0";
 
   return {
     server: isCodexSeatbeltSandbox
@@ -52,9 +54,14 @@ export default defineConfig(async ({ command }) => {
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        ...(command === "serve" && localStatePath
+          ? { persistState: { path: localStatePath } }
+          : {}),
         config: {
           ...localBindingConfig,
-          ...(command === "serve" ? { vars: { APP_ENV: "local" } } : {}),
+          ...(command === "serve"
+            ? { vars: { APP_ENV: "local", AI_DRAFT_CONTEXT: localDraftContext } }
+            : {}),
         },
       }),
       stripLocalSecrets(),

@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { evaluate } from "../scripts/eval-runner.mjs";
+import { ERIC_QUALITY_THRESHOLDS } from "../scripts/lib/quality-gates.mjs";
+
+test("Eric quality thresholds are one locked policy", () => {
+  assert.deepEqual(ERIC_QUALITY_THRESHOLDS, {
+    claimPrecision: 0.95,
+    materialRecall: 0.90,
+    criticalRecall: 1.00,
+    relationPrecision: 0.90,
+    relationRecall: 0.90,
+    actionPrecision: 0.95,
+    actionRecall: 1.00,
+    draftTokenIncreaseMax: 0.25,
+  });
+});
 
 const truth = {
   schemaVersion: "notique-ground-truth.v1",

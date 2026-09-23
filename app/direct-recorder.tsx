@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Mic, X } from "lucide-react";
 import {
   browserRecordingFilename,
   chooseBrowserRecordingMime,
@@ -13,6 +14,8 @@ type DirectRecorderProps = {
   disabled?: boolean;
   onSave: (file: File) => Promise<boolean>;
   onClose: () => void;
+  /** Reports whether the recorder holds audio that would be lost on unmount. */
+  onActiveChange?: (active: boolean) => void;
 };
 
 function microphoneIssue(error: unknown): string {
@@ -25,7 +28,7 @@ function microphoneIssue(error: unknown): string {
   return "暂时无法开始录音。你仍可以上传手机或电脑里已有的录音。";
 }
 
-export function DirectRecorder({ disabled, onSave, onClose }: DirectRecorderProps) {
+export function DirectRecorder({ disabled, onSave, onClose, onActiveChange }: DirectRecorderProps) {
   const [state, setState] = useState<RecorderState>("idle");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -35,6 +38,11 @@ export function DirectRecorder({ disabled, onSave, onClose }: DirectRecorderProp
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeRef = useRef("audio/webm");
+
+  useEffect(() => {
+    onActiveChange?.(state !== "idle" && state !== "unsupported" && state !== "requesting");
+    return () => onActiveChange?.(false);
+  }, [state, onActiveChange]);
 
   useEffect(() => {
     if (state !== "recording") return;
@@ -166,14 +174,14 @@ export function DirectRecorder({ disabled, onSave, onClose }: DirectRecorderProp
           <span className={`recording-dot ${activelyRecording ? "active" : ""}`} aria-hidden="true" />
           <span><strong>直接录音</strong><small>保存后会进入现有的说话人识别和逐字稿流程</small></span>
         </div>
-        {(state === "idle" || state === "unsupported") && <button className="icon-button" onClick={onClose} aria-label="关闭直接录音">×</button>}
+        {(state === "idle" || state === "unsupported") && <button className="icon-button" onClick={onClose} aria-label="关闭直接录音"><X aria-hidden="true" /></button>}
       </header>
 
       {issue && <p className="recorder-issue">{issue}</p>}
 
       {(state === "idle" || state === "requesting" || state === "unsupported") && (
         <div className="recorder-start">
-          <span className="recorder-mic" aria-hidden="true">●</span>
+          <span className="recorder-mic" aria-hidden="true"><Mic /></span>
           <div><strong>{state === "unsupported" ? "这个浏览器不支持直接录音" : "准备好后开始录音"}</strong><small>{state === "unsupported" ? "请改用“上传已有录音”。" : "第一次使用时，浏览器会询问麦克风权限。"}</small></div>
           {state !== "unsupported" && <button className="button record-button" disabled={disabled || state === "requesting"} onClick={() => void startRecording()}>{state === "requesting" ? "正在请求麦克风…" : "开始录音"}</button>}
         </div>

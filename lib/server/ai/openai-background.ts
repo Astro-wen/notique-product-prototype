@@ -9,6 +9,8 @@ export type OpenAiBackgroundStatus =
 export type OpenAiBackgroundResponseBody = {
   id?: string;
   status?: unknown;
+  /** Unix 秒。用来判断一个后台响应已经挂了多久。 */
+  created_at?: unknown;
   [key: string]: unknown;
 };
 
@@ -21,6 +23,25 @@ export class OpenAiBackgroundPending extends Error {
     this.name = "OpenAiBackgroundPending";
     this.responseId = responseId;
     this.responseStatus = responseStatus;
+  }
+}
+
+/**
+ * 后台响应超过预算仍是 queued/in_progress。抛出前已经尽力发过 cancel。
+ * 调用方拿到它应当丢掉这个 Response ID，下次重新 POST；继续 GET 只会拿到
+ * cancelled。
+ */
+export class OpenAiBackgroundStalled extends Error {
+  readonly responseId: string;
+  readonly responseStatus: "queued" | "in_progress";
+  readonly ageMs: number;
+
+  constructor(responseId: string, responseStatus: "queued" | "in_progress", ageMs: number) {
+    super(`OpenAI background Response ${responseStatus} for ${Math.round(ageMs / 1000)}s, cancelled.`);
+    this.name = "OpenAiBackgroundStalled";
+    this.responseId = responseId;
+    this.responseStatus = responseStatus;
+    this.ageMs = ageMs;
   }
 }
 
@@ -55,6 +76,13 @@ export async function requestOpenAiBackgroundResponse(input: {
   requestBody: Record<string, unknown>;
   idempotencyKey?: string;
   resumeResponseId?: string;
+  /**
+   * 恢复一个后台响应时，它自创建起挂了多久算卡住。线上见过一块易读稿在
+   * OpenAI 那边 in_progress 十二分钟没吐一个字，同批另外三块一分钟就完；
+   * 没有预算就会一直等到任务的三十分钟上限。超过预算：尽力 cancel，抛
+   * OpenAiBackgroundStalled。不传则不设预算。
+   */
+  stallBudgetMs?: number;
   signal?: AbortSignal;
   fetcher?: typeof fetch;
   onResponse?: (response: { id: string; status: string }) => Promise<void>;
@@ -112,6 +140,22 @@ export async function requestOpenAiBackgroundResponse(input: {
     });
   }
   if (status === "queued" || status === "in_progress") {
+    const createdAt = typeof body.created_at === "number" ? body.created_at * 1000 : null;
+    const ageMs = createdAt === null ? 0 : Date.now() - createdAt;
+    if (responseId && input.stallBudgetMs && createdAt !== null && ageMs > input.stallBudgetMs) {
+      // 只在恢复路径上判断：刚 POST 出去的响应还没来得及跑，不算卡住。
+      // cancel 失败也照样判卡住：留着它继续等才是更贵的错误。
+      try {
+        await fetcher(`${input.baseUrl}/responses/${encodeURIComponent(body.id)}/cancel`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${input.apiKey}` },
+          signal: input.signal,
+        });
+      } catch {
+        // 见上。
+      }
+      throw new OpenAiBackgroundStalled(body.id, status, ageMs);
+    }
     throw new OpenAiBackgroundPending(body.id, status);
   }
   if (status === "failed" || status === "cancelled") {

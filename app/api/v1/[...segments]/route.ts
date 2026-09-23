@@ -1,26 +1,48 @@
 import {
+  getEventTrashPreview,
+  listTrashedEvents,
+  moveEventToTrash,
+  permanentlyDeleteEvent,
+  restoreEvent,
+} from "@/lib/server/db/event-trash-repository";
+import {
+  abandonAssetUpload,
   confirmScenario,
   createEvent,
   createExtractionRun,
   createProject,
+  updateProjectIndex,
+  markProjectOpened,
   createTranscriptImport,
   debugRun,
   finalizeAsset,
   finalizeTranscriptImport,
   getAsset,
+  renameAsset,
+  reorderEventAssets,
   getAssetEvidenceObject,
   getClaimHistory,
   getEvent,
   getEvidenceRef,
   getExtractionRun,
   getProject,
+  getProjectDeletePreview,
   getRunClaims,
+  heartbeatAssetUpload,
   initializeAsset,
   listEvents,
   listProjects,
+  listDeletedProjects,
+  moveProjectToTrash,
+  restoreProject,
+  permanentlyDeleteProject,
   uploadAssetContent,
   uploadTranscriptImportItem,
 } from "@/lib/server/db/core-repository";
+import {
+  createEventAiArtifactRetry,
+  listEventAiArtifacts,
+} from "@/lib/server/db/event-ai-artifact-repository";
 import {
   buildProjectAgenda,
   buildProjectBrief,
@@ -47,9 +69,26 @@ import {
 import {
   createTranscriptionRun,
   getTranscriptionRun,
+  retryFailedTranscriptionChunks,
 } from "@/lib/server/db/transcription-repository";
 import { getEvidenceContext } from "@/lib/server/db/evidence-repository";
+import {
+  dismissRoutingSuggestion,
+  readRoutingSuggestion,
+  setEventRoutingSource,
+} from "@/lib/server/db/routing-suggestion-repository";
+import {
+  getEventMovePreview,
+  moveEvent,
+} from "@/lib/server/db/event-move-repository";
 import { getWorkflowSnapshot } from "@/lib/server/db/workflow-repository";
+import {
+  completeProjectAction,
+  reopenProjectAction,
+  applyDraftLinkVerdict,
+  listProjectActions,
+  listProjectDraftMemory,
+} from "@/lib/server/db/buyer-journey-repository";
 import {
   completeReviewSession,
   getReviewSession,
@@ -61,6 +100,7 @@ import {
   listEventTranscriptSegments,
   recordAiDraftAssessment,
 } from "@/lib/server/db/ai-draft-repository";
+import { READING_ARTIFACT_DEFINITIONS, type ReadingArtifactKind } from "@/lib/domain/reading-pipeline";
 import {
   ApiFault,
   enumValue,
@@ -95,6 +135,8 @@ type JsonRecord = Record<string, unknown>;
 
 const EVENT_TYPES = ["meeting", "showing", "estimate", "walkthrough"] as const;
 const ASSET_KINDS = ["transcript", "photo", "pdf", "text", "audio"] as const;
+// 只有这两种来源：用户在选择器里点了项目，或者他跳过了选择器。
+const ROUTING_SOURCES = ["user", "skipped"] as const;
 const CLAIM_TYPES = [
   "budget",
   "preference",
@@ -106,6 +148,7 @@ const CLAIM_TYPES = [
   "person_role",
   "timing",
   "property_fact",
+  "next_action",
   "material",
   "measurement",
   "other",
@@ -127,6 +170,11 @@ const GLOSSARY_CATEGORIES = [
   "material",
   "property",
 ] as const;
+// 可重试的种类从阅读线的定义派生，再加种类不用回来改这里。summary 故意
+// 不在内：它是旧产物，不再生产，重试它只会造出一条派发器不认识的运行。
+// 这行曾经手写成两种，四个阅读视图拆出来之后没跟上，界面上的重新生成
+// 对章节、发言总结、要点回顾、概要一直是 400。
+const ARTIFACT_KINDS: readonly ReadingArtifactKind[] = READING_ARTIFACT_DEFINITIONS.map((item) => item.kind);
 
 function record(value: unknown, field: string): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -310,8 +358,14 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 1 && segments[0] === "projects") {
     return ok({ projects: await listProjects(scope) }, id);
   }
+  if (segments.length === 2 && segments[0] === "projects" && segments[1] === "trash") {
+    return ok({ projects: await listDeletedProjects(scope) }, id);
+  }
   if (segments.length === 2 && segments[0] === "projects") {
     return ok({ project: await getProject(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "delete-preview") {
+    return ok({ preview: await getProjectDeletePreview(scope, segments[1]) }, id);
   }
   if (
     segments.length === 3 &&
@@ -323,14 +377,44 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
       id,
     );
   }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "draft-memory") {
+    return ok({ draft_memory: await listProjectDraftMemory(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "actions") {
+    return ok({ actions: await listProjectActions(scope, segments[1]) }, id);
+  }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "events") {
     return ok({ events: await listEvents(scope, segments[1]) }, id);
+  }
+  // 放在 events/:id 前面，不然 trash 会被当成一条记录的 id。
+  if (segments.length === 2 && segments[0] === "events" && segments[1] === "trash") {
+    return ok({ events: await listTrashedEvents(scope) }, id);
   }
   if (segments.length === 2 && segments[0] === "events") {
     return ok(await getEvent(scope, segments[1]), id);
   }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "delete-preview") {
+    return ok({ preview: await getEventTrashPreview(scope, segments[1]) }, id);
+  }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "transcript-segments") {
     return ok({ segments: await listEventTranscriptSegments(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "ai-artifacts") {
+    return ok(await listEventAiArtifacts(scope, segments[1]), id);
+  }
+  // 没有建议是常态，返回 null 而不是 404。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "routing-suggestion") {
+    return ok({ routing_suggestion: await readRoutingSuggestion(scope, segments[1]) }, id);
+  }
+  // 目标项目从查询串来：这是一次只读的试算，换个目标就是换个问题，不该占用一个
+  // 写入语义的请求体。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "move-preview") {
+    const target = requiredString(
+      new URL(request.url).searchParams.get("target"),
+      "target",
+      { max: 128 },
+    );
+    return ok({ preview: await getEventMovePreview(scope, segments[1], target) }, id);
   }
   if (
     segments.length === 3 &&
@@ -457,12 +541,60 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  if (
+    segments.length === 3 &&
+    segments[0] === "transcription-runs" &&
+    segments[2] === "retry-failed-chunks"
+  ) {
+    await jsonObject(request);
+    idempotencyKey(request);
+    return ok(
+      { transcription_run: await retryFailedTranscriptionChunks(scope, segments[1]) },
+      id,
+      202,
+    );
+  }
+  if (segments.length === 3 && segments[0] === "draft-links" && segments[2] === "verdict") {
+    const body = await jsonObject(request);
+    return ok(
+      {
+        draft_link: await applyDraftLinkVerdict(
+          scope,
+          segments[1],
+          {
+            action: enumValue(body.action, "action", ["accept", "reject"] as const),
+            baseContextVersion: nonNegativeInteger(
+              body.base_context_version,
+              "base_context_version",
+            ),
+          },
+          idempotencyKey(request),
+        ),
+      },
+      id,
+      201,
+    );
+  }
+  if (segments.length === 3 && segments[0] === "actions" && segments[2] === "reopen") {
+    await jsonObject(request);
+    return ok({ reopened: await reopenProjectAction(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "actions" && segments[2] === "complete") {
+    await jsonObject(request);
+    return ok(
+      { completion: await completeProjectAction(scope, segments[1], idempotencyKey(request)) },
+      id,
+      201,
+    );
+  }
   if (segments.length === 3 && segments[0] === "events" && segments[2] === "manual-claims") {
     const body = await jsonObject(request);
     const input: CreateManualClaimRequest = {
       statement: requiredString(body.statement, "statement", { max: 10_000 }),
       type: enumValue(body.type, "type", CLAIM_TYPES),
       segment_ids: stringArray(body.segment_ids, "segment_ids", { min: 1, max: 8 }),
+      ...(body.owner != null ? { owner: requiredString(body.owner, "owner", { max: 200 }) } : {}),
+      ...(body.due_at != null ? { due_at: requiredString(body.due_at, "due_at", { max: 10 }) } : {}),
     };
     const claim = await createManualClaim(
       scope,
@@ -471,6 +603,38 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       idempotencyKey(request),
     );
     return ok({ claim }, id, 201);
+  }
+  // 接受一条归属建议，或者用户自己挑了另一个项目，都走这条。搬不动的原因在
+  // 409 的 details.blockers 里，逐条都是可以直接念给人听的话。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "move") {
+    const body = await jsonObject(request);
+    const event = await moveEvent(
+      scope,
+      segments[1],
+      requiredString(body.target_project_id, "target_project_id", { max: 128 }),
+      idempotencyKey(request),
+    );
+    return ok({ event }, id);
+  }
+  // 第二层的选择器落库。只在这一列还空着时才写，所以重传材料不会改掉用户当初的表态。
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "routing-source") {
+    const body = await jsonObject(request);
+    await setEventRoutingSource(
+      scope,
+      segments[1],
+      enumValue(body.source, "source", ROUTING_SOURCES),
+    );
+    return ok({ ok: true }, id);
+  }
+  if (
+    segments.length === 4 &&
+    segments[0] === "events" &&
+    segments[2] === "routing-suggestion" &&
+    segments[3] === "dismiss"
+  ) {
+    await jsonObject(request);
+    await dismissRoutingSuggestion(scope, segments[1]);
+    return ok({ ok: true }, id);
   }
   if (
     segments.length === 3 &&
@@ -529,16 +693,47 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
     );
     return ok({ relation }, id, 201);
   }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "opened") {
+    await jsonObject(request);
+    return ok({ project: await markProjectOpened(scope, segments[1]) }, id);
+  }
   if (segments.length === 1 && segments[0] === "projects") {
     const body = await jsonObject(request);
     const project = await createProject(scope, {
       name: requiredString(body.name, "name", { max: 200 }),
+      auto_name: body.auto_name === undefined ? false : booleanValue(body.auto_name, "auto_name"),
+      profile: body.profile === undefined
+        ? undefined
+        : enumValue(body.profile, "profile", ["real_estate_buyer_journey"] as const),
       locale:
         body.locale === undefined
           ? "en-US"
           : requiredString(body.locale, "locale", { max: 35 }),
     }, idempotencyKey(request));
     return ok({ project }, id, 201);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "restore") {
+    await jsonObject(request);
+    return ok({ project: await restoreProject(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "restore") {
+    await jsonObject(request);
+    return ok({ event: await restoreEvent(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (
+    segments.length === 5 &&
+    segments[0] === "events" &&
+    segments[2] === "ai-artifacts" &&
+    segments[4] === "retry"
+  ) {
+    await jsonObject(request);
+    const artifactRun = await createEventAiArtifactRetry(
+      scope,
+      segments[1],
+      enumValue(segments[3], "artifact_kind", ARTIFACT_KINDS),
+      idempotencyKey(request),
+    );
+    return ok({ artifact_run: artifactRun }, id, 201);
   }
   if (segments.length === 3 && segments[0] === "projects" && segments[2] === "glossary") {
     const body = await jsonObject(request);
@@ -708,15 +903,39 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "finalize") {
     return ok({ asset: await finalizeAsset(scope, segments[1]) }, id);
   }
+  if (segments.length === 3 && segments[0] === "assets" && segments[2] === "heartbeat") {
+    return ok({ asset: await heartbeatAssetUpload(scope, segments[1]) }, id);
+  }
+  if (segments.length === 3 && segments[0] === "assets" && segments[2] === "abort") {
+    return ok({ asset: await abandonAssetUpload(scope, segments[1]) }, id);
+  }
   if (
     segments.length === 3 &&
     segments[0] === "assets" &&
     segments[2] === "transcription-runs"
   ) {
+    const body = await jsonObject(request);
+    const chunks = body.chunks === undefined
+      ? []
+      : (() => {
+          if (!Array.isArray(body.chunks)) {
+            throw new ApiFault(400, "BAD_REQUEST", "chunks must be an array.");
+          }
+          return body.chunks.map((value, index) => {
+            const chunk = record(value, `chunks[${index}]`);
+            return {
+              assetId: requiredString(chunk.asset_id, `chunks[${index}].asset_id`, { max: 128 }),
+              index: nonNegativeInteger(chunk.index, `chunks[${index}].index`),
+              startMs: nonNegativeInteger(chunk.start_ms, `chunks[${index}].start_ms`),
+              endMs: positiveInteger(chunk.end_ms, `chunks[${index}].end_ms`, 8 * 60 * 60 * 1_000),
+            };
+          });
+        })();
     const result = await createTranscriptionRun(
       scope,
       segments[1],
       idempotencyKey(request),
+      chunks,
     );
     return ok(
       { transcription_run: result.transcriptionRun },
@@ -884,6 +1103,14 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
 async function putHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  if (segments.length === 2 && segments[0] === "projects") {
+    const body = await jsonObject(request);
+    return ok({ project: await updateProjectIndex(scope, segments[1], {
+      name: requiredString(body.name, "name", { max: 200 }),
+      folder_name: body.folder_name == null || body.folder_name === "" ? null : requiredString(body.folder_name, "folder_name", { max: 80 }),
+      base_updated_at: requiredString(body.base_updated_at, "base_updated_at", { max: 40 }),
+    }, idempotencyKey(request)) }, id);
+  }
   if (segments.length === 2 && segments[0] === "glossary") {
     const body = await jsonObject(request);
     const glossaryEntry = await updateGlossaryEntry(
@@ -917,6 +1144,16 @@ async function putHandler(request: Request, segments: string[], id: string): Pro
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "content") {
     return ok({ asset: await uploadAssetContent(scope, segments[1], request) }, id);
   }
+  // 改名和排序都是"把某个值设成这样"，重复提交结果相同，所以不走
+  // mutation_replays 那套幂等重放，最后一次写入生效即可。
+  if (segments.length === 2 && segments[0] === "assets") {
+    const body = await jsonObject(request);
+    return ok({ asset: await renameAsset(scope, segments[1], requiredString(body.filename, "filename", { max: 200 })) }, id);
+  }
+  if (segments.length === 4 && segments[0] === "events" && segments[2] === "assets" && segments[3] === "order") {
+    const body = await jsonObject(request);
+    return ok({ assets: await reorderEventAssets(scope, segments[1], stringArray(body.asset_ids, "asset_ids", { min: 1, max: 200 })) }, id);
+  }
   throw new ApiFault(404, "NOT_FOUND", "API route was not found.");
 }
 
@@ -932,6 +1169,30 @@ async function deleteHandler(request: Request, segments: string[], id: string): 
       idempotencyKey(request),
     );
     return ok({ glossary_entry: glossaryEntry }, id);
+  }
+  if (segments.length === 2 && segments[0] === "projects") {
+    await jsonObject(request);
+    return ok({ project: await moveProjectToTrash(scope, segments[1], idempotencyKey(request)) }, id);
+  }
+  if (segments.length === 2 && segments[0] === "events") {
+    await jsonObject(request);
+    const result = await moveEventToTrash(scope, segments[1], idempotencyKey(request));
+    return ok({ event_id: result.event_id, project_id: result.project_id }, id);
+  }
+  if (segments.length === 3 && segments[0] === "events" && segments[2] === "permanent") {
+    await jsonObject(request);
+    const result = await permanentlyDeleteEvent(scope, segments[1], idempotencyKey(request));
+    return ok({ event_id: result.eventId, permanently_deleted: true }, id);
+  }
+  if (segments.length === 3 && segments[0] === "projects" && segments[2] === "permanent") {
+    const body = await jsonObject(request);
+    const result = await permanentlyDeleteProject(
+      scope,
+      segments[1],
+      requiredString(body.confirm_name, "confirm_name", { max: 200 }),
+      idempotencyKey(request),
+    );
+    return ok({ project_id: result.projectId, permanently_deleted: true }, id);
   }
   throw new ApiFault(404, "NOT_FOUND", "API route was not found.");
 }

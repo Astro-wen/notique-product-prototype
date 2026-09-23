@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { statementContaining } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -10,7 +11,7 @@ test("browser dispatch accepts one workspace-scoped Run and returns before proce
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
   assert.match(worker, /body\.kind !== "extraction"[\s\S]*body\.kind !== "transcription"/);
   assert.match(worker, /SELECT status FROM \$\{table\} WHERE id = \? AND workspace_id = \?/);
-  assert.match(worker, /ctx\.waitUntil\(dispatchExtractionRun\([\s\S]*\.catch/);
+  assert.match(worker, /ctx\.waitUntil\(Promise\.all\(\[[\s\S]*dispatchExtractionRun\([\s\S]*dispatchEventAiArtifactsForExtraction\([\s\S]*\.catch/);
   assert.match(worker, /run_id: input\.runId[\s\S]*run_status: run\.status[\s\S]*202/);
   assert.doesNotMatch(
     worker.slice(worker.indexOf('if (url.pathname === "/api/v1/jobs/dispatch")'), worker.indexOf("return handler.fetch")),
@@ -18,17 +19,30 @@ test("browser dispatch accepts one workspace-scoped Run and returns before proce
   );
 });
 
-test("production audio wakes durable Cron work instead of exceeding HTTP waitUntil", async () => {
+test("production audio keeps the HTTP request open instead of losing the queued Run", async () => {
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
   const transcription = await readFile(
     path.join(root, "lib/server/jobs/transcription-outbox.ts"),
     "utf8",
   );
   assert.match(worker, /env\.APP_ENV === "local"[\s\S]*dispatchTranscriptionRun/);
-  assert.match(worker, /else \{[\s\S]*await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
-  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(sweepAndDispatch\(\)\)/);
+  assert.match(worker, /streamTranscriptionDispatch[\s\S]*setInterval\(\(\) => controller\.enqueue/);
+  assert.match(worker, /return streamTranscriptionDispatch\(workspaceId, input\.runId, requestId, run\.status\)/);
+  assert.doesNotMatch(worker, /await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
+  assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
+  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
+});
+
+test("targeted audio wakes a stale processing lease instead of leaving it stuck", async () => {
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+  assert.match(outbox, /lease_expires_at <=/);
+  assert.match(outbox, /status = 'queued'[\s\S]{0,500}targeted_lease_expired/);
+  assert.match(outbox, /status = 'pending'[\s\S]{0,500}TRANSCRIPTION_TIMEOUT/);
 });
 
 test("targeted extraction and transcription dispatch only lease queued matching Runs", async () => {
@@ -103,6 +117,37 @@ test("targeted HTTP extraction is fenced and only handles frozen two-pass OpenAI
   }
 });
 
+test("an escalated background stage is a dependency barrier and usage includes failed attempts", async () => {
+  const processor = await readFile(
+    path.join(root, "lib/server/jobs/extraction-processor.ts"),
+    "utf8",
+  );
+  assert.match(processor, /const existingEscalated = await getLatestExtractionModelStage/);
+  assert.match(
+    processor,
+    /const escalationInFlight = Boolean\([\s\S]*existingEscalated\.status === "processing"[\s\S]*existingEscalated\.status === "succeeded"/,
+  );
+  assert.match(
+    processor,
+    /if \(escalationInFlight\) \{[\s\S]*stage: "verify_escalated"/,
+    "a persisted escalation Response must be resumed before any base Verify retry",
+  );
+  assert.match(
+    processor,
+    /async function persistedExtractionUsage\(runId: string\)[\s\S]*status IN \('succeeded', 'failed'\)/,
+    "failed provider attempts must remain part of usage accounting",
+  );
+  assert.match(
+    processor,
+    /const persistedUsage = await persistedExtractionUsage\(String\(leased\.id\)\)/,
+  );
+  assert.match(
+    processor,
+    /processing_stage\.status = 'processing'/,
+    "terminal persistence must be fenced while any background stage is still processing",
+  );
+});
+
 test("ordinary request scope lookup is read-only and mutations initialize explicitly", async () => {
   const context = await readFile(path.join(root, "lib/server/http/context.ts"), "utf8");
   const route = await readFile(path.join(root, "app/api/v1/[...segments]/route.ts"), "utf8");
@@ -132,15 +177,8 @@ test("workflow snapshot aggregates materials, jobs, pending review, and one next
 });
 
 test("queued browser wake survives polling object replacement and only targets the existing Run", async () => {
-  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
-  const extractionWake = page.slice(
-    page.indexOf("const queuedExtractionRunId"),
-    page.indexOf("const queuedTranscriptionRunId"),
-  );
-  const transcriptionWake = page.slice(
-    page.indexOf("const queuedTranscriptionRunId"),
-    page.indexOf("const activeTranscriptionRunId"),
-  );
+  const extractionWake = statementContaining("[queuedExtractionRunId, queuedExtractionRunStatus]");
+  const transcriptionWake = statementContaining("[queuedTranscriptionRunId, queuedTranscriptionRunStatus]");
 
   assert.match(extractionWake, /\[queuedExtractionRunId, queuedExtractionRunStatus\]/);
   assert.match(transcriptionWake, /\[queuedTranscriptionRunId, queuedTranscriptionRunStatus\]/);
@@ -149,9 +187,10 @@ test("queued browser wake survives polling object replacement and only targets t
 
   for (const block of [extractionWake, transcriptionWake]) {
     assert.match(block, /\.delete\([^)]*RunId\)/);
-    assert.match(block, /window\.setTimeout\([\s\S]*15_000/);
     assert.doesNotMatch(block, /createExtractionRun|createTranscriptionRun|requestExtractionForEvent/);
   }
+  assert.match(extractionWake, /window\.setTimeout\([\s\S]*ACTIVE_BACKGROUND_WAKE_MS/);
+  assert.match(transcriptionWake, /window\.setTimeout\([\s\S]*15_000/);
   assert.match(
     extractionWake,
     /if \(queuedExtractionRunStatus === "queued"[\s\S]*?const scheduleWake[\s\S]*?scheduleWake\(\)/,
@@ -163,32 +202,147 @@ test("queued browser wake survives polling object replacement and only targets t
   );
 });
 
-test("primary queued status and timer expose server queue cycles and attempts", async () => {
+test("primary queued status stays simple while server queue cycles remain durable", async () => {
   const [page, repository, types] = await Promise.all([
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "lib/server/db/workflow-repository.ts"), "utf8"),
     readFile(path.join(root, "lib/shared/api-types.ts"), "utf8"),
   ]);
-  assert.match(page, /if \(run\.status === "queued"\) return "等待后台启动"/);
-  assert.match(page, /queued: "等待后台启动"/);
+  assert.match(page, /if \(run\.status === "queued"\) return "正在启动分析"/);
+  assert.match(page, /queued: "正在启动分析"/);
 
-  const timing = page.slice(
-    page.indexOf("const runTimingItems"),
-    page.indexOf("const transcriptionTimingStart"),
-  );
-  for (const field of [
-    "firstQueuedAt",
-    "currentQueuedAt",
-    "firstStartedAt",
-    "currentStartedAt",
-    "processingAttemptNo",
-    "dispatchAttemptNo",
-  ]) {
-    assert.match(timing, new RegExp(`${field}: run\\.${field}`));
-  }
-  assert.match(page, /item\.attempt[\s\S]*第 \$\{item\.attempt\} 次/);
+  assert.doesNotMatch(page, /function runTimingItems/);
+  assert.doesNotMatch(page, /处理详情/);
+  assert.doesNotMatch(page, /item\.attempt[\s\S]*第 \$\{item\.attempt\} 次/);
   assert.match(repository, /er\.first_queued_at AS extraction_first_queued_at/);
   assert.match(repository, /er\.current_queued_at AS extraction_current_queued_at/);
   assert.match(repository, /first_queued_at: nullableText\(row, "extraction_first_queued_at"\)/);
   assert.match(types, /extraction:[\s\S]*first_queued_at: string \| null;[\s\S]*current_started_at: string \| null;/);
+});
+
+test("the extraction outbox closes its exhausted-pending zombie with real SQL", async () => {
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/outbox.ts"),
+    "utf8",
+  );
+  // The transcription outbox shipped with this loop and production hit it: a
+  // retry cycle parks rows in 'pending' at the attempt cap while the run sits
+  // 'queued', the dispatcher refuses capped rows, and dead-lettering only
+  // covered 'sending'. The extraction outbox had the identical structure.
+  const statements = [...outbox.matchAll(/`((?:UPDATE|SELECT)[\s\S]*?)`/g)].map((m) => m[1]);
+  const deadLetterSql = statements.find((sql) =>
+    sql.includes("UPDATE queue_outbox") && sql.includes("WHERE status IN ('pending', 'failed') AND attempt >= ?"));
+  const failRunsSql = statements.find((sql) =>
+    sql.includes("UPDATE extraction_runs") && sql.includes("SELECT run_id FROM queue_outbox"));
+  assert.ok(deadLetterSql, "the sweep must dead-letter exhausted pending extraction rows");
+  assert.ok(failRunsSql, "the sweep must fail runs whose outbox rows are dead-lettered");
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE extraction_runs (
+      id TEXT PRIMARY KEY, status TEXT, error_code TEXT, error_details_json TEXT,
+      finished_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE queue_outbox (
+      id TEXT PRIMARY KEY, run_id TEXT, status TEXT, attempt INTEGER,
+      next_attempt_at TEXT, lease_owner TEXT, lease_expires_at TEXT,
+      last_error_code TEXT, updated_at TEXT
+    );
+    INSERT INTO extraction_runs VALUES
+      ('zombie', 'queued', NULL, NULL, NULL, ''),
+      ('fresh', 'queued', NULL, NULL, NULL, '');
+    INSERT INTO queue_outbox VALUES
+      ('z0', 'zombie', 'pending', 3, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, ''),
+      ('f0', 'fresh', 'pending', 1, '2026-09-01T10:40:00.000Z', NULL, NULL, NULL, '');
+  `);
+  const timestamp = "2026-09-01T10:45:00.000Z";
+  database.prepare(deadLetterSql).run(timestamp, 3);
+  database.prepare(failRunsSql).run(timestamp, timestamp, 3);
+
+  const zombie = { ...database.prepare(`SELECT status, error_code FROM extraction_runs WHERE id = 'zombie'`).get() };
+  const fresh = { ...database.prepare(`SELECT status FROM extraction_runs WHERE id = 'fresh'`).get() };
+  assert.deepEqual(zombie, { status: "failed", error_code: "QUEUE_DISPATCH_FAILED" });
+  assert.deepEqual(fresh, { status: "queued" }, "a run under the attempt cap keeps dispatching");
+
+  // The targeted path — how production reaches a run — carries the same
+  // closure instead of reporting "queued" forever.
+  assert.match(outbox, /const exhaustion = await first\(/);
+  assert.match(outbox, /must fail instead of[\s\S]{0,40}reporting "queued" forever/);
+});
+
+test("a finished transcript starts the rest of the pipeline itself", async () => {
+  // Everything downstream hangs off an extraction Run, and the browser-side
+  // auto-start is armed in the uploader's own localStorage. A recording that
+  // finished anywhere else — after a retry, in another browser — sat at
+  // 等待自动整理 with a finished transcript and nothing reading it.
+  const outbox = await readFile(
+    path.join(root, "lib/server/jobs/transcription-outbox.ts"),
+    "utf8",
+  );
+  assert.match(outbox, /import \{ ensureAutomaticExtractionRuns \}/);
+  assert.match(outbox, /if \(String\(run\?\.status\) !== "succeeded" \|\| !run\?\.derived_transcript_asset_id\) return;/,
+    "only a Run with a persisted transcript fans out");
+  // Both orchestration modes reach it, and it can never break dispatch.
+  const dispatchRun = outbox.slice(outbox.indexOf("export async function dispatchTranscriptionRun("));
+  assert.equal(
+    (dispatchRun.match(/await startDownstreamWhenTranscriptReady\(workspaceId, runId\);/g) ?? []).length,
+    2,
+    "single and chunked Runs both fan out",
+  );
+  assert.match(outbox, /catch \(error\) \{\s*console\.error\("transcription_downstream_start_failed"/);
+});
+
+test("an open workspace runs the recovery the Cron trigger does not", async () => {
+  // Established against production: an extraction Run created while nothing
+  // watched stayed 'queued' with its updated_at untouched for minutes, and
+  // four Events whose transcripts had been ready for days had no Run at all.
+  // Everything the design delegated to the one-minute Cron therefore never
+  // happened, so the browser's own dispatch request carries it.
+  const outbox = await readFile(path.join(root, "lib/server/jobs/outbox.ts"), "utf8");
+  const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
+  const page = await readFile(path.join(root, "app/page.tsx"), "utf8");
+
+  assert.match(outbox, /export async function recoverAndDispatch\(input\?: \{/);
+  // Long audio stays out of the heartbeat: it takes minutes and the page
+  // already drives it through the targeted streaming dispatch.
+  const recover = outbox.slice(
+    outbox.indexOf("export async function recoverAndDispatch(input?: {"),
+    outbox.indexOf("export async function sweepAndDispatch()"),
+  );
+  assert.doesNotMatch(recover, /dispatchDueTranscriptionOutbox/);
+  assert.match(recover, /stage\(\s*"automatic_extraction"/);
+  assert.match(recover, /stage\("extraction_dispatch"/);
+
+  // Finishing work someone already asked for is free of surprises;
+  // commissioning new analysis costs money. A browser running the workspace
+  // scan would mean opening the app spends money on projects nobody opened, so
+  // the scan is opt-in and the browser may only name the Event on its screen.
+  assert.match(recover, /const commission = input\?\.commission;/);
+  assert.match(recover, /commission\s*\?[\s\S]{0,400}:\s*EMPTY_AUTOMATIC/,
+    "recovery commissions nothing unless asked");
+  assert.match(outbox, /recoverAndDispatch\(\{ commission: "workspace" \}\)/,
+    "only the Cron path scans the whole workspace");
+  const worker2 = await readFile(path.join(root, "worker/index.ts"), "utf8");
+  assert.match(worker2, /commission: \{ eventId: input\.heartbeatEventId \}/);
+  assert.match(worker2, /: undefined\),/);
+  const automatic = await readFile(
+    path.join(root, "lib/server/jobs/automatic-extraction.ts"),
+    "utf8",
+  );
+  assert.match(automatic, /\(\? IS NULL OR sc\.event_id = \?\)/,
+    "the scan can be restricted to one Event");
+  const page2 = await readFile(path.join(root, "app/page.tsx"), "utf8");
+  assert.match(page2, /api\.wakeWorkspace\(routeRef\.current\.eventId \|\| null\)/);
+
+  // One throwing stage used to take down every recovery behind it, including
+  // the automatic analysis that decides whether a transcript is ever read.
+  assert.match(outbox, /async function stage<T>\(name: string, run: \(\) => Promise<T>, fallback: T\): Promise<T>/);
+  assert.match(outbox, /console\.error\("recovery_stage_failed"/);
+
+  assert.match(worker, /ctx\.waitUntil\(Promise\.allSettled\(\[\s*recoverAndDispatch\(input\.heartbeatEventId[\s\S]{0,160}sweepAndDispatchEventAiArtifacts\(\),\s*\]\)/);
+  assert.match(page, /const RECOVERY_HEARTBEAT_MS = 60_000;/);
+  assert.match(page, /window\.setInterval\(beat, RECOVERY_HEARTBEAT_MS\)/);
+  assert.match(page, /if \(stopped \|\| document\.visibilityState === "hidden"\) return;/,
+    "a hidden tab must not keep paying for recovery");
 });

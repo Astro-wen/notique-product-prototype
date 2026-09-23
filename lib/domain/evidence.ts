@@ -123,7 +123,7 @@ export function normalizeWithSourceMap(raw: string): NormalizedWithMap {
       pendingSpaceIndex = null;
     }
 
-    const normalized = char.normalize("NFKC");
+    const normalized = char.normalize("NFKC").toLowerCase();
     for (const outputChar of normalized) {
       value += outputChar;
       sourceIndexes.push(index);
@@ -362,6 +362,30 @@ export function canonicalizeTranscriptEvidence(
   };
 }
 
+/** Repair model citation coordinates only. Preserve every intervening source
+ * segment and re-run the same exact/normalized quote checks. Never fuzzy-match
+ * statements, search another asset, or bridge an unbounded span. */
+export function recoverTranscriptEvidence(
+  segmentIds: string[],
+  quoteHint: string,
+  segmentById: ReadonlyMap<string, TranscriptSegment>,
+  options: CanonicalizeOptions,
+): CanonicalTranscriptEvidence | InvalidEvidence {
+  const initial = canonicalizeTranscriptEvidence(segmentIds, quoteHint, segmentById, options);
+  if (initial.valid || initial.code !== "EVIDENCE_SEGMENT_ORDER_INVALID") return initial;
+  const selected = segmentIds.map((id) => segmentById.get(id)!);
+  const lower = Math.min(...selected.map((segment) => segment.ordinal));
+  const upper = Math.max(...selected.map((segment) => segment.ordinal));
+  if (upper - lower >= 20) return initial;
+  const source = selected[0];
+  const contiguous = [...segmentById.values()].filter((segment) =>
+    segment.assetVersionId === source.assetVersionId && segment.eventId === options.expectedEventId
+    && segment.ordinal >= lower && segment.ordinal <= upper)
+    .sort((a, b) => a.ordinal - b.ordinal);
+  if (contiguous.length !== upper - lower + 1) return initial;
+  return canonicalizeTranscriptEvidence(contiguous.map((segment) => segment.id), quoteHint, segmentById, options);
+}
+
 export function validatePhotoBbox(value: unknown): value is [number, number, number, number] {
   if (!Array.isArray(value) || value.length !== 4) return false;
   if (!value.every((item) => typeof item === "number" && Number.isFinite(item))) return false;
@@ -380,4 +404,34 @@ export function validateDocumentPage(pageNumber: number | null, pageCount: numbe
   if (pageNumber == null) return true;
   if (!Number.isInteger(pageNumber) || pageNumber < 1) return false;
   return pageCount == null || pageNumber <= pageCount;
+}
+
+/**
+ * 模型抄错了引文的材料版本 ID 时，从它引的句子反推回来。
+ *
+ * 2026-09-22 真实录音上见过：模型把版本 ID 的前半段和记录 ID 的后半段拼在一起，
+ * 这一条的 27 处引文全指向一份不存在的材料，20 条结论因为「没有有效原话」整条
+ * 被丢。版本 ID 本来就是冗余信息，每处引文还带着它引的句子 ID，句子属于哪份
+ * 材料是确定的。所以只在版本 ID 对不上、而引的句子全部存在且都属于同一份本次
+ * 输入的材料时才改回来；句子对不上、跨了材料、或不是逐字稿引文，一律不动，
+ * 照旧交给后面的校验拒掉。
+ */
+export function repairEvidenceAssetVersion(
+  evidence: { kind: string; asset_version_id: string; segment_ids?: readonly string[] | null },
+  inputVersionIds: ReadonlySet<string>,
+  segmentVersionById: ReadonlyMap<string, string | null>,
+): string | null {
+  if (inputVersionIds.has(evidence.asset_version_id)) return null;
+  if (evidence.kind !== "transcript" && evidence.kind !== "text") return null;
+  const ids = evidence.segment_ids ?? [];
+  if (!ids.length) return null;
+  const versions = new Set<string>();
+  for (const id of ids) {
+    const version = segmentVersionById.get(id);
+    if (!version) return null;
+    versions.add(version);
+  }
+  if (versions.size !== 1) return null;
+  const [version] = versions;
+  return inputVersionIds.has(version!) ? version! : null;
 }

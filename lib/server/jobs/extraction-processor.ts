@@ -1,18 +1,26 @@
+import { classifyActionStatement } from "@/lib/domain/action-classification";
+import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { buildContextPack, type ContextPack, type ContextPackAsset } from "@/lib/domain/context-pack";
+import {
+  readableTranscriptSegmentsForVerification,
+  validateReadableTranscriptOutput,
+} from "@/lib/domain/event-ai-artifacts";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
   isSupportedModelImageMime,
 } from "@/lib/domain/asset-policy";
 import {
   EXTRACTION_RUN_LEASE_MS,
+  MAX_AI_TIMEOUT_MS,
   normalizeVerifierReasoningEffort,
 } from "@/lib/domain/model-config";
 import { EXTRACTION_STAGE_STALE_AFTER_MS } from "@/lib/domain/run-timing";
 import {
-  canonicalizeTranscriptEvidence,
+  recoverTranscriptEvidence,
   validateDocumentPage,
   validatePhotoBbox,
+  repairEvidenceAssetVersion,
 } from "@/lib/domain/evidence";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
@@ -34,21 +42,35 @@ import {
   validateVerificationOutput,
   type InventoryOutput,
   type VerificationOutput,
+  type DraftLinkCandidate,
 } from "@/lib/domain/two-stage-extraction";
 import {
   createModelProvider,
   isModelProviderNotConfigured,
   ModelBackgroundPendingError,
+  ModelBackgroundStalledError,
   ModelOutputInvalidError,
   ModelProviderRequestError,
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
 import { loadProjectLedger } from "@/lib/server/db/ledger-repository";
+import { createExtractionRun } from "@/lib/server/db/core-repository";
+import {
+  CONTEXT_CHANGED_RESTARTED,
+  contextRestartIdempotencyKey,
+  mayRestartAfterContextChange,
+} from "@/lib/domain/context-restart";
+import { listProjectDraftMemory } from "@/lib/server/db/buyer-journey-repository";
 import {
   getLatestExtractionModelStage,
   supersedeProcessingExtractionModelStage,
   upsertExtractionModelStage,
 } from "@/lib/server/db/extraction-stage-repository";
+import {
+  canResumeProcessingModelStage,
+  canReuseSucceededModelStage,
+  type ModelStageFrozenInput,
+} from "@/lib/server/jobs/model-stage-contract";
 import { parseJson } from "@/lib/server/http/api";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
@@ -157,6 +179,9 @@ function sanitizedIssue(value: unknown): Record<string, unknown> {
   if (value instanceof ModelBackgroundPendingError) {
     return { background_status: value.providerStatus };
   }
+  if (value instanceof ModelBackgroundStalledError) {
+    return { background_status: value.providerStatus, stalled_ms: value.ageMs };
+  }
   if (value instanceof ModelOutputInvalidError) {
     return { issues: value.issues.slice(0, 25) };
   }
@@ -170,6 +195,7 @@ function sanitizedIssue(value: unknown): Record<string, unknown> {
 function errorCode(error: unknown): string {
   if (isModelProviderNotConfigured(error)) return "MODEL_PROVIDER_NOT_CONFIGURED";
   if (error instanceof ModelBackgroundPendingError) return error.code;
+  if (error instanceof ModelBackgroundStalledError) return error.code;
   if (error instanceof ModelTimeoutError) return "MODEL_TIMEOUT";
   if (error instanceof ModelOutputInvalidError) return "MODEL_OUTPUT_INVALID";
   if (error instanceof ModelProviderRequestError) return "MODEL_PROVIDER_REQUEST_FAILED";
@@ -179,6 +205,7 @@ function errorCode(error: unknown): string {
 
 function isTransientModelError(error: unknown): boolean {
   if (error instanceof ModelBackgroundPendingError) return true;
+  if (error instanceof ModelBackgroundStalledError) return true;
   if (error instanceof ModelTimeoutError) return true;
   return error instanceof ModelProviderRequestError &&
     (error.status === null || error.status === 408 || error.status === 429 || error.status >= 500);
@@ -195,6 +222,21 @@ class ProcessingFault extends Error {
   }
 }
 
+/**
+ * Internal control-flow signal: Agent A has finished, but the independently
+ * generated readable transcript has not reached a terminal state yet. Keep
+ * the successful inventory stage, release the Worker lease, and resume Agent
+ * B later instead of silently falling back to raw-only.
+ */
+class ReadableTranscriptPendingError extends Error {
+  readonly code = "READABLE_TRANSCRIPT_PENDING";
+
+  constructor() {
+    super("Readable transcript is still being generated.");
+    this.name = "ReadableTranscriptPendingError";
+  }
+}
+
 type StageName = "inventory" | "verify" | "verify_escalated";
 
 function aggregateUsage(usages: ModelUsage[]): ModelUsage {
@@ -206,8 +248,42 @@ function aggregateUsage(usages: ModelUsage[]): ModelUsage {
     inputTokens: sum("inputTokens"),
     outputTokens: sum("outputTokens"),
     cachedTokens: sum("cachedTokens"),
-    providerRequestId: usages.at(-1)?.providerRequestId ?? null,
+    providerRequestId: [...usages].reverse().find((usage) => usage.providerRequestId)?.providerRequestId ?? null,
   };
+}
+
+/**
+ * Stage telemetry is the billing/accounting source of truth. In particular,
+ * an invalid model response still consumed provider tokens and must not be
+ * hidden by the later successful retry that the Run ultimately adopts.
+ */
+async function persistedExtractionUsage(runId: string): Promise<ModelUsage | null> {
+  const rows = await all(
+    `SELECT input_tokens, output_tokens, cached_tokens, provider_request_id
+       FROM extraction_model_stages
+      WHERE run_id = ? AND status IN ('succeeded', 'failed')
+      ORDER BY created_at ASC, id ASC`,
+    [runId],
+  );
+  return rows.length
+    ? aggregateUsage(rows.map((row) => stageUsage(row as {
+        input_tokens: number | null;
+        output_tokens: number | null;
+        cached_tokens: number | null;
+        provider_request_id: string | null;
+      })))
+    : null;
+}
+
+function escalationReasons(stage: {
+  error_details: unknown;
+} | null): string[] {
+  const details = stage?.error_details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return [];
+  const reasons = (details as Record<string, unknown>).escalation_reasons;
+  return Array.isArray(reasons)
+    ? reasons.filter((reason): reason is string => typeof reason === "string").slice(0, 20)
+    : [];
 }
 
 function stageUsage(row: {
@@ -242,7 +318,18 @@ async function runModelStage<T>(input: {
   }) => Promise<{ output: T; usage: ModelUsage }>;
 }): Promise<{ output: T; usage: ModelUsage; reused: boolean }> {
   const existing = await getLatestExtractionModelStage(String(input.run.id), input.stage);
-  if (existing?.status === "succeeded") {
+  const frozenInput: ModelStageFrozenInput = {
+    provider: input.provider,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    promptVersion: input.promptVersion,
+    schemaVersion: input.schemaVersion,
+    inputHash: input.inputHash,
+  };
+  const canReuseExisting = Boolean(
+    existing && canReuseSucceededModelStage(existing, frozenInput),
+  );
+  if (existing?.status === "succeeded" && canReuseExisting) {
     const output = input.validate(existing.validated_output);
     if (!output) {
       throw new ProcessingFault(
@@ -253,13 +340,7 @@ async function runModelStage<T>(input: {
     return { output, usage: stageUsage(existing), reused: true };
   }
   const canResumeExisting = Boolean(
-    existing?.status === "processing" &&
-    existing.provider === input.provider &&
-    existing.model === input.model &&
-    existing.reasoning_effort === input.reasoningEffort &&
-    existing.prompt_version === input.promptVersion &&
-    existing.schema_version === input.schemaVersion &&
-    existing.input_hash === input.inputHash,
+    existing && canResumeProcessingModelStage(existing, frozenInput),
   );
   const attempt = canResumeExisting
     ? existing!.attempt
@@ -343,6 +424,31 @@ async function runModelStage<T>(input: {
       // onProviderResponse has already persisted the durable Response ID. Keep
       // this exact stage attempt processing so the next Worker invocation uses
       // GET /responses/:id rather than creating another paid Response.
+      throw error;
+    }
+    if (error instanceof ModelBackgroundStalledError) {
+      // 后台响应卡住已被取消。把这次阶段尝试标成失败，下一轮就不会再恢复它
+      // （canResumeProcessingModelStage 只认 processing），而是开新的 attempt、
+      // 新的幂等键、重新 POST。仍按瞬时错误往上抛，让 Run 排队重试。
+      const finishedAt = now();
+      await upsertExtractionModelStage({
+        runId: String(input.run.id),
+        stage: input.stage,
+        attempt,
+        provider: input.provider,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        promptVersion: input.promptVersion,
+        schemaVersion: input.schemaVersion,
+        status: "failed",
+        inputHash: input.inputHash,
+        providerRequestId: null,
+        errorCode: error.code,
+        errorDetails: { ...input.details, ...sanitizedIssue(error) },
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+      });
       throw error;
     }
     if (isTransientModelError(error)) {
@@ -619,6 +725,25 @@ async function loadContextInput(run: Row): Promise<{
     };
   }));
   const ledgerPromise = loadProjectLedger(scope, String(run.project_id));
+  const frozenModelParams = parseJson<Record<string, unknown>>(
+    String(run.model_params_json ?? "{}"),
+    {},
+  );
+  const draftContextEnabled = frozenModelParams.draft_context === true;
+  const draftContextManifest = Array.isArray(frozenModelParams.draft_context_manifest)
+    ? frozenModelParams.draft_context_manifest.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const row = item as Record<string, unknown>;
+        return typeof row.claim_id === "string" && typeof row.claim_version_id === "string"
+          ? [{ claim_id: row.claim_id, claim_version_id: row.claim_version_id }]
+          : [];
+      })
+    : [];
+  const draftMemoryPromise = draftContextEnabled
+    ? listProjectDraftMemory(scope, String(run.project_id), {
+        frozenClaims: draftContextManifest,
+      })
+    : Promise.resolve({ claims: [], links: [] });
   const glossaryRowsPromise = all(
     `SELECT ge.canonical_value, ge.aliases_json, ge.category, ge.source_type,
             ge.source_claim_version_id
@@ -640,10 +765,11 @@ async function loadContextInput(run: Row): Promise<{
         )`,
     [run.project_id, run.workspace_id],
   );
-  const [photos, ledger, glossaryRows] = await Promise.all([
+  const [photos, ledger, glossaryRows, draftMemory] = await Promise.all([
     photosPromise,
     ledgerPromise,
     glossaryRowsPromise,
+    draftMemoryPromise,
   ]);
   const glossary = glossaryRows.flatMap((row) => {
     const canonical = String(row.canonical_value).trim();
@@ -667,6 +793,18 @@ async function loadContextInput(run: Row): Promise<{
     photos,
     documents: [],
     glossary,
+    draftContextEnabled,
+    draftClaims: draftMemory.claims
+      .map((claim) => ({
+      claimId: claim.claim_id,
+      claimVersionId: claim.claim_version_id,
+      eventId: claim.event_id,
+      eventSequenceNo: claim.event_sequence_no,
+      type: claim.type as ClaimWithVersion["type"],
+      statement: claim.statement,
+      confidence: claim.confidence,
+      evidenceRefIds: claim.evidence_ref_ids,
+      })),
   });
   const snapshotContext = contextSnapshotView(contextPack);
   const contextSnapshotJson = JSON.stringify(snapshotContext);
@@ -773,6 +911,152 @@ async function persistContextSnapshot(
   ]);
 }
 
+async function contextWithReadableTranscript(
+  run: Row,
+  base: ContextPack,
+  warnings: Array<Record<string, unknown>>,
+): Promise<ContextPack> {
+  const frozen = parseJson<Record<string, unknown>>(String(run.model_params_json ?? "{}"), {});
+  if (frozen.verification_uses_readable === false || getBindings().AI_VERIFICATION_USES_READABLE === "0") {
+    return base;
+  }
+  const row = await first(
+    `SELECT ar.status, ar.error_code, a.content_json
+       FROM event_ai_artifact_runs ar
+       LEFT JOIN event_ai_artifacts a ON a.run_id = ar.id
+      WHERE ar.extraction_run_id = ? AND ar.kind = 'readable_transcript'
+      /* The first Readable Run is part of this Extraction Run's frozen input.
+         A later user-requested Readable retry may improve the reading UI, but
+         it must not replace an in-flight Agent B input or cause another paid
+         verification Response to be created. */
+      ORDER BY ar.created_at ASC, ar.id ASC LIMIT 1`,
+    [run.id],
+  );
+  if (row && ["queued", "processing"].includes(String(row.status))) {
+    throw new ReadableTranscriptPendingError();
+  }
+  if (!row || String(row.status) !== "succeeded" || row.content_json == null) {
+    warnings.push({
+      code: String(row?.status) === "failed"
+        ? "READABLE_TRANSCRIPT_FAILED_RAW_ONLY"
+        : "READABLE_TRANSCRIPT_NOT_READY_RAW_ONLY",
+      error_code: row?.error_code == null ? null : String(row.error_code),
+    });
+    return base;
+  }
+  const candidate = parseJson(String(row.content_json), null);
+  const validation = validateReadableTranscriptOutput(candidate, {
+    eventId: base.new_event.event_id,
+    segments: base.new_event.transcript_segments,
+  });
+  if (!validation.valid || !validation.output) {
+    warnings.push({ code: "READABLE_TRANSCRIPT_INVALID_RAW_ONLY" });
+    return base;
+  }
+  const safeSegments = readableTranscriptSegmentsForVerification(validation.output);
+  const withheldSegmentCount = validation.output.segments.length - safeSegments.length;
+  if (withheldSegmentCount > 0) {
+    warnings.push({
+      code: safeSegments.length === 0
+        ? "READABLE_TRANSCRIPT_ALL_FLAGGED_RAW_ONLY"
+        : "READABLE_TRANSCRIPT_FLAGGED_SEGMENTS_WITHHELD",
+      withheld_segment_count: withheldSegmentCount,
+    });
+  }
+  if (safeSegments.length === 0) return base;
+  return {
+    ...base,
+    new_event: {
+      ...base.new_event,
+      readable_transcript_segments: safeSegments,
+    },
+  };
+}
+
+async function releaseRunForReadableTranscriptPoll(
+  run: Row,
+  owner: string,
+  dispatchOutboxOwner: string | undefined,
+): Promise<ExtractionProcessResult> {
+  const timestamp = now();
+  const nextPollAt = plusMilliseconds(timestamp, 5_000);
+  const guardId = id("guard");
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM extraction_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) AND (
+           ? IS NULL OR EXISTS (
+             SELECT 1 FROM queue_outbox
+              WHERE run_id = ? AND status = 'sending' AND lease_owner = ?
+           )
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        run.id,
+        owner,
+        dispatchOutboxOwner ?? null,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        timestamp,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                current_queued_at = ?, error_code = NULL,
+                error_details_json = '{"readable_transcript_pending":true}',
+                updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(timestamp, timestamp, run.id, owner),
+    getD1()
+      .prepare(
+        `UPDATE projects
+            SET scenario_lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
+            AND scenario_assessment_run_id = ?`,
+      )
+      .bind(
+        plusMilliseconds(timestamp, EXTRACTION_RUN_LEASE_MS + 5 * 60_000),
+        timestamp,
+        run.project_id,
+        run.workspace_id,
+        run.id,
+      ),
+    getD1()
+      .prepare(
+        `UPDATE queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'READABLE_TRANSCRIPT_PENDING', updated_at = ?
+          WHERE run_id = ? AND status = 'sending'
+            AND (? IS NULL OR lease_owner = ?)`,
+      )
+      .bind(
+        nextPollAt,
+        timestamp,
+        run.id,
+        dispatchOutboxOwner ?? null,
+        dispatchOutboxOwner ?? null,
+      ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return {
+    runId: String(run.id),
+    status: "background_pending",
+    persistedClaims: 0,
+    occurrenceCandidates: 0,
+    warningCount: 0,
+    errorCode: "READABLE_TRANSCRIPT_PENDING",
+  };
+}
+
 function prepareEvidence(
   evidence: ModelEvidence[],
   run: Row,
@@ -782,8 +1066,18 @@ function prepareEvidence(
 ): PreparedEvidence[] {
   const manifestById = new Map(manifestRows.map((row) => [String(row.id), row]));
   const segmentById = new Map(segments.map((segment) => [segment.id, segment]));
+  const inputVersionIds = new Set(
+    manifestRows.filter((row) => String(row.event_id) === String(run.event_id)).map((row) => String(row.id)),
+  );
+  const segmentVersionById = new Map(segments.map((segment) => [segment.id, segment.assetVersionId]));
   const prepared: PreparedEvidence[] = [];
-  for (const item of evidence) {
+  for (const original of evidence) {
+    // 版本 ID 抄错但引的句子都对得上同一份材料：改回来，别因为一个冗余字段丢掉整条结论。
+    const repairedVersion = repairEvidenceAssetVersion(original, inputVersionIds, segmentVersionById);
+    if (repairedVersion) {
+      warnings.push({ code: "EVIDENCE_VERSION_REPAIRED", from: original.asset_version_id, to: repairedVersion });
+    }
+    const item = repairedVersion ? { ...original, asset_version_id: repairedVersion } : original;
     const asset = manifestById.get(item.asset_version_id);
     if (!asset || String(asset.event_id) !== String(run.event_id)) {
       warnings.push({ code: "EVIDENCE_SCOPE_INVALID", asset_version_id: item.asset_version_id });
@@ -794,7 +1088,7 @@ function prepareEvidence(
         warnings.push({ code: "EVIDENCE_KIND_INVALID", asset_version_id: item.asset_version_id });
         continue;
       }
-      const canonical = canonicalizeTranscriptEvidence(
+      const canonical = recoverTranscriptEvidence(
         item.segment_ids,
         item.quote_hint,
         segmentById,
@@ -900,7 +1194,8 @@ function prepareCandidates(
       .map((claim) => [claim.id, claim]),
   );
   const clientKeys = new Set<string>();
-  for (const model of output.claims) {
+  for (const candidate of output.claims) {
+    const model = { ...candidate, type: classifyActionStatement(candidate.type, candidate.statement) as typeof candidate.type };
     if (clientKeys.has(model.client_claim_key)) {
       warnings.push({ code: "DUPLICATE_CLIENT_CLAIM_KEY", client_claim_key: model.client_claim_key });
       continue;
@@ -909,7 +1204,7 @@ function prepareCandidates(
     if (model.disposition === "duplicate") continue;
     const evidence = prepareEvidence(model.evidence, run, manifestRows, segments, warnings);
     if (!evidence.length) {
-      warnings.push({ code: "CLAIM_WITHOUT_VALID_EVIDENCE", client_claim_key: model.client_claim_key });
+      warnings.push({ code: "CLAIM_WITHOUT_VALID_EVIDENCE", client_claim_key: model.client_claim_key, statement: model.statement });
       continue;
     }
     const hasMaterialEvidence = evidence.some(
@@ -955,11 +1250,7 @@ function prepareCandidates(
       }
       if (
         relation.type === "resolves" &&
-        target.type !== "open_question" &&
-        target.type !== "risk" &&
-        target.type !== "concern" &&
-        target.type !== "requirement" &&
-        target.version.uncertainty === null
+        !canResolveClaim({ type: target.type, ...target.version })
       ) {
         warnings.push({
           code: "RELATION_SEMANTICS_INVALID",
@@ -1049,6 +1340,7 @@ async function persistModelOutput(
     providerRequestId: string | null;
   },
   pipelineWarnings: Array<Record<string, unknown>> = [],
+  draftLinkCandidates: DraftLinkCandidate[] = [],
 ): Promise<ExtractionProcessResult> {
   const validatedOutputJson = JSON.stringify(output);
   const validatedOutputBytes = new TextEncoder().encode(validatedOutputJson).byteLength;
@@ -1089,12 +1381,8 @@ async function persistModelOutput(
   if (needsScenario && !output.scenario_assessment) {
     throw new ProcessingFault("MODEL_OUTPUT_INVALID", "First-event extraction omitted scenario candidates.");
   }
-  if (!needsScenario && output.scenario_assessment !== null) {
-    throw new ProcessingFault(
-      "MODEL_OUTPUT_INVALID",
-      "Extraction returned scenario candidates for a project with a confirmed scenario.",
-    );
-  }
+  // 不负责判类型的分析也可能带回候选（它开始时项目还没有类型），直接不用，
+  // 不为这个作废整次分析。
   const timestamp = now();
   const db = getD1();
   const guardId = id("guard");
@@ -1106,8 +1394,16 @@ async function persistModelOutput(
            SELECT 1 FROM extraction_runs r
            JOIN projects p ON p.id = r.project_id AND p.workspace_id = r.workspace_id
           WHERE r.id = ? AND r.status = 'processing' AND r.lease_owner = ?
-            AND p.context_version = r.context_version
-            AND NOT EXISTS (SELECT 1 FROM claims WHERE extraction_run_id = r.id)
+           AND p.context_version = r.context_version
+            AND NOT EXISTS (
+              SELECT 1 FROM extraction_model_stages processing_stage
+               WHERE processing_stage.run_id = r.id
+                 AND processing_stage.status = 'processing'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM claims
+               WHERE extraction_run_id = r.id AND source = 'ai'
+            )
             AND NOT EXISTS (
               SELECT 1 FROM claim_occurrence_candidates WHERE extraction_run_id = r.id
             )
@@ -1194,6 +1490,54 @@ async function persistModelOutput(
       ),
     );
   }
+  const newClaimByClientKey = new Map(
+    prepared.newClaims.map((candidate) => [candidate.model.client_claim_key, candidate]),
+  );
+  for (const link of draftLinkCandidates) {
+    const source = newClaimByClientKey.get(link.final_claim_key);
+    if (!source) {
+      prepared.warnings.push({
+        code: "DRAFT_LINK_SOURCE_NOT_PERSISTED",
+        final_claim_key: link.final_claim_key,
+      });
+      continue;
+    }
+    statements.push(
+      db.prepare(
+        `INSERT INTO draft_link_candidates (
+          id, workspace_id, project_id, extraction_run_id,
+          source_claim_id, source_claim_version_id,
+          target_draft_claim_id, target_draft_claim_version_id,
+          type, reason, confidence, status, created_at, updated_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM claims target
+            WHERE target.id = ? AND target.workspace_id = ?
+              AND target.project_id = ? AND target.current_version_id = ?
+              AND target.review_status = 'pending' AND target.lifecycle_status = 'active'
+         )`,
+      ).bind(
+        id("dlink"),
+        run.workspace_id,
+        run.project_id,
+        run.id,
+        source.claimId,
+        source.versionId,
+        link.target_draft_claim_id,
+        link.target_draft_claim_version_id,
+        link.type,
+        link.reason,
+        link.confidence,
+        timestamp,
+        timestamp,
+        link.target_draft_claim_id,
+        run.workspace_id,
+        run.project_id,
+        link.target_draft_claim_version_id,
+      ),
+    );
+  }
   for (const occurrence of prepared.occurrences) {
     statements.push(
       db
@@ -1225,18 +1569,25 @@ async function persistModelOutput(
     );
   }
   if (needsScenario) {
+    // 直接采用把握最大的那个类型，不再弹卡片等人确认：那张卡片用户看不懂，还把
+    // 后面的记录都卡住。不推进 context_version，免得同项目里正在跑的分析白跑。
+    const candidates = output.scenario_assessment!.candidates;
+    const chosen = [...candidates].sort((left, right) => right.confidence - left.confidence)[0]!;
     statements.push(
       db
         .prepare(
           `UPDATE projects
-              SET scenario_status = 'pending_confirmation',
-                  scenario_candidates_json = ?, scenario_lease_expires_at = NULL,
-                  updated_at = ?
+              SET scenario_status = 'confirmed', scenario = ?,
+                  scenario_candidates_json = ?, scenario_version = scenario_version + 1,
+                  scenario_confirmed_by = 'system:auto-scenario', scenario_confirmed_at = ?,
+                  scenario_lease_expires_at = NULL, updated_at = ?
             WHERE id = ? AND workspace_id = ? AND scenario_status = 'assessing'
               AND scenario_assessment_run_id = ? AND context_version = ?`,
         )
         .bind(
-          JSON.stringify(output.scenario_assessment!.candidates),
+          chosen.scenario,
+          JSON.stringify(candidates),
+          timestamp,
           timestamp,
           run.project_id,
           run.workspace_id,
@@ -1292,7 +1643,8 @@ async function markRunFailed(
   const code = errorCode(error);
   const timestamp = now();
   const db = getD1();
-  const usage = completedUsage ?? (
+  const persistedUsage = await persistedExtractionUsage(String(run.id));
+  const usage = persistedUsage ?? completedUsage ?? (
     error instanceof ModelOutputInvalidError && error.usage ? error.usage : null
   );
   const guardId = id("guard");
@@ -1302,7 +1654,12 @@ async function markRunFailed(
         `INSERT INTO mutation_guards (id, guard_value, created_at)
          SELECT ?, CASE WHEN EXISTS (
            SELECT 1 FROM extraction_runs
-            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+           WHERE id = ? AND status = 'processing' AND lease_owner = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM extraction_model_stages processing_stage
+                WHERE processing_stage.run_id = extraction_runs.id
+                  AND processing_stage.status = 'processing'
+             )
          ) THEN 1 ELSE 0 END, ?`,
       )
       .bind(guardId, run.id, owner, timestamp),
@@ -1559,6 +1916,17 @@ export async function processExtractionRun(
       );
     }
     const input = await loadContextInput(leased);
+    // 排队期间项目上下文已经变了：现在就发现，接班任务还一次模型都没调过。
+    // 不查的话下面存快照的守卫会拦下，报的是一个说不清的内部错误。
+    const currentContext = await first(
+      `SELECT context_version FROM projects WHERE id = ? AND workspace_id = ?`,
+      [leased.project_id, leased.workspace_id],
+    );
+    if (currentContext && Number(currentContext.context_version) !== Number(leased.context_version)) {
+      throw new ProcessingFault("CLAIM_VERSION_CONFLICT", "Project context changed before extraction started.", {
+        before_model_stages: true,
+      });
+    }
     await persistContextSnapshot(
       leased,
       owner,
@@ -1576,12 +1944,16 @@ export async function processExtractionRun(
     const inventoryEffort =
       typeof frozenModelParams.reasoning_effort === "string"
         ? frozenModelParams.reasoning_effort
-        : "xhigh";
+        : "high";
     const verifierEffort = normalizeVerifierReasoningEffort(
       typeof frozenModelParams.verifier_reasoning_effort === "string"
         ? frozenModelParams.verifier_reasoning_effort
         : undefined,
     );
+    // 升级目前和基础 verify 同强度，"升级"的只有提示词里的质量反馈。
+    // Run 创建时冻结了 escalation_reasoning_effort，要把算力也提上去时
+    // 读它即可；在拿到评估数据之前先不提，免得每次升级都更慢更贵。
+    const escalationEffort = verifierEffort;
     const maxOutputTokens =
       typeof frozenModelParams.max_output_tokens === "number"
         ? frozenModelParams.max_output_tokens
@@ -1592,6 +1964,7 @@ export async function processExtractionRun(
         : undefined;
     const pipelineEnabled = frozenModelParams.two_pass_pipeline === true;
     let finalOutput: ExtractClaimsOutput;
+    let acceptedDraftLinks: DraftLinkCandidate[] = [];
     let finalUsage: ModelUsage;
     const pipelineWarnings: Array<Record<string, unknown>> = [];
 
@@ -1610,6 +1983,10 @@ export async function processExtractionRun(
         prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
         schema: INVENTORY_SCHEMA_VERSION,
       }));
+      const inventoryContext: ContextPack = {
+        ...input.contextPack,
+        draft_context: { enabled: false, claims: [] },
+      };
       const inventoryStage = await runModelStage<InventoryOutput>({
         run: leased,
         stage: "inventory",
@@ -1621,16 +1998,23 @@ export async function processExtractionRun(
         inputHash: inventoryInputHash,
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (stageOptions) => inventoryProvider.inventoryClaims(
-          input.contextPack,
-          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
+          inventoryContext,
+          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
         ),
       });
       completedUsage = inventoryStage.usage;
+
+      const verificationContext = await contextWithReadableTranscript(
+        leased,
+        input.contextPack,
+        pipelineWarnings,
+      );
 
       const verifyInputHash = await hashText(JSON.stringify({
         run_input_hash: leased.input_hash,
         context_snapshot_hash: input.contextSnapshotHash,
         inventory: inventoryStage.output,
+        readable_transcript_segments: verificationContext.new_event.readable_transcript_segments,
         stage: "verify",
         prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
         schema: VERIFICATION_SCHEMA_VERSION,
@@ -1644,30 +2028,78 @@ export async function processExtractionRun(
       });
       let verifyStage: { output: VerificationOutput; usage: ModelUsage; reused: boolean } | null = null;
       let verificationFailure: unknown = null;
-      try {
-        verifyStage = await runModelStage<VerificationOutput>({
-          run: leased,
-          stage: "verify",
-          provider: providerName,
-          model: modelName,
-          reasoningEffort: verifierEffort,
-          promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
-          schemaVersion: VERIFICATION_SCHEMA_VERSION,
-          inputHash: verifyInputHash,
-          validate: (value) => validateVerificationOutput(
-            value,
+      const existingVerify = await getLatestExtractionModelStage(String(leased.id), "verify");
+      const existingEscalated = await getLatestExtractionModelStage(
+        String(leased.id),
+        "verify_escalated",
+      );
+      const escalationInFlight = Boolean(
+        existingEscalated &&
+        (existingEscalated.status === "processing" || existingEscalated.status === "succeeded"),
+      );
+      const escalationTerminalFailure = existingEscalated?.status === "failed";
+
+      if (escalationInFlight) {
+        // Once escalation has a durable Response ID, it is a dependency
+        // barrier. Never create verify attempt 2 while that Response is still
+        // running; doing so can terminally finish the Run and orphan the
+        // escalation. A succeeded base Verify is safe to reuse for the final
+        // quality comparison, but a failed base Verify must stay failed.
+        if (existingVerify?.status === "succeeded") {
+          const validatedBase = validateVerificationOutput(
+            existingVerify.validated_output,
             inventoryStage.output,
-            input.contextPack,
-          ).output,
-          invoke: (stageOptions) => verifierProvider.verifyClaims(
-            input.contextPack,
-            inventoryStage.output,
-            { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage` },
-          ),
-        });
-      } catch (error) {
-        if (!(error instanceof ModelOutputInvalidError)) throw error;
-        verificationFailure = error;
+            verificationContext,
+          );
+          if (!validatedBase.valid || !validatedBase.output) {
+            throw new ProcessingFault(
+              "MODEL_OUTPUT_INVALID",
+              "Persisted base verification no longer matches the frozen escalation input.",
+            );
+          }
+          verifyStage = {
+            output: validatedBase.output,
+            usage: stageUsage(existingVerify),
+            reused: true,
+          };
+        } else if (existingEscalated!.status === "processing" && !existingEscalated!.provider_request_id) {
+          // A POST may still be waiting for its Response ID. Keep the stage
+          // recoverable; never supersede it with another paid POST.
+          throw new ModelTimeoutError();
+        }
+      } else if (escalationTerminalFailure && existingVerify?.status === "failed") {
+        // The bounded pipeline has spent its verify + escalation attempts.
+        // Do not turn a failed escalation into an unbounded verify retry loop.
+        verificationFailure = new ProcessingFault(
+          "MODEL_OUTPUT_INVALID",
+          "Verification and its single escalation attempt both failed.",
+        );
+      } else {
+        try {
+          verifyStage = await runModelStage<VerificationOutput>({
+            run: leased,
+            stage: "verify",
+            provider: providerName,
+            model: modelName,
+            reasoningEffort: verifierEffort,
+            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
+            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            inputHash: verifyInputHash,
+            validate: (value) => validateVerificationOutput(
+              value,
+              inventoryStage.output,
+              verificationContext,
+            ).output,
+            invoke: (stageOptions) => verifierProvider.verifyClaims(
+              verificationContext,
+              inventoryStage.output,
+              { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
+            ),
+          });
+        } catch (error) {
+          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          verificationFailure = error;
+        }
       }
       const usages = [
         inventoryStage.usage,
@@ -1681,13 +2113,94 @@ export async function processExtractionRun(
       let assessment = assessVerificationEscalation(
         inventoryStage.output,
         acceptedVerification ?? {},
-        input.contextPack,
+        verificationContext,
       );
-      if (assessment.required) {
+      if (escalationInFlight) {
+        const escalatedInputHash = existingEscalated!.input_hash;
         const escalatedProvider = createModelProvider(getBindings(), {
           provider: providerName,
           model: modelName,
-          reasoningEffort: "xhigh",
+          reasoningEffort: escalationEffort,
+          maxOutputTokens,
+          timeoutMs,
+        });
+        const storedEscalationReasons = escalationReasons(existingEscalated);
+        // 这条是跨调用取回已在途升级的路径，也是背景响应下的常态路径
+        // （HTTP waitUntil 只有 30 秒，升级几乎必然要跨调用取回）。它此前
+        // 没有 try/catch，升级输出不合格就把整个 Run 拖垮，连同一次已经
+        // 成功的 verify 一起作废。降级语义在下面那条路径早就定义好了，
+        // 这里复用：base 成功时，升级失败只记警告并回落。
+        try {
+          const escalatedStage = await runModelStage<VerificationOutput>({
+            run: leased,
+            stage: "verify_escalated",
+            provider: providerName,
+            model: modelName,
+            reasoningEffort: escalationEffort,
+            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
+            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            inputHash: escalatedInputHash,
+            details: { escalation_reasons: storedEscalationReasons },
+            validate: (value) => validateVerificationOutput(
+              value,
+              inventoryStage.output,
+              verificationContext,
+            ).output,
+            invoke: (stageOptions) => escalatedProvider.verifyClaims(
+              verificationContext,
+              inventoryStage.output,
+              {
+                ...stageOptions,
+                promptCacheKey: `notique:${leased.id}:two-stage`,
+                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
+                qualityFeedback: [
+                  ...storedEscalationReasons,
+                  "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
+                ],
+              },
+            ),
+          });
+          usages.push(escalatedStage.usage);
+          if (acceptedVerification) {
+            const selection = selectPreferredVerificationForReview(
+              inventoryStage.output,
+              acceptedVerification,
+              escalatedStage.output,
+              verificationContext,
+            );
+            acceptedVerification = selection.output;
+            assessment = selection.assessment;
+            if (selection.selected === "base") {
+              pipelineWarnings.push({
+                code: "MODEL_ESCALATION_NOT_IMPROVED",
+                fallback_stage: "verify",
+              });
+            }
+          } else {
+            acceptedVerification = escalatedStage.output;
+            assessment = assessVerificationEscalation(
+              inventoryStage.output,
+              acceptedVerification,
+              verificationContext,
+            );
+          }
+        } catch (error) {
+          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error.usage) usages.push(error.usage);
+          completedUsage = aggregateUsage(usages);
+          if (!acceptedVerification) throw error;
+          pipelineWarnings.push({
+            code: "MODEL_ESCALATION_OUTPUT_INVALID",
+            details: sanitizedIssue(error),
+            fallback_stage: "verify",
+          });
+        }
+        completedUsage = aggregateUsage(usages);
+      } else if (assessment.required && !escalationTerminalFailure) {
+        const escalatedProvider = createModelProvider(getBindings(), {
+          provider: providerName,
+          model: modelName,
+          reasoningEffort: escalationEffort,
           maxOutputTokens,
           timeoutMs,
         });
@@ -1704,7 +2217,7 @@ export async function processExtractionRun(
             stage: "verify_escalated",
             provider: providerName,
             model: modelName,
-            reasoningEffort: "xhigh",
+            reasoningEffort: escalationEffort,
             promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
             schemaVersion: VERIFICATION_SCHEMA_VERSION,
           inputHash: escalatedInputHash,
@@ -1712,14 +2225,15 @@ export async function processExtractionRun(
             validate: (value) => validateVerificationOutput(
               value,
               inventoryStage.output,
-              input.contextPack,
+              verificationContext,
             ).output,
             invoke: (stageOptions) => escalatedProvider.verifyClaims(
-              input.contextPack,
+              verificationContext,
               inventoryStage.output,
               {
                 ...stageOptions,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
+                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
                 qualityFeedback: [
                   ...assessment.reasons,
                   ...(assessment.droppedCriticalInventoryKeys.length
@@ -1739,7 +2253,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               acceptedVerification,
               escalatedStage.output,
-              input.contextPack,
+              verificationContext,
             );
             acceptedVerification = selection.output;
             assessment = selection.assessment;
@@ -1754,7 +2268,7 @@ export async function processExtractionRun(
             assessment = assessVerificationEscalation(
               inventoryStage.output,
               acceptedVerification,
-              input.contextPack,
+              verificationContext,
             );
           }
         } catch (error) {
@@ -1776,17 +2290,28 @@ export async function processExtractionRun(
           "Verification did not produce a valid final output.",
         );
       }
+      if (!assessment.required && assessment.reasons.includes("compound_claim")) {
+        // 没为复合结论单独复核，记下来，核对时能看到是哪几条。
+        pipelineWarnings.push({
+          code: "MODEL_COMPOUND_CLAIMS_LEFT_FOR_REVIEW",
+          claim_keys: acceptedVerification.quality_review.compound_claim_keys,
+        });
+      }
       if (assessment.required) {
         pipelineWarnings.push({
           code: "MODEL_QUALITY_GATE_UNRESOLVED",
           reasons: assessment.reasons,
           unmapped_inventory_keys: assessment.unmappedInventoryKeys,
           dropped_critical_inventory_keys: assessment.droppedCriticalInventoryKeys,
+          omitted_statements: inventoryStage.output.candidates.filter((candidate) => assessment.droppedCriticalInventoryKeys.includes(candidate.inventory_key)).map((candidate) => candidate.statement),
           low_confidence_relation_claim_keys: assessment.lowConfidenceRelationClaimKeys,
         });
       }
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
+      acceptedDraftLinks = acceptedVerification.draft_link_candidates;
       finalUsage = completedUsage ?? aggregateUsage(usages);
+      const persistedUsage = await persistedExtractionUsage(String(leased.id));
+      if (persistedUsage) finalUsage = persistedUsage;
     } else {
       const provider = createModelProvider(getBindings(), {
         provider: providerName,
@@ -1821,12 +2346,23 @@ export async function processExtractionRun(
       input.segments,
       finalUsage,
       pipelineWarnings,
+      acceptedDraftLinks,
     );
   } catch (error) {
     const frozenModelParams = parseJson<Record<string, unknown>>(
       String(leased.model_params_json ?? "{}"),
       {},
     );
+    if (
+      frozenModelParams.two_pass_pipeline === true &&
+      error instanceof ReadableTranscriptPendingError
+    ) {
+      return releaseRunForReadableTranscriptPoll(
+        leased,
+        owner,
+        options?.dispatchOutboxOwner,
+      );
+    }
     if (
       frozenModelParams.two_pass_pipeline === true &&
       error instanceof ModelBackgroundPendingError
@@ -1841,7 +2377,83 @@ export async function processExtractionRun(
     if (frozenModelParams.two_pass_pipeline === true && isTransientModelError(error)) {
       return deferRunForStageRetry(leased, owner, error, completedUsage);
     }
+    if (error instanceof ProcessingFault && error.code === "CLAIM_VERSION_CONFLICT") {
+      return restartAfterContextChange(leased, owner, error, completedUsage);
+    }
     return markRunFailed(leased, owner, error, completedUsage);
+  }
+}
+
+/**
+ * 上下文在分析途中变了：旧任务收尾，另起一个用新上下文的接班任务。
+ * 规则和理由见 lib/domain/context-restart.ts。
+ */
+async function restartAfterContextChange(
+  run: Row,
+  owner: string,
+  error: ProcessingFault,
+  completedUsage: ModelUsage | null,
+): Promise<ExtractionProcessResult> {
+  const recent = await first(
+    `SELECT COUNT(*) AS n FROM extraction_runs
+      WHERE event_id = ? AND workspace_id = ? AND error_code = ?
+        AND finished_at >= ?`,
+    [
+      run.event_id,
+      run.workspace_id,
+      CONTEXT_CHANGED_RESTARTED,
+      new Date(Date.now() - 60 * 60_000).toISOString(),
+    ],
+  );
+  if (!mayRestartAfterContextChange(Number(recent?.n ?? 0))) {
+    return markRunFailed(run, owner, error, completedUsage);
+  }
+  // 先按接班的码收尾：界面轮询到这一刻看到的就是「在换任务」，不会闪一下失败。
+  const failed = await markRunFailed(
+    run,
+    owner,
+    new ProcessingFault(CONTEXT_CHANGED_RESTARTED, "Project context changed; a fresh run continues.", {
+      ...error.details,
+      restarted_from_run_id: run.id,
+    }),
+    completedUsage,
+  );
+  if (failed.errorCode !== CONTEXT_CHANGED_RESTARTED) return failed;
+  const manifest = parseJson<Array<{ asset_version_id?: unknown }>>(String(run.input_manifest_json ?? "[]"), []);
+  const assetVersionIds = manifest
+    .map((item) => item?.asset_version_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  try {
+    const { run: successor } = await createExtractionRun(
+      { workspaceId: String(run.workspace_id), actorId: "system:notique-extraction" },
+      String(run.event_id),
+      contextRestartIdempotencyKey(String(run.id)),
+      assetVersionIds,
+    );
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs
+            SET error_details_json = json_set(COALESCE(error_details_json, '{}'), '$.successor_run_id', ?),
+                updated_at = ?
+          WHERE id = ? AND error_code = ?`,
+      )
+      .bind(successor.id, now(), run.id, CONTEXT_CHANGED_RESTARTED)
+      .run();
+    return failed;
+  } catch (creationError) {
+    // 接不上班就退回原来的失败，界面照常提示重新整理。
+    console.error("extraction_context_restart_failed", {
+      run_id: run.id,
+      message: creationError instanceof Error ? creationError.message : String(creationError),
+    });
+    await getD1()
+      .prepare(
+        `UPDATE extraction_runs SET error_code = 'CLAIM_VERSION_CONFLICT', updated_at = ?
+          WHERE id = ? AND error_code = ?`,
+      )
+      .bind(now(), run.id, CONTEXT_CHANGED_RESTARTED)
+      .run();
+    return { ...failed, errorCode: "CLAIM_VERSION_CONFLICT" };
   }
 }
 

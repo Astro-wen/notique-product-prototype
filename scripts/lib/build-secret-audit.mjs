@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
 const FORBIDDEN_BASENAME_PATTERNS = [
@@ -22,7 +22,14 @@ const SECRET_CONTENT_PATTERNS = [
       /\b[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)\s*[:=]\s*["'][^"'\r\n]{12,}["']/,
   },
   { name: "basic-auth-url", pattern: /https?:\/\/[^\s/:@]+:[^\s/@]{8,}@/i },
+  {
+    name: "developer-home-absolute-path",
+    pattern:
+      /(?:^|[^A-Za-z0-9])(?:\/(?:Users|home)\/[^/\s"'<>]+(?:\/[^\\\s"'<>]*)?|\/root(?:\/[^\\\s"'<>]*)?|[A-Za-z]:\\{1,2}Users\\{1,2}[^\\\s"'<>]+(?:\\{1,2}[^\\\s"'<>]*)?)/m,
+  },
 ];
+
+const GENERATED_WRANGLER_INTERNAL_FIELDS = ["configPath", "userConfigPath"];
 
 function normalizeRelativePath(root, filePath) {
   return relative(root, filePath).split(sep).join("/");
@@ -103,6 +110,29 @@ async function findSecretContentFindings(packageDirectory) {
   );
 }
 
+async function findMissingReferencedBuildAssets(packageDirectory) {
+  const root = resolve(packageDirectory);
+  const entries = await collectPackageEntries(root);
+  const files = entries.filter((entry) => entry.kind === "file");
+  const existingPaths = new Set(files.map((file) => file.relativePath));
+  const findings = [];
+  const seen = new Set();
+
+  for (const file of files) {
+    const text = (await readFile(file.filePath)).toString("utf8");
+    for (const match of text.matchAll(/\/assets\/(_vinext_fonts\/[^\s"'()?#]+\.woff2)/g)) {
+      const expectedPath = `client/assets/${match[1]}`;
+      if (existingPaths.has(expectedPath)) continue;
+      const key = `${file.relativePath}:${expectedPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({ path: file.relativePath, rule: "missing-referenced-vinext-font-asset" });
+    }
+  }
+
+  return findings;
+}
+
 export async function cleanForbiddenPackagePaths(packageDirectory) {
   const root = resolve(packageDirectory);
   const forbiddenPaths = await findForbiddenPackagePaths(root);
@@ -114,8 +144,37 @@ export async function cleanForbiddenPackagePaths(packageDirectory) {
   return forbiddenPaths;
 }
 
+export async function sanitizeGeneratedWranglerConfig(packageDirectory) {
+  const configPath = resolve(packageDirectory, "server", "wrangler.json");
+  let text;
+
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const config = JSON.parse(text);
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new TypeError("Generated server/wrangler.json must contain a JSON object.");
+  }
+
+  const removedFields = GENERATED_WRANGLER_INTERNAL_FIELDS.filter((field) =>
+    Object.hasOwn(config, field),
+  );
+  if (removedFields.length === 0) return [];
+
+  for (const field of removedFields) delete config[field];
+  await writeFile(configPath, `${JSON.stringify(config)}\n`, "utf8");
+  return removedFields;
+}
+
 export async function auditBuildPackage(packageDirectory) {
   const forbiddenPaths = await findForbiddenPackagePaths(packageDirectory);
-  const contentFindings = await findSecretContentFindings(packageDirectory);
+  const contentFindings = [
+    ...(await findSecretContentFindings(packageDirectory)),
+    ...(await findMissingReferencedBuildAssets(packageDirectory)),
+  ].sort((left, right) => `${left.path}:${left.rule}`.localeCompare(`${right.path}:${right.rule}`));
   return { forbiddenPaths, contentFindings };
 }

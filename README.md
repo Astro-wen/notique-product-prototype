@@ -1,107 +1,129 @@
-# Notique — AI Project Memory
+# Notique Evidence POC
 
-**Turn conversations into project memory you can trace, review, and use.**
+这是 Notique 的内部验证系统。它把 Project、Event、Transcript、照片和文件保存到服务端，生成待审核的 Claim，并把每条 Claim 连接回原始证据。只有人工确认且仍然有效的 Claim 才能进入事项概况、时间线、决定、偏好、待确认问题和风险等正式结果。
 
-Notique is an AI product prototype for people who manage ongoing client conversations. It brings transcripts, recordings, and photos into one project, extracts proposed facts, and connects each proposal to its original evidence. Users review the AI draft before it becomes lasting project memory, a change timeline, or a briefing for the next conversation.
+当前代码不包含示例 Claim、假 AI 结果或浏览器本地 Verdict。AI 服务未配置时，提取请求会明确返回 `MODEL_PROVIDER_NOT_CONFIGURED`。
 
-[Open the application](https://notique-evidence-workspace.uclae2e12.chatgpt.site/) · [Static interface preview](https://astro-wen.github.io/notique-product-prototype/) · [Product case study](docs/PRODUCT_OVERVIEW.md) · [中文工程说明](README.zh-CN.md)
+## 当前范围
 
-## The problem
+- 内部测试前端：创建 Project 和 Event、上传 Transcript、照片或录音、提交提取、审核 Claim、查看证据和正式结果
+- 服务端 API：统一成功和错误格式、Workspace 隔离、写操作并发保护和幂等控制
+- D1：Project、Event、Asset、Transcript Segment、Run、Claim Ledger、Evidence、Verdict、关系、结果快照和 Outbox
+- R2：原始材料使用不可覆盖的版本化 Key 保存
+- 确定性规则：Transcript 解析、逐字引文回填、状态机、Scenario、Views、Gap、Agenda 和 Brief
+- 离线评测：固定公式计算 Recall、Precision、Evidence、Citation、关系、重提、稳定性和 Brief 指标，并单独判断样本量是否达到正式门槛
+- ModelProvider 边界：OpenAI 兼容接口已经接好。未配置密钥时明确失败，不会生成占位 Claim
+- 后台任务：D1 Outbox、租约、重试、失败收口和每分钟定时 Sweep 已接好；OpenAI 长模型阶段可以按已保存的 Background Response ID 恢复，也可以通过受保护的内部接口手动触发
+- 阅读辅助：原始 Transcript 永久保留；Luna `high` 独立生成带原始引用的 AI 摘要和 100% Segment 映射的易读逐字稿。长逐字稿按固定边界分块续跑，任何遗漏、重复、乱序或敏感数字变化都会整份回退 raw-only
+- 项目管理：项目可移到回收站、恢复或永久删除；永久删除先清 R2 文件再删 D1，运行中项目不能删除
+- 通用项目工作区：用户以“项目 / 沟通 / 来源 / 重点 / 待确认 / 行动”组织工作；房地产买方旅程仍作为首个质量评测场景和领域预设，不再作为新建入口或导航文案
+- 双层记忆：AI 草稿可以先读、稍后核对；只有人工确认内容进入可信报告。可选的跨沟通草稿上下文默认关闭，并且不能直接改变任何已确认事实
+- 站内行动：`next_action` 可以从 AI 建议变为人工确认的行动，并在完成时留下可追溯的完成记录；不连接 CRM、日历或邮件
 
-A meeting summary captures one conversation. Ongoing work requires knowing what is still true after the next conversation: a client's revised preference, a changed decision, an unresolved question, or a new risk. Manually reconciling these changes is slow, while an AI summary without accessible evidence is difficult to trust.
+## 用户看到的 Transcript 三层
 
-Notique uses AI to prepare a draft, lets people inspect the source and resolve uncertainty, then builds the next conversation on confirmed information.
+1. **AI 摘要**：用于快速读重点，每条重点都有原始 Segment 和逐字支持句。
+2. **易读逐字稿**：完整内容的可读版本，补标点和分段，并显示每处修改；不能代替 Evidence。
+3. **原始逐字稿**：不可覆盖的审计来源，所有 Claim 引文、时间点和音频播放都回到这里。
 
-## Product walkthrough
+Summary Agent、Transcript Refiner 和事实识别共用现有 `AI_API_KEY`。前两者使用 Luna `high`，事实盘点 Agent A 保持 Luna `xhigh`，事实核对 Agent B 保持 Luna `high`。
 
-```text
-Add material → AI draft → Review against sources → Confirmed project memory
-                                                       ↓
-Next conversation ← Meeting brief ← Decisions, preferences, and changes
-```
+## 本地运行
 
-1. **Add a conversation.** Create a project, import a transcript, upload supported audio or photos, or record in the browser.
-2. **Generate an AI draft.** Audio is transcribed with speakers and timestamps. A two-stage pipeline extracts proposed facts and checks omissions, changes, and relationships.
-3. **Inspect the evidence.** Open a highlighted statement to see its original passage and surrounding context; where audio is available, play the relevant moment.
-4. **Make the decision.** Confirm, edit, reject, or add missing information. Review proposed relationships such as a new decision superseding an old one.
-5. **Prepare for what comes next.** Read confirmed decisions, preferences, questions, risks, and a timeline of changes. Later conversations inherit confirmed memory.
-
-The full application contains the server-backed workflow; access depends on its configured identity gateway. GitHub Pages is a static interface preview and does not run the extraction backend.
-
-## What is implemented
-
-| Capability | Implementation |
-| --- | --- |
-| Conversation capture | Transcript import, browser recording, audio transcription, and supported photo uploads |
-| AI draft | Two-stage extraction and verification with conditional additional review |
-| Source inspection | Transcript quotations, speaker and timestamp references, contextual highlighting, and audio playback |
-| Human review | Confirm, edit, reject, and supplement facts; separately accept or reject changes between facts |
-| Project memory | Confirmed records feed summaries, timelines, preferences, risks, and meeting briefs |
-| Reliable execution | Persisted model response IDs, resumable jobs, idempotent mutations, retries, and stage-level timing |
-| Evaluation | Offline scoring for recall, precision, evidence support, relationships, stability, and brief quality |
-
-## Product decisions
-
-- **Review before memory.** Pending and rejected proposals cannot enter formal reports or become context for later conversations.
-- **Evidence beside the decision.** Reviewing a claim includes seeing what was actually said, not just a model confidence score.
-- **Separate draft quality from corrected quality.** Human fixes can improve the final record while hiding weaknesses in the original AI output; evaluation tracks these separately.
-- **Resume existing work.** Refreshing a page or checking status reconnects to an existing run rather than starting another paid model request.
-- **Build reports from confirmed records.** Formal views use deterministic rules rather than another unconstrained generation step.
-
-See the [product case study](docs/PRODUCT_OVERVIEW.md) for scope, trade-offs, and next validation steps.
-
-## Architecture
-
-```text
-React / TypeScript interface
-          │
-Server API: workspace access, validation, idempotency
-          ├── Cloudflare D1: projects, jobs, facts, evidence, review decisions
-          ├── Cloudflare R2: versioned source materials and audio
-          └── Persisted background jobs
-                    ├── Audio transcription
-                    └── Extraction → Verification → Evidence checks → Human review
-                                                                        │
-                                                   Confirmed records → Project views
-```
-
-The frontend uses React, TypeScript, and a Vinext/Vite runtime. Server data uses Drizzle with Cloudflare D1; original assets use R2. The OpenAI provider uses the Responses API with persisted background response IDs. A DeepSeek adapter supports text-only input. Provider credentials stay on the server.
-
-## Run locally
-
-Requires **Node.js 22.13 or later** and npm.
+需要 Node.js 22.13 或更高版本。
 
 ```bash
-git clone https://github.com/Astro-wen/notique-product-prototype.git
-cd notique-product-prototype
-npm ci
-cp .env.example .env.local
+npm install
 npm run db:migrate:local
 npm run dev
 ```
 
-Open `http://localhost:3000`. The development configuration provides local D1/R2 bindings. Keep `APP_ENV=local` for local development.
+本地页面默认使用 `http://localhost:3000`。D1 和 R2 由当前 Sites/Vinext 开发环境提供。所有模型密钥只能配置在服务端环境变量中，不能写入浏览器代码、仓库、日志或数据库。
 
-To run real extraction, fill in the server-side `.env.local` values:
+本地配置必须显式使用 `APP_ENV=local`。如果这个值缺失，服务会按生产环境处理并拒绝没有可信身份网关的请求。
 
-```dotenv
-APP_ENV=local
+## 模型和任务配置
+
+复制 `.env.example` 中的变量到服务端环境。真实提取至少需要：
+
+```text
 AI_PROVIDER=openai
-AI_MODEL=<a model supporting the configured Responses API workflow>
-AI_API_KEY=<your server-side API key>
-INTERNAL_JOB_TOKEN=<a strong random secret>
-AI_TWO_PASS_PIPELINE=1
-AI_REASONING_EFFORT=xhigh
+AI_MODEL=<固定版本的多模态模型>
+AI_REASONING_EFFORT=high      # 线上 wrangler.jsonc 用 low，见下
 AI_VERIFIER_REASONING_EFFORT=high
+AI_TWO_PASS_PIPELINE=1
+AI_DRAFT_CONTEXT=0
+AI_API_KEY=<服务端 Secret>
+INTERNAL_JOB_TOKEN=<高强度随机 Secret>
 ```
 
-Use a model supporting the configured reasoning levels and image input when needed. Audio transcription has a separate `AI_TRANSCRIPTION_MODEL` setting. See [the engineering reference](README.zh-CN.md#模型和任务配置) and [`.env.example`](.env.example) for additional settings.
+OpenAI 的正式提取路径使用 Responses API。当前新 Run 的双阶段合同是 Prompt v9：
+Context Pack v3、Agent A Inventory v3、Agent B Verification v4，最终 Claim 输出继续使用
+claim-extraction v3。Prompt v8.2 与更早 Run 只作为历史审计，不会混进新合同：
+Agent A 使用 `AI_REASONING_EFFORT=high` 盘点最多 24 条内部原子事实，Agent B 用
+`AI_VERIFIER_REASONING_EFFORT=high` 查漏、纠错、判断 Reaffirmed 和提出关系。确定性检查
+发现关键遗漏、清单没对上、低置信关系、冲突或错误 Reaffirmed 时，Agent B 以同一强度再复核
+一次；只有复合 Claim 这一个问题时不复核，留给人工核对并记一条提示。两个 Agent 共用同一个
+`AI_API_KEY`，不需要第二个密钥。`max` 不属于当前产品配置；缺失或误填的强度都回到 `high`。
+线上的 `wrangler.jsonc` 目前配的是 low/low，比这里更快也更省，结论会更少，要不要改是部署时的决定。
 
-You can inspect the interface without a model key. Extraction returns `MODEL_PROVIDER_NOT_CONFIGURED` until configured; it does not insert fabricated AI results. Starting real transcription or extraction can incur provider charges.
+2026-09-22 用同一份 14 分钟真实录音实测：xhigh 加复核平均 8.1 分钟；high 不做复合复核
+平均 3.7 分钟，事实条数相同；medium 3.2 分钟但整段合同条款漏掉、多条引文对不上原话。
 
-For the static interface only, run `npm run build:pages`. This produces `pages-dist/` for GitHub Pages, without the backend or AI extraction service.
+每个 OpenAI 模型阶段都以 Responses API 的 `background: true` 创建。服务端收到 Response ID
+后先把它保存到对应阶段，再释放当前任务租约；后续 Outbox 唤醒使用
+`GET /responses/:id` 查询同一个 Response。`queued` 或 `in_progress` 只安排下一次查询，不会
+重新 POST 一个付费 Response。这样 Luna `xhigh` 不依赖某一次 Worker 请求一直保持连接，
+页面刷新、重复 dispatch 和定时兜底也都能恢复同一个模型任务。
 
-## Checks and evaluation
+`AI_TWO_PASS_PIPELINE=1` 开启双阶段；设为 `0` 可回滚到单阶段执行。单阶段和非 OpenAI
+兼容供应商仍由每分钟定时任务接管，不会放进网页请求的短后台时限。每个阶段的模型、
+推理强度、输入哈希、Token、耗时、Provider Request ID、通过 Schema 的输出和升级原因
+都会单独保存，成功的 Agent A 阶段可在同一 Run 重试时复用。全部执行参数都会写入 Run
+输入指纹，参数改变后必须创建新 Run，不能混用旧结果。
+
+Prompt v9 保持 Agent A `xhigh` 和 Agent B `high` 不变。Agent A 仍只读本次原始材料；
+Agent B 可以在功能开关启用时读取之前沟通中有合法原始 Evidence 的 AI 草稿，但这些草稿
+不是正式 Evidence、不能成为正式 Relation 目标，也不能关闭、取代或再次确认任何旧 Claim。
+模型只可提出独立的 Draft Link，等两端都被人确认后，再由用户决定是否建立正式关系。
+`AI_DRAFT_CONTEXT=0` 是本地与生产默认值；完成固定 Realtor 对照测试前不得改为 `1`。
+
+`AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
+
+录音转写使用 OpenAI Audio Transcriptions API。默认模型为
+`gpt-4o-transcribe-diarize`，输出逐句说话人和开始、结束时间。原音频保留在私有
+R2，转写结果作为派生 Transcript 保存；之后的 Claim 仍引用逐字原文和时间点，
+证据页可以从对应位置播放原录音。录音支持 MP3、M4A、WAV、WebM、MP4、MPEG
+和 MPGA，单文件上限 100 MiB。相关配置为：
+
+```text
+AI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize
+AI_TRANSCRIPTION_TIMEOUT_MS=600000
+MAX_AUDIO_BYTES=104857600
+```
+
+录音上传、转写和业务提取是三段独立的可重试操作。上传成功但转写失败时，原音频
+不会丢失；转写成功前，原音频不会直接进入 Claim 提取。
+
+Run Debug 只保留已经通过服务端 Schema 校验的模型 JSON，大小上限为 1 MiB，并与成功状态在同一个 D1 事务中写入。失败的 Run 保持为空。模型服务的鉴权信息和原始错误正文不会进入这个字段。
+
+照片进入模型前仍统一为 JPEG、PNG 或 WebP，单张上限 15 MiB。网页端可选择 iPhone 的 HEIC/HEIF/HIF，并在浏览器能解码时先缩放、转换为 JPEG 后再上传；转换失败会在本地明确提示，原始 HEIC 不会被误报为已上传。这是浏览器端的尽力转换，尚未在实体 iPhone/Safari 上完成全流程验证。服务端继续拒绝未经转换的 HEIC/HEIF。每个 Run 默认最多 12 张照片、照片合计最多 30 MiB；总字节限制可通过 `MAX_RUN_IMAGE_BYTES` 调整。
+
+每个 Run 在排队前会执行以下硬限制：单次输入 token、图片数量、图片总字节、Workspace 并发数、模型最大输出 token、每日模型 token。每日配额把已完成用量和排队中的预留量一起计算，因此并发请求不能绕过限制。`MAX_DAILY_EVAL_COST_USD` 目前没有参与普通 Run，因为仓库尚未内置经过确认的模型价格表；现阶段不会伪造美元成本。
+
+生产构建会从 `wrangler.jsonc` 带入每分钟一次的 Sweep 和 Dispatch 定时任务。双阶段 OpenAI 提取使用 Responses Background mode：网页请求只负责一个短检查点，Response ID 会先写入 D1，之后按同一 ID 恢复查询；长音频转写和单阶段回滚则由定时任务接管。`POST /api/internal/jobs/dispatch` 与 `POST /api/internal/jobs/sweep` 可用于部署检查，必须提供 `Authorization: Bearer <INTERNAL_JOB_TOKEN>`。当前实现使用 D1 Outbox 调度边界和 OpenAI Background Response 恢复查询，尚未宣称 Cloudflare Queue 已部署。
+
+## 生产安全条件
+
+- `AUTH_GATEWAY=chatgpt` 时，托管网关必须删除外部请求自带的 `oai-authenticated-*` Header，再注入已验证身份
+- `AUTH_GATEWAY=cloudflare-access` 时，Cloudflare Access 必须位于 Worker 前方并完成 JWT 签名和 Policy 验证
+- `AUTH_GATEWAY=public` 仅适用于明确标注为公开共享测试空间的部署：所有访客共享 `INTERNAL_WORKSPACE_ID` 和固定公开测试身份，任何访客都可以读取和修改其中的数据。真实人员或项目的敏感资料不得进入该模式。
+- 生产写请求要求同源 `Origin` 和 `Sec-Fetch-Site`
+- R2 Bucket 必须保持私有；证据只通过经过 Workspace 校验的 API 返回
+- Context Snapshot 只保存图片占位符、Hash 和文本上下文，不保存 base64 图片
+- Project、Event、Transcript Import、Asset 初始化、Extraction Run、Scenario 确认和各类 Verdict 要求 `Idempotency-Key`；内容上传和 finalize 通过资源状态、内容 Hash 与数据库 CAS 保证重试安全
+
+## 验证命令
 
 ```bash
 npm run typecheck
@@ -109,40 +131,109 @@ npm run lint
 npm run test:domain
 npm run test:audit
 npm test
-```
-
-`npm test` builds the application and runs automated checks. These checks do not establish model quality or customer validation.
-
-Offline evaluation takes reviewed ground truth and predictions:
-
-```bash
 npm run eval -- path/to/ground-truth.json path/to/predictions.json path/to/report.json
 ```
 
-The repository includes synthetic contractor, real-estate, and insurance scenarios for repeatable development. They are development fixtures, not customer studies. The [evaluation guide](eval/README.md) explains matching, evidence checks, sample eligibility, and independent-run requirements.
+`npm test` 会先完成正式构建，再运行领域规则、泄漏规则、仓库契约和服务端渲染检查。数据库迁移位于 `drizzle/`，Schema 来源是 `db/schema.ts`。
 
-## Current status and limits
+`npm run eval` 需要填入人工确认过的 Ground Truth 和模型结果。空模板只用于说明格式，不能产生验证结论。完整说明见 `eval/README.md`。
 
-This is an actively developed product prototype. The recorded Sites v17 release passed desktop read-only navigation and evidence-view checks using existing records. The new background architecture still needs a fresh paid end-to-end run on that release, and real-device mobile review remains pending.
+## 普通用户使用指南
 
-A documented public-meeting evaluation surfaced recall and semantic evidence-support gaps. Formal concept-validation gates have not passed. These findings inform the next iteration; they are not production accuracy or customer-impact claims.
+不需要先理解 Project、Run 或 Ledger。普通用户只需要记住这条循环：
 
-- PDF upload does not yet imply PDF understanding: a text/page extraction adapter is still needed.
-- Supported photos are JPEG, PNG, and WebP; HEIC/HEIF conversion is not implemented.
-- Production use requires a correctly configured identity gateway, private storage, server secrets, and workspace isolation.
+```text
+添加来源 → AI 初稿立即可读 → 重要内容可选核对 → 下一次沟通 → 项目进展 / 下一步 / 时间线
+```
 
-Detailed release evidence and outstanding work are in [the progress report](docs/ERIC_MVP_PROGRESS.md) and [acceptance checklist](tests/ACCEPTANCE_CHECKLIST.md).
+1. 选择或建立项目，再选择当前沟通。
+2. 上传 Transcript、照片或自己的录音；也可以直接使用浏览器录音。MP3、M4A、WAV、WebM、MP4、MPEG 和 MPGA 均可，单个录音上限 100 MB。PDF 目前没有可靠的页面提取路径，请先转成照片或文字。
+3. 录音完成转写后，系统会自动整理重点。刷新只会恢复同一个任务，不会建立第二个付费任务；自动启动失败时再点一次“重新启动分析”。
+4. AI 初稿出现后即可先读；点击重点会在同一工作区显示原句、播放位置和可用操作。第一批来源处理后只需确认一次工作场景，当前重点、原始逐字稿和逐条核对在此之前仍可使用。
+5. 优先核对金额、日期、责任人、矛盾、低置信内容和关系；其他草稿可以稍后处理。保存后自动进入下一条。
+6. 不清空 Pending 也可以准备下一次沟通；进入整组流程后，下一条材料就绪便会自动衔接分析。未核对草稿不会进入可信报告。
+7. 在“项目进展”同时查看标明可信状态的 AI 当前理解与 Verified-only 可信记忆；在“下一步”确认、修改、不采纳或完成行动。
+8. Timeline、Brief 和正式报告继续只读取已经人工确认的记录。
 
-## Repository guide
+页面地址会保存项目、沟通、当前栏目和记录。时间线打开证据后会“返回时间线”，审核记录会“返回审核列表”；刷新后也会从服务器恢复。
 
-| Path | Purpose |
-| --- | --- |
-| `app/` | Application pages and API routes |
-| `lib/domain/` | Extraction contracts, evidence rules, review states, and project views |
-| `lib/server/` | Model adapters, repositories, storage, and background jobs |
-| `db/`, `drizzle/` | Database schema and migrations |
-| `eval/` | Evaluation definitions and development fixtures |
-| `tests/` | Automated tests and acceptance criteria |
-| `github-pages/` | Static interface preview |
+出现“仍在后台运行”时，点击“检查状态”只查询原任务。出现“处理失败”时按页面原因重新处理；空输出先检查材料。不要为了让流程继续而确认证据不足的内容。
 
-For a walkthrough, see the [user manual](docs/USER_MANUAL.md). For implementation and deployment details, see the [engineering reference](README.zh-CN.md) and [maintainer handoff](docs/CLAUDE_HANDOFF.md).
+完整说明、错误恢复、隐私边界和每个功能的位置见 [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)。Eric 的非技术阶段说明见 [`docs/ERIC_MVP_PROGRESS.md`](docs/ERIC_MVP_PROGRESS.md)。接手项目请先读 [`docs/CODEX_PROJECT_HANDOFF.md`](docs/CODEX_PROJECT_HANDOFF.md)；`CLAUDE_HANDOFF.md` 仅作历史归档。
+
+## Eric 一键演示
+
+普通测试界面可以直接上传录音或 Transcript；来源准备好后会自动开始整理，不需要再点一次“开始分析”。
+系统按 Project 中的沟通顺序一次处理一条。新建项目不再固定房地产买方场景；第一批来源分析后只需确认或调整一次工作场景，当前重点、原始逐字稿和逐条确认在此之前仍可使用。每次结果先生成可立即阅读的 AI 草稿，用户可以在同一工作台确认重点，也可以稍后继续下一次沟通。默认关闭草稿上下文时，后续分析仍只继承可信记忆；灰度开启后也只把旧草稿当成带明显标记的理解线索，绝不直接写入正式状态。
+页面刷新后会继续读取服务器中的 Run，不会重复发起模型请求。
+
+先按上面的步骤启动本地服务。另开一个终端运行下面这条命令：
+
+```bash
+npm run demo:eric -- --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+默认使用 Oak Street contractor 合成案例。也可以从仓库内已经审核过的三套案例中
+明确选择一套：
+
+```bash
+npm run demo:eric -- --fixture=contractor --accept-fixture-scenario --confirm-reviewed-fixture
+npm run demo:eric -- --fixture=realtor --accept-fixture-scenario --confirm-reviewed-fixture
+npm run demo:eric -- --fixture=insurance --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+`--fixture` 只接受 `contractor`、`realtor` 和 `insurance`。命令不接受任意文件路径，
+因此不能把未审核的本地 manifest 带进自动确认流程。它只调用本地正式 API，创建
+Project，导入所选案例的 Transcript 和照片，再按时间顺序发起真实模型提取。每次
+提取都等待后台任务完成，再继续下一次。最后打印事项概况、时间线、决定、偏好、
+待确认问题、风险、下次议程和 Brief。
+
+`--accept-fixture-scenario` 只用于这三套固定案例。每份 manifest 在运行前声明
+`all_required_concepts.v1` 语义验收规则，`expected` 是审计用的稳定标签。案例导入
+不会把 `scenario.expected` 或 `scenario.semanticAcceptance` 字段发给模型。模型先
+独立生成两个或三个自然语言候选，脚本随后
+检查每个候选是否覆盖清单中的全部必要概念。恰好一个候选通过时，脚本确认该候选
+的原文；没有候选通过或多个候选同时通过都会停止。置信度不参与自动选择。正式用户
+测试仍然必须由人阅读候选项后再作选择。
+
+`--confirm-reviewed-fixture` 表示你明确允许脚本为这个合成案例提交 Evidence 审阅
+确认、Claim 确认和重复事实确认。去掉该参数时，Claim 会保留在待审核状态。去掉
+`--accept-fixture-scenario` 时，脚本会在第一次提取后停止，因为后续 Event 按产品
+规则必须等待场景确认。保留场景确认、去掉自动审阅参数时，三个 Run 会完成，但
+报告状态为 `awaiting_review`，不会把空的已确认结果写成成功。脚本不会静默代替
+用户作决定。
+
+如果终端连接在 dispatch 后中断，脚本会继续查询已经创建的 Run ID，不会重新创建
+Run。若需要从同一个案例身份恢复，可重复使用一个安全的关联 ID：
+
+```bash
+npm run demo:eric -- --correlation-id=eric-homework-01 --accept-fixture-scenario --confirm-reviewed-fixture
+```
+
+同一个关联 ID 会复用导入和提取步骤的幂等键，避免因为不确定的网络结果重复付费。
+同一个关联 ID 用在不同行业案例时会生成不同的内部关联值，因此三套案例不会复用
+彼此的 Project、导入或提取结果。
+本地队列里即使已有其他任务，脚本也会持续 dispatch 和查询，直到本次 Run 完成或
+达到超时。每次调用仍会生成一份新的 JSON 文件，因此恢复记录不会覆盖旧记录。
+
+每次执行都会把完整 JSON 记录写入 `outputs/eric-demo/`。文件名包含所选 fixture。
+记录包含 fixture 名称、仓库相对路径、manifest SHA256、内部关联值、模型 Run ID、
+服务端 Request ID、模型 Provider Request ID、最终 Project 状态和八份结果。这个
+目录不会提交到 Git。失败也会保留已完成步骤和错误对应的 Request ID，方便排查。
+如果失败发生在本地网络层且服务端没有返回响应，对应 Request ID 会明确记录为
+`null`，不会借用上一条成功请求的 ID。
+
+如果模型没有配置，命令会明确报 `MODEL_PROVIDER_NOT_CONFIGURED`。脚本不读取或
+打印 API Key，也不会在安装、构建或测试时自动运行。只有人工执行
+`npm run demo:eric` 才会调用付费模型。合成案例只用于工程演示和回归，不能作为
+Concept Validation 已经通过的证据。
+
+单次 Run 默认最多等待 10 分钟，覆盖当前服务允许的 9 分钟模型超时。脚本依赖
+已经启动的本地服务，本身不会创建后台服务，因此结束时没有临时服务需要清理。
+成功 Run 必须至少生成一条可审核 Claim 或 Occurrence。显式自动确认后，Folder
+Summary 与 Timeline 必须包含已确认内容，Brief 也必须引用一条已确认状态；否则
+命令失败，避免把结构正确但内容为空的响应当成演示成功。
+
+## 尚未完成的外部接入
+
+开始真实 Concept Validation 前还需要确认 Sites 已按 `.openai/hosting.json` 为 `DB` 和 `EVIDENCE` 创建并接好 D1/R2 资源，写入服务端 Secret，选择固定版本的高质量多模态模型，并完成 Ground Truth、稳定性、费用、延迟和 Blind Set 测试。Cloudflare Access 或 ChatGPT 托管网关的可信 Header 注入也必须由部署方确认。没有这些结果时，不能把本仓库称为已经完成的概念验证。

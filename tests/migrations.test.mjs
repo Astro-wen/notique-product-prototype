@@ -14,6 +14,22 @@ test("all D1 migrations apply from an empty database", async () => {
     .sort();
   assert.ok(migrationFiles.length >= 4, "expected the complete versioned schema");
 
+  const journal = JSON.parse(await readFile(
+    new URL("meta/_journal.json", migrationsDirectory),
+    "utf8",
+  ));
+  const journalTags = journal.entries.map((entry) => entry.tag);
+  assert.deepEqual(
+    journalTags,
+    migrationFiles.map((filename) => filename.replace(/\.sql$/, "")),
+    "every SQL migration must have the same ordered Drizzle journal entry",
+  );
+  assert.equal(
+    journal.entries.at(-1)?.idx,
+    migrationFiles.length - 1,
+    "the Drizzle journal index must end at the latest SQL migration",
+  );
+
   for (const filename of migrationFiles) {
     const sql = await readFile(new URL(filename, migrationsDirectory), "utf8");
     database.exec(sql.replaceAll("--> statement-breakpoint", ""));
@@ -49,9 +65,29 @@ test("all D1 migrations apply from an empty database", async () => {
     "transcription_queue_outbox",
     "review_sessions",
     "ai_draft_assessments",
+    "event_ai_artifact_runs",
+    "event_ai_artifacts",
+    "readable_segment_sources",
+    "event_ai_artifact_chunks",
+    "draft_link_candidates",
+    "event_routing_suggestions",
   ]) {
     assert.equal(tables.has(table), true, `missing migrated table ${table}`);
   }
+
+  // 第二层要记下这条记录的项目是谁定的，第三层据此决定自己该不该出声。
+  const eventColumns = new Set(
+    database.prepare("PRAGMA table_info(events)").all().map((row) => row.name),
+  );
+  assert.equal(eventColumns.has("routing_source"), true, "missing events.routing_source");
+  assert.throws(
+    () => database.prepare(
+      `INSERT INTO event_routing_suggestions (event_id, workspace_id, suggested_project_id, probability, judge)
+       VALUES ('evt_missing', 'ws', 'prj_missing', 1.4, 'jev')`,
+    ).run(),
+    /CHECK constraint failed|FOREIGN KEY constraint failed/,
+    "概率必须落在 0 到 1，阈值判断才站得住",
+  );
 
   const transcriptionIndexes = new Set(
     database
@@ -84,6 +120,11 @@ test("all D1 migrations apply from an empty database", async () => {
   ]) {
     assert.equal(extractionRunColumns.has(column), true, `missing extraction timing column ${column}`);
   }
+  assert.equal(
+    transcriptionIndexes.has("uq_transcription_runs_parent_chunk"),
+    true,
+    "each parent transcription must have at most one child Run per chunk index",
+  );
   const transcriptionRunColumns = new Set(
     database
       .prepare("PRAGMA table_info(transcription_runs)")
@@ -95,6 +136,13 @@ test("all D1 migrations apply from an empty database", async () => {
     "current_queued_at",
     "first_started_at",
     "current_started_at",
+    "orchestration_mode",
+    "parent_run_id",
+    "chunk_index",
+    "chunk_start_ms",
+    "chunk_end_ms",
+    "chunk_count",
+    "completed_chunk_count",
   ]) {
     assert.equal(transcriptionRunColumns.has(column), true, `missing transcription timing column ${column}`);
   }

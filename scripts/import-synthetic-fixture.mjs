@@ -239,7 +239,12 @@ export async function importSyntheticFixture({
   runId = randomUUID(),
   probeUnconfiguredProvider = false,
   eventKey = null,
+  projectProfile = undefined,
 }) {
+  invariant(
+    projectProfile === undefined || projectProfile === "real_estate_buyer_journey",
+    "Synthetic fixture projectProfile must be real_estate_buyer_journey when provided.",
+  );
   const safeBaseUrl = assertLoopbackBaseUrl(baseUrl);
   const absoluteManifestPath = path.resolve(manifestPath);
   const completeManifest = validateSyntheticManifest(
@@ -261,6 +266,7 @@ export async function importSyntheticFixture({
     json: {
       name: `[SYNTHETIC] ${manifest.project.name}`,
       locale: manifest.project.locale ?? "en-US",
+      ...(projectProfile ? { profile: projectProfile } : {}),
     },
   });
   const project = projectData.project;

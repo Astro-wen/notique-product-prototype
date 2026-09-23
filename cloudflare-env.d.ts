@@ -81,18 +81,26 @@ declare namespace Cloudflare {
     DB?: D1Database;
     EVIDENCE?: R2Bucket;
     AI_API_KEY?: string;
+    /** 引用支持度判断方。不配就没有判断，系统表现与今天一致。 */
+    JEV_API_KEY?: string;
+    /** 归属建议（第三层）的开关。默认关；关着时这一层一行都不跑。 */
+    PROJECT_ROUTING_ENABLED?: string;
     AI_API_BASE_URL?: string;
     AI_MODEL?: string;
     AI_PROVIDER?: string;
     AI_REASONING_EFFORT?: string;
     AI_VERIFIER_REASONING_EFFORT?: string;
     AI_TWO_PASS_PIPELINE?: string;
+    AI_EVENT_SUMMARY?: string;
+    AI_READABLE_TRANSCRIPT?: string;
+    AI_VERIFICATION_USES_READABLE?: string;
+    AI_DRAFT_CONTEXT?: string;
     AI_TIMEOUT_MS?: string;
     AI_MAX_OUTPUT_TOKENS?: string;
     AI_TRANSCRIPTION_MODEL?: string;
     AI_TRANSCRIPTION_TIMEOUT_MS?: string;
     APP_ENV?: string;
-    AUTH_GATEWAY?: "chatgpt" | "cloudflare-access";
+    AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
     INTERNAL_JOB_TOKEN?: string;
     INTERNAL_WORKSPACE_ID?: string;
     INTERNAL_WORKSPACE_NAME?: string;
@@ -101,7 +109,6 @@ declare namespace Cloudflare {
     MAX_RUN_IMAGE_BYTES?: string;
     MAX_CONCURRENT_RUNS_PER_WORKSPACE?: string;
     MAX_DAILY_EVAL_COST_USD?: string;
-    MAX_DAILY_MODEL_TOKENS?: string;
     MAX_AUDIO_BYTES?: string;
     [key: string]: unknown;
   }

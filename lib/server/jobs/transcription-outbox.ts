@@ -1,13 +1,21 @@
 import { getD1 } from "@/db";
 import {
+  finalizeChunkedTranscriptionParent,
   processTranscriptionRun,
   requeueExpiredTranscriptionRuns,
+  TRANSCRIPTION_LEASE_HEARTBEAT_MS,
+  transcriptionLeaseExpiresAt,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
+import {
+  AUDIO_CHUNK_MAX_PARALLEL,
+  audioChunkParallelism,
+} from "@/lib/domain/audio-chunking";
 import {
   TRANSCRIPTION_MAX_ATTEMPTS,
   transcriptionRetryDecision,
 } from "@/lib/domain/transcription-retry";
+import { ensureAutomaticExtractionRuns } from "@/lib/server/jobs/automatic-extraction";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
 type Row = Record<string, unknown>;
@@ -30,10 +38,12 @@ export type TranscriptionSweepResult = {
   requeuedExpiredRuns: number;
   failedUndeliverableRuns: number;
   requeuedLongRunningMessages: number;
+  deadLetteredExhaustedPending: number;
+  failedChunkedParents: number;
 };
 
 const MAX_OUTBOX_ATTEMPTS = TRANSCRIPTION_MAX_ATTEMPTS;
-const BATCH_LIMIT = 1;
+const BATCH_LIMIT = AUDIO_CHUNK_MAX_PARALLEL;
 const TRANSCRIPTION_TERMINAL_STATES = ["succeeded", "failed", "cancelled"] as const;
 
 type DispatchTarget = { runId: string; workspaceId: string };
@@ -59,9 +69,7 @@ async function hashText(value: string): Promise<string> {
 }
 
 async function lease(row: Row, owner: string, timestamp: string): Promise<Row | null> {
-  const timeoutMs = Number(row.run_timeout_ms ?? 300_000);
-  const leaseMs = Math.max(120_000, Math.min(timeoutMs + 60_000, 660_000));
-  const leaseExpiresAt = new Date(Date.parse(timestamp) + leaseMs).toISOString();
+  const leaseExpiresAt = transcriptionLeaseExpiresAt(timestamp);
   const db = getD1();
   const guardId = id("guard");
   try {
@@ -105,6 +113,76 @@ async function lease(row: Row, owner: string, timestamp: string): Promise<Row | 
       WHERE id = ? AND status = 'sending' AND lease_owner = ?`,
     [row.id, owner],
   );
+}
+
+async function renewDispatchLease(row: Row, owner: string): Promise<void> {
+  const timestamp = now();
+  const leaseExpiresAt = transcriptionLeaseExpiresAt(timestamp);
+  const guardId = id("guard");
+  const db = getD1();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO mutation_guards (id, guard_value, created_at)
+         SELECT ?, CASE WHEN EXISTS (
+           SELECT 1 FROM transcription_queue_outbox
+            WHERE id = ? AND run_id = ? AND status = 'sending' AND lease_owner = ?
+         ) AND EXISTS (
+           SELECT 1 FROM transcription_runs
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?
+         ) THEN 1 ELSE 0 END, ?`,
+      )
+      .bind(
+        guardId,
+        row.id,
+        row.run_id,
+        owner,
+        row.run_id,
+        owner,
+        timestamp,
+      ),
+    db
+      .prepare(
+        `UPDATE transcription_queue_outbox
+            SET lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND run_id = ? AND status = 'sending' AND lease_owner = ?`,
+      )
+      .bind(leaseExpiresAt, timestamp, row.id, row.run_id, owner),
+    db
+      .prepare(
+        `UPDATE transcription_runs
+            SET lease_expires_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+      )
+      .bind(leaseExpiresAt, timestamp, row.run_id, owner),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+}
+
+function startDispatchLeaseHeartbeat(row: Row, owner: string): () => Promise<void> {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let renewal = Promise.resolve();
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      renewal = renewDispatchLease(row, owner)
+        .catch((error) => {
+          console.error("transcription_dispatch_lease_renewal_failed", {
+            run_id: row.run_id,
+            outbox_id: row.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(schedule);
+    }, TRANSCRIPTION_LEASE_HEARTBEAT_MS);
+  };
+  schedule();
+  return async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    await renewal;
+  };
 }
 
 async function markSent(row: Row, owner: string): Promise<void> {
@@ -184,16 +262,69 @@ async function markRetryExhaustedRun(runId: string, code: string): Promise<void>
   ]);
 }
 
+/**
+ * A chunked parent whose children are all terminal with at least one failure
+ * can never finalize; fail it so the reader gets the retry button instead of
+ * a progress bar that will not move again. Shared by the periodic sweep and
+ * the targeted dispatch path, because in production the browser's targeted
+ * kicks are what actually drive transcription forward.
+ */
+async function failExhaustedChunkParents(timestamp: string): Promise<{ meta: { changes?: number } }> {
+  const failed = await getD1()
+    .prepare(
+      `UPDATE transcription_runs
+          SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_CHUNK_FAILED',
+              updated_at = ?
+        WHERE status = 'processing' AND orchestration_mode = 'chunked'
+          AND NOT EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status NOT IN ('succeeded', 'failed', 'cancelled')
+          )
+          AND EXISTS (
+            SELECT 1 FROM transcription_runs child
+             WHERE child.parent_run_id = transcription_runs.id
+               AND child.status = 'failed'
+          )`,
+    )
+    .bind(timestamp, timestamp)
+    .run();
+  if (Number(failed.meta.changes ?? 0) > 0) {
+    // The materials list reads the asset, not the run; without this it kept
+    // saying 正在提取 for a recording whose transcription had already failed.
+    await getD1()
+      .prepare(
+        `UPDATE assets
+            SET metadata_json = json_set(
+              COALESCE(metadata_json, '{}'),
+              '$.transcription_status', 'failed',
+              '$.transcription_error_code', 'TRANSCRIPTION_CHUNK_FAILED'
+            ), updated_at = ?
+          WHERE EXISTS (
+            SELECT 1 FROM transcription_runs
+             WHERE audio_asset_id = assets.id
+               AND workspace_id = assets.workspace_id
+               AND status = 'failed'
+               AND error_code = 'TRANSCRIPTION_CHUNK_FAILED'
+               AND finished_at = ?
+          )`,
+      )
+      .bind(timestamp, timestamp)
+      .run();
+  }
+  return failed;
+}
+
 async function prepareTargetedTranscriptionOutbox(
   target: DispatchTarget,
   timestamp: string,
 ): Promise<"queued" | "processing" | "terminal" | "missing"> {
   const row = await first(
-    `SELECT status FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    `SELECT status, lease_expires_at FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
     [target.runId, target.workspaceId],
   );
   if (!row) return "missing";
-  const status = String(row.status);
+  let status = String(row.status);
   if (
     TRANSCRIPTION_TERMINAL_STATES.includes(
       status as (typeof TRANSCRIPTION_TERMINAL_STATES)[number],
@@ -211,7 +342,35 @@ async function prepareTargetedTranscriptionOutbox(
       .run();
     return "terminal";
   }
-  if (status === "processing") return "processing";
+  if (status === "processing") {
+    const leaseExpiresAt = String(row.lease_expires_at ?? "");
+    if (!leaseExpiresAt || Date.parse(leaseExpiresAt) > Date.parse(timestamp)) return "processing";
+    const db = getD1();
+    await db.batch([
+      db.prepare(
+        `UPDATE transcription_runs
+            SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+                current_queued_at = ?, finished_at = NULL, error_code = 'TRANSCRIPTION_TIMEOUT',
+                error_details_json = '{"reason":"targeted_lease_expired","retryable":true}', updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND status = 'processing'
+            AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      ).bind(timestamp, timestamp, target.runId, target.workspaceId, timestamp),
+      db.prepare(
+        `UPDATE transcription_queue_outbox
+            SET status = 'pending', sent_at = NULL, next_attempt_at = ?,
+                lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = 'TRANSCRIPTION_TIMEOUT', updated_at = ?
+          WHERE run_id = ? AND status = 'sending'
+            AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+      ).bind(timestamp, timestamp, target.runId, timestamp),
+    ]);
+    const recovered = await first(
+      `SELECT status FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+      [target.runId, target.workspaceId],
+    );
+    if (String(recovered?.status) === "queued") status = "queued";
+    else return "processing";
+  }
   if (status !== "queued") return "missing";
   await getD1()
     .prepare(
@@ -224,6 +383,32 @@ async function prepareTargetedTranscriptionOutbox(
     )
     .bind(timestamp, timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
     .run();
+  // The reset above only touches rows under the attempt cap. A run whose
+  // rows are all at the cap has nothing left to dispatch: production drives
+  // transcription through exactly this targeted path, so without closing it
+  // here the run reports "queued" forever while nothing can ever run it.
+  const exhaustion = await first(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN attempt >= ? THEN 1 ELSE 0 END) AS capped
+       FROM transcription_queue_outbox WHERE run_id = ?`,
+    [MAX_OUTBOX_ATTEMPTS, target.runId],
+  );
+  const total = Number(exhaustion?.total ?? 0);
+  if (total > 0 && Number(exhaustion?.capped ?? 0) === total) {
+    await getD1()
+      .prepare(
+        `UPDATE transcription_queue_outbox
+            SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+                next_attempt_at = '9999-12-31T23:59:59.999Z',
+                last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+          WHERE run_id = ? AND attempt >= ?`,
+      )
+      .bind(timestamp, target.runId, MAX_OUTBOX_ATTEMPTS)
+      .run();
+    await markRetryExhaustedRun(target.runId, "TRANSCRIPTION_TIMEOUT");
+    await failExhaustedChunkParents(timestamp);
+    return "terminal";
+  }
   return "queued";
 }
 
@@ -269,14 +454,14 @@ export async function dispatchDueTranscriptionOutbox(
   const rows = (
     await getD1()
       .prepare(
-        `SELECT o.*, r.request_timeout_ms AS run_timeout_ms
+        `SELECT o.*
            FROM transcription_queue_outbox o
            JOIN transcription_runs r ON r.id = o.run_id
           WHERE o.status IN ('pending', 'failed') AND o.attempt < ?
             AND o.next_attempt_at <= ?
             AND r.status = 'queued'
             ${targetClause}
-          ORDER BY o.next_attempt_at, o.created_at
+          ORDER BY o.attempt, o.next_attempt_at, o.created_at
           LIMIT ?`,
       )
       .bind(...bindings)
@@ -288,12 +473,12 @@ export async function dispatchDueTranscriptionOutbox(
     deferred: 0,
     items: [],
   };
-  for (const row of rows) {
+  await Promise.all(rows.map(async (row) => {
     const owner = `transcription_dispatcher_${crypto.randomUUID()}`;
     const leased = await lease(row, owner, timestamp);
     if (!leased) {
       result.deferred += 1;
-      continue;
+      return;
     }
     result.claimed += 1;
     try {
@@ -305,7 +490,7 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: "dispatch_failed",
           errorCode: "OUTBOX_PAYLOAD_HASH_MISMATCH",
         });
-        continue;
+        return;
       }
       const payload = JSON.parse(String(leased.payload_json)) as {
         transcription_run_id?: unknown;
@@ -318,9 +503,15 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: "dispatch_failed",
           errorCode: "OUTBOX_PAYLOAD_INVALID",
         });
-        continue;
+        return;
       }
-      const processed = await processTranscriptionRun(String(leased.run_id));
+      const stopHeartbeat = startDispatchLeaseHeartbeat(leased, owner);
+      let processed: TranscriptionProcessResult;
+      try {
+        processed = await processTranscriptionRun(String(leased.run_id), owner);
+      } finally {
+        await stopHeartbeat();
+      }
       if (processed.status === "retryable") {
         const code = processed.errorCode || "TRANSCRIPTION_RETRYABLE_FAILURE";
         const retryDecision = transcriptionRetryDecision({
@@ -342,7 +533,7 @@ export async function dispatchDueTranscriptionOutbox(
           outcome: processed.status,
           errorCode: retryDecision.errorCode,
         });
-        continue;
+        return;
       }
       if (processed.status === "lease_not_acquired") {
         const run = await first(`SELECT status FROM transcription_runs WHERE id = ?`, [leased.run_id]);
@@ -374,15 +565,89 @@ export async function dispatchDueTranscriptionOutbox(
         errorCode: code,
       });
     }
-  }
+  }));
   return result;
+}
+
+/**
+ * Fans the finished transcript out to the rest of the pipeline.
+ *
+ * Everything downstream — the readable transcript, the summary, the facts —
+ * hangs off an extraction Run, and the only things that create one are a
+ * button and a Cron sweep. The browser-side auto-start is armed in the
+ * uploader's own localStorage, so a recording that finishes anywhere else —
+ * after a retry, in another browser, on another device — could sit at
+ * 等待自动整理 with a finished transcript and nothing reading it. The
+ * transcript becoming available is the real trigger, and this is where that
+ * happens, so start the same sweep the Cron would run.
+ *
+ * It is idempotent (an Event with a covering Run is skipped) and must never
+ * break dispatch: the transcript is already safely persisted by this point.
+ */
+async function startDownstreamWhenTranscriptReady(
+  workspaceId: string,
+  runId: string,
+): Promise<void> {
+  const run = await first(
+    `SELECT status, derived_transcript_asset_id FROM transcription_runs
+      WHERE id = ? AND workspace_id = ? AND parent_run_id IS NULL`,
+    [runId, workspaceId],
+  );
+  if (String(run?.status) !== "succeeded" || !run?.derived_transcript_asset_id) return;
+  try {
+    await ensureAutomaticExtractionRuns();
+  } catch (error) {
+    console.error("transcription_downstream_start_failed", {
+      run_id: runId,
+      message: error instanceof Error ? error.message : "Unexpected error",
+    });
+  }
 }
 
 export async function dispatchTranscriptionRun(
   workspaceId: string,
   runId: string,
 ): Promise<TranscriptionDispatchResult> {
-  return dispatchDueTranscriptionOutbox({ workspaceId, runId });
+  const parent = await first(
+    `SELECT orchestration_mode, chunk_count FROM transcription_runs WHERE id = ? AND workspace_id = ?`,
+    [runId, workspaceId],
+  );
+  if (String(parent?.orchestration_mode) !== "chunked") {
+    const single = await dispatchDueTranscriptionOutbox({ workspaceId, runId });
+    await startDownstreamWhenTranscriptReady(workspaceId, runId);
+    return single;
+  }
+  const parallelism = audioChunkParallelism(Number(parent?.chunk_count ?? 1));
+  const children = (
+    await getD1()
+      .prepare(
+        `SELECT id FROM transcription_runs
+          WHERE parent_run_id = ? AND workspace_id = ?
+            AND status IN ('queued','processing')
+          ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, chunk_index
+          LIMIT ?`,
+      )
+      .bind(runId, workspaceId, parallelism)
+      .all<Row>()
+  ).results ?? [];
+  const dispatched = await Promise.all(
+    children.map((child) => dispatchDueTranscriptionOutbox({
+      workspaceId,
+      runId: String(child.id),
+    })),
+  );
+  await finalizeChunkedTranscriptionParent(runId);
+  // Concurrent per-child exhaustion can race past the parent closure when
+  // each child still saw a sibling in flight; the next kick lands here with
+  // nothing to dispatch and closes the parent for good.
+  await failExhaustedChunkParents(now());
+  await startDownstreamWhenTranscriptReady(workspaceId, runId);
+  return dispatched.reduce<TranscriptionDispatchResult>((result, current) => ({
+    claimed: result.claimed + current.claimed,
+    sent: result.sent + current.sent,
+    deferred: result.deferred + current.deferred,
+    items: [...result.items, ...current.items],
+  }), { claimed: 0, sent: 0, deferred: 0, items: [] });
 }
 
 /**
@@ -424,7 +689,10 @@ export async function sweepTranscriptionJobs(
     )
     .bind(timestamp, timestamp, MAX_OUTBOX_ATTEMPTS)
     .run();
-  const threshold = new Date(Date.parse(timestamp) - 2 * 60_000).toISOString();
+  // A run stuck in 'queued' recovers through this path once per retry cycle,
+  // so the threshold is most of each cycle's latency. 45s is still far beyond
+  // normal dispatch latency (a cron tick plus immediate kicks).
+  const threshold = new Date(Date.parse(timestamp) - 45_000).toISOString();
   const requeued = await db
     .prepare(
       `UPDATE transcription_queue_outbox
@@ -437,12 +705,32 @@ export async function sweepTranscriptionJobs(
     )
     .bind(timestamp, timestamp, threshold)
     .run();
+  // Close the zombie loop: a lease-expiry cycle ends with the outbox row in
+  // 'pending' at the attempt cap and the run back in 'queued'. The dispatcher
+  // refuses rows at the cap, and dead-lettering above only covers 'sending',
+  // so without this clause both sides sat unfinished forever while the UI
+  // showed steady progress.
+  const exhaustedPending = await db
+    .prepare(
+      `UPDATE transcription_queue_outbox
+          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = '9999-12-31T23:59:59.999Z',
+              last_error_code = 'OUTBOX_MAX_ATTEMPTS', updated_at = ?
+        WHERE status IN ('pending', 'failed') AND attempt >= ?
+          AND next_attempt_at < '9999-12-31T23:59:59.999Z'
+          AND EXISTS (
+            SELECT 1 FROM transcription_runs r
+             WHERE r.id = transcription_queue_outbox.run_id AND r.status = 'queued'
+          )`,
+    )
+    .bind(timestamp, MAX_OUTBOX_ATTEMPTS)
+    .run();
   const [failedRuns] = await db.batch([
     db
       .prepare(
         `UPDATE transcription_runs
-            SET status = 'failed', finished_at = ?, error_code = 'QUEUE_DISPATCH_FAILED',
-                error_details_json = '{"reason":"outbox_dead_lettered"}', updated_at = ?
+            SET status = 'failed', finished_at = ?, error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED',
+                error_details_json = '{"reason":"provider_retry_exhausted","retryable":true}', updated_at = ?
           WHERE status = 'queued' AND id IN (
             SELECT run_id FROM transcription_queue_outbox
              WHERE status = 'failed' AND attempt >= ?
@@ -456,7 +744,7 @@ export async function sweepTranscriptionJobs(
             SET metadata_json = json_set(
               COALESCE(metadata_json, '{}'),
               '$.transcription_status', 'failed',
-              '$.transcription_error_code', 'QUEUE_DISPATCH_FAILED'
+              '$.transcription_error_code', 'TRANSCRIPTION_RETRY_EXHAUSTED'
             ), updated_at = ?
           WHERE EXISTS (
             SELECT 1 FROM transcription_runs
@@ -467,17 +755,20 @@ export async function sweepTranscriptionJobs(
                AND audio_asset_id = assets.id
                AND workspace_id = assets.workspace_id
                AND status = 'failed'
-               AND error_code = 'QUEUE_DISPATCH_FAILED'
+               AND error_code = 'TRANSCRIPTION_RETRY_EXHAUSTED'
                AND finished_at = ?
           )`,
       )
       .bind(timestamp, timestamp),
   ]);
+  const failedParents = await failExhaustedChunkParents(timestamp);
   return {
     recoveredOutbox: Number(recovered.meta.changes ?? 0),
     deadLetteredOutbox: Number(deadLettered.meta.changes ?? 0),
     requeuedExpiredRuns,
     failedUndeliverableRuns: Number(failedRuns.meta.changes ?? 0),
     requeuedLongRunningMessages: Number(requeued.meta.changes ?? 0),
+    deadLetteredExhaustedPending: Number(exhaustedPending.meta.changes ?? 0),
+    failedChunkedParents: Number(failedParents.meta.changes ?? 0),
   };
 }

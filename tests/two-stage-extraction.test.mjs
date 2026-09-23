@@ -11,6 +11,10 @@ import {
   validateInventoryOutput,
   validateVerificationOutput,
 } from "../lib/domain/two-stage-extraction.ts";
+import {
+  canResumeProcessingModelStage,
+  canReuseSucceededModelStage,
+} from "../lib/server/jobs/model-stage-contract.ts";
 
 function evidence() {
   return [{
@@ -73,6 +77,7 @@ function verification(overrides = {}) {
       final_claim_keys: ["claim-1"],
       reason: "Retained as a material atomic fact.",
     }],
+    draft_link_candidates: [],
     quality_review: {
       unresolved_conflict_keys: [],
       compound_claim_keys: [],
@@ -82,9 +87,9 @@ function verification(overrides = {}) {
   };
 }
 
-function context(scenario) {
+function context(scenario, draftClaims = []) {
   return {
-    schema_version: "context-pack.v2",
+    schema_version: "context-pack.v3",
     project: { id: "project-1", scenario, locale: "en-US", context_version: 1 },
     verified_context: {
       glossary: [],
@@ -93,9 +98,79 @@ function context(scenario) {
       open_questions: [],
       active_risks: [],
     },
-    new_event: { event_id: "event-1", transcript_segments: [], photos: [], documents: [] },
+    draft_context: { enabled: draftClaims.length > 0, claims: draftClaims },
+    new_event: {
+      event_id: "event-1",
+      transcript_segments: [],
+      readable_transcript_segments: [],
+      photos: [],
+      documents: [],
+    },
   };
 }
+
+function persistedVerifyStage(overrides = {}) {
+  return {
+    status: "succeeded",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoning_effort: "high",
+    prompt_version: "claim-extraction-prompt.v9:verify",
+    schema_version: VERIFICATION_SCHEMA_VERSION,
+    input_hash: "verify-hash-with-readable-v1",
+    ...overrides,
+  };
+}
+
+function frozenVerifyInput(overrides = {}) {
+  return {
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "high",
+    promptVersion: "claim-extraction-prompt.v9:verify",
+    schemaVersion: VERIFICATION_SCHEMA_VERSION,
+    inputHash: "verify-hash-with-readable-v1",
+    ...overrides,
+  };
+}
+
+test("a succeeded Agent B stage is reused only for the exact frozen input", () => {
+  const persisted = persistedVerifyStage();
+  const exact = frozenVerifyInput();
+  assert.equal(canReuseSucceededModelStage(persisted, exact), true);
+
+  // Filtering a newly flagged readable segment changes the verifier's input
+  // projection and therefore its input hash. The old paid output must not be
+  // treated as the result of this new Agent B input.
+  assert.equal(canReuseSucceededModelStage(
+    persisted,
+    frozenVerifyInput({ inputHash: "verify-hash-with-filtered-readable-v2" }),
+  ), false);
+
+  for (const [field, value] of [
+    ["provider", "another-provider"],
+    ["model", "another-model"],
+    ["reasoningEffort", "xhigh"],
+    ["promptVersion", "claim-extraction-prompt.v10:verify"],
+    ["schemaVersion", "claim-verification.v5"],
+  ]) {
+    assert.equal(
+      canReuseSucceededModelStage(persisted, frozenVerifyInput({ [field]: value })),
+      false,
+      `${field} mismatch must prevent succeeded-stage reuse`,
+    );
+  }
+});
+
+test("processing resume uses the same frozen match without changing provider-response semantics", () => {
+  const processing = persistedVerifyStage({ status: "processing" });
+  assert.equal(canResumeProcessingModelStage(processing, frozenVerifyInput()), true);
+  assert.equal(canResumeProcessingModelStage(
+    processing,
+    frozenVerifyInput({ inputHash: "different-input" }),
+  ), false);
+  assert.equal(canResumeProcessingModelStage(persistedVerifyStage(), frozenVerifyInput()), false);
+});
 
 test("validates a bounded atomic inventory with evidence", () => {
   const result = validateInventoryOutput(inventory());
@@ -179,6 +254,57 @@ test("final extraction helper removes verifier bookkeeping and preserves schema 
   });
 });
 
+test("draft links are bounded hints and can never become formal relation targets", () => {
+  const draft = {
+    claimId: "draft-old",
+    claimVersionId: "draft-old-v1",
+    eventId: "event-old",
+    eventSequenceNo: 1,
+    type: "preference",
+    statement: "The buyer prefers a quiet street.",
+    confidence: 0.82,
+    evidenceRefIds: ["evidence-old"],
+  };
+  const linked = verification({
+    draft_link_candidates: [{
+      final_claim_key: "claim-1",
+      target_draft_claim_id: draft.claimId,
+      target_draft_claim_version_id: draft.claimVersionId,
+      type: "changed",
+      reason: "The new preference may replace the earlier unreviewed preference.",
+      confidence: 0.91,
+    }],
+  });
+  const validated = validateVerificationOutput(
+    linked,
+    inventory(),
+    context("real_estate_buyer_journey", [draft]),
+  );
+  assert.equal(validated.valid, true);
+  assert.deepEqual(toFinalExtractClaimsOutput(linked).claims, linked.claims);
+  assert.equal("draft_link_candidates" in toFinalExtractClaimsOutput(linked), false);
+
+  const formalRelation = verification({
+    claims: [finalClaim({
+      relations: [{
+        type: "supersedes",
+        target_claim_id: draft.claimId,
+        target_claim_version_id: draft.claimVersionId,
+        reason: "A draft must not be a formal relation target.",
+        confidence: 0.99,
+      }],
+    })],
+  });
+  assert.equal(
+    validateVerificationOutput(
+      formalRelation,
+      inventory(),
+      context("real_estate_buyer_journey", [draft]),
+    ).valid,
+    false,
+  );
+});
+
 test("all five disposition outcomes are accepted with exact mapping rules", () => {
   const outcomes = ["included", "merged", "duplicate", "unsupported", "lower_priority"];
   const source = inventory(outcomes.map((outcome, index) => candidate({
@@ -205,18 +331,51 @@ test("verifier rejects missing, duplicate, unknown, and invalid final mappings",
   const result = validateVerificationOutput(verification({
     candidate_dispositions: [
       { inventory_key: "inv-1", outcome: "included", final_claim_keys: [], reason: "Missing final key." },
-      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: ["missing"], reason: "Invalid mapping." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+      { inventory_key: "inv-2", outcome: "included", final_claim_keys: ["missing"], reason: "Unknown target." },
       { inventory_key: "unknown", outcome: "unsupported", final_claim_keys: [], reason: "Unknown source." },
     ],
   }), source);
   assert.equal(result.valid, false);
-  assert.ok(result.issues.some((issue) => issue.message.includes("Missing disposition for inventory key inv-2")));
-  assert.ok(result.issues.some((issue) => issue.message === "Duplicate inventory disposition."));
+  // 重复处置和漏掉处置都不再整份拒绝：前者去重，后者留给升级判断。
+  // 真正说不通的映射照样拒绝。
   assert.ok(result.issues.some((issue) => issue.message === "Unknown inventory key."));
   assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
+  assert.ok(result.issues.some((issue) => issue.message.includes("must map to exactly one final claim")));
+  assert.ok(!result.issues.some((issue) => issue.message === "Duplicate inventory disposition."));
+  assert.ok(!result.issues.some((issue) => issue.message.includes("Missing disposition for inventory key")));
+  assert.ok(result.repairs.some((note) => note.includes("duplicate disposition for inv-1")));
 });
 
-test("verifier reuses the existing claim contract and enforces the 10-claim bound", () => {
+test("a duplicate disposition is deduplicated instead of failing the whole verification", () => {
+  const source = inventory();
+  const result = validateVerificationOutput(verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "First." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+    ],
+  }), source);
+  // 保留先出现的那条，整份输出仍然可用，不必重跑一次付费调用。
+  assert.equal(result.valid, true);
+  assert.equal(result.output.candidate_dispositions.length, 1);
+  assert.equal(result.output.candidate_dispositions[0].outcome, "included");
+  assert.deepEqual(result.repairs, ["dropped duplicate disposition for inv-1"]);
+});
+
+test("a structured uncertainty forces needs_additional_evidence instead of rejecting the claim", () => {
+  const claim = finalClaim({
+    needs_additional_evidence: false,
+    uncertainty: { reason: "两个金额对不上。", alternatives: ["120 万", "150 万"], question: "以哪个为准？" },
+  });
+  const result = validateVerificationOutput(verification({ claims: [claim] }), inventory());
+  // 给了不确定性却把标志位留成 false 是自相矛盾。取保守的一边：true 只会
+  // 让这条进人工核对，不会让它更容易通过。
+  assert.equal(result.valid, true);
+  assert.equal(result.output.claims[0].needs_additional_evidence, true);
+  assert.ok(result.repairs.some((note) => note.includes("set needs_additional_evidence")));
+});
+
+test("verifier reuses the existing claim contract and enforces the configured claim safety bound", () => {
   const claims = Array.from({ length: TWO_STAGE_EXTRACTION_LIMITS.finalClaims + 1 }, (_, index) =>
     finalClaim({ client_claim_key: `claim-${index}` }));
   const result = validateVerificationOutput(verification({ claims }), inventory());
@@ -239,7 +398,9 @@ test("unmapped and dropped critical inventory candidates deterministically escal
   const missing = verification({ candidate_dispositions: [] });
   const result = assessVerificationEscalation(inventory(), missing);
   assert.equal(result.required, true);
-  assert.ok(result.reasons.includes("verification_contract_invalid"));
+  // 漏掉处置是语义信号，不是契约违规。它和下面"显式丢弃"那半段行为一致：
+  // 都只报 unmapped / dropped，交给升级重核，而不是整份作废重跑。
+  assert.equal(result.reasons.includes("verification_contract_invalid"), false);
   assert.ok(result.reasons.includes("inventory_candidate_unmapped"));
   assert.ok(result.reasons.includes("critical_candidate_dropped"));
   assert.deepEqual(result.unmappedInventoryKeys, ["inv-1"]);
@@ -283,6 +444,21 @@ test("unresolved conflicts, compound claims, and reaffirmed issues each escalate
   assert.ok(result.reasons.includes("reaffirmed_issue"));
 });
 
+test("a compound claim alone is left for human review instead of another verification pass", () => {
+  // 六次实测里为复合结论多跑的复核只有两次拆得更好，从没补回过事实，每次多等一两分钟。
+  const compoundOnly = assessVerificationEscalation(inventory(), verification({
+    quality_review: { unresolved_conflict_keys: [], compound_claim_keys: ["claim-1"], reaffirmed_issue_claim_keys: [] },
+  }));
+  assert.deepEqual(compoundOnly.reasons, ["compound_claim"]);
+  assert.equal(compoundOnly.required, false);
+
+  // 同时有别的问题时照旧复核。
+  const withConflict = assessVerificationEscalation(inventory(), verification({
+    quality_review: { unresolved_conflict_keys: ["conflict-1"], compound_claim_keys: ["claim-1"], reaffirmed_issue_claim_keys: [] },
+  }));
+  assert.equal(withConflict.required, true);
+});
+
 test("quality flags are bounded and may only reference final claim keys", () => {
   const result = validateVerificationOutput(verification({
     quality_review: {
@@ -299,7 +475,7 @@ test("quality flags are bounded and may only reference final claim keys", () => 
 test("a compound escalation cannot replace a more atomic base review queue", () => {
   const source = inventory([
     candidate(),
-    candidate({ inventory_key: "inv-2" }),
+    candidate({ inventory_key: "inv-2", critical: false, critical_reason: null, materiality: "low" }),
   ]);
   const base = verification({
     candidate_dispositions: [
@@ -322,6 +498,31 @@ test("a compound escalation cannot replace a more atomic base review queue", () 
   const selected = selectPreferredVerificationForReview(source, base, compound);
   assert.equal(selected.selected, "base");
   assert.equal(selected.output, base);
+});
+
+test("a compound candidate that preserves a critical fact beats a base that dropped it", () => {
+  const source = inventory([candidate(), candidate({ inventory_key: "inv-2" })]);
+  const base = verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "Included." },
+      { inventory_key: "inv-2", outcome: "lower_priority", final_claim_keys: [], reason: "Outside the cap." },
+    ],
+  });
+  const compound = verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "merged", final_claim_keys: ["claim-1"], reason: "Merged." },
+      { inventory_key: "inv-2", outcome: "merged", final_claim_keys: ["claim-1"], reason: "Merged." },
+    ],
+    quality_review: {
+      unresolved_conflict_keys: [],
+      compound_claim_keys: ["claim-1"],
+      reaffirmed_issue_claim_keys: [],
+    },
+  });
+
+  const selected = selectPreferredVerificationForReview(source, base, compound);
+  assert.equal(selected.selected, "candidate");
+  assert.deepEqual(selected.assessment.droppedCriticalInventoryKeys, []);
 });
 
 test("a clean escalation replaces a base output that drops a critical fact", () => {
@@ -347,4 +548,53 @@ test("a clean escalation replaces a base output that drops a critical fact", () 
   assert.equal(selected.selected, "candidate");
   assert.equal(selected.output, improved);
   assert.equal(selected.assessment.required, false);
+});
+
+test("the exact contract violations that failed production run b489c777 now validate", () => {
+  // 线上 2026-09-21 20:11 那次 verify 一次性中了四类：两条给了结构化不确定性
+  // 却把标志位留成 false、一条重复处置、一个候选漏了处置。四类都是填表错误，
+  // 不是判断错误，所以修复而不是整份丢掉再花一次钱重跑。
+  const source = inventory([
+    candidate(),
+    candidate({ inventory_key: "inv-2", critical: false, critical_reason: null }),
+  ]);
+  const uncertainty = { reason: "两个金额对不上。", alternatives: ["120 万", "150 万"], question: "以哪个为准？" };
+  const result = validateVerificationOutput(verification({
+    claims: [
+      finalClaim({ needs_additional_evidence: false, uncertainty }),
+      finalClaim({ client_claim_key: "claim-2", needs_additional_evidence: false, uncertainty }),
+    ],
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-1"], reason: "First." },
+      { inventory_key: "inv-1", outcome: "lower_priority", final_claim_keys: [], reason: "Repeat." },
+    ],
+  }), source);
+
+  assert.equal(result.valid, true);
+  assert.equal(result.output.claims[0].needs_additional_evidence, true);
+  assert.equal(result.output.claims[1].needs_additional_evidence, true);
+  assert.equal(result.output.candidate_dispositions.length, 1);
+  // 两处标志位、一处去重，外加一条「有候选未处置」的备注，都回传给上层
+  // 记成警告，不静默吞掉。
+  assert.equal(result.repairs.filter((note) => note.includes("set needs_additional_evidence")).length, 2);
+  assert.equal(result.repairs.filter((note) => note.includes("duplicate disposition")).length, 1);
+  assert.ok(result.repairs.some((note) => note.includes("unmapped")));
+  // inv-2 没有处置，不再是契约违规，而是交给升级判断的语义信号。
+  const assessment = assessVerificationEscalation(source, result.output);
+  assert.ok(assessment.reasons.includes("inventory_candidate_unmapped"));
+  assert.deepEqual(assessment.unmappedInventoryKeys, ["inv-2"]);
+  assert.equal(assessment.reasons.includes("verification_contract_invalid"), false);
+});
+
+test("a disposition pointing at a claim that does not exist is still rejected", () => {
+  // 线上 run 63de4f56 的升级阶段出现过 7 条。这条不修：把引用悄悄删掉会让
+  // 一个候选标着 included 却指向空，处置语义就坏了。拒绝它，由基础 verify
+  // 成功时的回落来兜底。
+  const result = validateVerificationOutput(verification({
+    candidate_dispositions: [
+      { inventory_key: "inv-1", outcome: "included", final_claim_keys: ["claim-does-not-exist"], reason: "Dangling." },
+    ],
+  }), inventory());
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
 });

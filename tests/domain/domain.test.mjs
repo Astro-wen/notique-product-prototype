@@ -7,6 +7,7 @@ import {
   confirmScenario,
   DomainConflictError,
   releaseScenarioLease,
+  recalculateLifecycle,
 } from "../../lib/domain/claim-state.ts";
 import {
   buildTranscriptEvidenceContextWindow,
@@ -26,6 +27,7 @@ import {
   buildRisks,
   buildTimeline,
   classifyScenarioSemanticKind,
+  RE_BUYER_SLOTS,
   SCENARIO_SEMANTIC_KINDS,
 } from "../../lib/domain/views.ts";
 import { buildContextPack } from "../../lib/domain/context-pack.ts";
@@ -128,12 +130,12 @@ test("scenario semantics recognize real-estate buyer journeys without enabling u
       scenario: { status: "confirmed", value: scenario, version: 2 },
     }));
     assert.equal(gap.applicable, true, scenario);
-    assert.equal(gap.missingSlots.length, 5, scenario);
+    assert.equal(gap.missingSlots.length, RE_BUYER_SLOTS.length, scenario);
     assert.equal(
       buildNextMeetingAgenda(ledger({
         scenario: { status: "confirmed", value: scenario, version: 2 },
       })).filter((item) => item.sourceKind === "gap").length,
-      5,
+      RE_BUYER_SLOTS.length,
       scenario,
     );
   }
@@ -220,7 +222,7 @@ function contextPackWithTarget({
   },
 } = {}) {
   return {
-    schema_version: "context-pack.v2",
+    schema_version: "context-pack.v3",
     project: { id: "project-1", scenario: "Kitchen renovation", locale: "en-US", context_version: 2 },
     verified_context: {
       glossary: [],
@@ -243,6 +245,7 @@ function contextPackWithTarget({
         evidenceRefIds: ["evidence-existing"],
       }],
     },
+    draft_context: { enabled: false, claims: [] },
     new_event: {
       event_id: "event-1",
       transcript_segments: [],
@@ -759,13 +762,13 @@ test("gap, agenda, risks, and brief use verified sources only", () => {
   assert.notEqual(brief.stateClaimId, brief.riskClaimId);
 });
 
-test("Brief leaves the risk slot empty when the only current state is the same risk", () => {
+test("Brief keeps a sole risk in the risk slot instead of hiding it", () => {
   const onlyRisk = ledger({
     claims: [claim({ id: "only-risk", type: "risk", statement: "A permit may be required." })],
   });
   const brief = buildDeterministicBrief(onlyRisk);
-  assert.equal(brief.stateClaimId, "only-risk");
-  assert.equal(brief.riskClaimId, null);
+  assert.equal(brief.stateClaimId, null);
+  assert.equal(brief.riskClaimId, "only-risk");
 });
 
 test("Preferences contains only verified preference history, including superseded versions", () => {
@@ -854,7 +857,7 @@ test("Preferences expose structured current value, conditions, decision people, 
   );
 });
 
-test("Brief uses a verified unresolved warning when no explicit risk Claim exists", () => {
+test("Brief keeps evidence gaps in the agenda instead of mislabelling them as risks", () => {
   const state = claim({ id: "state", type: "decision" });
   const warning = claim({
     id: "warning",
@@ -865,8 +868,10 @@ test("Brief uses a verified unresolved warning when no explicit risk Claim exist
   const brief = buildDeterministicBrief(data);
 
   assert.equal(brief.stateClaimId, "state");
-  assert.equal(brief.riskClaimId, "warning");
-  assert.equal(brief.missingSlotCount, 0);
+  assert.equal(brief.riskClaimId, null);
+  assert.equal(brief.riskRelationId, null);
+  assert.equal(buildRisks(data).claims.length, 0);
+  assert.ok(buildNextMeetingAgenda(data).some(item => item.claimId === "warning" && item.sourceKind === "evidence_gap"));
 });
 
 test("risk and agenda contradictions expose both verified statements and evidence", () => {
@@ -899,6 +904,7 @@ test("risk and agenda contradictions expose both verified statements and evidenc
   });
 
   const contradiction = buildRisks(data).contradictions[0];
+  assert.equal(buildDeterministicBrief(data).riskRelationId, contradiction.relationId);
   assert.deepEqual(contradiction, {
     relationId: "relation-contradiction",
     sourceClaimId: "budget-new",
@@ -952,7 +958,8 @@ test("context pack is verified-only and never includes withdrawn claims", () => 
   assert.deepEqual(pack.verified_context.active_claims.map((item) => item.claimId), ["active"]);
   assert.deepEqual(pack.verified_context.recent_history.map((item) => item.claimId), ["resolved"]);
   assert.deepEqual(pack.verified_context.glossary.map((item) => item.term), ["allowed"]);
-  assert.equal(pack.schema_version, "context-pack.v2");
+  assert.equal(pack.schema_version, "context-pack.v3");
+  assert.deepEqual(pack.draft_context, { enabled: false, claims: [] });
   assert.deepEqual(pack.verified_context.active_claims[0].uncertainty, active.version.uncertainty);
   assert.equal(pack.verified_context.active_claims[0].lifecycleStatus, "active");
   assert.equal(pack.verified_context.active_claims[0].repeatCount, active.repeatCount);
@@ -968,8 +975,8 @@ test("model output contract rejects extra fields and invalid targets", () => {
   }).valid, false);
 });
 
-test("claim extraction prompt contract is v8", () => {
-  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v8.2");
+test("claim extraction prompt contract is v9", () => {
+  assert.equal(CLAIM_EXTRACTION_PROMPT_VERSION, "claim-extraction-prompt.v9.2");
 });
 
 test("model uncertainty and additional-evidence flags have one unambiguous contract", () => {
@@ -1322,4 +1329,51 @@ test("unconfigured provider fails clearly without fabricating output", async () 
   await assert.rejects(() => new UnconfiguredModelProvider().extractClaims(), {
     code: "MODEL_PROVIDER_NOT_CONFIGURED",
   });
+});
+
+for (const targetInput of [
+  {type:"decision", statement:"No offer until the lender refreshes preapproval.", normalizedValue:{required_prerequisite:"lender refreshes preapproval letter"}},
+  {type:"other", statement:"Priya will confirm the top price before filtering.", normalizedValue:{action:"confirm top price",sequence_condition:"before filtering by price"}},
+]) {
+  test(`completed prerequisites stored as ${targetInput.type} survive model validation and close only after relation confirmation`, () => {
+    const context = contextPackWithTarget({...targetInput, uncertainty:null});
+    const target = context.verified_context.active_risks[0];
+    const output = validModelOutput();
+    output.claims[0].relations = [{type:"resolves",target_claim_id:target.claimId,target_claim_version_id:target.claimVersionId,reason:"Direct evidence confirms completion.",confidence:.95}];
+    assert.equal(validateExtractClaimsOutput(output, context).valid,true);
+    const old = claim({id:target.claimId,...targetInput});
+    const relation = {id:"completion",targetClaimId:old.id,targetClaimVersionId:old.currentVersionId,type:"resolves",status:"proposed"};
+    assert.equal(recalculateLifecycle(old,[relation]).lifecycleStatus,"active");
+    assert.equal(recalculateLifecycle(old,[{...relation,status:"active"}]).lifecycleStatus,"resolved");
+    assert.equal(recalculateLifecycle(old,[{...relation,status:"rejected"}]).lifecycleStatus,"active");
+    assert.equal(recalculateLifecycle(old,[{...relation,status:"active",targetClaimVersionId:"stale"}]).lifecycleStatus,"active");
+    assert.equal(recalculateLifecycle({...old,lifecycleStatus:"withdrawn"},[{...relation,status:"active"}]).lifecycleStatus,"withdrawn");
+  });
+}
+
+test('an ordinary decision does not become a resolvable prerequisite', () => {
+  const context = contextPackWithTarget({type:'decision',statement:'Both buyers approved the offer.',normalizedValue:null,uncertainty:null});
+  const target = context.verified_context.active_risks[0];
+  const output = validModelOutput();
+  output.claims[0].relations=[{type:'resolves',target_claim_id:target.claimId,target_claim_version_id:target.claimVersionId,reason:'Similar later topic.',confidence:.99}];
+  assert.equal(validateExtractClaimsOutput(output,context).valid,false);
+});
+
+test('a later date or matching type never expires an unrelated condition', () => {
+  const old = claim({id:'old',type:'requirement',statement:'Both buyers must approve every offer.'});
+  const next = {...claim({id:'next',type:'requirement',statement:'The lender issued preapproval.'}),updatedAt:'2026-09-01T00:00:00.000Z'};
+  assert.deepEqual(buildFolderSummary(ledger({claims:[old,next]})).currentClaims.map(c=>c.id).sort(),['next','old']);
+});
+
+test('superseded values stay historical and reactivate only after all effective links are removed', () => {
+  const old=claim({id:'old-cap',type:'budget',normalizedValue:{max:1150000}});
+  const relation={id:'update',targetClaimId:old.id,targetClaimVersionId:old.currentVersionId,type:'supersedes',status:'active'};
+  const replaced=recalculateLifecycle(old,[relation]);
+  assert.equal(replaced.lifecycleStatus,'superseded');
+  assert.deepEqual(replaced.version.normalizedValue,{max:1150000});
+  assert.equal(recalculateLifecycle(replaced,[{...relation,status:'inactive'},{...relation,id:'other-link'}]).lifecycleStatus,'superseded');
+  assert.equal(recalculateLifecycle(replaced,[{...relation,status:'inactive'}]).lifecycleStatus,'active');
+  const resolved=recalculateLifecycle(old,[{...relation,type:'resolves'}]);
+  assert.equal(resolved.lifecycleStatus,'resolved');
+  assert.equal(recalculateLifecycle(resolved,[{...relation,type:'resolves',status:'inactive'}]).lifecycleStatus,'active');
 });

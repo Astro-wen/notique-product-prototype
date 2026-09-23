@@ -1,0 +1,816 @@
+import { getBindings, getD1 } from "@/db";
+import { CONTEXT_PACK_SCHEMA_VERSION, type ContextPack } from "@/lib/domain/context-pack";
+import {
+  chunkReadableTranscriptSource,
+  eventAiArtifactContractMismatch,
+  mergeReadableTranscriptChunks,
+  validateEventSummaryOutput,
+  validateReadableTranscriptOutput,
+} from "@/lib/domain/event-ai-artifacts";
+import type { ModelUsage } from "@/lib/domain/model-contract";
+import {
+  createModelProvider,
+  ModelBackgroundPendingError,
+  ModelBackgroundStalledError,
+  ModelOutputInvalidError,
+  ModelProviderRequestError,
+  ModelTimeoutError,
+} from "@/lib/server/ai/model-provider";
+import {
+  ensureReadableTranscriptChunks,
+  listReadableTranscriptChunks,
+  persistReadableTranscriptChunk,
+  persistReadableTranscriptArtifact,
+  persistSummaryArtifact,
+  sourceSegmentsForArtifactRun,
+  type EventAiArtifactChunkRecord,
+  readingUpstreamContent,
+} from "@/lib/server/db/event-ai-artifact-repository";
+import {
+  readingArtifactDefinition,
+  readingArtifactReadiness,
+} from "@/lib/domain/reading-pipeline";
+import { scheduleProjectRoutingSuggestion } from "@/lib/server/jobs/project-routing";
+
+type Row = Record<string, unknown>;
+
+const TARGET_LEASE_MS = 40_000;
+const CRON_LEASE_MS = 2 * 60_000;
+const ARTIFACT_PROVIDER_TIMEOUT_MS = 25_000;
+/**
+ * 阅读产物的后台响应挂多久算卡住。同一批分块一分钟就完，五分钟没动基本
+ * 不会再动了；等到三十分钟的任务上限只是把用户晾在那里。
+ */
+const ARTIFACT_BACKGROUND_STALL_MS = 5 * 60_000;
+const MAX_CREATE_ATTEMPTS = 3;
+const MAX_JOB_AGE_MS = 30 * 60_000;
+const READABLE_CHUNK_CONCURRENCY = 4;
+
+class StaleArtifactModelContractError extends Error {
+  readonly code = "STALE_ARTIFACT_MODEL_CONTRACT";
+
+  constructor(readonly details: NonNullable<ReturnType<typeof eventAiArtifactContractMismatch>>) {
+    super(
+      `AI artifact Run ${details.kind || "unknown"} froze ${details.actual_prompt_version || "missing prompt"} / ` +
+      `${details.actual_schema_version || "missing schema"}; retry the single artifact to create the current contract.`,
+    );
+    this.name = "StaleArtifactModelContractError";
+  }
+}
+
+function id(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+async function first(sql: string, bindings: unknown[]): Promise<Row | null> {
+  return (await getD1().prepare(sql).bind(...bindings).first<Row>()) ?? null;
+}
+
+function nextPoll(timestamp: string, milliseconds = 5_000): string {
+  return new Date(Date.parse(timestamp) + milliseconds).toISOString();
+}
+
+function transient(error: unknown): boolean {
+  return error instanceof ModelTimeoutError ||
+    error instanceof ModelBackgroundStalledError ||
+    error instanceof ModelProviderRequestError && (
+      error.status === null || error.status === 408 || error.status === 409 ||
+      error.status === 429 || (error.status !== null && error.status >= 500)
+    );
+}
+
+function safeIssue(error: unknown): Record<string, unknown> {
+  if (error instanceof StaleArtifactModelContractError) {
+    return { message: error.message, ...error.details };
+  }
+  if (error instanceof ModelOutputInvalidError) return { issues: error.issues.slice(0, 20) };
+  if (error instanceof ModelProviderRequestError) return { message: error.message, status: error.status };
+  if (error instanceof Error) return { name: error.name, message: error.message };
+  return { message: "Unexpected artifact processing failure." };
+}
+
+async function leaseRun(row: Row, owner: string, leaseMs: number): Promise<Row | null> {
+  const timestamp = now();
+  const leaseExpires = nextPoll(timestamp, leaseMs);
+  await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'processing', lease_owner = ?, lease_expires_at = ?,
+              attempt_no = attempt_no + CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END,
+              started_at = COALESCE(started_at, ?), updated_at = ?
+        WHERE id = ? AND status IN ('queued', 'processing')
+          AND next_attempt_at <= ?
+          AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+    )
+    .bind(owner, leaseExpires, timestamp, timestamp, row.id, timestamp, timestamp)
+    .run();
+  return first(
+    `SELECT * FROM event_ai_artifact_runs
+      WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    [row.id, owner],
+  );
+}
+
+async function releasePending(run: Row, owner: string, responseId: string, status: string): Promise<void> {
+  const timestamp = now();
+  await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'queued', provider_request_id = ?, next_attempt_at = ?,
+              lease_owner = NULL, lease_expires_at = NULL,
+              error_code = NULL, error_details_json = ?, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    )
+    .bind(
+      responseId,
+      nextPoll(timestamp),
+      JSON.stringify({ background_response_status: status }),
+      timestamp,
+      run.id,
+      owner,
+    )
+    .run();
+}
+
+async function deferTransient(run: Row, owner: string, error: unknown): Promise<void> {
+  const timestamp = now();
+  const noResponseId = run.provider_request_id == null;
+  const terminal = noResponseId && Number(run.attempt_no) >= MAX_CREATE_ATTEMPTS ||
+    Date.parse(timestamp) - Date.parse(String(run.created_at)) >= MAX_JOB_AGE_MS;
+  await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = ?, next_attempt_at = ?, lease_owner = NULL,
+              lease_expires_at = NULL, error_code = ?, error_details_json = ?,
+              finished_at = CASE WHEN ? THEN ? ELSE finished_at END, updated_at = ?,
+              provider_request_id = CASE WHEN ? THEN NULL ELSE provider_request_id END
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    )
+    .bind(
+      terminal ? "failed" : "queued",
+      terminal ? "9999-12-31T23:59:59.999Z" : nextPoll(timestamp, 10_000),
+      terminal ? "ARTIFACT_RETRY_EXHAUSTED" : "ARTIFACT_RETRY_SCHEDULED",
+      JSON.stringify(safeIssue(error)).slice(0, 64 * 1024),
+      terminal ? 1 : 0,
+      timestamp,
+      timestamp,
+      // 卡住的响应已被取消，留着 id 只会在下一轮 GET 到 cancelled 后终态失败。
+      error instanceof ModelBackgroundStalledError ? 1 : 0,
+      run.id,
+      owner,
+    )
+    .run();
+}
+
+/**
+ * A model response that fails schema validation is not a permanent defect of
+ * the input. On the walkthrough recording the summary failed validation on its
+ * first attempt and succeeded on an identical retry, but the run had already
+ * been failed terminally — the reader had to notice the failure and press
+ * "单独重新生成" for work the system could have redone itself.
+ *
+ * Re-polling the same provider response would return the same invalid output,
+ * so the retry drops the response id and creates a new one. Clearing it is
+ * also what makes the attempt cap apply: the lease only counts an attempt for
+ * a run that has no response to resume.
+ */
+async function retryInvalidOutput(run: Row, owner: string, error: unknown): Promise<boolean> {
+  const timestamp = now();
+  const attemptsLeft = Number(run.attempt_no) < MAX_CREATE_ATTEMPTS;
+  const withinAge = Date.parse(timestamp) - Date.parse(String(run.created_at)) < MAX_JOB_AGE_MS;
+  if (!attemptsLeft || !withinAge) return false;
+  const updated = await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'queued', provider_request_id = NULL, lease_owner = NULL,
+              lease_expires_at = NULL, next_attempt_at = ?,
+              error_code = 'ARTIFACT_RETRY_SCHEDULED', error_details_json = ?,
+              updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    )
+    .bind(
+      nextPoll(timestamp, 5_000),
+      JSON.stringify(safeIssue(error)).slice(0, 64 * 1024),
+      timestamp,
+      run.id,
+      owner,
+    )
+    .run();
+  return Number(updated.meta.changes ?? 0) === 1;
+}
+
+async function failRun(run: Row, owner: string, error: unknown): Promise<void> {
+  const timestamp = now();
+  const code = error instanceof ModelOutputInvalidError
+    ? "MODEL_OUTPUT_INVALID"
+    : error instanceof StaleArtifactModelContractError
+      ? error.code
+      : error instanceof ModelProviderRequestError
+        ? "MODEL_PROVIDER_REQUEST_FAILED"
+        : "ARTIFACT_PROCESSING_FAILED";
+  await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = '9999-12-31T23:59:59.999Z', error_code = ?,
+              error_details_json = ?, finished_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    )
+    .bind(
+      code,
+      JSON.stringify(safeIssue(error)).slice(0, 64 * 1024),
+      timestamp,
+      timestamp,
+      run.id,
+      owner,
+    )
+    .run();
+}
+
+function guardReadableChunk() {
+  return getD1().prepare(
+    `INSERT INTO mutation_guards (id, guard_value, created_at)
+     SELECT ?, CASE WHEN EXISTS (
+       SELECT 1 FROM event_ai_artifact_runs
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?
+     ) AND EXISTS (
+       SELECT 1 FROM event_ai_artifact_chunks
+        WHERE id = ? AND artifact_run_id = ? AND status = 'processing'
+     ) THEN 1 ELSE 0 END, ?`,
+  );
+}
+
+async function leaseReadableChunk(
+  run: Row,
+  owner: string,
+  chunk: EventAiArtifactChunkRecord,
+): Promise<EventAiArtifactChunkRecord | null> {
+  const timestamp = now();
+  await getD1().prepare(
+    `UPDATE event_ai_artifact_chunks
+        SET status = 'processing',
+            attempt_no = attempt_no + CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END,
+            error_code = NULL, updated_at = ?
+      WHERE id = ? AND artifact_run_id = ? AND status IN ('queued','processing')
+        AND EXISTS (
+          SELECT 1 FROM event_ai_artifact_runs
+           WHERE id = ? AND status = 'processing' AND lease_owner = ?
+        )`,
+  ).bind(timestamp, chunk.id, run.id, run.id, owner).run();
+  const row = await first(
+    `SELECT * FROM event_ai_artifact_chunks
+      WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
+    [chunk.id, run.id],
+  );
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    artifact_run_id: String(row.artifact_run_id),
+    chunk_index: Number(row.chunk_index),
+    input_hash: String(row.input_hash),
+    status: "processing",
+    provider_request_id: row.provider_request_id == null ? null : String(row.provider_request_id),
+    validated_output_json: row.validated_output_json == null ? null : String(row.validated_output_json),
+    input_tokens: row.input_tokens == null ? null : Number(row.input_tokens),
+    output_tokens: row.output_tokens == null ? null : Number(row.output_tokens),
+    cached_tokens: row.cached_tokens == null ? null : Number(row.cached_tokens),
+    attempt_no: Number(row.attempt_no ?? 0),
+    error_code: row.error_code == null ? null : String(row.error_code),
+  };
+}
+
+async function recordReadableProviderResponse(
+  run: Row,
+  owner: string,
+  chunk: EventAiArtifactChunkRecord,
+  response: { id: string; status: string },
+): Promise<void> {
+  const timestamp = now();
+  const guardId = id("guard");
+  await getD1().batch([
+    guardReadableChunk().bind(
+      guardId,
+      run.id,
+      owner,
+      chunk.id,
+      run.id,
+      timestamp,
+    ),
+    getD1().prepare(
+      `UPDATE event_ai_artifact_chunks
+          SET provider_request_id = ?, updated_at = ?
+        WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
+    ).bind(response.id, timestamp, chunk.id, run.id),
+    getD1().prepare(
+      `UPDATE event_ai_artifact_runs
+          SET provider_request_id = ?, error_details_json = ?, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+    ).bind(
+      response.id,
+      JSON.stringify({
+        background_response_status: response.status,
+        readable_chunk_index: chunk.chunk_index,
+      }),
+      timestamp,
+      run.id,
+      owner,
+    ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+}
+
+async function parkReadableChunkPending(
+  run: Row,
+  owner: string,
+  chunk: EventAiArtifactChunkRecord,
+  responseId: string,
+): Promise<void> {
+  const timestamp = now();
+  const guardId = id("guard");
+  await getD1().batch([
+    guardReadableChunk().bind(
+      guardId,
+      run.id,
+      owner,
+      chunk.id,
+      run.id,
+      timestamp,
+    ),
+    getD1().prepare(
+      `UPDATE event_ai_artifact_chunks
+          SET status = 'queued', provider_request_id = ?, error_code = NULL, updated_at = ?
+        WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
+    ).bind(responseId, timestamp, chunk.id, run.id),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+}
+
+/**
+ * 把运行放回队列，但这一次领取不算一次尝试。
+ *
+ * leaseRun 每领取一次就把 attempt_no 加一，而这里的两种放回都不是失败：
+ * 易读稿做完一批分块等下一批，下游视图等上游还没好。等易读稿那几分钟里
+ * 下游会被领起来又放回十来次，attempt_no 涨到两位数，早就越过
+ * MAX_CREATE_ATTEMPTS。之后模型第一次抄错 id，retryInvalidOutput 一看次数
+ * 已耗尽，直接判死。界面上就是"这次总结未完成"，用户以为模型不稳定，
+ * 其实是等待被记成了失败。放回时把领取加上的那一次减掉，attempt_no 只数
+ * 真正打到模型的次数。只减 provider_request_id 为空的情况，和领取时加一的
+ * 条件对称。
+ */
+async function releaseForNextReadableChunk(
+  run: Row,
+  owner: string,
+  completedChunks: number,
+  totalChunks: number,
+  delayMs = 0,
+): Promise<void> {
+  const timestamp = now();
+  await getD1().prepare(
+    `UPDATE event_ai_artifact_runs
+        SET status = 'queued', next_attempt_at = ?, lease_owner = NULL,
+            lease_expires_at = NULL, error_code = NULL, error_details_json = ?, updated_at = ?,
+            attempt_no = MAX(0, attempt_no - CASE WHEN provider_request_id IS NULL THEN 1 ELSE 0 END)
+      WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+  ).bind(
+    nextPoll(timestamp, delayMs),
+    JSON.stringify({ readable_chunks_completed: completedChunks, readable_chunks_total: totalChunks }),
+    timestamp,
+    run.id,
+    owner,
+  ).run();
+}
+
+async function parkReadableChunkFailure(
+  run: Row,
+  owner: string,
+  chunk: EventAiArtifactChunkRecord,
+  error: unknown,
+  retryable: boolean,
+): Promise<"pending" | "failed"> {
+  const timestamp = now();
+  const ageExpired = Date.parse(timestamp) - Date.parse(String(run.created_at)) >= MAX_JOB_AGE_MS;
+  // An invalid chunk output has to be redone from a new provider response —
+  // resuming the old one returns the same invalid text — and clearing the id
+  // is also what lets the attempt cap below count this retry.
+  const invalidOutput = error instanceof ModelOutputInvalidError;
+  // 卡住的响应同样要从新的响应重做，id 必须清掉，也同样计入尝试上限。
+  const stalled = error instanceof ModelBackgroundStalledError;
+  const attemptsExpired = (chunk.provider_request_id == null || invalidOutput || stalled)
+    && chunk.attempt_no >= MAX_CREATE_ATTEMPTS;
+  const terminal = !retryable || ageExpired || attemptsExpired;
+  const guardId = id("guard");
+  const errorCode = terminal
+    ? error instanceof ModelOutputInvalidError
+      ? "MODEL_OUTPUT_INVALID"
+      : retryable
+        ? "ARTIFACT_RETRY_EXHAUSTED"
+        : "ARTIFACT_PROCESSING_FAILED"
+    : "ARTIFACT_RETRY_SCHEDULED";
+  await getD1().batch([
+    guardReadableChunk().bind(
+      guardId,
+      run.id,
+      owner,
+      chunk.id,
+      run.id,
+      timestamp,
+    ),
+    getD1().prepare(
+      `UPDATE event_ai_artifact_chunks
+          SET status = ?, error_code = ?,
+              provider_request_id = CASE WHEN ? THEN NULL ELSE provider_request_id END,
+              updated_at = ?
+        WHERE id = ? AND artifact_run_id = ? AND status = 'processing'`,
+    ).bind(
+      terminal ? "failed" : "queued",
+      errorCode,
+      !terminal && (invalidOutput || stalled) ? 1 : 0,
+      timestamp,
+      chunk.id,
+      run.id,
+    ),
+    getD1().prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  ]);
+  return terminal ? "failed" : "pending";
+}
+
+function aggregateChunkUsage(chunks: EventAiArtifactChunkRecord[]): ModelUsage {
+  const sum = (key: "input_tokens" | "output_tokens" | "cached_tokens") => {
+    const values = chunks.map((chunk) => chunk[key]).filter((value): value is number => value !== null);
+    return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  };
+  return {
+    inputTokens: sum("input_tokens"),
+    outputTokens: sum("output_tokens"),
+    cachedTokens: sum("cached_tokens"),
+    providerRequestId: [...chunks].reverse().find((chunk) => chunk.provider_request_id)?.provider_request_id ?? null,
+  };
+}
+
+function minimalContext(input: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>): ContextPack {
+  return {
+    schema_version: CONTEXT_PACK_SCHEMA_VERSION,
+    project: {
+      id: String(input.run.project_id),
+      scenario: null,
+      locale: input.locale,
+      context_version: 0,
+    },
+    verified_context: {
+      glossary: input.glossary.map((entry) => ({
+        ...entry,
+        sourceKind: "manual" as const,
+      })),
+      active_claims: [],
+      recent_history: [],
+      open_questions: [],
+      active_risks: [],
+    },
+    draft_context: {
+      enabled: false,
+      claims: [],
+    },
+    new_event: {
+      event_id: String(input.run.event_id),
+      transcript_segments: input.segments,
+      readable_transcript_segments: [],
+      photos: [],
+      documents: [],
+    },
+  };
+}
+
+async function finalizeReadableTranscript(
+  run: Row,
+  owner: string,
+  source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  chunks: EventAiArtifactChunkRecord[],
+): Promise<boolean> {
+  if (!chunks.length || chunks.some((chunk) => chunk.status !== "succeeded")) return false;
+  const outputs = chunks.map((chunk) => JSON.parse(chunk.validated_output_json ?? "null"));
+  const merged = mergeReadableTranscriptChunks(String(run.event_id), outputs);
+  const validated = validateReadableTranscriptOutput(merged, {
+    eventId: String(run.event_id),
+    segments: source.segments,
+  }, { allowRawFallback: true });
+  if (!validated.output) {
+    throw new ModelOutputInvalidError(validated.issues, aggregateChunkUsage(chunks));
+  }
+  await persistReadableTranscriptArtifact(run, owner, validated.output, aggregateChunkUsage(chunks));
+  return true;
+}
+
+async function processReadableChunkAttempt(
+  run: Row,
+  owner: string,
+  source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  sourceChunks: ReturnType<typeof chunkReadableTranscriptSource>,
+  provider: ReturnType<typeof createModelProvider>,
+  storedChunk: EventAiArtifactChunkRecord,
+): Promise<"succeeded" | "pending" | "failed"> {
+  const chunk = await leaseReadableChunk(run, owner, storedChunk);
+  if (!chunk) return "pending";
+  const sourceChunk = sourceChunks[chunk.chunk_index];
+  if (!sourceChunk) {
+    return parkReadableChunkFailure(
+      run,
+      owner,
+      chunk,
+      new Error("READABLE_TRANSCRIPT_CHUNK_MISSING"),
+      false,
+    );
+  }
+  const context = minimalContext({ ...source, segments: sourceChunk.segments });
+  try {
+    const result = await provider.refineTranscript(context, {
+      idempotencyKey: `notique:${run.id}:readable_transcript:chunk:${chunk.chunk_index}`,
+      ...(chunk.provider_request_id ? { resumeProviderResponseId: chunk.provider_request_id } : {}),
+      onProviderResponse: (response) => recordReadableProviderResponse(run, owner, chunk, response),
+      promptCacheKey: `notique:${run.extraction_run_id}:readable:${chunk.chunk_index}`,
+      backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS,
+    });
+    const validated = validateReadableTranscriptOutput(result.output, {
+      eventId: String(run.event_id),
+      segments: sourceChunk.segments,
+    }, { allowRawFallback: true });
+    if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
+    await persistReadableTranscriptChunk(run, owner, chunk.id, validated.output, result.usage);
+    return "succeeded";
+  } catch (error) {
+    if (error instanceof ModelBackgroundPendingError) {
+      await parkReadableChunkPending(run, owner, chunk, error.providerResponseId);
+      return "pending";
+    }
+    const currentChunk = (await listReadableTranscriptChunks(String(run.id)))
+      .find((item) => item.id === chunk.id);
+    if (currentChunk?.status === "succeeded") return "succeeded";
+    // A schema-invalid chunk is retryable for the same reason a whole invalid
+    // run is: the next response usually validates. The attempt cap bounds it.
+    return parkReadableChunkFailure(
+      run,
+      owner,
+      chunk,
+      error,
+      transient(error) || error instanceof ModelOutputInvalidError,
+    );
+  }
+}
+
+async function processReadableTranscriptRun(
+  run: Row,
+  owner: string,
+  source: Awaited<ReturnType<typeof sourceSegmentsForArtifactRun>>,
+  provider: ReturnType<typeof createModelProvider>,
+): Promise<"succeeded" | "pending" | "failed"> {
+  const sourceChunks = chunkReadableTranscriptSource(source.segments);
+  const storedChunks = await ensureReadableTranscriptChunks(run, sourceChunks);
+  if (storedChunks.some((chunk) => chunk.status === "failed")) {
+    const failed = storedChunks.find((chunk) => chunk.status === "failed");
+    throw new Error(failed?.error_code ?? "READABLE_TRANSCRIPT_CHUNK_FAILED");
+  }
+  if (await finalizeReadableTranscript(run, owner, source, storedChunks)) return "succeeded";
+
+  const nextStoredChunks = storedChunks
+    .filter((chunk) => chunk.status !== "succeeded")
+    .slice(0, READABLE_CHUNK_CONCURRENCY);
+  const outcomes = await Promise.all(nextStoredChunks.map((chunk) =>
+    processReadableChunkAttempt(run, owner, source, sourceChunks, provider, chunk)
+  ));
+  const refreshed = await listReadableTranscriptChunks(String(run.id));
+  if (refreshed.some((chunk) => chunk.status === "failed")) {
+    const failed = refreshed.find((chunk) => chunk.status === "failed");
+    throw new Error(failed?.error_code ?? "READABLE_TRANSCRIPT_CHUNK_FAILED");
+  }
+  if (await finalizeReadableTranscript(run, owner, source, refreshed)) return "succeeded";
+
+  await releaseForNextReadableChunk(
+    run,
+    owner,
+    refreshed.filter((chunk) => chunk.status === "succeeded").length,
+    refreshed.length,
+    outcomes.some((outcome) => outcome !== "succeeded") ? 5_000 : 0,
+  );
+  return outcomes.some((outcome) => outcome === "failed") ? "failed" : "pending";
+}
+
+/**
+ * 上游各自现在是什么状态。没有任何 Run 记录的算 missing，和终态失败一样
+ * 不再等待：那一支不会自己冒出来。
+ */
+async function readingDependencyStatuses(
+  eventId: string,
+  kinds: readonly string[],
+): Promise<Record<string, "queued" | "processing" | "succeeded" | "failed" | "missing">> {
+  if (!kinds.length) return {};
+  const result = await getD1()
+    .prepare(
+      `SELECT kind, status FROM event_ai_artifact_runs
+        WHERE event_id = ? AND kind IN (${kinds.map(() => "?").join(", ")})
+        ORDER BY created_at ASC`,
+    )
+    .bind(eventId, ...kinds)
+    .all<Row>();
+  const rows = result.results ?? [];
+  const out: Record<string, "queued" | "processing" | "succeeded" | "failed" | "missing"> = {};
+  for (const row of rows) {
+    const kind = String(row.kind);
+    const status = String(row.status) as "queued" | "processing" | "succeeded" | "failed";
+    // 同一种类若有多行，成功优先；否则取最后一条的状态。
+    if (out[kind] === "succeeded") continue;
+    out[kind] = status;
+  }
+  return out;
+}
+
+async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | "pending" | "failed"> {
+  try {
+    const contractMismatch = eventAiArtifactContractMismatch(run);
+    if (contractMismatch) throw new StaleArtifactModelContractError(contractMismatch);
+    const source = await sourceSegmentsForArtifactRun(String(run.id));
+    if (!source.segments.length) throw new Error("ARTIFACT_INPUT_MISSING_TRANSCRIPT");
+    const provider = createModelProvider(getBindings(), {
+      provider: String(run.provider),
+      model: String(run.model),
+      reasoningEffort: String(run.reasoning_effort),
+      timeoutMs: ARTIFACT_PROVIDER_TIMEOUT_MS,
+    });
+    if (String(run.kind) === "readable_transcript") {
+      return processReadableTranscriptRun(run, owner, source, provider);
+    }
+    const context = minimalContext(source);
+    const kind = String(run.kind);
+    const isReadingView = kind === "chapters" || kind === "speakers" || kind === "key_points" || kind === "overview";
+    let upstream: Record<string, unknown[]> = {};
+    if (isReadingView) {
+      const definition = readingArtifactDefinition(kind);
+      const statuses = await readingDependencyStatuses(String(run.event_id), definition.dependsOn);
+      const readiness = readingArtifactReadiness(kind, (dependency) => statuses[dependency] ?? "missing");
+      if (readiness.state === "wait") {
+        // 上游还在跑。退回队列等下一轮，不抢跑也不白花一次调用；这一次
+        // 领取不算尝试，见 releaseForNextReadableChunk。五秒够派发器转一圈。
+        await releaseForNextReadableChunk(run, owner, 0, 0, 5_000);
+        return "pending";
+      }
+      if (readiness.state === "abandon") {
+        await failRun(run, owner, new Error("ARTIFACT_UPSTREAM_UNAVAILABLE"));
+        return "failed";
+      }
+      // 硬依赖此时都已成功；可选上游有就带上，没有也不等。
+      upstream = await readingUpstreamContent(String(run.event_id), [
+        ...definition.dependsOn,
+        ...(definition.optionalUpstream ?? []),
+      ]);
+    }
+    const onProviderResponse = async (response: { id: string; status: string }) => {
+      await getD1()
+        .prepare(
+          `UPDATE event_ai_artifact_runs
+              SET provider_request_id = ?, error_details_json = ?, updated_at = ?
+            WHERE id = ? AND status = 'processing' AND lease_owner = ?`,
+        )
+        .bind(
+          response.id,
+          JSON.stringify({ background_response_status: response.status }),
+          now(),
+          run.id,
+          owner,
+        )
+        .run();
+    };
+    const options = {
+      idempotencyKey: `notique:${run.id}:${run.kind}`,
+      ...(run.provider_request_id ? { resumeProviderResponseId: String(run.provider_request_id) } : {}),
+      onProviderResponse,
+      promptCacheKey: `notique:${run.extraction_run_id}:event-artifacts`,
+      backgroundStallMs: ARTIFACT_BACKGROUND_STALL_MS,
+    };
+    const result = isReadingView
+      ? await provider.summarizeReadingView(
+        kind as "chapters" | "speakers" | "key_points" | "overview",
+        context,
+        upstream,
+        options,
+      )
+      : await provider.summarizeEvent(context, options);
+    const validated = validateEventSummaryOutput(result.output, {
+      eventId: String(run.event_id),
+      segments: source.segments,
+    });
+    if (!validated.output) throw new ModelOutputInvalidError(validated.issues, result.usage);
+    await persistSummaryArtifact(run, owner, validated.output, result.usage);
+    if (kind === "overview" || kind === "chapters") {
+      // 归属判断读概要和章节。两个同时开跑、谁先完不一定，由后完成的那个触发。
+      // 两个几乎同时完成时可能各触发一次，判断结果覆盖写，多一次无害。
+      // 不 await：产物已经落库，这一层失败与否都不该改变本次任务的结果。
+      const statuses = await readingDependencyStatuses(String(run.event_id), ["overview", "chapters"]);
+      if (statuses.overview === "succeeded" && statuses.chapters === "succeeded") {
+        scheduleProjectRoutingSuggestion({
+          eventId: String(run.event_id),
+          workspaceId: String(run.workspace_id),
+          projectId: String(run.project_id),
+        });
+      }
+    }
+    return "succeeded";
+  } catch (error) {
+    if (error instanceof ModelBackgroundPendingError) {
+      await releasePending(run, owner, error.providerResponseId, error.providerStatus);
+      return "pending";
+    }
+    if (transient(error)) {
+      await deferTransient(run, owner, error);
+      return "pending";
+    }
+    if (error instanceof ModelOutputInvalidError && await retryInvalidOutput(run, owner, error)) {
+      return "pending";
+    }
+    await failRun(run, owner, error);
+    return "failed";
+  }
+}
+
+export async function dispatchDueEventAiArtifactRuns(input?: {
+  workspaceId: string;
+  runId?: string;
+  extractionRunId?: string;
+  targeted?: boolean;
+}): Promise<{ claimed: number; succeeded: number; pending: number; failed: number }> {
+  const timestamp = now();
+  const clauses = [
+    "status IN ('queued', 'processing')",
+    "next_attempt_at <= ?",
+    "(lease_expires_at IS NULL OR lease_expires_at <= ?)",
+  ];
+  const bindings: unknown[] = [timestamp, timestamp];
+  if (input?.workspaceId) {
+    clauses.push("workspace_id = ?");
+    bindings.push(input.workspaceId);
+  }
+  if (input?.runId) {
+    clauses.push("id = ?");
+    bindings.push(input.runId);
+  }
+  if (input?.extractionRunId) {
+    clauses.push("extraction_run_id = ?");
+    bindings.push(input.extractionRunId);
+  }
+  const limit = input?.runId ? 1 : input?.extractionRunId ? 2 : 2;
+  const rows = await getD1()
+    .prepare(
+      `SELECT * FROM event_ai_artifact_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY next_attempt_at,
+                 CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,
+                 created_at, id LIMIT ?`,
+    )
+    .bind(...bindings, limit)
+    .all<Row>();
+  const result = { claimed: 0, succeeded: 0, pending: 0, failed: 0 };
+  await Promise.all((rows.results ?? []).map(async (row) => {
+    const owner = id("eaw");
+    const leased = await leaseRun(row, owner, input?.targeted ? TARGET_LEASE_MS : CRON_LEASE_MS);
+    if (!leased) return;
+    result.claimed += 1;
+    const outcome = await processLeasedRun(leased, owner);
+    result[outcome] += 1;
+  }));
+  return result;
+}
+
+export async function dispatchEventAiArtifactsForExtraction(
+  workspaceId: string,
+  extractionRunId: string,
+): Promise<{ claimed: number; succeeded: number; pending: number; failed: number }> {
+  return dispatchDueEventAiArtifactRuns({ workspaceId, extractionRunId, targeted: true });
+}
+
+export async function dispatchEventAiArtifactRun(
+  workspaceId: string,
+  runId: string,
+): Promise<{ claimed: number; succeeded: number; pending: number; failed: number }> {
+  return dispatchDueEventAiArtifactRuns({ workspaceId, runId, targeted: true });
+}
+
+export async function sweepEventAiArtifactRuns(): Promise<number> {
+  const timestamp = now();
+  const recovered = await getD1()
+    .prepare(
+      `UPDATE event_ai_artifact_runs
+          SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+              next_attempt_at = ?, error_code = 'ARTIFACT_LEASE_RECOVERED', updated_at = ?
+        WHERE status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+    )
+    .bind(timestamp, timestamp, timestamp)
+    .run();
+  return Number(recovered.meta.changes ?? 0);
+}
+
+export async function sweepAndDispatchEventAiArtifacts() {
+  const recovered = await sweepEventAiArtifactRuns();
+  const dispatch = await dispatchDueEventAiArtifactRuns();
+  return { recovered, dispatch };
+}
