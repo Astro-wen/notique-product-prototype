@@ -36,6 +36,7 @@ export type AppRoute = {
   runId?: string;
   tab?: AppResultTab;
   readingTab?: AppReadingTab;
+  workspaceTab?: "overview";
   origin?: AppRouteOrigin;
   originTab?: AppResultTab;
   originReadingTab?: AppReadingTab;
@@ -132,6 +133,7 @@ export function normalizeAppRoute(route: AppRoute): AppRoute {
   };
 
   if (route.eventId && !["projects", "project"].includes(next.view)) next.eventId = route.eventId;
+  if (next.view === "simple" && next.projectId && route.workspaceTab === "overview") next.workspaceTab = "overview";
   if (next.view === "simple" && route.readingTab && readingTabs.has(route.readingTab)) {
     next.readingTab = route.readingTab;
   }
@@ -169,6 +171,7 @@ export function parseAppRoute(search: string): AppRoute {
     runId: optionalParam(params, "run"),
     tab: tab && resultTabs.has(tab) ? tab : undefined,
     readingTab: readingTab && readingTabs.has(readingTab) ? readingTab : undefined,
+    workspaceTab: optionalParam(params,"workspaceTab") === "overview" ? "overview" : undefined,
     origin: origin && routeOrigins.has(origin) ? origin : undefined,
     originTab: originTab && resultTabs.has(originTab) ? originTab : undefined,
     originReadingTab: originReadingTab && readingTabs.has(originReadingTab)
@@ -185,6 +188,7 @@ export function serializeAppRoute(route: AppRoute): string {
   params.set("view", normalized.view);
   if (normalized.tab) params.set("tab", normalized.tab);
   if (normalized.readingTab) params.set("readingTab", normalized.readingTab);
+  if (normalized.workspaceTab) params.set("workspaceTab", normalized.workspaceTab);
   if (normalized.claimId) params.set("claim", normalized.claimId);
   if (normalized.runId) params.set("run", normalized.runId);
   if (normalized.origin) params.set("origin", normalized.origin);

@@ -1,4 +1,5 @@
 import { expect, type Page, type Route } from "@playwright/test";
+import type { AnalysisRun, DecisionRequest, ProjectOverview, ReviewCard, WorkspaceSnapshot } from "../../lib/shared/workflow-v2";
 
 type MutationRecord = {
   method: string;
@@ -587,6 +588,8 @@ export class NotiqueApiFixture {
   private staleSummaryArtifactDuringNewRun = false;
   private readonly allowedMutations = new Set<string>();
   private readonly manualClaims = new Map<string, ReturnType<typeof claimRecord>>();
+  private workflowContextVersion = 8;
+  private readonly workflowDecisions = new Map<string, { text: string; version: number; origin: "source_statement" | "user_input"; rejected: boolean }>();
   private activeProjectIds = new Set(["project-a", "project-b"]);
   private trashProjectIds = new Set(["project-trash"]);
   /** 单条记录的回收站。删掉的记录从项目的记录列表里消失，恢复后回来。 */
@@ -893,6 +896,63 @@ export class NotiqueApiFixture {
     return actions;
   }
 
+  /** Synthetic V2 ledger. Every route is fulfilled locally, so these browser tests never reach a real database. */
+  private workspaceV2(eventId: string): WorkspaceSnapshot {
+    const isA = eventId === "event-a";
+    const factsReady = !isA || !this.analysisProgressMode && (!this.summaryFirstMode || this.summaryFirstExtractionStatus === "succeeded");
+    const rawClaims = factsReady && isA ? [
+      claimRecord("claim-summary-pending", "预算上限是 120 万美元", "budget", "pending", "seg-summary-target"),
+      claimRecord("claim-timeline-verified", "经纪人周五前发送三套房源", "next_action", "verified", "seg-timeline"),
+      ...(this.summarySharedClaims ? [claimRecord("claim-summary-shared", "客户仍需确认 120 万美元是否包含装修预算", "open_question", "pending", "seg-summary-target")] : []),
+    ] : [];
+    const cards: ReviewCard[] = rawClaims.flatMap(claim => {
+      const decided = this.workflowDecisions.get(claim.id);
+      if (decided?.rejected) return [];
+      const kind = claim.type === "next_action" ? "action" : claim.type === "open_question" ? "question" : "record";
+      const claimRef = { claimId: claim.id, claimVersionId: `${claim.id}-version-${decided?.version ?? 1}` };
+      const accepted = Boolean(decided) || claim.review_status === "verified";
+      return [{ id: `card-${claim.id}`, revision: decided?.version ?? 1, kind, title: decided?.text ?? claim.current_version.statement,
+        memberRefs: [claimRef], members: [{ ...claimRef, kind, statement: decided?.text ?? claim.current_version.statement,
+          reviewState: accepted ? "accepted" : "draft", origin: decided?.origin ?? "source_statement", supportStatus: "fully_supports", evidenceRefIds: claim.evidence_ref_ids }],
+        suggestedOperation: kind === "action" ? "accept_action" : "confirm", needsDecision: kind === "question" && !accepted,
+        reasonCode: kind === "question" && !accepted ? "blocking_question" : null, reason: kind === "question" ? "补充答案后继续跟进。" : "", disposition: accepted ? "processed" : "active",
+        sourceStatus: "ready", latestDecisionId: decided ? `decision-${claim.id}-${decided.version}` : null, decisionRevision: decided ? 1 : null }];
+    });
+    const bullets = cards.map(card => ({ id: card.members[0].claimId, text: card.title, claimRefs: card.memberRefs,
+      reviewState: card.members[0].reviewState === "accepted" ? "accepted" as const : "draft" as const, origin: card.members[0].origin, sourceStatus: card.sourceStatus }));
+    const totalSegments = transcriptSegments(isA ? "project-a" : "project-b", eventId).length;
+    const coverage = { totalSegments, completedSegments: factsReady ? totalSegments : 0, complete: factsReady, unprocessedRanges: [] };
+    const summaryReady = !isA || !this.analysisProgressMode && (!this.summaryFirstMode || this.summaryFirstSummaryStatus === "succeeded");
+    return { access: { workspaceId: "workspace-playwright", actorId: "actor-playwright", canEdit: true }, snapshotId: `snapshot-${eventId}-${this.workflowContextVersion}`,
+      contextVersion: this.workflowContextVersion, sourceRevision: 1, coverage, bullets, reviewCards: cards,
+      actions: cards.filter(c => c.kind === "action" && c.members[0].reviewState === "accepted").map(c => ({ id: c.members[0].claimId, claimRef: c.memberRefs[0], revision: 1,
+        executionState: "open", questionRefs: [], basisState: "current", basisDetails: [], latestOutcome: null })),
+      questions: cards.filter(c => c.kind === "question").map(c => ({ id: c.members[0].claimId, claimRef: c.memberRefs[0], revision: 1, resolutionState: "open", answerRefs: [], latestOutcome: null })),
+      narrative: summaryReady && bullets.length ? { text: bullets.map(b => b.text).join("。"), sentenceRefs: bullets.map(b => ({ text: b.text, claimRefs: b.claimRefs, reviewState: b.reviewState })),
+        basedOnContextVersion: this.workflowContextVersion, freshness: "current", scope: "mixed" } : null,
+      counts: { draftCount: bullets.filter(b => b.reviewState === "draft").length, needsDecisionCount: cards.filter(c => c.needsDecision).length, openActionCount: cards.filter(c => c.kind === "action" && c.members[0].reviewState === "accepted").length }, nextCursor: null,
+      analysisRunId: isA && !factsReady ? "analysis-event-a" : null, reviewProgress: { lastCardId: null, finishedAt: null, remainingCount: cards.filter(c => c.needsDecision).length } };
+  }
+
+  private overviewV2(projectId: string): ProjectOverview {
+    const events = this.eventsForProject(projectId);
+    const snapshots = events.map(event => ({ event, snapshot: this.workspaceV2(event.id) }));
+    return { access: { workspaceId: "workspace-playwright", actorId: "actor-playwright", canEdit: true }, snapshotId: `overview-${projectId}-${this.workflowContextVersion}`,
+      contextVersion: this.workflowContextVersion, currentBullets: snapshots.flatMap(({ event, snapshot }) => snapshot.bullets.map(b => ({ ...b, eventId: event.id }))),
+      recentChanges: [], openQuestions: snapshots.flatMap(({ event, snapshot }) => snapshot.questions.map(q => ({ ...q, eventId: event.id }))),
+      nextActions: snapshots.flatMap(({ event, snapshot }) => snapshot.actions.map(a => ({ ...a, eventId: event.id }))),
+      recordSummaries: snapshots.map(({ event, snapshot }) => ({ eventId: event.id, title: event.title, occurredAt: event.occurred_at,
+        narrative: snapshot.narrative, coverage: snapshot.coverage, counts: snapshot.counts, reviewProgress: snapshot.reviewProgress! })),
+      counts: { draftCount: snapshots.reduce((n, { snapshot }) => n + snapshot.counts.draftCount, 0), needsDecisionCount: snapshots.reduce((n, { snapshot }) => n + snapshot.counts.needsDecisionCount, 0),
+        openActionCount: snapshots.reduce((n, { snapshot }) => n + snapshot.counts.openActionCount, 0), openQuestionCount: snapshots.reduce((n, { snapshot }) => n + snapshot.questions.length, 0) }, nextCursor: null };
+  }
+
+  private analysisV2(): AnalysisRun {
+    const coverage = this.workspaceV2("event-a").coverage;
+    return { id: "analysis-event-a", revision: 1, state: coverage.complete ? "succeeded" : "running", inputRevision: 1, retryable: false, coverage,
+      stages: [{ id: "facts", name: "整理重点", state: coverage.complete ? "succeeded" : "running", retryable: false, errorCode: null }] };
+  }
+
   private async fulfill(route: Route, data: unknown, status = 200) {
     await route.fulfill({
       status,
@@ -924,6 +984,37 @@ export class NotiqueApiFixture {
     if (!isDispatcherWake && !this.allowedMutations.has(`${method} ${path}`)) {
       this.blockedWrites.push(record);
       await route.abort("blockedbyclient");
+      return;
+    }
+
+    const projectOpenedMatch = path.match(/^\/api\/v1\/projects\/([^/]+)\/opened$/);
+    if (method === "POST" && projectOpenedMatch) {
+      await this.fulfill(route, envelope({ project: this.project(decodeURIComponent(projectOpenedMatch[1])) }));
+      return;
+    }
+
+    const workflowDecisionMatch = path.match(/^\/api\/v2\/review-cards\/([^/]+)\/decisions$/);
+    if (method === "POST" && workflowDecisionMatch) {
+      const cardId = decodeURIComponent(workflowDecisionMatch[1]);
+      const snapshot = this.workspaceV2("event-a");
+      const card = snapshot.reviewCards.find(c => c.id === cardId);
+      const payload = body as DecisionRequest;
+      if (!card || payload.expectedContextVersion !== snapshot.contextVersion || payload.expectedCardRevision !== card.revision) {
+        await this.fulfill(route, { error: { code: "context_version_conflict", message: "记录已经变化，请重新核对。" }, request_id: requestId }, 409);
+        return;
+      }
+      if (!["edit", "confirm", "reject", "accept_action"].includes(payload.operation)) {
+        throw new Error(`V2 browser fixture does not implement ${payload.operation}.`);
+      }
+      for (const member of payload.members) {
+        const current = card.members.find(m => m.claimId === member.claimId && m.claimVersionId === member.claimVersionId);
+        if (!current) throw new Error("V2 browser fixture received an unknown member version.");
+        this.workflowDecisions.set(member.claimId, { text: member.newText ?? current.statement, version: card.revision + 1,
+          origin: member.origin === "user_input" ? "user_input" : "source_statement", rejected: member.operation === "reject" });
+      }
+      this.workflowContextVersion += 1;
+      await this.fulfill(route, envelope({ mutationId: `mutation-${cardId}-${this.workflowContextVersion}`, contextVersion: this.workflowContextVersion,
+        changedRefs: [{ entityType: "card", id: cardId, revision: card.revision + 1 }], affectedViews: ["workspace", "overview", "narrative", "report"], refreshState: "current" }));
       return;
     }
 
@@ -1059,6 +1150,21 @@ export class NotiqueApiFixture {
       }
 
       this.reads.push({ method: "GET", path });
+
+      const workspaceV2Match = path.match(/^\/api\/v2\/events\/([^/]+)\/workspace$/);
+      if (workspaceV2Match) {
+        await this.fulfill(route, envelope(this.workspaceV2(decodeURIComponent(workspaceV2Match[1]))));
+        return;
+      }
+      const overviewV2Match = path.match(/^\/api\/v2\/projects\/([^/]+)\/overview$/);
+      if (overviewV2Match) {
+        await this.fulfill(route, envelope(this.overviewV2(decodeURIComponent(overviewV2Match[1]))));
+        return;
+      }
+      if (path === "/api/v2/analysis-runs/analysis-event-a") {
+        await this.fulfill(route, envelope(this.analysisV2()));
+        return;
+      }
 
       if (path === "/api/v1/projects") {
         const projects = [...this.activeProjectIds]

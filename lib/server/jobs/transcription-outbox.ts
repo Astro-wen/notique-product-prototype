@@ -15,6 +15,7 @@ import {
   TRANSCRIPTION_MAX_ATTEMPTS,
   transcriptionRetryDecision,
 } from "@/lib/domain/transcription-retry";
+import { commissionMaterialAnalysis } from "./material-analysis";
 import { ensureAutomaticExtractionRuns } from "@/lib/server/jobs/automatic-extraction";
 import { sha256Hex } from "@/lib/server/storage/keys";
 
@@ -589,13 +590,14 @@ async function startDownstreamWhenTranscriptReady(
   runId: string,
 ): Promise<void> {
   const run = await first(
-    `SELECT status, derived_transcript_asset_id FROM transcription_runs
+    `SELECT status, event_id, derived_transcript_asset_id FROM transcription_runs
       WHERE id = ? AND workspace_id = ? AND parent_run_id IS NULL`,
     [runId, workspaceId],
   );
   if (String(run?.status) !== "succeeded" || !run?.derived_transcript_asset_id) return;
   try {
-    await ensureAutomaticExtractionRuns();
+    await commissionMaterialAnalysis({ workspaceId, eventId: String(run.event_id) });
+    await ensureAutomaticExtractionRuns({ eventId: String(run.event_id) });
   } catch (error) {
     console.error("transcription_downstream_start_failed", {
       run_id: runId,

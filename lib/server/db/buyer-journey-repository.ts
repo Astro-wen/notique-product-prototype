@@ -1,11 +1,12 @@
 import { getD1 } from "@/db";
+import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { assertRequestAccess, requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
+import { legacyWorkflowInvalidationStatements } from "@/lib/server/db/legacy-workflow-invalidation";
 import {
   findMutationReplay,
   mutationReplayStatement,
 } from "@/lib/server/db/mutation-replay";
-import { createManualRelation } from "@/lib/server/db/verdict-repository";
 
 type Row = Record<string, unknown>;
 
@@ -243,10 +244,14 @@ export async function applyDraftLinkVerdict(
             target.review_status AS target_review_status,
             target.lifecycle_status AS target_lifecycle_status,
             target.current_version_id AS target_current_version_id,
+            target.type AS target_type, target_version.statement AS target_statement,
+            target_version.normalized_value_json AS target_normalized_value_json,
+            target_version.uncertainty_json AS target_uncertainty_json,
             p.context_version
        FROM draft_link_candidates dl
        JOIN claims source ON source.id = dl.source_claim_id
        JOIN claims target ON target.id = dl.target_draft_claim_id
+       JOIN claim_versions target_version ON target_version.id = target.current_version_id
        JOIN projects p ON p.id = dl.project_id AND p.workspace_id = dl.workspace_id
       WHERE dl.id = ? AND dl.workspace_id = ? AND p.deleted_at IS NULL`,
     [linkId, scope.workspaceId],
@@ -289,6 +294,8 @@ export async function applyDraftLinkVerdict(
           `UPDATE projects SET context_version = context_version + 1, updated_at = ?
             WHERE id = ? AND workspace_id = ? AND context_version = ?`,
         ).bind(timestamp, link.project_id, scope.workspaceId, input.baseContextVersion),
+        ...legacyWorkflowInvalidationStatements(db, scope, String(link.project_id), timestamp, [String(link.source_claim_id),String(link.target_draft_claim_id)]),
+        requestWriteGuard(db,scope,guardId),
         mutationReplayStatement(
           scope,
           endpointScope,
@@ -311,6 +318,9 @@ export async function applyDraftLinkVerdict(
     }
     return response;
   }
+  if (Number(link.context_version) !== input.baseContextVersion) {
+    throw new ApiFault(409, "CLAIM_VERSION_CONFLICT", "Draft link changed. Refresh before deciding.");
+  }
   const existingFormalRelation = await first(
     `SELECT id FROM claim_relations
       WHERE workspace_id = ? AND project_id = ? AND type = ? AND status = 'active'
@@ -324,77 +334,144 @@ export async function applyDraftLinkVerdict(
       link.target_draft_claim_version_id,
     ],
   );
-  if (existingFormalRelation) {
-    const response = {
-      draftLinkId: linkId,
-      status: "accepted" as const,
-      formalRelationId: String(existingFormalRelation.id),
-    };
-    const db = getD1();
-    await db.batch([
-      db.prepare(
-        `UPDATE draft_link_candidates SET status = 'accepted', updated_at = ?
-          WHERE id = ? AND workspace_id = ? AND status = 'proposed'`,
-      ).bind(timestamp, linkId, scope.workspaceId),
-      mutationReplayStatement(
-        scope,
-        endpointScope,
-        idempotencyKey,
-        replay.requestHash,
-        response,
-        timestamp,
-      ),
-    ]);
-    return response;
-  }
-  if (
+  if (!existingFormalRelation && (
     String(link.source_review_status) !== "verified" ||
     String(link.target_review_status) !== "verified" ||
     String(link.source_lifecycle_status) !== "active" ||
     String(link.target_lifecycle_status) !== "active" ||
     String(link.source_current_version_id) !== String(link.source_claim_version_id) ||
     String(link.target_current_version_id) !== String(link.target_draft_claim_version_id)
-  ) {
+  )) {
     throw new ApiFault(
       409,
       "CLAIM_VERSION_CONFLICT",
       "Both draft-link records must be current and human-confirmed before a formal relation can be created.",
     );
   }
-  const relation = await createManualRelation(
-    scope,
-    {
-      project_id: String(link.project_id),
-      base_context_version: input.baseContextVersion,
-      source_claim_id: String(link.source_claim_id),
-      source_claim_version_id: String(link.source_claim_version_id),
-      target_claim_id: String(link.target_draft_claim_id),
-      target_claim_version_id: String(link.target_draft_claim_version_id),
-      type: relationType,
-      reason: String(link.reason),
-    },
-    `${idempotencyKey}:formal-relation`,
-  );
+  if (!existingFormalRelation && link.source_claim_id === link.target_draft_claim_id) {
+    throw new ApiFault(400, "BAD_REQUEST", "A Claim cannot be related to itself.");
+  }
+  if (!existingFormalRelation && relationType === "resolves" && !canResolveClaim({
+    type: String(link.target_type),
+    statement: String(link.target_statement),
+    normalizedValue: parseJson<Record<string, unknown> | null>(
+      link.target_normalized_value_json == null ? null : String(link.target_normalized_value_json), null,
+    ),
+    uncertainty: parseJson(link.target_uncertainty_json == null ? null : String(link.target_uncertainty_json), null),
+  })) {
+    throw new ApiFault(422, "BAD_REQUEST", "Resolve can only close an open question, risk, concern, prerequisite, or uncertain record.");
+  }
+  const lifecycleRelation = ["supersedes", "contradicts", "resolves"].includes(relationType);
+  if (!existingFormalRelation) {
+    const conflict = await first(
+      `SELECT id FROM claim_relations WHERE workspace_id = ? AND project_id = ? AND status = 'active'
+        AND source_claim_version_id = ? AND target_claim_version_id = ?
+        AND (type = ? OR (type IN ('supersedes', 'contradicts', 'resolves') AND ? = 1)) LIMIT 1`,
+      [scope.workspaceId, link.project_id, link.source_claim_version_id,
+        link.target_draft_claim_version_id, relationType, lifecycleRelation ? 1 : 0],
+    );
+    if (conflict) throw new ApiFault(409, "CLAIM_STATE_CONFLICT", "This relationship is already active.");
+  }
+  const relationId = existingFormalRelation ? String(existingFormalRelation.id) : id("rel");
+  const verdictId = existingFormalRelation ? null : id("rvdt");
+  const guardId = id("guard");
   const response = {
     draftLinkId: linkId,
     status: "accepted" as const,
-    formalRelationId: relation.relation_id,
+    formalRelationId: relationId,
   };
   const db = getD1();
-  await db.batch([
+  const relationGuard = existingFormalRelation
+    ? `EXISTS (SELECT 1 FROM claim_relations WHERE id = ? AND workspace_id = ?
+         AND project_id = ? AND source_claim_version_id = ? AND target_claim_version_id = ?
+         AND type = ? AND status = 'active')`
+    : `NOT EXISTS (SELECT 1 FROM claim_relations WHERE workspace_id = ? AND project_id = ?
+         AND source_claim_version_id = ? AND target_claim_version_id = ? AND status = 'active'
+         AND (type = ? OR (type IN ('supersedes', 'contradicts', 'resolves') AND ? = 1)))`;
+  const relationGuardValues = existingFormalRelation
+    ? [relationId, scope.workspaceId, link.project_id, link.source_claim_version_id,
+      link.target_draft_claim_version_id, relationType]
+    : [scope.workspaceId, link.project_id, link.source_claim_version_id,
+      link.target_draft_claim_version_id, relationType, lifecycleRelation ? 1 : 0];
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM draft_link_candidates dl
+         JOIN projects p ON p.id = dl.project_id AND p.workspace_id = dl.workspace_id
+         JOIN claims source ON source.id = dl.source_claim_id AND source.project_id = dl.project_id
+         JOIN claims target ON target.id = dl.target_draft_claim_id AND target.project_id = dl.project_id
+         WHERE dl.id = ? AND dl.workspace_id = ? AND dl.status = 'proposed'
+           AND p.deleted_at IS NULL AND p.context_version = ?
+           AND dl.type = ? AND dl.source_claim_id = ? AND dl.source_claim_version_id = ?
+           AND dl.target_draft_claim_id = ? AND dl.target_draft_claim_version_id = ?
+           AND source.current_version_id = dl.source_claim_version_id
+           AND target.current_version_id = dl.target_draft_claim_version_id
+           AND (? = 1 OR (source.review_status = 'verified' AND target.review_status = 'verified'
+             AND source.lifecycle_status = 'active' AND target.lifecycle_status = 'active'))
+       ) AND ${relationGuard} THEN 1 ELSE 0 END, ?`,
+    ).bind(guardId, linkId, scope.workspaceId, input.baseContextVersion,
+      link.type, link.source_claim_id, link.source_claim_version_id,
+      link.target_draft_claim_id, link.target_draft_claim_version_id,
+      existingFormalRelation ? 1 : 0, ...relationGuardValues, timestamp),
+  ];
+  if (!existingFormalRelation) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO claim_relations (
+          id, workspace_id, project_id, type, source_claim_version_id,
+          target_claim_version_id, context_version, status, contradiction_status,
+          reason, confidence, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
+      ).bind(relationId, scope.workspaceId, link.project_id, relationType,
+        link.source_claim_version_id, link.target_draft_claim_version_id,
+        input.baseContextVersion, relationType === "contradicts" ? "open" : null,
+        link.reason, timestamp),
+      db.prepare(
+        `INSERT INTO relation_verdicts
+          (id, relation_id, action, base_relation_status, secondary_evidence_note, user_id, created_at)
+        VALUES (?, ?, 'confirm', 'proposed', ?, ?, ?)`,
+      ).bind(verdictId, relationId, link.reason, scope.actorId, timestamp),
+      // A formal supersedes/resolves relation changes the target's lifecycle.
+      db.prepare(
+        `UPDATE claims AS c SET lifecycle_status = CASE
+           WHEN EXISTS (SELECT 1 FROM claim_relations r WHERE r.target_claim_version_id = c.current_version_id
+             AND r.status = 'active' AND r.type = 'supersedes') THEN 'superseded'
+           WHEN EXISTS (SELECT 1 FROM claim_relations r WHERE r.target_claim_version_id = c.current_version_id
+             AND r.status = 'active' AND r.type = 'resolves') THEN 'resolved'
+           ELSE 'active' END,
+         resolved_at = CASE WHEN EXISTS (SELECT 1 FROM claim_relations r
+           WHERE r.target_claim_version_id = c.current_version_id AND r.status = 'active' AND r.type = 'resolves')
+           THEN COALESCE(c.resolved_at, ?) ELSE NULL END, updated_at = ?
+         WHERE c.project_id = ? AND c.review_status = 'verified' AND c.lifecycle_status <> 'withdrawn'`,
+      ).bind(timestamp, timestamp, link.project_id),
+    );
+  }
+  statements.push(
     db.prepare(
       `UPDATE draft_link_candidates SET status = 'accepted', updated_at = ?
         WHERE id = ? AND workspace_id = ? AND status = 'proposed'`,
-    ).bind(now(), linkId, scope.workspaceId),
-    mutationReplayStatement(
-      scope,
-      endpointScope,
-      idempotencyKey,
-      replay.requestHash,
-      response,
-      now(),
-    ),
-  ]);
+    ).bind(timestamp, linkId, scope.workspaceId),
+    db.prepare(
+      `UPDATE projects SET ledger_version = ledger_version + 1,
+         context_version = context_version + 1, updated_at = ?
+       WHERE id = ? AND workspace_id = ? AND context_version = ?`,
+    ).bind(timestamp, link.project_id, scope.workspaceId, input.baseContextVersion),
+    ...legacyWorkflowInvalidationStatements(db, scope, String(link.project_id), timestamp,
+      [String(link.source_claim_id), String(link.target_draft_claim_id)]),
+    requestWriteGuard(db, scope, guardId),
+    mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, response, timestamp),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
+  );
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    await assertRequestAccess(scope, "write");
+    const recovered = await findMutationReplay<typeof response>(scope, endpointScope, idempotencyKey, input);
+    if (recovered.response) return recovered.response;
+    if (error instanceof ApiFault) throw error;
+    throw new ApiFault(409, "CLAIM_VERSION_CONFLICT", "Draft link changed. Refresh before deciding.");
+  }
   return response;
 }
 
@@ -530,6 +607,8 @@ export async function reopenProjectAction(
             context_version = context_version + 1, updated_at = ?
           WHERE id = ? AND workspace_id = ?`,
       ).bind(timestamp, action.project_id, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, String(action.project_id), timestamp, [claimId]),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, response, timestamp),
       db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
     ]);
@@ -663,6 +742,8 @@ export async function completeProjectAction(
             context_version = context_version + 1, updated_at = ?
           WHERE id = ? AND workspace_id = ? AND context_version = ?`,
       ).bind(timestamp, action.project_id, scope.workspaceId, action.context_version),
+      ...legacyWorkflowInvalidationStatements(db, scope, String(action.project_id), timestamp, [claimId,completionClaimId]),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,

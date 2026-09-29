@@ -37,6 +37,8 @@ const HEADLINE = `上传${UPLOADS.join("、")}，建立专属${BUILDS.join("、"
 const subscribeToNothing = () => () => {};
 const clientGreeting = () => greetingFor(new Date().getHours());
 const serverGreeting = () => "";
+const clientReady = () => true;
+const serverReady = () => false;
 
 function Rotator({ words, current }: { words: string[]; current: number }) {
   return (
@@ -71,6 +73,7 @@ export function LandingHero({
   // 问候语。useSyncExternalStore 的第三个参数就是为这种两边不同准备的：它让
   // React 知道这处不一致是故意的，不会当成 hydration 错误。
   const hello = useSyncExternalStore(subscribeToNothing, clientGreeting, serverGreeting);
+  const ready = useSyncExternalStore(subscribeToNothing, clientReady, serverReady);
 
   useEffect(() => {
     const cycle = 2 * UPLOADS.length * BUILDS.length;
@@ -108,7 +111,7 @@ export function LandingHero({
         tabIndex={-1}
         aria-label="选择录音、逐字稿或照片"
         accept={accept}
-        disabled={busy}
+        disabled={!ready || busy}
         onChange={(event) => { takeFiles(event.target.files); event.target.value = ""; }}
       />
 
@@ -116,7 +119,7 @@ export function LandingHero({
         <div className="landing-top">
           <p className="landing-greeting">{hello}</p>
           {/* 这一页说的是「上传什么、得到什么」，怎么得到的放在这后面。 */}
-          <button type="button" className="text-button landing-explain" onClick={onExplain}>
+          <button type="button" className="text-button landing-explain" disabled={!ready} onClick={onExplain}>
             这东西怎么工作<ArrowRight size={14} aria-hidden="true" />
           </button>
         </div>
@@ -132,17 +135,17 @@ export function LandingHero({
             <Rotator words={BUILDS} current={buildIndex} />
           </span>
         </h1>
-        <p className="landing-sub">结论都能点开看到原话，确认过的才进报告</p>
+        <p className="landing-sub">先读完整记录，按需确认重点，再跟进和补结果</p>
       </header>
 
       <div className="landing-actions">
-        <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"} active={recorderOpen} disabled={busy} onClick={onRecord} />
-        <NqActionCard icon={Upload} kind="audio" title="上传音频" description="分出说话人和时间点" disabled={busy} onClick={onPickAudio} />
-        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿直接进来，跳过转写" disabled={busy} onClick={onPickTranscript} />
-        <NqActionCard icon={Images} kind="photo" title="上传图片" description="手写笔记、白板、纸质材料" disabled={busy} onClick={onPickPhoto} />
+        <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"} active={recorderOpen} disabled={!ready || busy} onClick={onRecord} />
+        <NqActionCard icon={Upload} kind="audio" title="上传音频" description="分出说话人和时间点" disabled={!ready || busy} onClick={onPickAudio} />
+        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿直接进来，跳过转写" disabled={!ready || busy} onClick={onPickTranscript} />
+        <NqActionCard icon={Images} kind="photo" title="上传图片" description="手写笔记、白板、纸质材料" disabled={!ready || busy} onClick={onPickPhoto} />
       </div>
 
-      <button type="button" className="landing-dropzone" disabled={busy} onClick={() => fileRef.current?.click()}>
+      <button type="button" className="landing-dropzone" disabled={!ready || busy} onClick={() => fileRef.current?.click()}>
         <span className="landing-dropzone-mark" aria-hidden="true">
           {uploading ? <i className="spinner" /> : <Upload />}
         </span>

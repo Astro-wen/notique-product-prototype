@@ -17,6 +17,53 @@ function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
+function estimatedCostUsd(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function measuredQuantity(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function sumMeasured(values) {
+  if (values.some((value) => value === null)) return null;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Number.isFinite(total) ? total : null;
+}
+
+function hasAdjudication(claim) {
+  const value = claim.annotation?.adjudication;
+  return claim.annotation?.doubleAnnotated === true &&
+    ((typeof value === "string" && value.trim().length > 0) ||
+      (value != null && typeof value === "object" && Object.keys(value).length > 0));
+}
+
+function comparableIndependentRuns(predictionSet) {
+  const runs = predictionSet.runs;
+  if (runs.length < 3 || predictionSet.metadata?.independentRunsVerified !== true) return false;
+  const frozen = runs.map((run) => run.frozen);
+  if (frozen.some((item) => !item || !item.inputSnapshotHash || !item.contextSnapshotHash ||
+    !item.provider || !item.model || !item.promptVersion || !item.schemaVersion ||
+    !item.parserVersion || !item.startedAt)) return false;
+  const first = runs[0];
+  const shared = (run) => canonical({
+    projectId: run.projectId,
+    eventId: run.eventId,
+    inputSnapshotHash: run.frozen.inputSnapshotHash,
+    inputManifest: run.frozen.inputManifest,
+    contextVersion: run.frozen.contextVersion,
+    contextSnapshotHash: run.frozen.contextSnapshotHash,
+    provider: run.frozen.provider,
+    model: run.frozen.model,
+    promptVersion: run.frozen.promptVersion,
+    schemaVersion: run.frozen.schemaVersion,
+    parserVersion: run.frozen.parserVersion,
+    modelParameters: run.frozen.modelParameters,
+  });
+  return runs.every((run) => shared(run) === shared(first)) &&
+    new Set(frozen.map((item) => item.startedAt)).size === runs.length;
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
@@ -252,10 +299,12 @@ function singleRunMetrics(groundTruth, run) {
     briefUsefulRate: brief.usefulRate,
     briefStructurallyComplete: brief.structurallyComplete,
     usage: {
-      inputTokens: run.usage?.inputTokens ?? 0,
-      outputTokens: run.usage?.outputTokens ?? 0,
-      costUsd: run.usage?.costUsd ?? 0,
-      latencyMs: run.usage?.latencyMs ?? 0,
+      inputTokens: measuredQuantity(run.usage?.inputTokens),
+      outputTokens: measuredQuantity(run.usage?.outputTokens),
+      cachedTokens: measuredQuantity(run.usage?.cachedTokens),
+      costUsd: estimatedCostUsd(run.usage?.costUsd),
+      costUsdBasis: "estimated",
+      latencyMs: measuredQuantity(run.usage?.latencyMs),
     },
   };
 }
@@ -333,14 +382,33 @@ export function evaluate(groundTruth, predictionSet) {
   );
   const visualClaimsAllAdjudicated = visualPredictions.every((claim) => typeof claim.unsupportedVisualClaim === "boolean");
 
-  const totals = predictionSet.runs.reduce((result, run) => ({
-    inputTokens: result.inputTokens + (run.usage?.inputTokens ?? 0),
-    outputTokens: result.outputTokens + (run.usage?.outputTokens ?? 0),
-    costUsd: result.costUsd + (run.usage?.costUsd ?? 0),
-    latencyMs: result.latencyMs + (run.usage?.latencyMs ?? 0),
-  }), { inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 });
+  const usageTotals = Object.fromEntries(["inputTokens", "outputTokens", "cachedTokens", "latencyMs"]
+    .map((field) => [field, sumMeasured(perRun.map((run) => run.usage[field]))]));
+  const costEstimates = perRun.map((run) => run.usage.costUsd);
+  const costSum = costEstimates.every((cost) => cost !== null)
+    ? costEstimates.reduce((sum, cost) => sum + cost, 0)
+    : null;
+  const costUsd = Number.isFinite(costSum) ? costSum : null;
+  const totals = {
+    ...usageTotals,
+    costUsd,
+    costUsdBasis: "estimated",
+    costUsdComplete: costUsd !== null,
+  };
 
   const doubleAnnotated = groundTruth.claims.filter((claim) => claim.annotation?.doubleAnnotated === true);
+  const doubleAnnotatedAndAdjudicated = groundTruth.claims.filter(hasAdjudication);
+  const sourceIsNonSynthetic = groundTruth.metadata?.synthetic === false;
+  const sourceAuthorizationDocumented = groundTruth.metadata?.authorization?.approved === true &&
+    typeof groundTruth.metadata.authorization.reference === "string" &&
+    groundTruth.metadata.authorization.reference.trim().length > 0;
+  const sourceMaterialCount = Number.isSafeInteger(groundTruth.metadata?.evaluationMaterialCount)
+    ? groundTruth.metadata.evaluationMaterialCount : null;
+  const meetsThirtyMaterialMinimum = sourceMaterialCount != null && sourceMaterialCount >= 30;
+  const blindSetFrozen = groundTruth.split === "blind" &&
+    typeof groundTruth.metadata?.blindSetFrozenAt === "string" &&
+    Number.isFinite(Date.parse(groundTruth.metadata.blindSetFrozenAt));
+  const independentRunsVerified = comparableIndependentRuns(predictionSet);
   const scenarios = groupBy(groundTruth.claims, (claim) => claim.scenarioId);
   const scenarioEventCounts = Object.fromEntries([...scenarios].map(([id, claims]) => [id, new Set(claims.map((claim) => claim.eventId)).size]));
   const scenarioShapeValid = Object.keys(scenarioEventCounts).length >= 3 && Object.values(scenarioEventCounts).every((count) => count >= 3 && count <= 5);
@@ -375,15 +443,25 @@ export function evaluate(groundTruth, predictionSet) {
     relationCount: groundTruth.relations.length,
     imageFactCount: imageTruth.length,
     doubleAnnotatedCount: doubleAnnotated.length,
+    adjudicatedDoubleAnnotationCount: doubleAnnotatedAndAdjudicated.length,
     runCount: predictionSet.runs.length,
     hasThreeIndependentRuns: predictionSet.runs.length >= 3,
+    independentRunsVerified,
+    sourceIsNonSynthetic,
+    sourceAuthorizationDocumented,
+    sourceMaterialCount,
+    meetsThirtyMaterialMinimum,
+    blindSetFrozen,
     criticalClaimsAllDoubleAnnotated: criticalTruth.every((claim) => claim.annotation?.doubleAnnotated === true),
+    criticalClaimsAllAdjudicated: criticalTruth.every(hasAdjudication),
     semanticSampleDoubleAnnotatedRate: groundTruth.claims.length === 0 ? null : doubleAnnotated.length / groundTruth.claims.length,
     meetsTranscriptMinimum: scenarioShapeValid && eventMaterialShapeValid &&
+      sourceIsNonSynthetic && sourceAuthorizationDocumented && meetsThirtyMaterialMinimum &&
+      blindSetFrozen && independentRunsVerified &&
       materialTruth.length >= 40 && criticalTruth.length >= 10 &&
       criticalAmbiguities.length >= 8 && groundTruth.relations.length >= 8 &&
-      doubleAnnotated.length / Math.max(1, groundTruth.claims.length) >= 0.2 &&
-      criticalTruth.every((claim) => claim.annotation?.doubleAnnotated === true) && predictionSet.runs.length >= 3,
+      doubleAnnotatedAndAdjudicated.length / Math.max(1, groundTruth.claims.length) >= 0.2 &&
+      criticalTruth.every(hasAdjudication),
     meetsImageMinimum: imageTruth.length >= 12,
   };
 

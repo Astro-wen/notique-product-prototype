@@ -6,6 +6,41 @@ export type RequestScope = {
   actorId: string;
 };
 
+function isDemoScope(scope: RequestScope): boolean {
+  const bindings = getBindings();
+  return (bindings.AUTH_GATEWAY === 'public' && scope.actorId === 'public@notique.test') ||
+    (bindings.APP_ENV === 'local' && scope.actorId === 'local@notique.test');
+}
+
+/** The V1 route uses the same member roles as V2 before every read or write. */
+export async function assertRequestAccess(scope: RequestScope, mode: 'read' | 'write'): Promise<void> {
+  if (isDemoScope(scope)) return;
+  const member = await getD1().prepare(`SELECT role FROM workspace_members
+    WHERE workspace_id=? AND actor_id=? AND revoked_at IS NULL`)
+    .bind(scope.workspaceId,scope.actorId).first<{role:string}>();
+  if (member && (mode==='read' || member.role==='editor' || member.role==='owner')) return;
+  if (mode==='read' && !member) {
+    const empty = await getD1().prepare(`SELECT 1 AS allowed WHERE NOT EXISTS
+      (SELECT 1 FROM projects WHERE workspace_id=?) AND NOT EXISTS
+      (SELECT 1 FROM workspace_members WHERE workspace_id=?)`)
+      .bind(scope.workspaceId,scope.workspaceId).first<{allowed:number}>();
+    if (empty) return;
+  }
+  throw new ApiFault(403,'forbidden',mode==='read'
+    ? '当前账号无法访问这个工作空间。'
+    : '当前账号无法修改这个工作空间。');
+}
+
+/** Recheck V1's existing transaction guard after all business statements and
+ * before its replay receipt. A revoked editor rolls the whole batch back. */
+export function requestWriteGuard(db: D1Database, scope: RequestScope, guardId: string): D1PreparedStatement {
+  return db.prepare(`UPDATE mutation_guards SET guard_value=CASE WHEN ?=1 OR EXISTS
+    (SELECT 1 FROM workspace_members WHERE workspace_id=? AND actor_id=?
+      AND revoked_at IS NULL AND role IN ('editor','owner'))
+    THEN guard_value ELSE 0 END WHERE id=?`)
+    .bind(isDemoScope(scope)?1:0,scope.workspaceId,scope.actorId,guardId);
+}
+
 export async function getRequestScope(request: Request): Promise<RequestScope> {
   const bindings = getBindings();
   // Only an explicit local binding enables the development identity. Missing or
@@ -73,4 +108,15 @@ export async function initializeRequestWorkspace(scope: RequestScope): Promise<v
     )
     .bind(scope.workspaceId, workspaceName, timestamp, timestamp)
     .run();
+  if (!isDemoScope(scope)) {
+    // First verified user may create a fresh private workspace. Existing data
+    // or any historical membership always requires an explicit owner grant.
+    await getD1().prepare(`INSERT INTO workspace_members
+      (id,workspace_id,actor_id,role,created_at,updated_at)
+      SELECT ?,?,?, 'owner',?,? WHERE NOT EXISTS
+        (SELECT 1 FROM projects WHERE workspace_id=?) AND NOT EXISTS
+        (SELECT 1 FROM workspace_members WHERE workspace_id=?)
+      ON CONFLICT(workspace_id,actor_id) DO NOTHING`)
+      .bind(`wm_${crypto.randomUUID().replaceAll('-','')}`,scope.workspaceId,scope.actorId,timestamp,timestamp,scope.workspaceId,scope.workspaceId).run();
+  }
 }

@@ -1,3 +1,4 @@
+import { validateWorkflowNarrative, workflowNarrativePrompt, workflowNarrativeSchema, WorkflowNarrativeInvalidError, type WorkflowNarrativeInput, type WorkflowNarrativeProvider } from '@/lib/domain/workflow-narrative';
 import type { ContextPack } from "@/lib/domain/context-pack";
 import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
@@ -42,6 +43,7 @@ import {
   type InventoryOutput,
   type ModelStageRequestOptions,
   type TwoStageModelProvider,
+  type VerificationSchemaVersion,
 } from "@/lib/domain/two-stage-extraction";
 
 export class ModelTimeoutError extends Error {
@@ -405,7 +407,7 @@ function inventoryJsonSchema() {
   };
 }
 
-function verificationJsonSchema() {
+function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION_SCHEMA_VERSION) {
   const extraction = extractionJsonSchema();
   return {
     type: "object",
@@ -413,9 +415,10 @@ function verificationJsonSchema() {
     required: [
       "schema_version", "event_id", "scenario_assessment", "claims",
       "candidate_dispositions", "draft_link_candidates", "quality_review",
+      ...(version===VERIFICATION_SCHEMA_VERSION?["same_intent_groups"]:[]),
     ],
     properties: {
-      schema_version: { type: "string", enum: [VERIFICATION_SCHEMA_VERSION] },
+      schema_version: { type: "string", enum: [version] },
       event_id: extraction.properties.event_id,
       scenario_assessment: extraction.properties.scenario_assessment,
       claims: extraction.properties.claims,
@@ -461,6 +464,19 @@ function verificationJsonSchema() {
           },
         },
       },
+      ...(version===VERIFICATION_SCHEMA_VERSION?{same_intent_groups:{
+        type:"array",maxItems:12,items:{
+          type:"object",additionalProperties:false,
+          required:["group_key","record_claim_key","action_claim_key","reason","confidence"],
+          properties:{
+            group_key:{type:"string",minLength:1,maxLength:MODEL_CONTRACT_LIMITS.identifierLength},
+            record_claim_key:{type:"string",minLength:1,maxLength:MODEL_CONTRACT_LIMITS.identifierLength},
+            action_claim_key:{type:"string",minLength:1,maxLength:MODEL_CONTRACT_LIMITS.identifierLength},
+            reason:{type:"string",minLength:1,maxLength:MODEL_CONTRACT_LIMITS.explanationLength},
+            confidence:{type:"number",minimum:0,maximum:1},
+          },
+        },
+      }}:{}),
       quality_review: {
         type: "object",
         additionalProperties: false,
@@ -768,7 +784,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 
   private async requestStructuredOutput(
-    input: ContextPack,
+    input: Pick<ContextPack, "new_event">,
     prompt: string,
     schemaName: string,
     schema: Record<string, unknown>,
@@ -940,6 +956,19 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  async summarizeWorkflow(input: WorkflowNarrativeInput, options?: ModelStageRequestOptions) {
+    const result = await this.requestStructuredOutput(
+      { new_event: { event_id: input.eventId, transcript_segments: [], readable_transcript_segments: [], photos: [], documents: [] } },
+      workflowNarrativePrompt(input, options?.qualityFeedback),
+      'workflow_narrative', workflowNarrativeSchema(), options,
+    );
+    try { return { output: validateWorkflowNarrative(result.value, input), usage: result.usage }; }
+    catch (error) {
+      if (error instanceof WorkflowNarrativeInvalidError) throw new WorkflowNarrativeInvalidError(error.issues, result.usage);
+      throw error;
     }
   }
 
@@ -1182,6 +1211,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 
   async verifyClaims(input: ContextPack, inventory: InventoryOutput, options?: ModelStageRequestOptions) {
+    const version=options?.verificationSchemaVersion ?? VERIFICATION_SCHEMA_VERSION;
     const scenarioInstruction = input.project.scenario === null
       ? "Return exactly 2 or 3 distinct scenario candidates grounded in this event."
       : "The project scenario is already confirmed; scenario_assessment must be null.";
@@ -1204,18 +1234,22 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "draft_context contains unreviewed suggestions only. It may help detect continuity, but it is not Evidence, cannot be used for reaffirmed, and cannot be a formal relation target or change any lifecycle.",
       "When a final claim may relate to a draft_context item, emit a draft_link_candidate using the exact draft claim/version IDs and one of same, changed, conflicting, or possibly_answered. Return an empty array when no safe draft link exists.",
       "Atomicity is a hard requirement. Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Never merge separate amounts, dates, approvals, assignments, risks, questions, or lifecycle changes to fit a display budget. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order.",
+      ...(version===VERIFICATION_SCHEMA_VERSION?[
+        "same_intent_groups may group one new decision and one new next_action only when they express the same explicitly stated original agreement. Retain both independently supported atomic claims. Use their exact final client_claim_key values, a unique group_key, reason and confidence at least 0.85. Return [] when no safe pair exists.",
+        "Return at most 12 disjoint pairs. Each claim may belong to one pair. Similar topic, identical text or shared source segments alone do not establish the same intent. Separate independent questions, new conditions, changed values and distinct actions. Reaffirmed and duplicate claims retain their existing identity and cannot enter a new pair.",
+      ]:[]),
       "Report unresolved conflicts, compound final claims, and questionable reaffirmed classifications in quality_review instead of hiding them.",
       ...(options?.qualityFeedback?.length
         ? [`A prior verification attempt triggered these deterministic failures. Correct them explicitly: ${options.qualityFeedback.join(", ")}.`]
         : []),
-      `Return strict JSON matching ${VERIFICATION_SCHEMA_VERSION}.`,
+      `Return strict JSON matching ${version}.`,
       `ATOMIC INVENTORY:\n${JSON.stringify(inventory)}`,
     ].join("\n\n");
     const result = await this.requestStructuredOutput(
       input,
       prompt,
       "notique_claim_verification",
-      verificationJsonSchema(),
+      verificationJsonSchema(version),
       options,
     );
     const decoded = decodeProviderNormalizedValues(result.value, this.provider === "openai");
@@ -1447,7 +1481,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 }
 
-class UnconfiguredTwoStageModelProvider extends UnconfiguredModelProvider implements TwoStageModelProvider {
+class UnconfiguredTwoStageModelProvider extends UnconfiguredModelProvider implements TwoStageModelProvider, WorkflowNarrativeProvider {
+  async summarizeWorkflow(): Promise<never> { throw new ModelProviderNotConfiguredError(); }
   async summarizeReadingView(): Promise<never> {
     throw new ModelProviderNotConfiguredError();
   }
@@ -1478,7 +1513,7 @@ export function createModelProvider(
     timeoutMs?: number;
     maxOutputTokens?: number;
   },
-): TwoStageModelProvider {
+): TwoStageModelProvider & WorkflowNarrativeProvider {
   const provider = execution?.provider?.trim() || bindings.AI_PROVIDER?.trim();
   const model = execution?.model?.trim() || bindings.AI_MODEL?.trim();
   const baseUrl = providerBaseUrl(bindings, provider);

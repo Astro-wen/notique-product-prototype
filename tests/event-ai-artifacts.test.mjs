@@ -1444,9 +1444,9 @@ test("artifact prompt cache keys stay within the OpenAI 64-character limit", asy
 
 test("artifact retry refreshes the panel and dispatches once for the batch", async () => {
   // 以前这里钉的是 onRetryArtifact(event.id, "summary")，那正是四个阅读视图
-  // 重新生成点不通的原因：summary 是不再生产的旧种类。现在按钮只重试失败
-  // 的种类，重试完刷新面板，派发器只叫一次。
-  assert.match(uiSource, /if \(failed\.length\) await onRetryReading\(event\.id, failed\);\s*await load\(true\);/);
+  // 重新生成点不通的原因：summary 是不再生产的旧种类。现在按钮提交
+  // 用户所选的一种，提交完刷新面板，派发器只叫一次。
+  assert.match(uiSource, /await onRetryReading\(event\.id, \[kind\]\);\s*await load\(true\);/);
   assert.doesNotMatch(uiSource, /className="transcript-subtabs"/);
   assert.match(uiSource, /retryReadingArtifacts[\s\S]*kickDispatcher\(\{ kind: "artifact", runId: last\.id \}\)/);
 });
@@ -1949,17 +1949,15 @@ test("重试路由认全部可生产的阅读种类，不认旧的 summary", asy
   assert.ok(!kinds.includes("readable_transcript"));
 });
 
-test("生成阅读总结按钮只重试失败的种类，不再传 summary", async () => {
+test("阅读摘要只生成用户选择的视图，打开失败记录保持只读", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(page, /onRetryArtifact\(event\.id, "summary"\)/);
   const fn = page.slice(page.indexOf("async function retrySummaryArtifact"), page.indexOf("async function startAnalysisAndLoadArtifacts"));
+  assert.match(fn, /onRetryReading\(event\.id, \[kind\]\)/);
   for (const kind of ["chapters", "speakers", "key_points", "overview"]) {
-    assert.ok(fn.includes(`"${kind}"`), `按钮必须考虑 ${kind}`);
+    assert.ok(page.includes(`retrySummaryArtifact("${kind}")`), `入口提交所选视图 ${kind}`);
   }
-  // 易读逐字稿删掉了，再传它服务端会 400。
-  assert.ok(!fn.includes('"readable_transcript"'));
-  assert.match(fn, /status === "failed" \|\| status == null/);
-  assert.match(fn, /if \(failed\.length\) await onRetryReading\(event\.id, failed\)/);
+  assert.doesNotMatch(fn, /"summary"|"readable_transcript"/);
+  assert.doesNotMatch(page, /autoRetriedRuns|failedViewKey/);
   const parent = page.slice(page.indexOf("async function retryReadingArtifacts"), page.indexOf("async function retryEventAiArtifact("));
   assert.match(parent, /READING_ARTIFACT_DEFINITIONS\.map\(\(item\) => item\.kind\)\.filter/);
 });

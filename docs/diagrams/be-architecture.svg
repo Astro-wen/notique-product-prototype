@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+  <title>后端架构</title>
+  <desc>HTTP 接口通过身份与资源权限进入领域服务。领域服务写入 D1 信息账本，并经 outbox、后台执行器和模型生成产物，产物写回信息账本。只读 MCP 通过独立的身份与资源权限校验进入读模型，只查询统一快照。信息账本形成统一快照后由接口返回。MCP 不连接生成任务。</desc>
+  <rect x="0" y="0" width="1000" height="560" fill="#FFFFFF"/>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <text x="500" y="29" font-size="22">后端架构</text>
+  </g>
+  <g fill="none" stroke="#111111" stroke-width="1.8" stroke-linejoin="round">
+    <polyline points="370,115 370,145"/>
+    <polyline points="690,115 690,145"/>
+    <polyline points="370,205 370,235"/>
+    <polyline points="690,205 690,235"/>
+    <polyline points="280,265 215,265"/>
+    <polyline points="125,295 125,365"/>
+    <polyline points="215,397.5 265,397.5"/>
+    <polyline points="405,397.5 495,397.5"/>
+    <polyline points="370,295 370,335 585,335 585,365"/>
+    <polyline points="690,295 690,335 852.5,335 852.5,365"/>
+    <polyline points="675,397.5 745,397.5"/>
+    <polyline points="852.5,430 852.5,475"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="370,145 365,136 375,136"/>
+    <polygon points="690,145 685,136 695,136"/>
+    <polygon points="370,235 365,226 375,226"/>
+    <polygon points="690,235 685,226 695,226"/>
+    <polygon points="215,265 224,260 224,270"/>
+    <polygon points="125,365 120,356 130,356"/>
+    <polygon points="265,397.5 256,392.5 256,402.5"/>
+    <polygon points="495,397.5 486,392.5 486,402.5"/>
+    <polygon points="585,365 580,356 590,356"/>
+    <polygon points="852.5,365 847.5,356 857.5,356"/>
+    <polygon points="745,397.5 736,392.5 736,402.5"/>
+    <polygon points="852.5,475 847.5,466 857.5,466"/>
+  </g>
+  <g fill="#EAF3FC" stroke="#111111" stroke-width="1.5">
+    <rect x="280" y="55" width="180" height="60" rx="10"/>
+    <rect x="600" y="55" width="180" height="60" rx="10"/>
+    <rect x="265" y="145" width="210" height="60" rx="10"/>
+    <rect x="585" y="145" width="210" height="60" rx="10"/>
+    <rect x="280" y="235" width="180" height="60" rx="10"/>
+    <rect x="600" y="235" width="180" height="60" rx="10"/>
+    <rect x="35" y="235" width="180" height="60" rx="10"/>
+    <rect x="35" y="365" width="180" height="65" rx="10"/>
+    <rect x="265" y="365" width="140" height="65" rx="10"/>
+    <rect x="495" y="365" width="180" height="65" rx="10"/>
+    <rect x="745" y="365" width="215" height="65" rx="10"/>
+    <rect x="745" y="475" width="215" height="60" rx="10"/>
+  </g>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <text x="370" y="93" font-size="22">HTTP 接口</text>
+    <text x="690" y="93" font-size="22">只读 MCP</text>
+    <text x="370" y="182" font-size="20">身份与资源权限</text>
+    <text x="690" y="182" font-size="20">身份与资源权限</text>
+    <text x="370" y="260" font-size="22">领域服务</text>
+    <text x="370" y="284" font-size="18">写入与决策</text>
+    <text x="690" y="260" font-size="22">读模型</text>
+    <text x="690" y="284" font-size="18">仅查询</text>
+    <text x="125" y="260" font-size="22">outbox</text>
+    <text x="125" y="284" font-size="18">待执行任务</text>
+    <text x="125" y="405" font-size="22">后台执行器</text>
+    <text x="335" y="405" font-size="22">模型</text>
+    <text x="585" y="405" font-size="22">D1 信息账本</text>
+    <text x="852.5" y="405" font-size="22">统一快照</text>
+    <text x="852.5" y="513" font-size="22">接口返回</text>
+    <text x="475" y="324" font-size="18">记录变更</text>
+    <text x="800" y="324" font-size="18">读取快照</text>
+    <text x="450" y="384" font-size="18">模型产物</text>
+  </g>
+</svg>

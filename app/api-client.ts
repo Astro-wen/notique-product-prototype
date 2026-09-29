@@ -319,6 +319,7 @@ export type ExtractionRun = {
 
 export type Event = {
   id: Id;
+  sourceRevision?: number;
   projectId?: Id;
   title: string;
   eventType?: string;
@@ -741,6 +742,7 @@ export function normalizeEvent(value: unknown): Event {
     occurredAt: asString(pick(source, ["occurred_at", "occurredAt", "event_time"]), undefined as unknown as string) || undefined,
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     status: asString(pick(source, ["status", "material_status", "materialStatus", "processing_status"]), undefined as unknown as string) || undefined,
+    sourceRevision: asNumber(pick(source, ["source_revision", "sourceRevision"])) ?? 0,
     pendingClaimCount: asNumber(pick(source, ["pending_claim_count", "pendingClaimCount"])) ?? 0,
     pendingOccurrenceCount: asNumber(pick(source, ["pending_occurrence_count", "pendingOccurrenceCount"])) ?? 0,
     assets: rawAssets.map(normalizeAsset).filter((item): item is Asset => Boolean(item)),
@@ -949,7 +951,7 @@ type RequestOptions = RequestInit & {
 const REQUEST_TIMEOUT_MS = 25_000;
 const TRANSCRIPTION_DISPATCH_TIMEOUT_MS = 10 * 60_000;
 
-async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestInit } = init;
   init = requestInit;
   const headers = new Headers(init.headers);

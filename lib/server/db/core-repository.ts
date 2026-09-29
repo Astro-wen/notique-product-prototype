@@ -1,4 +1,5 @@
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
+import { materialAnalysisStatements } from "@/lib/server/workflow/material-analysis";
 import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
   normalizeAiTimeoutMs,
@@ -11,6 +12,7 @@ import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
 } from "@/lib/domain/model-contract";
+import { VERIFICATION_SCHEMA_VERSION } from "@/lib/domain/two-stage-extraction";
 import { parseTranscript } from "@/lib/domain/transcript";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
@@ -835,19 +837,6 @@ export async function getEvent(
   scope: RequestScope,
   eventId: string,
 ): Promise<{ event: EventRecord; assets: AssetRecord[] }> {
-  const existing = await first(
-    `${EVENT_WITH_REVIEW_COUNTS_SELECT}
-      JOIN projects p ON p.id = e.project_id
-     WHERE e.id = ? AND e.workspace_id = ? AND p.deleted_at IS NULL`,
-    [eventId, scope.workspaceId],
-  );
-  if (!existing) {
-    throw new ApiFault(404, "PROJECT_SCOPE_VIOLATION", "Event was not found.");
-  }
-  await expireStaleAssetUploads(scope, { eventId });
-  // The sweep can make a previously blocked Event ready. Return the row after
-  // that recovery write instead of leaking the stale pre-sweep material state
-  // for one extra poll.
   const event = await first(
     `${EVENT_WITH_REVIEW_COUNTS_SELECT}
       JOIN projects p ON p.id = e.project_id
@@ -1373,6 +1362,7 @@ export async function finalizeTranscriptImport(
             WHERE id = ? AND import_id = ? AND upload_status = 'uploaded'`,
         )
         .bind(value.eventId, value.assetId, timestamp, item.itemId, importId),
+      ...materialAnalysisStatements(db, scope, value.eventId, value.assetId, value.assetVersionId, timestamp),
     );
   });
   statements.push(
@@ -1836,7 +1826,8 @@ export async function heartbeatAssetUpload(
 }
 
 /**
- * Lazily expires unfinished uploads whose browser stopped responding.
+ * Expires unfinished uploads whose browser stopped responding. Called by
+ * internal recovery and write paths, never by a read request.
  *
  * The status CAS races safely with content upload and finalization: whichever
  * write reaches D1 first wins, and the losing content path removes its own R2
@@ -1962,6 +1953,29 @@ export async function expireStaleAssetUploads(
     }
   }
   return expiredCount;
+}
+
+/** Bounded internal recovery across workspaces. The minute sweep can reclaim
+ * abandoned uploads even when no editor opens that project again. */
+export async function sweepStaleAssetUploadsForWorkspaces(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_ASSET_UPLOAD_TTL_MS).toISOString();
+  const workspaces = await all(
+    `SELECT workspace_id FROM assets
+      WHERE current_version_id IS NULL AND (
+        processing_status IN ('uploading','parsing') AND updated_at < ?
+        OR processing_status='failed' AND failure_code IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED')
+          AND staged_r2_key IS NOT NULL
+      )
+      GROUP BY workspace_id ORDER BY MIN(updated_at) LIMIT 8`,
+    [cutoff],
+  );
+  let expired = 0;
+  for (const row of workspaces) {
+    expired += await expireStaleAssetUploads(
+      {workspaceId:String(row.workspace_id),actorId:'system@notique.test'},
+    );
+  }
+  return expired;
 }
 
 /**
@@ -2191,6 +2205,7 @@ export async function finalizeAsset(
         row.staged_sha256,
       ),
     eventMaterialReadinessStatement(scope, String(row.event_id), timestamp),
+    ...materialAnalysisStatements(db, scope, String(row.event_id), assetId, versionId, timestamp),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   );
   try {
@@ -2286,13 +2301,24 @@ async function shaText(value: string): Promise<string> {
   return sha256Hex(new TextEncoder().encode(value).buffer);
 }
 
+export type WorkflowExtractionOptions = {
+  guard: { sql: string; values: unknown[] };
+  sourceRevision: number;
+  replay?: (runId: string) => D1PreparedStatement;
+};
+
 export async function createExtractionRun(
   scope: RequestScope,
   eventId: string,
   idempotencyKey: string,
   assetVersionIds: string[],
   retriedAfterScenarioRace = false,
+  workflow?: WorkflowExtractionOptions,
 ): Promise<{ run: ExtractionRunRecord; created: boolean }> {
+  if (workflow) {
+    const allowed = await getD1().prepare(`SELECT (${workflow.guard.sql}) AS permitted`).bind(...workflow.guard.values).first<{permitted:number}>();
+    if (!allowed?.permitted) throw new ApiFault(409,'CLAIM_VERSION_CONFLICT','材料或权限已有变化，请重新读取后整理');
+  }
   const bindings = getBindings();
   const providerHasEndpoint =
     Boolean(bindings.AI_API_BASE_URL?.trim()) ||
@@ -2475,7 +2501,7 @@ export async function createExtractionRun(
       }))
     : [];
   const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
-  const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
+  const eventSummaryEnabled = !workflow && hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
   // 易读逐字稿已经删掉，冻结参数里如实记成 false。
   const readableTranscriptEnabled = false;
   const artifactStageCount = Number(eventSummaryEnabled) + Number(readableTranscriptEnabled);
@@ -2525,6 +2551,7 @@ export async function createExtractionRun(
       verifier_reasoning_effort: verifierReasoningEffort,
       escalation_reasoning_effort: escalationReasoningEffort,
       two_pass_pipeline: pipelineEnabled,
+      verification_schema_version: pipelineEnabled ? VERIFICATION_SCHEMA_VERSION : null,
       draft_context: draftContextEnabled,
       draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
@@ -2535,6 +2562,7 @@ export async function createExtractionRun(
       parser_version: "transcript-parser.v1",
       locale: project.locale,
       ordered_segment_ids: selectedSegmentIds,
+      ...(workflow ? { workflow_source_revision: workflow.sourceRevision } : {}),
     }),
   );
   const existing = await first(
@@ -2551,7 +2579,7 @@ export async function createExtractionRun(
         { existing_run_id: existing.id },
       );
     }
-    await ensureEventAiArtifactRuns({
+    if (!workflow) await ensureEventAiArtifactRuns({
       workspaceId: scope.workspaceId,
       projectId: String(existing.project_id),
       eventId,
@@ -2579,7 +2607,7 @@ export async function createExtractionRun(
         { existing_run_id: activeEventRun.id },
       );
     }
-    await ensureEventAiArtifactRuns({
+    if (!workflow) await ensureEventAiArtifactRuns({
       workspaceId: scope.workspaceId,
       projectId: String(activeEventRun.project_id),
       eventId,
@@ -2611,6 +2639,7 @@ export async function createExtractionRun(
     verifier_reasoning_effort: verifierReasoningEffort,
     escalation_reasoning_effort: escalationReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
+    ...(pipelineEnabled ? {verification_schema_version: VERIFICATION_SCHEMA_VERSION} : {}),
     draft_context: draftContextEnabled,
     draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,
@@ -2620,7 +2649,9 @@ export async function createExtractionRun(
     reserved_input_tokens: estimatedInputTokens,
     reserved_model_tokens: reservedModelTokens,
     token_budget_policy: "per-run-safety.v1",
+    ...(workflow ? { workflow_source_revision: workflow.sourceRevision } : {}),
   });
+  const workflowGuardId = workflow ? id("guard") : null;
   const statements = [
     db
       .prepare(
@@ -2647,6 +2678,7 @@ export async function createExtractionRun(
       )
       .bind(eventRunGuardId, eventId, scope.workspaceId, timestamp),
   ] as D1PreparedStatement[];
+  if (workflow) statements.unshift(db.prepare(`INSERT INTO mutation_guards (id,guard_value,created_at) SELECT ?,CASE WHEN ${workflow.guard.sql} THEN 1 ELSE 0 END,?`).bind(workflowGuardId,...workflow.guard.values,timestamp));
   if (needsScenarioAssessment) {
     statements.push(
       db
@@ -2733,22 +2765,32 @@ export async function createExtractionRun(
           WHERE id = ? AND workspace_id = ?`,
       )
       .bind(runId, timestamp, eventId, scope.workspaceId),
+    db.prepare('DELETE FROM workflow_snapshots WHERE workspace_id = ? AND project_id = ?')
+      .bind(scope.workspaceId, project.id),
   );
   if (scenarioGuardId) {
     statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(scenarioGuardId));
   }
   statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(eventRunGuardId));
   statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(quotaGuardId));
+  if (workflow) {
+    if (workflow.replay) statements.push(workflow.replay(runId));
+    statements.push(db.prepare('DELETE FROM mutation_guards WHERE id=?').bind(workflowGuardId));
+  }
   try {
     await db.batch(statements);
   } catch (error) {
+    if (workflow) {
+      const permitted = await db.prepare(`SELECT (${workflow.guard.sql}) AS permitted`).bind(...workflow.guard.values).first<{permitted:number}>();
+      if (!permitted?.permitted) throw new ApiFault(409,'CLAIM_VERSION_CONFLICT','材料或权限已有变化，请重新读取后整理');
+    }
     const raced = await first(
       `SELECT * FROM extraction_runs
         WHERE event_id = ? AND idempotency_key = ? AND workspace_id = ?`,
       [eventId, idempotencyKey, scope.workspaceId],
     );
     if (raced && String(raced.input_hash) === inputHash) {
-      await ensureEventAiArtifactRuns({
+      if (!workflow) await ensureEventAiArtifactRuns({
         workspaceId: scope.workspaceId,
         projectId: String(raced.project_id),
         eventId,
@@ -2783,7 +2825,7 @@ export async function createExtractionRun(
           { existing_run_id: activeEventRace.id },
         );
       }
-      await ensureEventAiArtifactRuns({
+      if (!workflow) await ensureEventAiArtifactRuns({
         workspaceId: scope.workspaceId,
         projectId: String(activeEventRace.project_id),
         eventId,
@@ -2812,7 +2854,7 @@ export async function createExtractionRun(
       // 另一条记录刚抢到判类型的活。这次不判类型，照常分析：再建一次，这回读到的
       // 状态已经不是未判定，不会再去抢。只重来一次，免得和失败重置来回打转。
       if (!retriedAfterScenarioRace) {
-        return createExtractionRun(scope, eventId, idempotencyKey, assetVersionIds, true);
+        return createExtractionRun(scope, eventId, idempotencyKey, assetVersionIds, true, workflow);
       }
       throw new ApiFault(
         409,
@@ -2822,7 +2864,7 @@ export async function createExtractionRun(
     }
     throw error;
   }
-  await ensureEventAiArtifactRuns({
+  if (!workflow) await ensureEventAiArtifactRuns({
     workspaceId: scope.workspaceId,
     projectId: String(project.id),
     eventId,

@@ -1,4 +1,6 @@
-import { getD1 } from "@/db";
+import { getBindings, getD1 } from "@/db";
+import { expireStaleAssetUploads, sweepStaleAssetUploadsForWorkspaces } from "@/lib/server/db/core-repository";
+import { commissionMaterialAnalysis } from "./material-analysis";
 import {
   failExpiredProcessingRuns,
   processExtractionRun,
@@ -652,7 +654,10 @@ export async function sweepJobs(timestamp = now()): Promise<SweepResult> {
  * took down every recovery behind it — including the automatic analysis that
  * decides whether a finished transcript is ever read.
  */
-async function stage<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
+export type RecoveryStageFailure = { stage: string; code: 'RECOVERY_STAGE_FAILED' };
+type RecoveryStageObserver = (failure: RecoveryStageFailure) => void;
+
+async function stage<T>(name: string, run: () => Promise<T>, fallback: T, onStageFailure?: RecoveryStageObserver): Promise<T> {
   try {
     return await run();
   } catch (error) {
@@ -660,6 +665,7 @@ async function stage<T>(name: string, run: () => Promise<T>, fallback: T): Promi
       stage: name,
       message: error instanceof Error ? error.message : "Unexpected error",
     });
+    onStageFailure?.({ stage: name, code: 'RECOVERY_STAGE_FAILED' });
     return fallback;
   }
 }
@@ -713,16 +719,28 @@ const EMPTY_AUTOMATIC: AutomaticExtractionEnsureResult = {
  */
 export async function recoverAndDispatch(input?: {
   commission?: "workspace" | { eventId: string };
+  onStageFailure?: RecoveryStageObserver;
 }): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
+  if (input?.commission && input.commission !== 'workspace') {
+    const workspaceId = getBindings().INTERNAL_WORKSPACE_ID || 'ws_internal';
+    const eventId = input.commission.eventId;
+    await stage('asset_upload_sweep',()=>expireStaleAssetUploads(
+      {workspaceId,actorId:'system@notique.test'},
+      {eventId},
+    ),0,input.onStageFailure);
+  }
   const [transcription_sweep, sweep] = await Promise.all([
-    stage("transcription_sweep", sweepTranscriptionJobs, EMPTY_TRANSCRIPTION_SWEEP),
-    stage("extraction_sweep", sweepJobs, EMPTY_SWEEP),
+    stage("transcription_sweep", sweepTranscriptionJobs, EMPTY_TRANSCRIPTION_SWEEP, input?.onStageFailure),
+    stage("extraction_sweep", sweepJobs, EMPTY_SWEEP, input?.onStageFailure),
   ]);
+  // These jobs were authorized when material was submitted. Recovery consumes
+  // saved intents even when no browser fast path or new commissioning exists.
+  await stage("material_analysis", () => commissionMaterialAnalysis(), {claimed:0,commissioned:0,reused:0,deferred:0,runIds:[]}, input?.onStageFailure);
   const commission = input?.commission;
   const automatic_extraction = commission
     ? await stage(
@@ -731,27 +749,30 @@ export async function recoverAndDispatch(input?: {
         commission === "workspace" ? undefined : { eventId: commission.eventId },
       ),
       EMPTY_AUTOMATIC,
+      input?.onStageFailure,
     )
     : EMPTY_AUTOMATIC;
   // Dispatching is not commissioning: these Runs exist because someone already
   // asked for them, and leaving them queued is the stall this whole mechanism
   // exists to end.
-  const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH);
+  const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH, input?.onStageFailure);
   return { sweep, dispatch, transcription_sweep, automatic_extraction };
 }
 
-export async function sweepAndDispatch(): Promise<{
+export async function sweepAndDispatch(options: { onStageFailure?: RecoveryStageObserver } = {}): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
   transcription_dispatch: TranscriptionDispatchResult;
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
-  const recovered = await recoverAndDispatch({ commission: "workspace" });
+  await stage('asset_upload_sweep',sweepStaleAssetUploadsForWorkspaces,0,options.onStageFailure);
+  const recovered = await recoverAndDispatch({ commission: "workspace", onStageFailure: options.onStageFailure });
   const transcription_dispatch = await stage(
     "transcription_dispatch",
     () => dispatchDueTranscriptionOutbox(),
     { claimed: 0, sent: 0, deferred: 0, items: [] } as TranscriptionDispatchResult,
+    options.onStageFailure,
   );
   return { ...recovered, transcription_dispatch };
 }

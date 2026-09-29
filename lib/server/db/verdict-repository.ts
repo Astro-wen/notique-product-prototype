@@ -13,7 +13,8 @@ import {
   validateExplicitClaimEditProjection,
 } from "@/lib/domain/claim-state";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
+import { legacyWorkflowInvalidationStatements } from "@/lib/server/db/legacy-workflow-invalidation";
 import { claimRecord } from "@/lib/server/db/records";
 import {
   findMutationReplay,
@@ -335,6 +336,7 @@ export async function attestClaimEvidenceReview(
           scope.actorId,
           timestamp,
         ),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -581,6 +583,8 @@ export async function applyClaimVerdict(
               WHERE id = ? AND workspace_id = ?`,
           )
           .bind(timestamp, existing.project_id, scope.workspaceId),
+        ...legacyWorkflowInvalidationStatements(db, scope, String(existing.project_id), timestamp, [claimId], {eventId:String(existing.event_id)}),
+        requestWriteGuard(db,scope,guardId),
         mutationReplayStatement(
           scope,
           endpointScope,
@@ -673,6 +677,8 @@ export async function applyClaimVerdict(
               WHERE id = ? AND workspace_id = ?`,
           )
           .bind(timestamp, existing.project_id, scope.workspaceId),
+        ...legacyWorkflowInvalidationStatements(db, scope, String(existing.project_id), timestamp, [claimId], {eventId:String(existing.event_id)}),
+        requestWriteGuard(db,scope,guardId),
         mutationReplayStatement(
           scope,
           endpointScope,
@@ -1095,6 +1101,8 @@ export async function applyClaimVerdict(
               WHERE id = ? AND workspace_id = ?`,
           )
           .bind(timestamp, existing.project_id, scope.workspaceId),
+        ...legacyWorkflowInvalidationStatements(db, scope, String(existing.project_id), timestamp, [claimId], {eventId:String(existing.event_id)}),
+        requestWriteGuard(db,scope,guardId),
         mutationReplayStatement(
           scope,
           endpointScope,
@@ -1216,6 +1224,8 @@ export async function withdrawClaim(
             WHERE id = ? AND workspace_id = ?`,
         )
         .bind(timestamp, existing.project_id, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, String(existing.project_id), timestamp, [claimId], {eventId:String(existing.event_id)}),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -1432,6 +1442,10 @@ export async function applyBatchVerdicts(
             .bind(timestamp, projectId, scope.workspaceId),
         ];
       }),
+      ...[...new Set(rows.map(row => String(row.project_id)))].flatMap(projectId => legacyWorkflowInvalidationStatements(
+        db, scope, projectId, timestamp, input.verdicts.filter((_,index) => String(rows[index].project_id) === projectId).map(item => item.claim_id),
+      )),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -1887,6 +1901,9 @@ export async function applyOccurrenceVerdict(
           ]
         : []),
       ...(input.action === "convert_to_new_claim" ? convertedClaimStatements : []),
+      ...legacyWorkflowInvalidationStatements(db, scope, String(candidate.project_id), timestamp, convertedClaims.map(item => item.claimId),
+        {advanceContext:true,eventId:String(candidate.event_id)}),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -2140,6 +2157,8 @@ export async function createManualRelation(
             WHERE id = ? AND workspace_id = ? AND context_version = ?`,
         )
         .bind(timestamp, input.project_id, scope.workspaceId, input.base_context_version),
+      ...legacyWorkflowInvalidationStatements(db, scope, input.project_id, timestamp, [input.source_claim_id,input.target_claim_id]),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -2285,6 +2304,8 @@ export async function resolveContradiction(
             WHERE id = ? AND workspace_id = ?`,
         )
         .bind(timestamp, relation.project_id, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, String(relation.project_id), timestamp, []),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,

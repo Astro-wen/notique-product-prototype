@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  type AnySQLiteColumn,
   index,
   integer,
   real,
@@ -126,6 +127,7 @@ export const events = sqliteTable(
      * 见 lib/domain/material-routing.ts：选过的材料，归属建议必须闭嘴。
      */
     routingSource: text("routing_source", { enum: ["user", "skipped"] }),
+    sourceRevision: integer("source_revision").notNull().default(0),
     metadataJson: text("metadata_json").notNull().default("{}"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -749,6 +751,7 @@ export const claims = sqliteTable(
       .default("active"),
     currentVersionId: text("current_version_id"),
     firstEventId: text("first_event_id").notNull(),
+    workflowRevision: integer("workflow_revision").notNull().default(1),
     source: text("source", { enum: ["ai", "human", "occurrence_conversion"] })
       .notNull()
       .default("ai"),
@@ -788,6 +791,7 @@ export const claimVersions = sqliteTable(
     uncertaintyJson: text("uncertainty_json"),
     source: text("source", { enum: ["ai", "human"] }).notNull(),
     createdBy: text("created_by"),
+    workflowOrigin: text("workflow_origin", { enum: ["source_statement", "ai_suggestion", "user_input", "user_selection"] }),
     createdAt: createdAt(),
   },
   (table) => [
@@ -1028,14 +1032,12 @@ export const verdicts = sqliteTable(
     newVersionId: text("new_version_id"),
     userId: text("user_id").notNull(),
     explanation: text("explanation"),
+    workflowDecisionId: text("workflow_decision_id"),
+    workflowMemberId: text("workflow_member_id"),
     createdAt: createdAt(),
   },
   (table) => [
-    uniqueIndex("uq_verdicts_claim_base_action").on(
-      table.claimId,
-      table.baseVersionId,
-      table.action,
-    ),
+    uniqueIndex("uq_verdicts_workflow_member").on(table.workflowDecisionId, table.workflowMemberId),
     index("idx_verdicts_claim_created").on(table.claimId, table.createdAt),
   ],
 );
@@ -1344,4 +1346,397 @@ export const eventRoutingSuggestions = sqliteTable(
     ),
     index("idx_event_routing_suggestions_project").on(table.suggestedProjectId),
   ],
+);
+
+// Workflow V2 projections and operation envelopes extend the claim ledger.
+export const workflowCards = sqliteTable(
+  "workflow_cards",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    groupKey: text("group_key").notNull(),
+    revision: integer("revision").notNull().default(1),
+    kind: text("kind").notNull(),
+    title: text("title").notNull(),
+    needsDecision: integer("needs_decision").notNull().default(0),
+    reasonCode: text("reason_code"),
+    reason: text("reason").notNull().default(""),
+    disposition: text("disposition").notNull().default("active"),
+    latestDecisionId: text("latest_decision_id"),
+    decisionRevision: integer("decision_revision"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_workflow_cards_group").on(table.workspaceId, table.eventId, table.groupKey),
+    index("idx_workflow_cards_project").on(table.workspaceId, table.projectId, table.eventId),
+    check("ck_workflow_cards_0", sql`revision > 0`),
+    check("ck_workflow_cards_1", sql`kind IN ('record','question','action','conflict')`),
+    check("ck_workflow_cards_2", sql`needs_decision IN (0,1)`),
+    check("ck_workflow_cards_3", sql`reason_code IN ('accepted_change','blocking_question','action_choice')`),
+    check("ck_workflow_cards_4", sql`disposition IN ('active','processed')`),
+  ],
+);
+
+export const cardMembers = sqliteTable(
+  "card_members",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    cardId: text("card_id").notNull().references((): AnySQLiteColumn => workflowCards.id, { onDelete: "cascade" }),
+    claimId: text("claim_id").notNull().references((): AnySQLiteColumn => claims.id, { onDelete: "cascade" }),
+    claimVersionId: text("claim_version_id").notNull().references((): AnySQLiteColumn => claimVersions.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("primary"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_card_members_version").on(table.cardId, table.claimVersionId),
+    index("idx_card_members_claim").on(table.workspaceId, table.claimId),
+    check("ck_card_members_0", sql`role IN ('primary','context')`),
+  ],
+);
+
+export const workflowDecisions = sqliteTable(
+  "workflow_decisions",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    cardId: text("card_id").references((): AnySQLiteColumn => workflowCards.id, { onDelete: "set null" }),
+    actorId: text("actor_id").notNull(),
+    operation: text("operation").notNull(),
+    revision: integer("revision").notNull().default(1),
+    idempotencyKey: text("idempotency_key").notNull(),
+    contextVersion: integer("context_version").notNull(),
+    reversalOf: text("reversal_of").references((): AnySQLiteColumn => workflowDecisions.id, { onDelete: "set null" }),
+    revertedBy: text("reverted_by"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_workflow_decisions_key").on(table.workspaceId, table.actorId, table.cardId, table.idempotencyKey),
+    index("idx_workflow_decisions_event").on(table.workspaceId, table.projectId, table.eventId, table.createdAt),
+    check("ck_workflow_decisions_0", sql`revision > 0`),
+  ],
+);
+
+export const decisionMembers = sqliteTable(
+  "decision_members",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    decisionId: text("decision_id").notNull().references((): AnySQLiteColumn => workflowDecisions.id, { onDelete: "cascade" }),
+    claimId: text("claim_id").notNull().references((): AnySQLiteColumn => claims.id, { onDelete: "cascade" }),
+    verdictId: text("verdict_id").references((): AnySQLiteColumn => verdicts.id, { onDelete: "set null" }),
+    beforeVersionId: text("before_version_id").notNull().references((): AnySQLiteColumn => claimVersions.id, { onDelete: "cascade" }),
+    afterVersionId: text("after_version_id").notNull().references((): AnySQLiteColumn => claimVersions.id, { onDelete: "cascade" }),
+    beforeStateJson: text("before_state_json").notNull(),
+    afterStateJson: text("after_state_json").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_decision_members_claim").on(table.decisionId, table.claimId),
+  ],
+);
+
+export const reviewDeferrals = sqliteTable(
+  "review_deferrals",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    cardId: text("card_id").notNull().references((): AnySQLiteColumn => workflowCards.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    untilAt: text("until_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_review_deferrals_actor").on(table.cardId, table.actorId),
+  ],
+);
+
+export const reviewProgress = sqliteTable(
+  "review_progress",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    lastCardId: text("last_card_id").references((): AnySQLiteColumn => workflowCards.id, { onDelete: "set null" }),
+    snapshotId: text("snapshot_id").notNull(),
+    finishedAt: text("finished_at"),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_review_progress_actor").on(table.eventId, table.actorId),
+  ],
+);
+
+export const workflowNarratives = sqliteTable(
+  "workflow_narratives",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    scopeKey: text("scope_key").notNull(),
+    scopeKind: text("scope_kind").notNull(),
+    basedOnContextVersion: integer("based_on_context_version").notNull(),
+    text: text("text").notNull().default(""),
+    sentenceRefsJson: text("sentence_refs_json").notNull().default("[]"),
+    freshness: text("freshness").notNull(),
+    inputHash: text("input_hash").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_workflow_narratives_version").on(table.workspaceId, table.scopeKey, table.scopeKind, table.basedOnContextVersion),
+    index("idx_workflow_narratives_project").on(table.workspaceId, table.projectId, table.eventId),
+    check("ck_workflow_narratives_0", sql`scope_kind IN ('accepted','draft','mixed')`),
+    check("ck_workflow_narratives_1", sql`freshness IN ('current','stale','updating','failed')`),
+  ],
+);
+
+export const derivedDependencies = sqliteTable(
+  "derived_dependencies",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    derivedType: text("derived_type").notNull(),
+    derivedId: text("derived_id").notNull(),
+    claimVersionId: text("claim_version_id").references((): AnySQLiteColumn => claimVersions.id, { onDelete: "cascade" }),
+    assetVersionId: text("asset_version_id").references((): AnySQLiteColumn => assetVersions.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+  },
+  (table) => [
+    index("idx_derived_dependencies_claim").on(table.workspaceId, table.claimVersionId),
+    index("idx_derived_dependencies_asset").on(table.workspaceId, table.assetVersionId),
+    index("idx_derived_dependencies_output").on(table.workspaceId, table.derivedType, table.derivedId),
+    check("ck_derived_dependencies_0", sql`claim_version_id IS NOT NULL OR asset_version_id IS NOT NULL`),
+  ],
+);
+
+export const workflowSnapshots = sqliteTable(
+  "workflow_snapshots",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    contextVersion: integer("context_version").notNull(),
+    sourceRevision: integer("source_revision").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_workflow_snapshots_scope").on(table.workspaceId, table.projectId, table.eventId, table.actorId, table.contextVersion),
+    index("idx_workflow_snapshots_expiry").on(table.expiresAt),
+  ],
+);
+
+export const actionMetadata = sqliteTable(
+  "action_metadata",
+  {
+    claimId: text("claim_id").primaryKey().notNull().references((): AnySQLiteColumn => claims.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    basisVersionRefsJson: text("basis_version_refs_json").notNull().default("[]"),
+    basisState: text("basis_state").notNull().default("current"),
+    cancelledAt: text("cancelled_at"),
+    ownerHint: text("owner_hint"),
+    dueAt: text("due_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_action_metadata_project").on(table.workspaceId, table.projectId, table.eventId),
+    check("ck_action_metadata_0", sql`basis_state IN ('current','needs_review')`),
+  ],
+);
+
+export const workflowOutcomes = sqliteTable(
+  "workflow_outcomes",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    subjectType: text("subject_type").notNull(),
+    subjectClaimId: text("subject_claim_id").notNull().references((): AnySQLiteColumn => claims.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull().default(1),
+    currentVersionId: text("current_version_id"),
+    authorId: text("author_id").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_workflow_outcomes_subject").on(table.workspaceId, table.subjectClaimId, table.createdAt),
+    check("ck_workflow_outcomes_0", sql`subject_type IN ('action','question')`),
+    check("ck_workflow_outcomes_1", sql`revision > 0`),
+  ],
+);
+
+export const outcomeVersions = sqliteTable(
+  "outcome_versions",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    outcomeId: text("outcome_id").notNull().references((): AnySQLiteColumn => workflowOutcomes.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    text: text("text").notNull(),
+    evidenceRefsJson: text("evidence_refs_json").notNull().default("[]"),
+    answerClaimVersionIdsJson: text("answer_claim_version_ids_json").notNull().default("[]"),
+    relationIdsJson: text("relation_ids_json").notNull().default("[]"),
+    supersedesVersionId: text("supersedes_version_id").references((): AnySQLiteColumn => outcomeVersions.id, { onDelete: "set null" }),
+    withdrawnAt: text("withdrawn_at"),
+    authorId: text("author_id").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_outcome_versions_revision").on(table.outcomeId, table.revision),
+    check("ck_outcome_versions_0", sql`revision > 0`),
+  ],
+);
+
+export const workflowChanges = sqliteTable(
+  "workflow_changes",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    mutationId: text("mutation_id").notNull(),
+    contextVersion: integer("context_version").notNull(),
+    actorId: text("actor_id").notNull(),
+    kind: text("kind").notNull(),
+    changedRefsJson: text("changed_refs_json").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_workflow_changes_project").on(table.workspaceId, table.projectId, table.contextVersion),
+  ],
+);
+
+export const workflowReports = sqliteTable(
+  "workflow_reports",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    eventIdsJson: text("event_ids_json").notNull(),
+    snapshotJson: text("snapshot_json").notNull().default("{}"),
+    contextVersion: integer("context_version").notNull(),
+    scope: text("scope").notNull(),
+    format: text("format").notNull(),
+    content: text("content").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_workflow_reports_project").on(table.workspaceId, table.projectId, table.contextVersion),
+    check("ck_workflow_reports_0", sql`scope IN ('accepted','mixed')`),
+    check("ck_workflow_reports_1", sql`format IN ('markdown','plain_text')`),
+  ],
+);
+
+export const workflowOutbox = sqliteTable(
+  "workflow_outbox",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    eventId: text("event_id").references((): AnySQLiteColumn => events.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    taskKey: text("task_key").notNull(),
+    inputRevision: integer("input_revision").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    state: text("state").notNull().default("queued"),
+    availableAt: text("available_at").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    fencingToken: integer("fencing_token").notNull().default(0),
+    attempt: integer("attempt").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_workflow_outbox_task").on(table.workspaceId, table.taskKey),
+    index("idx_workflow_outbox_dispatch").on(table.state, table.availableAt, table.leaseExpiresAt),
+    check("ck_workflow_outbox_0", sql`state IN ('queued','running','succeeded','failed','cancelled')`),
+  ],
+);
+
+export const workspaceMembers = sqliteTable(
+  "workspace_members",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    role: text("role").notNull(),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_workspace_members_actor").on(table.workspaceId, table.actorId),
+    check("ck_workspace_members_0", sql`role IN ('viewer','editor','owner')`),
+  ],
+);
+
+export const accessGrants = sqliteTable(
+  "access_grants",
+  {
+    id: text("id").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, { onDelete: "cascade" }),
+    actorId: text("actor_id").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    scope: text("scope").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_access_grants_hash").on(table.tokenHash),
+    index("idx_access_grants_actor").on(table.workspaceId, table.actorId),
+    check("ck_access_grants_0", sql`scope = 'mcp:read'`),
+  ],
+);
+
+export const mcpRequestLimits = sqliteTable(
+  "mcp_request_limits",
+  {
+    key: text("key").primaryKey().notNull(),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, {onDelete: "cascade"}),
+    bucketStart: integer("bucket_start").notNull(),
+    requestCount: integer("request_count").notNull(),
+  },
+  (table) => [
+    index("idx_mcp_request_limits_bucket").on(table.bucketStart),
+    check("ck_mcp_request_limits_count", sql`request_count BETWEEN 1 AND 60`),
+  ],
+);
+
+export const workflowMentionDecisions = sqliteTable(
+  "workflow_mention_decisions",
+  {
+    decisionId: text("decision_id").primaryKey().notNull().references((): AnySQLiteColumn => workflowDecisions.id, {onDelete: "cascade"}),
+    workspaceId: text("workspace_id").notNull().references((): AnySQLiteColumn => workspaces.id, {onDelete: "cascade"}),
+    projectId: text("project_id").notNull().references((): AnySQLiteColumn => projects.id, {onDelete: "cascade"}),
+    eventId: text("event_id").notNull().references((): AnySQLiteColumn => events.id, {onDelete: "cascade"}),
+    candidateId: text("candidate_id").notNull().references((): AnySQLiteColumn => claimOccurrenceCandidates.id, {onDelete: "cascade"}),
+    candidateFingerprint: text("candidate_fingerprint").notNull(),
+    afterStatus: text("after_status").notNull(),
+    convertedClaimId: text("converted_claim_id").references((): AnySQLiteColumn => claims.id, {onDelete: "set null"}),
+    convertedVersionId: text("converted_version_id").references((): AnySQLiteColumn => claimVersions.id, {onDelete: "set null"}),
+  },
+  (table) => [index("idx_workflow_mention_decisions_candidate").on(table.workspaceId, table.candidateId),
+    check("ck_workflow_mention_decisions_status", sql`after_status IN ('confirmed','rejected','converted')`)],
 );

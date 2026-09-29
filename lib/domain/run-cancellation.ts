@@ -94,6 +94,30 @@ export function runCancellationStatements(scope: CancelScope): CancelStatement[]
     failRun("transcription_runs"),
     failRun("extraction_runs"),
     failRun("event_ai_artifact_runs"),
+    {
+      sql: `UPDATE workflow_outbox SET state='cancelled', error_code=?, lease_owner=NULL,
+        lease_expires_at=NULL, fencing_token=fencing_token+1, updated_at=?
+        WHERE ${column}=? AND workspace_id=? AND state IN ('queued','running')`,
+      binds: ["code", "timestamp", "scopeId", "workspace"],
+    },
+    {
+      sql: scope === "project"
+        ? `DELETE FROM workflow_snapshots WHERE project_id=? AND workspace_id=?`
+        : `DELETE FROM workflow_snapshots WHERE project_id IN (SELECT project_id FROM events WHERE id=? AND workspace_id=?)`,
+      binds: ["scopeId", "workspace"],
+    },
+    {
+      sql: scope === "project"
+        ? `DELETE FROM derived_dependencies WHERE derived_type='report' AND project_id=? AND workspace_id=?`
+        : `DELETE FROM derived_dependencies WHERE derived_type='report' AND project_id IN (SELECT project_id FROM events WHERE id=? AND workspace_id=?)`,
+      binds: ["scopeId", "workspace"],
+    },
+    {
+      sql: scope === "project"
+        ? `DELETE FROM workflow_reports WHERE project_id=? AND workspace_id=?`
+        : `DELETE FROM workflow_reports WHERE project_id IN (SELECT project_id FROM events WHERE id=? AND workspace_id=?)`,
+      binds: ["scopeId", "workspace"],
+    },
   ];
 }
 

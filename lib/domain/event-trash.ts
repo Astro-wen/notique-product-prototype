@@ -185,6 +185,14 @@ export function recordPurgeStatements(): Array<{ sql: string; pairs: number }> {
       pairs: 2,
     },
     { sql: `DELETE FROM text_segments WHERE event_id = ? AND workspace_id = ?`, pairs: 1 },
+    { sql: `DELETE FROM workflow_snapshots WHERE project_id IN (SELECT project_id FROM events WHERE id = ? AND workspace_id = ?)`, pairs: 1 },
+    { sql: `DELETE FROM derived_dependencies WHERE derived_type='report' AND project_id IN (SELECT project_id FROM events WHERE id = ? AND workspace_id = ?)`, pairs: 1 },
+    { sql: `DELETE FROM workflow_reports WHERE project_id IN (SELECT project_id FROM events WHERE id = ? AND workspace_id = ?)`, pairs: 1 },
+    {
+      sql: `DELETE FROM workflow_narratives WHERE id IN (
+        SELECT derived_id FROM derived_dependencies WHERE derived_type = 'narrative'
+        AND claim_version_id IN (${RECORD_CLAIM_VERSIONS}))`, pairs: 1,
+    },
     // 结论版本、判断、签字、证据顺着外键从结论级联。
     { sql: `DELETE FROM claims WHERE event_id = ? AND workspace_id = ?`, pairs: 1 },
     // 材料、各类任务、阅读产物、归属建议、回收站登记顺着外键从记录级联。

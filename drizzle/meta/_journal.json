@@ -162,6 +162,34 @@
       "when": 1790294400000,
       "tag": "0022_auto_confirm_scenarios",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1790660941065,
+      "tag": "0023_workflow_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1790665771696,
+      "tag": "0024_report_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1790683350726,
+      "tag": "0025_mcp_request_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1790691875753,
+      "tag": "0026_workflow_mentions",
+      "breakpoints": true
     }
   ]
 }

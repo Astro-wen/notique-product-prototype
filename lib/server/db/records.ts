@@ -59,6 +59,7 @@ export function eventRecord(row: Row): EventRecord {
     occurred_at: text(row, "occurred_at"),
     sequence_no: integer(row, "sequence_no"),
     material_status: text(row, "material_status") as EventRecord["material_status"],
+    source_revision: integer(row, "source_revision"),
     active_run_id: nullableText(row, "active_run_id"),
     pending_claim_count: integer(row, "pending_claim_count"),
     pending_occurrence_count: integer(row, "pending_occurrence_count"),

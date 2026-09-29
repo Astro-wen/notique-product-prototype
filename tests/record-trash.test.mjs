@@ -280,7 +280,7 @@ test("带 project_id 的表要么跟着记录走，要么跟着结论走，要�
   // 以后加一张带 project_id 的表，这里会当场失败，逼人想清楚删记录时它归谁。
   const PROJECT_LEVEL = new Set([
     "events", "context_snapshots", "gap_checks", "glossary_entries", "glossary_entry_audits",
-    "review_sessions", "scenario_verdicts", "transcript_imports", "view_snapshots",
+    "review_sessions", "scenario_verdicts", "transcript_imports", "view_snapshots", "workflow_reports",
   ]);
   const database = await migratedDatabase();
   const tables = database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map((row) => row.name);

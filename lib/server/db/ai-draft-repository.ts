@@ -1,11 +1,12 @@
 import { getD1 } from "@/db";
 import { getClaim } from "@/lib/server/db/verdict-repository";
+import { legacyWorkflowInvalidationStatements } from "@/lib/server/db/legacy-workflow-invalidation";
 import {
   findMutationReplay,
   mutationReplayStatement,
 } from "@/lib/server/db/mutation-replay";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { assertRequestAccess, requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
 import type {
   AiDraftAssessmentRecord,
   ClaimRecord,
@@ -38,6 +39,7 @@ type PersistedSummary = {
     }>;
   }>;
 };
+type SummarySourceSegments = Set<string> & { artifactId: string };
 
 function summarySourceSegmentIds(contentJson: string): Set<string> {
   const summary = parseJson<PersistedSummary>(contentJson, {});
@@ -60,10 +62,10 @@ async function activeSummarySourceSegmentIds(
   projectId: string,
   eventId: string,
   runId: string,
-): Promise<Set<string> | null> {
+): Promise<SummarySourceSegments | null> {
   const row = await getD1()
     .prepare(
-      `SELECT artifact.content_json
+      `SELECT artifact.id, artifact.content_json
          FROM event_ai_artifacts artifact
          JOIN event_ai_artifact_runs artifact_run
            ON artifact_run.id = artifact.run_id
@@ -85,7 +87,7 @@ async function activeSummarySourceSegmentIds(
     .bind(scope.workspaceId, projectId, eventId, runId)
     .first<Row>();
   if (!row || typeof row.content_json !== "string") return null;
-  return summarySourceSegmentIds(row.content_json);
+  return Object.assign(summarySourceSegmentIds(row.content_json), { artifactId: String(row.id) });
 }
 
 function id(prefix: string): string {
@@ -298,6 +300,7 @@ export async function createManualClaim(
   const runId = event.active_run_id == null ? "" : String(event.active_run_id);
   const hasCompletedDraft = runId !== "" && COMPLETED_AI_DRAFT_STATUSES.has(String(event.run_status));
   const isEarlySourceBackedAction = runId !== "" && !hasCompletedDraft && input.type === "next_action";
+  let summaryArtifactId: string | null = null;
   if (!hasCompletedDraft && !isEarlySourceBackedAction) {
     throw new ApiFault(
       409,
@@ -357,14 +360,56 @@ export async function createManualClaim(
         "An action added before fact extraction finishes must use source passages cited by this Event's active Summary.",
       );
     }
+    summaryArtifactId = summarySegmentIds.artifactId;
   }
 
   const claimId = id("clm");
   const versionId = id("clv");
+  const guardId = id("guard");
   const timestamp = now();
+  const db = getD1();
+  const projectId = String(event.project_id);
   const openedAt = ["open_question", "risk", "concern"].includes(input.type) ? timestamp : null;
   const statements = [
-    getD1()
+    db.prepare(
+      `INSERT INTO mutation_guards (id, guard_value, created_at)
+       SELECT ?, CASE WHEN EXISTS (
+         SELECT 1 FROM events e
+         JOIN projects p ON p.id = e.project_id AND p.workspace_id = e.workspace_id
+           AND p.deleted_at IS NULL
+         JOIN extraction_runs r ON r.id = e.active_run_id
+           AND r.workspace_id = e.workspace_id AND r.project_id = e.project_id
+           AND r.event_id = e.id
+         WHERE e.id = ? AND e.workspace_id = ? AND e.project_id = ?
+           AND e.active_run_id = ? AND r.status = ?
+       ) AND (
+         SELECT COUNT(*) FROM text_segments ts
+         JOIN assets a ON a.id = ts.asset_id
+           AND a.workspace_id = ts.workspace_id AND a.project_id = ts.project_id
+           AND a.event_id = ts.event_id
+         JOIN asset_versions av ON av.id = ts.asset_version_id AND av.asset_id = a.id
+         WHERE ts.workspace_id = ? AND ts.project_id = ? AND ts.event_id = ?
+           AND ts.id IN (SELECT value FROM json_each(?))
+           AND ${RAW_TRANSCRIPT_ASSET_PREDICATE}
+       ) = ? AND (? IS NULL OR ? = (
+         SELECT artifact.id FROM event_ai_artifacts artifact
+         JOIN event_ai_artifact_runs artifact_run ON artifact_run.id = artifact.run_id
+           AND artifact_run.workspace_id = artifact.workspace_id
+           AND artifact_run.project_id = artifact.project_id
+           AND artifact_run.event_id = artifact.event_id
+         WHERE artifact.workspace_id = ? AND artifact.project_id = ?
+           AND artifact.event_id = ? AND artifact.kind = 'summary'
+           AND artifact_run.kind = 'summary' AND artifact_run.status = 'succeeded'
+           AND artifact_run.extraction_run_id = ?
+         ORDER BY artifact.artifact_version DESC, artifact.created_at DESC LIMIT 1
+       )) THEN 1 ELSE 0 END, ?`,
+    ).bind(
+      guardId, eventId, scope.workspaceId, projectId, runId, String(event.run_status),
+      scope.workspaceId, projectId, eventId, JSON.stringify(uniqueSegmentIds),
+      uniqueSegmentIds.length, summaryArtifactId, summaryArtifactId,
+      scope.workspaceId, projectId, eventId, runId, timestamp,
+    ),
+    db
       .prepare(
         `INSERT INTO claims (
            id, workspace_id, project_id, event_id, extraction_run_id,
@@ -377,7 +422,7 @@ export async function createManualClaim(
       .bind(
         claimId,
         scope.workspaceId,
-        String(event.project_id),
+        projectId,
         eventId,
         runId,
         `human_missing:${replay.requestHash}`,
@@ -388,7 +433,7 @@ export async function createManualClaim(
         timestamp,
         timestamp,
       ),
-    getD1()
+    db
       .prepare(
         `INSERT INTO claim_versions (
            id, claim_id, version_no, statement, normalized_value_json,
@@ -397,7 +442,7 @@ export async function createManualClaim(
       )
       .bind(versionId, claimId, input.statement, input.owner || input.due_at ? JSON.stringify({ ...(input.owner ? { owner: input.owner } : {}), ...(input.due_at ? { due_at: input.due_at } : {}) }) : null, scope.actorId, timestamp),
     ...segmentRows.map((segment) =>
-      getD1()
+      db
         .prepare(
           `INSERT INTO evidence_refs (
              id, workspace_id, project_id, event_id, claim_version_id,
@@ -410,7 +455,7 @@ export async function createManualClaim(
         .bind(
           id("evr"),
           scope.workspaceId,
-          String(event.project_id),
+          projectId,
           eventId,
           versionId,
           String(segment.asset_version_id),
@@ -421,6 +466,38 @@ export async function createManualClaim(
           timestamp,
         ),
     ),
+    // An action added while extraction is running changes the ledger, but not
+    // the frozen context that the in-flight extraction run will publish against.
+    ...(isEarlySourceBackedAction ? [db.prepare(
+      `UPDATE projects SET ledger_version=ledger_version+1,updated_at=?
+       WHERE id=? AND workspace_id=?`,
+    ).bind(timestamp, projectId, scope.workspaceId)] : []),
+    // This new Claim starts at workflow_revision 1; no earlier version needs a revision bump.
+    ...legacyWorkflowInvalidationStatements(db, scope, projectId, timestamp, [], {
+      advanceContext: !isEarlySourceBackedAction,
+      eventId,
+    }),
+    // A same-context narrative key may already be succeeded. This claim's
+    // unique key guarantees a fresh job; the lease coalesces queued jobs for
+    // the event before any model call.
+    ...(isEarlySourceBackedAction ? [db.prepare(
+      `INSERT INTO workflow_outbox
+       (id,workspace_id,project_id,event_id,kind,task_key,input_revision,
+        payload_json,available_at,created_at,updated_at)
+       SELECT 'wjob_'||lower(hex(randomblob(16))),e.workspace_id,e.project_id,e.id,
+         'narrative',?,p.context_version,
+         json_object('eventId',e.id,'contextVersion',p.context_version),?,?,?
+       FROM events e JOIN projects p
+         ON p.id=e.project_id AND p.workspace_id=e.workspace_id
+       WHERE e.id=? AND e.workspace_id=? AND e.project_id=?
+         AND e.material_status<>'archived' AND p.deleted_at IS NULL
+       ON CONFLICT(workspace_id,task_key) DO NOTHING`,
+    ).bind(
+      `narrative:manual:${claimId}`,
+      new Date(Date.parse(timestamp) + 2000).toISOString(),
+      timestamp, timestamp, eventId, scope.workspaceId, projectId,
+    )] : []),
+    requestWriteGuard(db, scope, guardId),
     mutationReplayStatement(
       scope,
       endpointScope,
@@ -429,9 +506,10 @@ export async function createManualClaim(
       { claimId },
       timestamp,
     ),
+    db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ];
   try {
-    await getD1().batch(statements);
+    await db.batch(statements);
   } catch (error) {
     const recovered = await findMutationReplay<{ claimId: string }>(
       scope,
@@ -440,6 +518,7 @@ export async function createManualClaim(
       request,
     );
     if (recovered.response) return getClaim(scope, recovered.response.claimId);
+    await assertRequestAccess(scope, "write");
     throw error;
   }
   return getClaim(scope, claimId);

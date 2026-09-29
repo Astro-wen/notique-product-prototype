@@ -17,17 +17,40 @@ function mapById(items, label) {
   return result;
 }
 
+const SUPPORT_VERDICTS = new Set(["fully_supports", "partially_supports", "does_not_support"]);
+
+function supportReview(value, previous, label) {
+  if (value == null) return previous ?? "unreviewed";
+  invariant(SUPPORT_VERDICTS.has(value), `Invalid support verdict for ${label}.`);
+  return value;
+}
+
+function own(object, key) {
+  return Object.hasOwn(object ?? {}, key);
+}
+
 export function applyAdjudication(raw, decisions, groundTruth) {
   invariant(raw?.schemaVersion === "notique-eval-predictions.v1", "Unsupported prediction schema.");
   invariant(decisions?.schemaVersion === "notique-eval-adjudication.v1", "Unsupported adjudication schema.");
   invariant(groundTruth?.schemaVersion === "notique-ground-truth.v1", "Unsupported Ground Truth schema.");
   const truthById = mapById(groundTruth.claims, "Ground Truth Claim");
   const relationTruthById = mapById(groundTruth.relations, "Ground Truth Relation");
+  const eventId = decisions.groundTruthEventId;
+  invariant(typeof eventId === "string" && eventId, "groundTruthEventId is required.");
   const decisionRuns = mapById(decisions.runs, "adjudication Run");
   const rawRuns = mapById(raw.runs, "prediction Run");
   invariant(decisionRuns.size === rawRuns.size, "Every exported Run must have exactly one adjudication entry.");
 
   const output = structuredClone(raw);
+  output.metadata = {
+    ...output.metadata,
+    adjudication: {
+      groundTruthEventId: eventId,
+      reference: decisions.metadata?.reference ?? null,
+      reviewedBy: decisions.metadata?.reviewedBy ?? null,
+      completedAt: decisions.metadata?.completedAt ?? null,
+    },
+  };
   for (const run of output.runs) {
     const decision = decisionRuns.get(run.id);
     invariant(decision, `Missing adjudication for Run ${run.id}.`);
@@ -37,15 +60,26 @@ export function applyAdjudication(raw, decisions, groundTruth) {
     const relationIds = new Set((run.relations ?? []).map((item) => item.id));
     for (const claimId of claimMappings.keys()) invariant(claimIds.has(claimId), `Unknown Claim ${claimId} in Run ${run.id}.`);
     for (const relationId of relationMappings.keys()) invariant(relationIds.has(relationId), `Unknown Relation ${relationId} in Run ${run.id}.`);
+    for (const claimId of Object.keys(decision.claimReviews ?? {})) invariant(claimIds.has(claimId), `Unknown Claim review ${claimId} in Run ${run.id}.`);
 
     for (const claim of run.claims) {
       const truthId = claimMappings.get(claim.id) ?? null;
       if (truthId != null) invariant(truthById.has(truthId), `Unknown Ground Truth Claim ${truthId}.`);
+      if (truthId != null) invariant(truthById.get(truthId).eventId === eventId, `Claim ${claim.id} matches a different Ground Truth Event.`);
       claim.matchedGroundTruthId = truthId;
-      claim.citationSupport = decision.citationSupport ?? "fully_supports";
-      claim.unsupportedVisualClaim = decision.unsupportedVisualClaim ?? false;
-      for (const evidence of claim.evidence) {
-        evidence.semanticSupportVerdict = decision.evidenceSupport ?? "fully_supports";
+      const review = decision.claimReviews?.[claim.id];
+      claim.citationSupport = supportReview(review?.citationSupport ?? decision.citationSupport, claim.citationSupport, claim.id);
+      const visualReview = review?.unsupportedVisualClaim ?? decision.unsupportedVisualClaim;
+      if (visualReview != null) invariant(typeof visualReview === "boolean", `Invalid visual review for ${claim.id}.`);
+      claim.unsupportedVisualClaim = visualReview ?? claim.unsupportedVisualClaim ?? null;
+      const evidenceIds = new Set(claim.evidence.map((evidence, index) => evidence.id ?? `#${index}`));
+      for (const id of Object.keys(review?.evidenceSupport ?? {})) invariant(evidenceIds.has(id), `Unknown Evidence ${id} in Claim ${claim.id}.`);
+      for (const [index, evidence] of claim.evidence.entries()) {
+        evidence.semanticSupportVerdict = supportReview(
+          review?.evidenceSupport?.[evidence.id ?? `#${index}`] ?? decision.evidenceSupport,
+          evidence.semanticSupportVerdict,
+          `${claim.id} evidence ${index}`,
+        );
       }
       const truth = truthId == null ? null : truthById.get(truthId);
       if (truth?.expectedClassification === "reaffirmed" && truth.targetVersionId) {
@@ -64,6 +98,7 @@ export function applyAdjudication(raw, decisions, groundTruth) {
       }
       const truth = relationTruthById.get(truthId);
       invariant(truth, `Unknown Ground Truth Relation ${truthId}.`);
+      invariant(truthById.get(truth.sourceClaimId)?.eventId === eventId, `Relation ${relation.id} matches a different Ground Truth Event.`);
       relation.sourceGroundTruthClaimId = truth.sourceClaimId;
       relation.targetGroundTruthClaimId = truth.targetClaimId;
       relation.productionTargetVersionId = relation.targetVersionId;
@@ -73,10 +108,20 @@ export function applyAdjudication(raw, decisions, groundTruth) {
     invariant(Number.isInteger(run.viewLeakageCount) && run.viewLeakageCount >= 0, `Run ${run.id} requires an adjudicated viewLeakageCount.`);
     const usefulSlots = new Set(decision.usefulBriefSlots ?? []);
     for (const slot of run.brief?.slots ?? []) slot.useful = usefulSlots.has(slot.slot);
+    run.adjudication = {
+      claimMatchesComplete: run.claims.every((claim) => own(decision.claimMatches, claim.id)),
+      relationMatchesComplete: (run.relations ?? []).every((relation) => own(decision.relationMatches, relation.id)),
+      claimReviewsComplete: run.claims.every((claim) => {
+        const review = decision.claimReviews?.[claim.id];
+        return SUPPORT_VERDICTS.has(review?.citationSupport) &&
+          claim.evidence.every((evidence, index) => SUPPORT_VERDICTS.has(review?.evidenceSupport?.[evidence.id ?? `#${index}`])) &&
+          (!claim.evidence.some((evidence) => evidence.kind === "photo") || typeof review?.unsupportedVisualClaim === "boolean");
+      }),
+      viewReviewed: Number.isInteger(decision.viewLeakageCount),
+      briefReviewed: Array.isArray(decision.usefulBriefSlots),
+    };
   }
 
-  const eventId = decisions.groundTruthEventId;
-  invariant(typeof eventId === "string" && eventId, "groundTruthEventId is required.");
   const eventClaims = groundTruth.claims.filter((claim) => claim.eventId === eventId);
   const eventClaimIds = new Set(eventClaims.map((claim) => claim.id));
   invariant(eventClaims.length > 0, `No Ground Truth Claims found for Event ${eventId}.`);

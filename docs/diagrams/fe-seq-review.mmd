@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant S as 服务端
+    participant W as 概要任务
+    U->>F: 修改金额并保存
+    F->>S: 决定、基准版本、幂等键
+    S->>S: 原子保存与依赖失效
+    S-->>F: 新上下文版本
+    F->>S: 读取目标版本快照
+    S-->>F: 新要点、概要正在更新
+    F-->>U: 已保存并更新重点
+    S->>W: 合并受影响概要任务
+    W->>S: 提交结果与输入版本
+    S->>S: 校验仍为当前版本
+    F->>S: 读取概要状态
+    S-->>F: 返回当前正文

@@ -142,13 +142,20 @@ test("搬完之后每一张表里的行都跟着走了", async () => {
     id: "evt_staying", workspace_id: workspace, project_id: "prj_source",
     event_type: "meeting", title: "留下的材料", occurred_at: "2026-09-21T00:00:00Z", sequence_no: 1,
   });
+  const workflowValues = {
+    workflow_cards: {kind:"record"},
+    workflow_mention_decisions: {after_status:"confirmed"},
+    workflow_narratives: {scope_kind:"mixed",freshness:"current"},
+    workflow_outcomes: {subject_type:"question"},
+    derived_dependencies: {claim_version_id:"version"},
+  };
   for (const table of MOVED_TABLES) {
     insertRow(database, table, {
-      id: `${table}_row`, workspace_id: workspace, project_id: "prj_source", event_id: "evt_moving",
+      ...(table === "action_metadata" ? {claim_id: `${table}_row`} : table === "workflow_mention_decisions" ? {decision_id: `${table}_row`} : {id: `${table}_row`}), ...workflowValues[table], workspace_id: workspace, project_id: "prj_source", event_id: "evt_moving",
     }, 1);
     // 同一张表里挂在别的记录上的行，一行都不许动。
     insertRow(database, table, {
-      id: `${table}_other`, workspace_id: workspace, project_id: "prj_source", event_id: "evt_staying",
+      ...(table === "action_metadata" ? {claim_id: `${table}_other`} : table === "workflow_mention_decisions" ? {decision_id: `${table}_other`} : {id: `${table}_other`}), ...workflowValues[table], workspace_id: workspace, project_id: "prj_source", event_id: "evt_staying",
     }, 2);
   }
   insertRow(database, "event_routing_suggestions", {
@@ -188,9 +195,9 @@ test("搬完之后每一张表里的行都跟着走了", async () => {
   database.exec("COMMIT");
 
   for (const table of MOVED_TABLES) {
-    const moved = database.prepare(`SELECT project_id FROM ${table} WHERE id = ?`).get(`${table}_row`);
+    const moved = database.prepare(`SELECT project_id FROM ${table} WHERE ${table === "action_metadata" ? "claim_id" : table === "workflow_mention_decisions" ? "decision_id" : "id"} = ?`).get(`${table}_row`);
     assert.equal(moved.project_id, "prj_target", `${table} 里的行没跟着搬`);
-    const untouched = database.prepare(`SELECT project_id FROM ${table} WHERE id = ?`).get(`${table}_other`);
+    const untouched = database.prepare(`SELECT project_id FROM ${table} WHERE ${table === "action_metadata" ? "claim_id" : table === "workflow_mention_decisions" ? "decision_id" : "id"} = ?`).get(`${table}_other`);
     assert.equal(untouched.project_id, "prj_source", `${table} 里别的记录的行被误改了`);
   }
 

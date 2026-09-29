@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant A as 材料接口
+    participant D as D1
+    participant W as 执行器
+    participant M as 模型供应商
+    A->>D: 保存源修订与 outbox
+    D-->>A: 提交成功
+    W->>D: 领取租约与阶段
+    D-->>W: 运行版本与 fencingToken
+    W->>M: 对应原文与任务参数
+    M-->>W: 候选与用量
+    W->>D: 校验租约并保存检查点
+    alt 个别阶段失败
+        W->>D: 保存失败范围与重试时间
+        W->>D: 重新领取失败阶段
+    else 合并与引用校验通过
+        W->>D: 发布完整覆盖快照
+    end

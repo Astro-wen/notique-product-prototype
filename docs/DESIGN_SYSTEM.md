@@ -1,5 +1,7 @@
 # Notique 前端视觉库
 
+当前为有来源的视觉适配，尚未严格复用官网全部组件。2026-09-29 的 PC 实测已清理 `.interface-refresh` 中主按钮、文字链接、阅读导航及选中原文的旧绿色覆盖，保留绿色表示完成状态。其他页面与官网登录后组件仍需逐一核对 DOM、实际计算样式和交互状态。
+
 访问 `/design-system`；可下载 `/design-system/tokens.json`。实现位于 `app/components/notique-ui.tsx`，设计变量及样式集中在 `app/globals.css`。
 
 ## 来源与验证范围

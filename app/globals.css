@@ -1404,6 +1404,13 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .reading-workspace-heading p { margin: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.5; }
 .reader-partial-error { min-height: 40px; padding: 7px 14px; border-bottom: 1px solid #ead7a2; background: #fff9e9; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: #76560b; font-size: var(--text-xs); }
 .reader-mobile-switch { display: none; }
+/* 原文入口优先展示来源，按需展开已有阅读组件。 */
+.interface-refresh .reader-workspace-layout.is-source-only { grid-template-columns: minmax(0, 1fr); }
+.interface-refresh .reader-workspace-layout.is-source-only .reader-reading-pane { border-right: 0; }
+.reader-extra-views > summary { display: none; }
+.reader-extra-views.is-source-only > summary { display: block; padding: 16px 32px; color: var(--muted); font-size: var(--text-xs); cursor: pointer; border-bottom: 1px solid var(--line); }
+.reader-extra-views.is-source-only > summary::before { content: "▸"; margin-right: 7px; }
+.reader-extra-views.is-source-only[open] > summary::before { content: "▾"; }
 .reader-workspace-layout { height: clamp(520px, calc(100dvh - 188px), 900px); display: grid; grid-template-columns: minmax(560px, 1fr) minmax(340px, 400px); align-items: stretch; overflow: hidden; background: #fff; }
 .reader-reading-pane { min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: var(--surface-muted); display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .reader-reading-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
@@ -1941,11 +1948,11 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .interface-refresh .sidebar-toggle { box-shadow: none; }
 .interface-refresh .public-workspace-notice { position: relative; width: 100%; min-height: 32px; margin-bottom: 12px; border: 0; border-bottom: 1px solid #e5e8e0; border-radius: 0; background: transparent; color: #7a7564; justify-content: flex-end; padding: 7px 0; font-size: 11px; backdrop-filter: none; }
 .interface-refresh .public-workspace-notice strong { color: #77715f; font-weight: 600; font-size: 11px; }
-.interface-refresh .button { border-radius: 8px; min-height: 40px; font-size: 13px; box-shadow: none; font-weight: 550; transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
-.interface-refresh .button.primary { background: #285c45; border-color: #285c45; color: white; box-shadow: 0 1px 2px rgba(22, 51, 36, .12); }
-.interface-refresh .button.primary:hover { background: #1d4935; }
+.interface-refresh .button { border-radius: var(--radius-sm); min-height: 42px; font-size: var(--text-sm); box-shadow: none; font-weight: 500; transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+.interface-refresh .button.primary { background: var(--ink); border-color: var(--ink); color: white; }
+.interface-refresh .button.primary:hover:not(:disabled) { background: #303030; border-color: #303030; }
 .interface-refresh .button.secondary { background: var(--panel); border-color: var(--line); }
-.interface-refresh .text-button { color: #2d654a; }
+.interface-refresh .text-button { color: var(--blue-dark); }
 .interface-refresh .section-kicker, .interface-refresh .eyebrow { text-transform: none; letter-spacing: 0; }
 .interface-refresh .results-page { width: min(1600px, 100%); padding-top: 0; }
 .interface-refresh .results-scope-tabs { margin-bottom: 20px; min-height: 40px; border-bottom: 1px solid var(--line); }
@@ -1959,7 +1966,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .interface-refresh .result-nav-primary { display: flex; flex-wrap: wrap; gap: 8px; }
 .interface-refresh .result-nav-primary button { display: flex; gap: 8px; padding: 0 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; min-height: 48px; font-size: 14px; font-weight: 500; color: var(--muted); }
 .interface-refresh .result-nav-primary button strong { font-weight: 550; }
-.interface-refresh .result-nav-primary button.active { color: #285c45; border-bottom-color: #285c45; background: transparent; }
+.interface-refresh .result-nav-primary button.active { color: var(--blue-dark); border-bottom-color: var(--blue); background: transparent; }
 .interface-refresh .result-nav-primary button span { width: 18px; height: 20px; background: transparent; }
 .interface-refresh .result-nav-chevron { display: none; }
 .interface-refresh .result-nav-secondary { position: relative; margin: 0 0 0 auto; padding: 0; border: 0; }
@@ -2024,12 +2031,12 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .interface-refresh .summary-card-content { gap: 20px; }
 .interface-refresh .summary-card-content h3 { color: #8b957f; font-weight: 550; font-size: 12px; }
 .interface-refresh .reader-reading-pane .summary-sentences > article { padding: 12px 14px; border: 0; border-left: 2px solid transparent; border-radius: 0 6px 6px 0; margin: 2px 0; animation: none; opacity: 1; transform: none; }
-.interface-refresh .reader-reading-pane .summary-reveal-line.selected { border-left-color: #4c7850; background: #f0f5ec; box-shadow: none; }
+.interface-refresh .reader-reading-pane .summary-reveal-line.selected { border-left-color: var(--blue); background: var(--blue-soft); box-shadow: none; }
 .interface-refresh .summary-point-copy mark { max-width: 80ch; background: transparent; font-size: 15px; line-height: 1.65; font-weight: 550; }
 .interface-refresh .reader-reading-pane .summary-point-copy:hover mark, .interface-refresh .reader-reading-pane .summary-reveal-line.selected mark { background: transparent; }
-.interface-refresh .reader-reading-pane .summary-point-copy > span { font-size: 12px; font-weight: 500; color: #68845e; }
+.interface-refresh .reader-reading-pane .summary-point-copy > span { font-size: 12px; font-weight: 500; color: var(--blue-dark); }
 .interface-refresh .summary-trust-note { border: 0; color: #8b9385; font-size: 11px; padding-top: 8px; }
-.interface-refresh .summary-expand-button { color: #356542; font-size: 12px; padding: 8px 14px; border: 1px solid #dce4d5; border-radius: 6px; margin-top: 16px; }
+.interface-refresh .summary-expand-button { color: var(--blue-dark); font-size: 12px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); margin-top: 16px; }
 
 .interface-refresh .reader-action-heading { padding: 22px 24px; background: transparent; border-color: var(--line); }
 .interface-refresh .reader-action-heading strong { font-size: 17px; font-weight: 600; letter-spacing: -.02em; }

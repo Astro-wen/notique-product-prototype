@@ -35,14 +35,17 @@ async function collectFiles(relativeDirectory) {
   return files;
 }
 
-test("production UI does not ship hard-coded AI claims or browser-only verdict state", async () => {
+test("production workspace excludes synthetic claims and design-library imports", async () => {
   const appFiles = (await collectFiles("app")).filter((path) => /\.(ts|tsx|js|jsx)$/.test(path));
-  const source = (await Promise.all(appFiles.map(read))).join("\n");
-
-  assert.doesNotMatch(source, /const\s+claimSets\s*[:=]/);
-  assert.doesNotMatch(source, /quote:\s*["'`]/);
-  assert.doesNotMatch(source, /time:\s*["'`]\d{1,2}:\d{2}/);
-  assert.doesNotMatch(source, /MODEL_NOT_CONFIGURED[\s\S]{0,500}(sample|mock|fallback)/i);
+  const forbidden = [/const\s+claimSets\s*[:=]/, /quote:\s*["'`]/, /time:\s*["'`]\d{1,2}:\d{2}/, /MODEL_NOT_CONFIGURED[\s\S]{0,500}(sample|mock|fallback)/i];
+  for(const file of appFiles.filter(file=>!file.startsWith('app/design-system/'))) {
+    const source=await read(file);
+    for(const pattern of forbidden) assert.equal(pattern.test(source),false,`${file} must use persisted business content: ${pattern}`);
+    assert.equal(/(?:from\s*|import\s*\(\s*)["'][^"']*(?:design-system|preview-fixture)/.test(source),false,`${file} must not import design-library examples`);
+  }
+  const preview=await read('app/design-system/workflow/page.tsx');
+  assert.match(preview,/合成示例，刷新重置/);
+  assert.match(preview,/from ["']\.\/preview-fixture["']/);
 });
 
 test("Cloudflare persistence bindings are declared", async () => {
@@ -170,11 +173,13 @@ test("Run Debug persists only bounded, schema-validated model output", async () 
     /validatedOutputBytes\s*=\s*new TextEncoder\(\)\.encode\(validatedOutputJson\)\.byteLength[\s\S]{0,500}MODEL_OUTPUT_INVALID/i,
     "validated output must have an actual UTF-8 byte limit",
   );
+  const publication = processor.slice(processor.indexOf("async function persistModelOutput"),processor.indexOf("async function markRunFailed"));
   assert.match(
-    processor,
-    /UPDATE extraction_runs[\s\S]{0,500}status\s*=\s*\?[\s\S]{0,500}validated_output_json\s*=\s*\?[\s\S]{0,900}db\.batch\(statements\)/i,
-    "validated output and successful status must commit in the same D1 batch",
+    publication,
+    /UPDATE extraction_runs[\s\S]{0,500}status\s*=\s*\?[\s\S]{0,500}validated_output_json\s*=\s*\?[\s\S]*db\.batch\(statements\)/i,
+    "validated output and successful status must commit in the publication batch",
   );
+  assert.match(publication,/INSERT INTO workflow_outbox[\s\S]*db\.batch\(statements\)/,"the overview intent must share that publication batch");
   const failedSection = processor.slice(
     processor.indexOf("async function markRunFailed"),
     processor.indexOf("export async function processExtractionRun"),
@@ -950,6 +955,8 @@ test("the durable repair creates extraction for every uncovered current source m
     // analysis for the Event on its screen, so opening the app cannot spend
     // money on a project nobody opened. Unscoped is the Cron's whole-workspace
     // scan.
+    database.exec('ALTER TABLE events ADD COLUMN source_revision INTEGER NOT NULL DEFAULT 0');
+    database.exec("INSERT INTO events VALUES ('event-v2','ws-a','project-a','ready',1,1); INSERT INTO assets VALUES ('v2-text','ws-a','event-v2','transcript','v2-version','ready','{}',NULL)");
     const rows = database.prepare(candidateMatch[1]).all(25, null, null, 2, 50);
     assert.deepEqual(
       rows.map((row) => row.event_id).sort(),
@@ -968,9 +975,10 @@ test("the durable repair creates extraction for every uncovered current source m
 });
 
 test("stale Asset upload leases self-heal after a lost abort without blocking ready material", async () => {
-  const [core, workflow] = await Promise.all([
+  const [core, workflow, outbox] = await Promise.all([
     read("lib/server/db/core-repository.ts"),
     read("lib/server/db/workflow-repository.ts"),
+    read("lib/server/jobs/outbox.ts"),
   ]);
   const sweep = core.slice(
     core.indexOf("export async function expireStaleAssetUploads"),
@@ -1011,14 +1019,14 @@ test("stale Asset upload leases self-heal after a lost abort without blocking re
     /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,300}findMutationReplay/,
     "asset init must sweep before replaying an abandoned init response",
   );
-  assert.match(
+  assert.doesNotMatch(
     core.slice(core.indexOf("export async function getEvent"), core.indexOf("export async function createTranscriptImport")),
-    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,1600}eventRecord\(event\)/,
+    /expireStaleAssetUploads\(/,
   );
-  assert.match(
-    workflow,
-    /getProject\(scope, projectId\)[\s\S]{0,100}expireStaleAssetUploads\(scope, \{ projectId \}\)/,
-  );
+  assert.doesNotMatch(workflow.slice(workflow.indexOf("export async function getWorkflowSnapshot")),/expireStaleAssetUploads\(/);
+  assert.match(core,/export async function sweepStaleAssetUploadsForWorkspaces/);
+  assert.match(outbox,/recoverAndDispatch\([\s\S]*asset_upload_sweep[\s\S]*expireStaleAssetUploads\(/);
+  assert.match(outbox,/export async function sweepAndDispatch\([\s\S]*?asset_upload_sweep[\s\S]*?sweepStaleAssetUploadsForWorkspaces/);
 
   const expireCasSql = sql(
     sweep,
@@ -1368,7 +1376,7 @@ test("whichever record analyses first owns one persisted scenario assessment lea
   const guard = extraction.slice(extraction.indexOf("if (needsScenarioAssessment) {"), extraction.indexOf("UPDATE projects", extraction.indexOf("if (needsScenarioAssessment) {")));
   assert.doesNotMatch(guard, /sequence_no = 1/);
   // 两条记录同时来抢，输的那条重建一次，这回不判类型，照常分析。
-  assert.match(extraction, /return createExtractionRun\(scope, eventId, idempotencyKey, assetVersionIds, true\)/);
+  assert.match(extraction, /return createExtractionRun\(scope, eventId, idempotencyKey, assetVersionIds, true, workflow\)/);
 });
 
 test("the budget a Run is accepted under is the budget it is processed under", async () => {
@@ -1856,7 +1864,7 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/,
+    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/,
     "the scheduled recovery path must continue sweeping stale leases",
   );
 });
@@ -2126,7 +2134,7 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
+  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
   assert.match(
     worker,
     /if\s*\(env\.APP_ENV\s*!==\s*["']local["']\)[\s\S]{0,900}sameOrigin[\s\S]{0,500}authenticated/,

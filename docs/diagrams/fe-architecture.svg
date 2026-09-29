@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-labelledby="title desc">
+  <title id="title">前端与后端职责架构</title>
+  <desc id="desc">页面组件通过 Query 快照和 Service 请求访问后端领域服务。后端读写 D1 账本并执行后台模型任务，模型结果回写后端，前端重新读取快照。前端仅保存临时交互状态，后端保存业务状态。</desc>
+  <rect x="8" y="8" width="984" height="424" rx="12" fill="#ffffff" stroke="#dedede" stroke-width="1.5"/>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111">
+    <text x="40" y="46" font-size="20" font-weight="600">前端</text>
+    <text x="755" y="46" font-size="20" font-weight="600">后端</text>
+  </g>
+  <g fill="none" stroke="#111111" stroke-width="1.8" stroke-linejoin="round">
+    <polyline points="220,153 266,153"/>
+    <polyline points="455,153 501,153"/>
+    <polyline points="690,153 746,153"/>
+    <polyline points="857,112 857,80 365,80 365,103"/>
+    <polyline points="800,194 800,247 660,247 660,301"/>
+    <polyline points="850,194 850,301"/>
+    <polyline points="925,310 925,203"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="275,153 265,148 265,158"/>
+    <polygon points="510,153 500,148 500,158"/>
+    <polygon points="755,153 745,148 745,158"/>
+    <polygon points="365,112 360,102 370,102"/>
+    <polygon points="660,310 655,300 665,300"/>
+    <polygon points="850,310 845,300 855,300"/>
+    <polygon points="925,194 920,204 930,204"/>
+  </g>
+  <g fill="#eff4fa" stroke="#111111" stroke-width="1.5">
+    <rect x="40" y="112" width="180" height="82" rx="7"/>
+    <rect x="275" y="112" width="180" height="82" rx="7"/>
+    <rect x="510" y="112" width="180" height="82" rx="7"/>
+    <rect x="755" y="112" width="205" height="82" rx="7"/>
+    <rect x="580" y="310" width="160" height="68" rx="7"/>
+    <rect x="780" y="310" width="180" height="68" rx="7"/>
+  </g>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <text x="130" y="148" font-size="21">页面 / 组件</text>
+    <text x="130" y="178" font-size="18">展示与交互</text>
+    <text x="365" y="148" font-size="21">Query 快照</text>
+    <text x="365" y="178" font-size="18">服务端状态副本</text>
+    <text x="600" y="148" font-size="21">Service 请求</text>
+    <text x="600" y="178" font-size="18">统一接口调用</text>
+    <text x="857" y="148" font-size="21">后端领域服务</text>
+    <text x="857" y="178" font-size="18">规则与业务状态</text>
+    <text x="660" y="352" font-size="21">D1 账本</text>
+    <text x="870" y="352" font-size="21">后台模型任务</text>
+    <text x="611" y="67" font-size="18">重新读取最新快照</text>
+    <text x="627" y="282" font-size="18">读写</text>
+    <text x="821" y="282" font-size="18">执行</text>
+    <text x="952" y="282" font-size="18">结果</text>
+    <text x="252" y="243" font-size="19">前端仅保存临时交互状态</text>
+    <text x="770" y="412" font-size="19">后端保存业务状态</text>
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant A as 批阅接口
+    participant D as D1
+    participant W as 概要任务
+    participant R as 读取接口
+    A->>D: 查幂等回执并校验版本
+    A->>D: 批次写决定、依赖、outbox、回执
+    D-->>A: 新上下文版本
+    R->>D: 读取一致快照
+    D-->>R: 新版要点与更新状态
+    W->>D: 冻结输入版本
+    W->>W: 生成逐句关联的概要
+    W->>D: 对照当前版本提交
+    alt 输入仍有效
+        D-->>W: 发布为当前正文
+    else 已有新决定
+        D-->>W: 保留历史，等待最新任务
+    end

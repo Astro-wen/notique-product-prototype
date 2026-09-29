@@ -30,7 +30,7 @@ test("production audio keeps the HTTP request open instead of losing the queued 
   assert.match(worker, /return streamTranscriptionDispatch\(workspaceId, input\.runId, requestId, run\.status\)/);
   assert.doesNotMatch(worker, /await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
-  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\)\]\)\)/);
+  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
 });
@@ -308,7 +308,7 @@ test("an open workspace runs the recovery the Cron trigger does not", async () =
   // already drives it through the targeted streaming dispatch.
   const recover = outbox.slice(
     outbox.indexOf("export async function recoverAndDispatch(input?: {"),
-    outbox.indexOf("export async function sweepAndDispatch()"),
+    outbox.indexOf("export async function sweepAndDispatch("),
   );
   assert.doesNotMatch(recover, /dispatchDueTranscriptionOutbox/);
   assert.match(recover, /stage\(\s*"automatic_extraction"/);
@@ -321,7 +321,7 @@ test("an open workspace runs the recovery the Cron trigger does not", async () =
   assert.match(recover, /const commission = input\?\.commission;/);
   assert.match(recover, /commission\s*\?[\s\S]{0,400}:\s*EMPTY_AUTOMATIC/,
     "recovery commissions nothing unless asked");
-  assert.match(outbox, /recoverAndDispatch\(\{ commission: "workspace" \}\)/,
+  assert.match(outbox, /recoverAndDispatch\(\{ commission: "workspace"(?:, onStageFailure: [^}]+)? \}\)/,
     "only the Cron path scans the whole workspace");
   const worker2 = await readFile(path.join(root, "worker/index.ts"), "utf8");
   assert.match(worker2, /commission: \{ eventId: input\.heartbeatEventId \}/);
@@ -337,10 +337,10 @@ test("an open workspace runs the recovery the Cron trigger does not", async () =
 
   // One throwing stage used to take down every recovery behind it, including
   // the automatic analysis that decides whether a transcript is ever read.
-  assert.match(outbox, /async function stage<T>\(name: string, run: \(\) => Promise<T>, fallback: T\): Promise<T>/);
+  assert.match(outbox, /async function stage<T>\(name: string, run: \(\) => Promise<T>, fallback: T(?:, onStageFailure\?: RecoveryStageObserver)?\): Promise<T>/);
   assert.match(outbox, /console\.error\("recovery_stage_failed"/);
 
-  assert.match(worker, /ctx\.waitUntil\(Promise\.allSettled\(\[\s*recoverAndDispatch\(input\.heartbeatEventId[\s\S]{0,160}sweepAndDispatchEventAiArtifacts\(\),\s*\]\)/);
+  assert.match(worker, /ctx\.waitUntil\(Promise\.allSettled\(\[\s*recoverAndDispatch\(input\.heartbeatEventId[\s\S]{0,160}sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\),\s*\]\)/);
   assert.match(page, /const RECOVERY_HEARTBEAT_MS = 60_000;/);
   assert.match(page, /window\.setInterval\(beat, RECOVERY_HEARTBEAT_MS\)/);
   assert.match(page, /if \(stopped \|\| document\.visibilityState === "hidden"\) return;/,

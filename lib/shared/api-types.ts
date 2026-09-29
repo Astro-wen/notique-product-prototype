@@ -43,6 +43,14 @@ export type ClaimLifecycleStatus =
 export type ReviewSessionStatus = "active" | "completed" | "abandoned";
 
 export type ApiErrorCode =
+  | "not_found"
+  | "forbidden"
+  | "version_conflict"
+  | "cursor_expired"
+  | "snapshot_busy"
+  | "run_limit"
+  | "dependency_conflict"
+  | "idempotency_conflict"
   | "BAD_REQUEST"
   | "INVALID_JSON"
   | "NOT_FOUND"
@@ -265,6 +273,7 @@ export type EventRecord = {
   occurred_at: string;
   sequence_no: number;
   material_status: MaterialStatus;
+  source_revision: number;
   active_run_id: string | null;
   pending_claim_count: number;
   pending_occurrence_count: number;

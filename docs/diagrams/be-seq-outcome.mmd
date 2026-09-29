@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant A as 行动与结果接口
+    participant D as D1
+    participant R as 概览服务
+    A->>D: 保存行动完成关系
+    D-->>A: 已执行，问题仍打开
+    A->>D: 校验答案与目标问题版本
+    A->>D: 保存结果、人工答案、resolves
+    D-->>A: 新版本和问题状态
+    R->>D: 读取当前重点与变化
+    D-->>R: 同版本快照
+    A->>D: 修正或撤回结果
+    D->>D: 停用旧答案关系并重算问题
+    D-->>A: 新回执与受影响项
+    R->>D: 再次读取最新状态

@@ -69,7 +69,7 @@ const BOXES: Box[] = [
   { id: "escalate", x: factNodeX, y: ROW[2], w: NODE_W, label: "重核 agent", sub: ["丢了事实、有冲突时才跑", "两份里留下问题更少的"], tone: "fact" },
   { id: "judge", x: factNodeX, y: ROW[3], w: NODE_W, label: "引用判断 agent（未上线）", sub: ["已做好，还没接进任务", "现在核对结果直接到你手上"], tone: "fact", pending: true },
 
-  { id: "human", x: 280, y: 586, w: 400, label: "你逐条确认", sub: ["确认过的才进报告"], tone: "human" },
+  { id: "human", x: 280, y: 586, w: 400, label: "你按需确认", sub: ["可先读、复制，再选重点跟进"], tone: "human" },
 ];
 
 const EDGES: Array<[string, string]> = [
@@ -133,7 +133,7 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
       <header className="hiw-head">
         <h1>使用说明</h1>
         <p>
-          上传录音或逐字稿，系统整理成能读的版本，同时把每条结论配上原话。你确认过的才进报告。
+          上传材料后先读完整记录，可以直接复制。按需确认重点和加入跟进，补充的结果会回到记录。
         </p>
       </header>
 
@@ -142,7 +142,7 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
           <title id="hiw-diagram-title">
             材料先由语音识别服务转成逐字稿。逐字稿一出来，阅读线的章节、发言总结、要点回顾、全文概要
             四个 agent 和事实线的清点 agent 同时开工；事实线接着由核对 agent 配原话，出问题时重核 agent
-            再核一遍，引用判断 agent 已做好但未上线。两条线最后都汇到你逐条确认。
+            再核一遍，引用判断 agent 已做好但未上线。两条线最后汇成完整记录，你按需确认重点，再跟进和补结果。
           </title>
           <defs>
             <marker id="hiw-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
@@ -256,20 +256,24 @@ export function HowItWorks({ onBack }: { onBack: () => void }) {
           </p>
         </li>
         <li>
-          <h2>确认</h2>
+          <h2>按需确认和跟进</h2>
           <p>
-            待确认的条目按风险排序，逐条看原话，确认或者否掉。报告、简报、待办只收确认过的，
-            没确认的一直待在那里。所以报告里每句话都找得到出处。
+            先读完整记录，可以直接复制带草稿标识的内容。需要拍板的地方会集中显示，
+            普通重点可随时回看原话、确认或修改。只确认一部分也可以先离开，其余草稿继续保留。
+          </p>
+          <p>
+            想继续做的行动点加入跟进。行动完成和问题得到答案分别记录，也可以直接给问题补答案。
+            新答案回到记录，项目回顾随之更新，下次沟通接着这一份记录继续。
           </p>
         </li>
       </ol>
 
       <section className="hiw-limits">
-        <h2>不做什么</h2>
+        <h2>读记录时看这几个标记</h2>
         <ul>
-          <li>不替你确认。没人点过头的结论不会进报告，哪怕模型很有把握。</li>
-          <li>不补原文里没有的事。找不到出处的结论会被丢掉，而不是被合理推测出来。</li>
-          <li>不掩盖失败。某一步没跑成，界面直接说哪一步没成，而不是给一份看起来完整的东西。</li>
+          <li>AI 草稿：系统整理的内容，可先读和复制，仍需你判断。</li>
+          <li>已采纳：你确认或修改过的表述，原话中的大约、可能等限定继续保留。</li>
+          <li>来源变化：材料或依据有了变化，回到当前内容核对后再采用。</li>
         </ul>
       </section>
     </div>

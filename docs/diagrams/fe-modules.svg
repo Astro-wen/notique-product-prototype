@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420" viewBox="0 0 1000 420" role="img" aria-labelledby="title desc">
+  <title id="title">前端工作流模块</title>
+  <desc id="desc">事项与材料、重点与批阅、行动与结果三个模块依次连接。行动的答案更新记录回到重点与批阅；下次打开回到事项与材料。重点与批阅向下产出已采纳要点。用户可在保存后离开，不必完成全部批阅。</desc>
+  <rect width="1000" height="420" fill="#FFFFFF"/>
+
+  <g fill="none" stroke="#111111" stroke-width="2" stroke-linejoin="round">
+    <polyline points="320,176 380,176"/>
+    <polyline points="620,176 680,176"/>
+    <polyline points="800,124 800,70 500,70 500,124"/>
+    <polyline points="800,228 800,360 200,360 200,228"/>
+    <polyline points="500,228 500,286"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="380,176 370,170 370,182"/>
+    <polygon points="680,176 670,170 670,182"/>
+    <polygon points="500,124 494,114 506,114"/>
+    <polygon points="200,228 194,238 206,238"/>
+    <polygon points="500,286 494,276 506,276"/>
+  </g>
+
+  <g fill="#EAF4FD" stroke="#AFCFEA" stroke-width="1.5">
+    <rect x="80" y="124" width="240" height="104" rx="14"/>
+    <rect x="380" y="124" width="240" height="104" rx="14"/>
+    <rect x="680" y="124" width="240" height="104" rx="14"/>
+    <rect x="390" y="286" width="220" height="50" rx="12"/>
+  </g>
+
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <g font-size="22" font-weight="500">
+      <text x="200" y="165">M1 事项与材料</text>
+      <text x="500" y="165">M2 重点与批阅</text>
+      <text x="800" y="165">M3 行动与结果</text>
+    </g>
+    <g font-size="18">
+      <text x="200" y="199">保存后可离开</text>
+      <text x="500" y="199">保存后可离开</text>
+      <text x="800" y="199">保存后可离开</text>
+    </g>
+    <g font-size="20">
+      <text x="650" y="53">答案更新记录</text>
+      <text x="680" y="348">下次打开</text>
+      <text x="500" y="318">已采纳要点</text>
+    </g>
+    <text x="500" y="405" font-size="18">查看材料或阅读要点后即可离开，无需完成全部批阅</text>
+  </g>
+</svg>

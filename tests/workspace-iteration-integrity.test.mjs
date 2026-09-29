@@ -75,9 +75,9 @@ test("large uploads report progress, can be cancelled, and stop only after a sta
   assert.match(coreRepository, /export async function heartbeatAssetUpload/);
   assert.match(coreRepository, /processing_status = 'uploading'/);
   assert.match(apiRoute, /segments\[2\] === "heartbeat"[\s\S]{0,120}heartbeatAssetUpload\(scope, segments\[1\]\)/);
-  assert.match(
+  assert.doesNotMatch(
     coreRepository.slice(coreRepository.indexOf("export async function getEvent"), coreRepository.indexOf("export async function createTranscriptImport")),
-    /expireStaleAssetUploads\(scope, \{ eventId \}\)[\s\S]{0,1600}eventRecord\(event\)/,
+    /expireStaleAssetUploads\(/,
   );
   assert.match(styles, /\.asset-upload-progress progress/);
   assert.match(styles, /\.import-upload-progress progress/);

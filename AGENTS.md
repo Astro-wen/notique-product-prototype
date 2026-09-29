@@ -26,3 +26,13 @@ Updated 2026-09-28. This file is the current workflow for every agent, including
 - Publish the same committed `main` source to the existing Sites project in `.openai/hosting.json`, using the Sites hosting workflow. Reuse its project ID, D1/R2 bindings, and audience. Confirm the saved version's source SHA equals GitHub `main` and the deployment succeeds.
 - Keep production runtime secrets and environment values unless the user requests a change. Runtime values may intentionally differ from local defaults; inspect them separately from Git source. The current production settings include high/high fact reasoning and a 100 MiB audio limit.
 - Backups of retired branches and the former desktop checkout are outside the repo at `../notique-backups/2026-09-28-unify-main/`. These are recovery archives, not active workspaces.
+
+## Workflow V2 implementation specifications
+
+- Product scope updated by the user on 2026-09-29: PC only. Prioritize desktop/laptop layouts, mouse and keyboard interaction. Browser QA uses desktop and laptop viewports. Existing mobile compatibility may remain, but mobile-specific development and acceptance are outside the current scope.
+
+- For Workflow V2 work, read `docs/FRONTEND_TECHNICAL_PLAN.md` and `docs/BACKEND_TECHNICAL_PLAN.md` together. These are implementation specifications, not a claim that V2 is already shipped.
+- Keep both documents and `docs/WORKFLOW_V2_CONTRACT.json` consistent when changing workflow states or interfaces. The contract manifest describes the planned API. Implement compiled shared types and runtime validation in `lib/shared/workflow-v2.ts`.
+- Preserve the three valid exits: reading only, partial acceptance, and follow-up with results. An action being completed and a question being answered are separate states. Questions can be answered directly.
+- Reuse the existing claim/version/verdict/relation ledger. Derived summaries reference exact versions, and every write entry point invalidates affected outputs.
+- Implement in the staged order and verify the product paths defined in both specifications. Record engineering tests, actual UI walkthroughs, and model-quality evaluation separately.

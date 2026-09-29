@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -51,7 +50,8 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.match(uiSource, /key=\{project\?\.id \?\? "none"\}/);
   assert.match(uiSource, /onResult=\{\(tab = "brief-card"\) => void loadView\(tab\)\}/);
   assert.match(uiSource, /projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\)/);
-  assert.match(uiSource, /onResult\("client-progress"\); return; \}/, "the project record opens directly from the workspace nav");
+  assert.match(uiSource, /onSelectWorkspaceTab\(next === "results" \? "overview" : undefined\)/, "the project review opens directly without an analysis gate");
+  assert.match(uiSource, /activeTab === "results" && <ProjectOverviewPage/);
   assert.match(uiSource, /await openClaim\(nextId, "review", undefined, "replace"\)/);
   assert.match(uiSource, /await finishGuidedReview\(\)/);
   const finishGuidedReview = declarationSource("finishGuidedReview");
@@ -69,12 +69,12 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.doesNotMatch(uiSource, /Luna Max|旧的 max/);
 });
 
-test("mobile keeps one event selector and resets the tab when switching events", () => {
-  const styles = fs.readFileSync("app/globals.css", "utf8");
-  assert.match(uiSource, /function selectEvent\(nextEventId: string\)[\s\S]*?setActiveTab\("materials"\);[\s\S]*?onUseEvent\(nextEventId\)/);
+test("PC event selection opens current highlights and preserves unsaved work", () => {
+  const selectEvent = declarationSource('selectEvent');
+  assert.match(selectEvent, /if \(workflowHasUnsavedInput\(\)\) return/);
+  assert.match(selectEvent, /setActiveTab\("highlights"\);[\s\S]*?onUseEvent\(nextEventId\)/);
+  assert.match(selectEvent, /onClearTranscriptArtifact\(\)/);
   assert.match(uiSource, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
-  assert.doesNotMatch(styles, /simple-meeting-rail/);
-  assert.match(styles, /\.simple-new-event-mobile \{ display: inline-flex;/);
 });
 
 test("terminal transcription publishes the ready Event before refreshing workflow context", () => {
@@ -109,7 +109,7 @@ test("starting analysis rechecks a stale Event once before reporting not ready",
 
   assert.match(action, /if \(extractionAssetVersionIds\(extractionTarget\)\.length === 0\) \{[\s\S]*?api\.getEvent\(targetEvent\.id\)/);
   assert.match(action, /extractionTarget = refreshed/);
-  assert.match(action, /requestExtractionForEvent\(extractionTarget\)/);
+  assert.match(action, /requestExtractionForEvent\(extractionTarget, automatic\)/);
   assert.ok(
     action.indexOf("api.getEvent(targetEvent.id)") < action.indexOf('code: "EVENT_NOT_READY"'),
     "the browser must consult server truth before rejecting a just-finished transcript",

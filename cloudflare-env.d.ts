@@ -100,6 +100,7 @@ declare namespace Cloudflare {
     AI_TRANSCRIPTION_MODEL?: string;
     AI_TRANSCRIPTION_TIMEOUT_MS?: string;
     APP_ENV?: string;
+    MCP_ALLOWED_HOSTS?: string;
     AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
     INTERNAL_JOB_TOKEN?: string;
     INTERNAL_WORKSPACE_ID?: string;
@@ -115,5 +116,6 @@ declare namespace Cloudflare {
 }
 
 declare module "cloudflare:workers" {
+  export function waitUntil(promise: Promise<unknown>): void;
   export const env: Cloudflare.Env;
 }

@@ -1,3 +1,4 @@
+import { ANALYSIS_SOURCE_SQL } from "@/lib/server/workflow/analysis-service";
 import { CONTEXT_CHANGED_RESTARTED } from "@/lib/domain/context-restart";
 import { getD1 } from "@/db";
 import { createExtractionRun } from "@/lib/server/db/core-repository";
@@ -94,9 +95,9 @@ function deferredReason(error: unknown): string | null {
 
 /**
  * Ensures that every ready Event receives an extraction Run for its exact
- * current source manifest. The browser remains the fast path; this Cron repair
- * path also catches transcript/photo-only Events and material added after an
- * earlier Run, even when the originating browser is no longer open.
+ * current source manifest for historical records with source_revision=0.
+ * New material submissions are commissioned by their durable initial_analysis
+ * intent, including while their originating browser is closed.
  */
 export async function ensureAutomaticExtractionRuns(input?: {
   /**
@@ -119,6 +120,7 @@ export async function ensureAutomaticExtractionRuns(input?: {
          JOIN events e ON e.id = a.event_id AND e.workspace_id = a.workspace_id
          JOIN projects p ON p.id = e.project_id AND p.workspace_id = e.workspace_id
         WHERE e.material_status = 'ready'
+          AND e.source_revision = 0
           AND p.deleted_at IS NULL
           AND a.kind <> 'audio'
           AND a.processing_status = 'ready'
@@ -341,11 +343,16 @@ export async function ensureAutomaticExtractionRuns(input?: {
     }
 
     try {
+      const source = await getD1().prepare(ANALYSIS_SOURCE_SQL).bind(workspaceId, eventId).first<{stamp:string}>();
+      if (!source) throw new ApiFault(409, "EVENT_NOT_READY", "材料已变更，请重新读取");
+      const sourceRevision = Number((JSON.parse(source.stamp) as {sourceRevision:number}).sourceRevision);
       const ensured = await createExtractionRun(
         { workspaceId, actorId: "system-auto-manifest" },
         eventId,
         await idempotencyKey(eventId, assetVersionIds, failedAttempts),
         assetVersionIds,
+        false,
+        {sourceRevision,guard:{sql:`(${ANALYSIS_SOURCE_SQL})=?`,values:[workspaceId,eventId,source.stamp]}},
       );
       const outcome = ensured.created ? "created" : "reused";
       result[outcome] += 1;

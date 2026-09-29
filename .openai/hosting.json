@@ -1,5 +1,8 @@
 {
   "project_id": "appgprj_6a716fd238e881919b59fbe6e647e8a7",
   "d1": "DB",
-  "r2": "EVIDENCE"
+  "r2": "EVIDENCE",
+  "capabilities": [
+    "mcp"
+  ]
 }

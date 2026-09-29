@@ -178,10 +178,10 @@ test("the workspace nav is flat and a project-scope entry opens the record in on
   assert.doesNotMatch(styles, /\.meeting-more-menu|\.meeting-more-trigger/);
   assert.match(page, /className="meeting-tabs-scope"/, "event scope and project scope stay visually separated");
   assert.match(styles, /\.meeting-tabs-project/);
-  // The project entry navigates straight to the record; it must not render an
-  // interstitial whose only content is another button.
-  // 项目类型不再要人确认，分析做完就直接打开项目概览。
-  assert.match(page, /if \(next === "results" && analysisDone\) \{ onResult\("client-progress"\); return; \}/);
+  // Project review is readable before analysis finishes, with direct entry.
+  assert.match(page, /onSelectWorkspaceTab\(next === "results" \? "overview" : undefined\)/);
+  assert.match(page, /activeTab === "results" && <ProjectOverviewPage/);
+  assert.doesNotMatch(page, /next === "results" && analysisDone/);
   assert.doesNotMatch(page, /<b>设置项目类型<\/b>|<h2>这个项目属于哪一类/);
   assert.match(page, /if \(\(next === "transcript" \|\| next === "review"\) && event\)/);
   assert.doesNotMatch(page, />打开项目概览</, "the dead interstitial button is replaced by direct navigation");

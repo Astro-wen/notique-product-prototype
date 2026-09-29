@@ -221,3 +221,11 @@ test("restoring a project-less route keeps how-it-works instead of bouncing to t
   const early = restore.indexOf('target.view === "how-it-works"');
   assert.ok(early > 0 && early < guard, "how-it-works 的早返回必须排在 projectId 兜底之前");
 });
+
+test('project review route survives reload without changing legacy reading links',()=>{
+ const route=parseAppRoute('?project=p&event=e&view=simple&workspaceTab=overview');
+ assert.equal(route.workspaceTab,'overview');assert.deepEqual(parseAppRoute(serializeAppRoute(route)),route);
+ assert.equal(parseAppRoute('?project=p&event=e&view=simple&readingTab=readable').workspaceTab,undefined);
+ assert.equal(parseAppRoute('?view=projects&workspaceTab=overview').workspaceTab,undefined);
+ assert.equal(parseAppRoute('?project=p&workspaceTab=random').workspaceTab,undefined);
+});

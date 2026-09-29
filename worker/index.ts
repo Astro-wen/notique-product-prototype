@@ -1,3 +1,4 @@
+import { dispatchWorkflowOutbox } from '@/lib/server/jobs/workflow-outbox';
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
@@ -223,6 +224,7 @@ const worker = {
               ? { commission: { eventId: input.heartbeatEventId } }
               : undefined),
             sweepAndDispatchEventAiArtifacts(),
+            dispatchWorkflowOutbox(),
           ]).then((results) => {
             for (const result of results) {
               if (result.status === "rejected") {
@@ -316,7 +318,7 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
   scheduled(_controller: unknown, _env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(Promise.all([sweepAndDispatch(), sweepAndDispatchEventAiArtifacts()]));
+    ctx.waitUntil(Promise.all([sweepAndDispatch(), sweepAndDispatchEventAiArtifacts(), dispatchWorkflowOutbox()]));
   },
 };
 

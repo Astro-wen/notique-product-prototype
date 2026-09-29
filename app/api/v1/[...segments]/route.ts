@@ -1,3 +1,4 @@
+import { wakeMaterialAnalysis } from "@/lib/server/jobs/material-analysis";
 import {
   getEventTrashPreview,
   listTrashedEvents,
@@ -115,9 +116,11 @@ import {
   toResponse,
 } from "@/lib/server/http/api";
 import {
+  assertRequestAccess,
   getRequestScope,
   initializeRequestWorkspace,
 } from "@/lib/server/http/context";
+import { wakeWorkflowOutbox } from "@/lib/server/jobs/workflow-outbox";
 import { planByteRangeResponse } from "@/lib/server/http/byte-range";
 import type {
   BatchClaimVerdictRequest,
@@ -126,7 +129,7 @@ import type {
   OccurrenceVerdictRequest,
   CreateManualClaimRequest,
 } from "@/lib/shared/api-types";
-import { getBindings } from "@/db";
+import { getBindings, getD1 } from "@/db";
 
 export const dynamic = "force-dynamic";
 
@@ -355,6 +358,7 @@ function parseOccurrenceVerdict(body: JsonRecord): OccurrenceVerdictRequest {
 
 async function getHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
+  await assertRequestAccess(scope, 'read');
   if (segments.length === 1 && segments[0] === "projects") {
     return ok({ projects: await listProjects(scope) }, id);
   }
@@ -541,6 +545,7 @@ async function getHandler(request: Request, segments: string[], id: string): Pro
 async function postHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  await assertRequestAccess(scope, 'write');
   if (
     segments.length === 3 &&
     segments[0] === "transcription-runs" &&
@@ -873,6 +878,7 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
       };
     });
     const result = await finalizeTranscriptImport(scope, segments[1], ordered);
+    for (const event of result.events) wakeMaterialAnalysis(scope.workspaceId, event.id);
     return ok(
       { transcript_import: result.transcriptImport, events: result.events },
       id,
@@ -901,7 +907,9 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
     return ok({ asset, content_url: `/api/v1/assets/${encodeURIComponent(asset.id)}/content` }, id, 201);
   }
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "finalize") {
-    return ok({ asset: await finalizeAsset(scope, segments[1]) }, id);
+    const asset = await finalizeAsset(scope, segments[1]);
+    wakeMaterialAnalysis(scope.workspaceId, asset.event_id);
+    return ok({ asset }, id);
   }
   if (segments.length === 3 && segments[0] === "assets" && segments[2] === "heartbeat") {
     return ok({ asset: await heartbeatAssetUpload(scope, segments[1]) }, id);
@@ -1103,6 +1111,7 @@ async function postHandler(request: Request, segments: string[], id: string): Pr
 async function putHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  await assertRequestAccess(scope, 'write');
   if (segments.length === 2 && segments[0] === "projects") {
     const body = await jsonObject(request);
     return ok({ project: await updateProjectIndex(scope, segments[1], {
@@ -1160,6 +1169,7 @@ async function putHandler(request: Request, segments: string[], id: string): Pro
 async function deleteHandler(request: Request, segments: string[], id: string): Promise<Response> {
   const scope = await getRequestScope(request);
   await initializeRequestWorkspace(scope);
+  await assertRequestAccess(scope, 'write');
   if (segments.length === 2 && segments[0] === "glossary") {
     const body = await jsonObject(request);
     const glossaryEntry = await deleteGlossaryEntry(
@@ -1201,20 +1211,30 @@ async function handle(request: Request, context: RouteContext): Promise<Response
   const id = requestId(request);
   try {
     const { segments } = await context.params;
-    if (request.method === "GET") return await getHandler(request, segments, id);
-    if (request.method === "POST") {
+    let response: Response | undefined;
+    if (request.method === "GET") response = await getHandler(request, segments, id);
+    else if (request.method === "POST") {
       enforceSameOriginWrite(request);
-      return await postHandler(request, segments, id);
+      response = await postHandler(request, segments, id);
     }
-    if (request.method === "PUT") {
+    else if (request.method === "PUT") {
       enforceSameOriginWrite(request);
-      return await putHandler(request, segments, id);
+      response = await putHandler(request, segments, id);
     }
-    if (request.method === "DELETE") {
+    else if (request.method === "DELETE") {
       enforceSameOriginWrite(request);
-      return await deleteHandler(request, segments, id);
+      response = await deleteHandler(request, segments, id);
     }
-    throw new ApiFault(405, "METHOD_NOT_ALLOWED", "HTTP method is not supported.");
+    if (!response) throw new ApiFault(405, "METHOD_NOT_ALLOWED", "HTTP method is not supported.");
+    const scope = await getRequestScope(request);
+    await assertRequestAccess(scope,request.method === 'GET' ? 'read' : 'write');
+    if (request.method !== 'GET' && response.ok) {
+      const queued = await getD1().prepare(`SELECT 1 AS pending FROM workflow_outbox
+        WHERE workspace_id=? AND kind='narrative' AND state='queued' AND available_at<=?
+        LIMIT 1`).bind(scope.workspaceId,new Date(Date.now()+3000).toISOString()).first<{pending:number}>();
+      if (queued) wakeWorkflowOutbox();
+    }
+    return response;
   } catch (error) {
     return toResponse(error, id);
   }

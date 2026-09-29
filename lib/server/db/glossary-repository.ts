@@ -1,6 +1,7 @@
 import { getD1 } from "@/db";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
+import { legacyWorkflowInvalidationStatements } from "@/lib/server/db/legacy-workflow-invalidation";
 import {
   findMutationReplay,
   mutationReplayStatement,
@@ -273,6 +274,8 @@ export async function createGlossaryEntry(
             SET context_version = context_version + 1, updated_at = ?
           WHERE id = ? AND workspace_id = ?`,
       ).bind(timestamp, projectId, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, projectId, timestamp),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -393,6 +396,8 @@ export async function updateGlossaryEntry(
             SET context_version = context_version + 1, updated_at = ?
           WHERE id = ? AND workspace_id = ?`,
       ).bind(timestamp, projectId, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, projectId, timestamp),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -485,6 +490,8 @@ export async function deleteGlossaryEntry(
             SET context_version = context_version + 1, updated_at = ?
           WHERE id = ? AND workspace_id = ?`,
       ).bind(timestamp, projectId, scope.workspaceId),
+      ...legacyWorkflowInvalidationStatements(db, scope, projectId, timestamp),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,

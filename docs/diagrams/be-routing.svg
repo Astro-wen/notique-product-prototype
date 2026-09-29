@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500" viewBox="0 0 1000 500" role="img" aria-labelledby="title desc">
+  <title id="title">后台任务调度流程</title>
+  <desc id="desc">outbox 待处理任务被领取租约后，执行当前阶段并保存检查点。阶段成功后合并与引用校验，再发布完整覆盖；阶段失败则确认失败范围并退避，仅重试失败阶段。部分成功可先读，旧租约不能写回，关闭页面后继续。</desc>
+  <rect x="0" y="0" width="1000" height="500" fill="#FFFFFF"/>
+  <g fill="none" stroke="#111111" stroke-width="1.8" stroke-linejoin="round">
+    <polyline points="210,142 250,142"/>
+    <polyline points="430,142 470,142"/>
+    <polyline points="670,142 750,142"/>
+    <polyline points="860,174 860,227"/>
+    <polyline points="770,285 670,285"/>
+    <polyline points="570,250 570,174"/>
+    <polyline points="860,343 860,365"/>
+    <polyline points="750,398 690,398"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="250,142 241,137 241,147"/>
+    <polygon points="470,142 461,137 461,147"/>
+    <polygon points="750,142 741,137 741,147"/>
+    <polygon points="860,227 855,218 865,218"/>
+    <polygon points="670,285 679,280 679,290"/>
+    <polygon points="570,174 565,183 575,183"/>
+    <polygon points="860,365 855,356 865,356"/>
+    <polygon points="690,398 699,393 699,403"/>
+  </g>
+  <g fill="#EAF3FC" stroke="#111111" stroke-width="1.5">
+    <rect x="30" y="110" width="180" height="64" rx="10"/>
+    <rect x="250" y="110" width="180" height="64" rx="10"/>
+    <rect x="470" y="110" width="200" height="64" rx="10"/>
+    <rect x="750" y="110" width="220" height="64" rx="10"/>
+    <rect x="470" y="250" width="200" height="70" rx="10"/>
+    <rect x="750" y="365" width="220" height="66" rx="10"/>
+    <rect x="470" y="365" width="220" height="66" rx="10"/>
+  </g>
+  <polygon points="860,227 950,285 860,343 770,285" fill="#FFF2CC" stroke="#111111" stroke-width="1.5"/>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <text x="500" y="35" font-size="22">后台任务调度流程</text>
+    <text x="120" y="150" font-size="20">outbox 待处理</text>
+    <text x="340" y="150" font-size="22">领取租约</text>
+    <text x="570" y="150" font-size="22">执行当前阶段</text>
+    <text x="860" y="150" font-size="22">保存检查点</text>
+    <text x="860" y="293" font-size="20">阶段成功？</text>
+    <text x="570" y="293" font-size="20">失败范围与退避</text>
+    <text x="860" y="406" font-size="20">合并与引用校验</text>
+    <text x="580" y="406" font-size="22">发布完整覆盖</text>
+    <text x="719" y="273" font-size="18">否</text>
+    <text x="881" y="361" font-size="18">是</text>
+    <text x="645" y="216" font-size="18">重试失败阶段</text>
+  </g>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" font-size="18">
+    <circle cx="47" cy="285" r="4" fill="#5B8DB8"/>
+    <text x="62" y="291">关闭页面后继续</text>
+    <circle cx="47" cy="326" r="4" fill="#5B8DB8"/>
+    <text x="62" y="332">旧租约不能写回</text>
+    <circle cx="47" cy="367" r="4" fill="#5B8DB8"/>
+    <text x="62" y="373">部分成功可先读</text>
+  </g>
+</svg>

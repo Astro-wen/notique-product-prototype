@@ -1,0 +1,9 @@
+import {getBindings,getD1} from '@/db';
+import {mcpIdentity,mcpConnectionStatus,setMcpConnection,McpAccessFault} from '@/lib/server/mcp/access';
+import {parseWorkflowRequest,WorkflowValidationError} from '@/lib/shared/workflow-v2';
+import {WorkflowFault} from '@/lib/server/workflow/snapshot-store';
+const headers={'cache-control':'private, no-store'};
+export const dynamic='force-dynamic';
+function error(cause:unknown){const status=cause instanceof McpAccessFault || cause instanceof WorkflowFault?cause.status:cause instanceof WorkflowValidationError?400:500;return Response.json({error:{code:status===401?'UNAUTHORIZED':status===403?'FORBIDDEN':status===400?'INVALID_REQUEST':'CONNECTION_UNAVAILABLE',message:cause instanceof McpAccessFault || cause instanceof WorkflowFault || cause instanceof WorkflowValidationError?cause.message:'连接状态读取失败，请重试。'}},{status,headers});}
+export async function GET(request:Request){try {const identity=mcpIdentity(request,getBindings());return Response.json({data:await mcpConnectionStatus(getD1(),identity)},{headers});}catch(cause){if(cause instanceof McpAccessFault && cause.status===401)return Response.json({data:{authenticated:false,enabled:false,scope:'mcp:read',endpoint:'/mcp',expiresAt:null,accountEmail:null}},{headers});return error(cause);}}
+export async function POST(request:Request){try {const origin=request.headers.get('origin');if(!origin || origin!==new URL(request.url).origin)throw new McpAccessFault(403,'请在当前平台的连接页保存授权。');const body=await request.text();if(body.length>128)throw new McpAccessFault(400,'授权参数过长。');let value;try{value=JSON.parse(body);}catch{throw new McpAccessFault(400,'请选择开启或断开只读授权。');}value=parseWorkflowRequest('McpConnectionRequest',value);const env=getBindings(),identity=mcpIdentity(request,env);return Response.json({data:await setMcpConnection(getD1(),identity,env,value.enabled)},{headers});}catch(cause){return error(cause);}}

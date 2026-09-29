@@ -57,6 +57,21 @@ function finite(value) {
   return Number.isFinite(value) ? Number(value) : 0;
 }
 
+function sumEstimatedCosts(values) {
+  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0)) return null;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Number.isFinite(total) ? total : null;
+}
+
+function sumMeasured(values) {
+  return sumEstimatedCosts(values);
+}
+
+function sumKnown(values) {
+  if (values.some((value) => value === null)) return null;
+  return sumMeasured(values);
+}
+
 function uniqueBy(items, keyOf) {
   const output = new Map();
   for (const item of items) {
@@ -246,25 +261,39 @@ export function summarizeArm(arm) {
   const evidence = predictions.flatMap((claim) => claim.evidence ?? []);
   const formalRelations = arm.runs.flatMap((run) => run.prediction.relations ?? []);
   const stages = arm.runs.flatMap(stageTelemetry);
-  const factUsage = arm.runs.reduce((total, run) => ({
-    inputTokens: total.inputTokens + finite(run.prediction.usage?.inputTokens),
-    outputTokens: total.outputTokens + finite(run.prediction.usage?.outputTokens),
-    cachedTokens: total.cachedTokens + finite(run.prediction.usage?.cachedTokens),
-    costUsd: total.costUsd + finite(run.prediction.usage?.costUsd),
-    latencyMs: total.latencyMs + finite(run.prediction.usage?.latencyMs),
-  }), { inputTokens: 0, outputTokens: 0, cachedTokens: 0, costUsd: 0, latencyMs: 0 });
-  const artifactUsage = arm.runs.flatMap((run) => run.artifactRuns ?? []).reduce((total, run) => ({
-    inputTokens: total.inputTokens + finite(run.input_tokens),
-    outputTokens: total.outputTokens + finite(run.output_tokens),
-    cachedTokens: total.cachedTokens + finite(run.cached_tokens),
-    costUsd: total.costUsd + finite(run.estimated_cost_usd),
-    modelDurationMs: total.modelDurationMs + finite(run.duration_ms),
-  }), { inputTokens: 0, outputTokens: 0, cachedTokens: 0, costUsd: 0, modelDurationMs: 0 });
+  const factTotals = Object.fromEntries(["inputTokens", "outputTokens", "cachedTokens", "latencyMs"]
+    .map((field) => [field, sumMeasured(arm.runs.map((run) => run.prediction.usage?.[field]))]));
+  const factCostUsd = sumEstimatedCosts(arm.runs.map((run) => run.prediction.usage?.costUsd));
+  const factUsage = {
+    ...factTotals,
+    costUsd: factCostUsd,
+    costUsdBasis: "estimated",
+    costUsdComplete: factCostUsd !== null,
+  };
+  const artifactRuns = arm.runs.flatMap((run) => run.artifactRuns ?? []);
+  const artifactTotals = Object.fromEntries(Object.entries({
+    inputTokens: "input_tokens",
+    outputTokens: "output_tokens",
+    cachedTokens: "cached_tokens",
+    modelDurationMs: "duration_ms",
+  }).map(([field, source]) => [field, sumMeasured(artifactRuns.map((run) => run[source]))]));
+  const artifactCostUsd = sumEstimatedCosts(artifactRuns.map((run) => run.estimated_cost_usd));
+  const artifactUsage = {
+    ...artifactTotals,
+    costUsd: artifactCostUsd,
+    costUsdBasis: "estimated",
+    costUsdComplete: artifactCostUsd !== null,
+  };
+  const combinedCostUsd = factCostUsd === null || artifactCostUsd === null
+    ? null
+    : sumEstimatedCosts([factCostUsd, artifactCostUsd]);
   const usage = {
-    inputTokens: factUsage.inputTokens + artifactUsage.inputTokens,
-    outputTokens: factUsage.outputTokens + artifactUsage.outputTokens,
-    cachedTokens: factUsage.cachedTokens + artifactUsage.cachedTokens,
-    costUsd: factUsage.costUsd + artifactUsage.costUsd,
+    inputTokens: sumKnown([factUsage.inputTokens, artifactUsage.inputTokens]),
+    outputTokens: sumKnown([factUsage.outputTokens, artifactUsage.outputTokens]),
+    cachedTokens: sumKnown([factUsage.cachedTokens, artifactUsage.cachedTokens]),
+    costUsd: combinedCostUsd,
+    costUsdBasis: "estimated",
+    costUsdComplete: combinedCostUsd !== null,
     // Extraction end-to-end latency already includes any wait for the parallel
     // Readable Transcript. Do not double-count artifact duration as wall time.
     latencyMs: factUsage.latencyMs,
@@ -642,15 +671,17 @@ export function buildScoredComparison({ control, treatment, controlAdjudication,
   const comparable = validateComparableArms(control, treatment);
   const controlScore = scoreArm(control, controlAdjudication, groundTruth, actionGroundTruth);
   const treatmentScore = scoreArm(treatment, treatmentAdjudication, groundTruth, actionGroundTruth);
-  const controlTokens = controlScore.metrics.usage.inputTokens + controlScore.metrics.usage.outputTokens;
-  const treatmentTokens = treatmentScore.metrics.usage.inputTokens + treatmentScore.metrics.usage.outputTokens;
-  const tokenIncrease = controlTokens === 0 ? null : (treatmentTokens - controlTokens) / controlTokens;
-  const controlFactTokens = controlScore.metrics.factUsage.inputTokens + controlScore.metrics.factUsage.outputTokens;
-  const treatmentFactTokens = treatmentScore.metrics.factUsage.inputTokens + treatmentScore.metrics.factUsage.outputTokens;
-  const factTokenIncrease = controlFactTokens === 0
+  const controlTokens = sumKnown([controlScore.metrics.usage.inputTokens, controlScore.metrics.usage.outputTokens]);
+  const treatmentTokens = sumKnown([treatmentScore.metrics.usage.inputTokens, treatmentScore.metrics.usage.outputTokens]);
+  const tokenIncrease = controlTokens == null || treatmentTokens == null || controlTokens === 0
+    ? null : (treatmentTokens - controlTokens) / controlTokens;
+  const controlFactTokens = sumKnown([controlScore.metrics.factUsage.inputTokens, controlScore.metrics.factUsage.outputTokens]);
+  const treatmentFactTokens = sumKnown([treatmentScore.metrics.factUsage.inputTokens, treatmentScore.metrics.factUsage.outputTokens]);
+  const factTokenIncrease = controlFactTokens == null || treatmentFactTokens == null || controlFactTokens === 0
     ? null
     : (treatmentFactTokens - controlFactTokens) / controlFactTokens;
-  const latencyIncrease = controlScore.metrics.usage.latencyMs === 0
+  const latencyIncrease = controlScore.metrics.usage.latencyMs == null ||
+    treatmentScore.metrics.usage.latencyMs == null || controlScore.metrics.usage.latencyMs === 0
     ? null
     : (treatmentScore.metrics.usage.latencyMs - controlScore.metrics.usage.latencyMs) /
       controlScore.metrics.usage.latencyMs;
@@ -700,6 +731,7 @@ export function buildScoredComparison({ control, treatment, controlAdjudication,
     limitations: [
       "This four-Event synthetic A/B is a development regression, not real-buyer concept validation.",
       "One Run per arm does not establish the three-run semantic stability gate.",
+      "Cost figures are estimates, not reconciled provider bills; missing estimates remain null.",
       "Latency is reported but has no pass threshold until a product SLO is frozen.",
     ],
   };

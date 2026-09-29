@@ -1,4 +1,5 @@
 import type { ContextPack } from "./context-pack";
+import {sameIntentGroupIssues,type SameIntentGroupProposal} from "./same-intent-groups.ts";
 import type {
   ExtractClaimsOutput,
   ModelContractIssue,
@@ -14,7 +15,17 @@ import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-ar
 
 export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
-export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
+export const LEGACY_VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
+export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v5" as const;
+export const VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
+export type VerificationSchemaVersion = typeof VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
+
+export function verificationContractForRun(params:Record<string,unknown>):{schemaVersion:VerificationSchemaVersion;promptVersion:string} {
+  const version=params.verification_schema_version;
+  if(version===undefined || version===LEGACY_VERIFICATION_SCHEMA_VERSION)return {schemaVersion:LEGACY_VERIFICATION_SCHEMA_VERSION,promptVersion:TWO_STAGE_EXTRACTION_PROMPT_VERSION};
+  if(version===VERIFICATION_SCHEMA_VERSION)return {schemaVersion:VERIFICATION_SCHEMA_VERSION,promptVersion:VERIFICATION_PROMPT_VERSION};
+  throw new Error('Unsupported frozen verification schema.');
+}
 
 export const TWO_STAGE_EXTRACTION_LIMITS = {
   inventoryCandidates: 24,
@@ -69,7 +80,8 @@ export type DraftLinkCandidate = {
 };
 
 export type VerificationOutput = {
-  schema_version: typeof VERIFICATION_SCHEMA_VERSION;
+  schema_version: VerificationSchemaVersion;
+  same_intent_groups?: SameIntentGroupProposal[];
   event_id: string;
   scenario_assessment: ExtractClaimsOutput["scenario_assessment"];
   claims: ExtractClaimsOutput["claims"];
@@ -116,6 +128,7 @@ export interface TwoStageModelProvider extends ModelProvider {
 }
 
 export type ModelStageRequestOptions = {
+  verificationSchemaVersion?: VerificationSchemaVersion;
   signal?: AbortSignal;
   idempotencyKey?: string;
   promptCacheKey?: string;
@@ -381,8 +394,10 @@ export function validateVerificationOutput(
   if (!record(rawValue)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
   const { value: repairedValue, repairs } = repairVerificationOutput(rawValue);
   const value = repairedValue as Record<string, unknown>;
-  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review"], "$", issues);
-  if (value.schema_version !== VERIFICATION_SCHEMA_VERSION) {
+  const legacy=value.schema_version===LEGACY_VERIFICATION_SCHEMA_VERSION;
+  exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review", ...(legacy?[]:["same_intent_groups"])], "$", issues);
+  if(!legacy)issues.push(...sameIntentGroupIssues(value.same_intent_groups));
+  if (value.schema_version !== VERIFICATION_SCHEMA_VERSION && !legacy) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
   }
   if (value.event_id !== inventory.event_id) {

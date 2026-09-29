@@ -1,13 +1,21 @@
 import { expect, test } from '@playwright/test';
 import { NotiqueApiFixture } from './notique-api-fixture';
 
-test('reading views show question answers and actual speaker summaries with raw-only source recall', async ({page}) => {
+function apiFixture() {
   const fixture = new NotiqueApiFixture();
+  fixture.allowMutation('POST', '/api/v1/projects/project-a/opened');
+  return fixture;
+}
+
+test('reading views show question answers and actual speaker summaries with raw-only source recall', async ({page}) => {
+  const fixture = apiFixture();
   fixture.enableSummaryFirstFlow(); fixture.completeSummary(); fixture.completeFacts(); fixture.completeReadableTranscript();
   await fixture.install(page);
-  await page.goto('/?project=project-a&event=event-a&view=simple&readingTab=readable');
+  await page.goto('/?project=project-a&event=event-a&view=simple');
+  await page.getByRole('button', {name:'查看原文',exact:true}).click();
   await expect(page.locator('.raw-artifact')).toBeVisible();
   await expect(page.locator('.transcript-subtabs, .tingwu-keywords, .readable-artifact')).toHaveCount(0);
+  await page.locator('.reader-extra-views > summary').click();
   await page.getByRole('button', {name:'要点回顾',exact:true}).click();
   await expect(page.locator('.tingwu-point')).toHaveCount(3);
   await expect(page.locator('.tingwu-point h3').first()).toHaveText('买家的预算是多少？');
@@ -25,7 +33,7 @@ test('reading views show question answers and actual speaker summaries with raw-
 
 for (const width of [1024, 1440, 1920]) {
   test(`overview fits and uses the desktop window at ${width}px`, async ({page}) => {
-    const fixture = new NotiqueApiFixture();
+    const fixture = apiFixture();
     await fixture.install(page);
     await page.setViewportSize({width,height:1000});
     await page.goto('/?project=project-a&view=results&tab=client-progress');
@@ -38,25 +46,25 @@ for (const width of [1024, 1440, 1920]) {
 }
 
 test('workspace Modify opens an editable field without a second Modify click', async ({page}) => {
-  const fixture = new NotiqueApiFixture();
+  const fixture = apiFixture();
   fixture.enableSummaryFirstFlow();
   fixture.completeSummary();
   fixture.completeFacts();
   await fixture.install(page);
   await page.goto('/?project=project-a&event=event-a&view=simple');
-  await page.locator('.rail-pending-list button').filter({hasText:'预算上限是 120 万美元'}).click();
-  await page.locator('.inline-review-view').getByRole('button',{name:'修改后确认'}).click();
-  await expect(page.locator('.edit-form textarea').first()).toBeVisible();
-  await expect(page.locator('.edit-form textarea').first()).toHaveValue('预算上限是 120 万美元');
+  const bullet = page.getByTestId('bullet-claim-summary-pending');
+  await bullet.getByRole('button',{name:'改一下',exact:true}).click();
+  await expect(bullet.getByRole('textbox',{name:'修改重点'})).toBeVisible();
+  await expect(bullet.getByRole('textbox',{name:'修改重点'})).toHaveValue('预算上限是 120 万美元');
   await expect(page).toHaveURL(/view=simple/);
-  await expect(page.locator('.reader-action-rail .edit-form')).toBeVisible();
-  await page.locator('.edit-form').getByRole('button',{name:'取消',exact:true}).click();
-  await expect(page.locator('.rail-pending-list')).toContainText('预算上限是 120 万美元');
+  await bullet.getByRole('button',{name:'取消',exact:true}).click();
+  await expect(bullet.getByRole('textbox')).toHaveCount(0);
+  await expect(bullet).toContainText('预算上限是 120 万美元');
   expect(fixture.writes.filter(write=>!['/api/v1/jobs/dispatch','/api/v1/projects/project-a/opened'].includes(write.path))).toEqual([]);
 });
 
 test('project record search recovers from an empty result and secondary views remain reachable', async ({page}) => {
-  const fixture = new NotiqueApiFixture();
+  const fixture = apiFixture();
   await fixture.install(page);
   await page.goto('/?project=project-a&view=results&tab=client-progress');
   const rows = page.locator('.project-overview-row');
@@ -77,8 +85,8 @@ test('project record search recovers from an empty result and secondary views re
 });
 
 for (const width of [1024, 1440, 1920]) {
-  test(`transcript opens first and leaves a usable decision column at ${width}px`, async ({page}) => {
-    const fixture = new NotiqueApiFixture();
+  test(`the record opens first and its raw reader remains usable at ${width}px`, async ({page}) => {
+    const fixture = apiFixture();
     fixture.enableSummaryFirstFlow();
     fixture.completeSummary();
     fixture.completeReadableTranscript();
@@ -86,20 +94,22 @@ for (const width of [1024, 1440, 1920]) {
     await fixture.install(page);
     await page.setViewportSize({width,height:800});
     await page.goto('/?project=project-a&event=event-a&view=simple');
+    await expect(page.getByTestId('bullet-claim-summary-pending')).toBeVisible();
+    await page.getByRole('button', {name:'查看原文',exact:true}).click();
+    await page.locator('.reader-extra-views > summary').click();
     await expect(page.locator('.tingwu-overview-copy')).toBeVisible();
     await expect(page.getByRole('button',{name:'章节速览',exact:true})).toBeVisible();
     await expect(page.locator('.reader-overview')).toHaveJSProperty('tagName','SECTION');
-    await expect(page.locator('.transcript-copy-button').first()).toBeVisible();
-    await expect(page.locator('.pending-view')).toBeVisible();
+    await expect(page.getByRole('button',{name:'导出逐字稿',exact:true})).toBeVisible();
+    await expect(page.locator('.reader-action-rail')).toHaveCount(0);
     const bounds=await page.evaluate(()=>{
       const left=document.querySelector('.reader-reading-pane')!.getBoundingClientRect();
-      const right=document.querySelector('.reader-action-rail')!.getBoundingClientRect();
-      return {ratio:right.width/(left.width+right.width),bottom:left.bottom,right:left.right,railLeft:right.left,overflow:document.documentElement.scrollWidth>innerWidth};
+      const canvas=document.querySelector('.reader-workspace-layout')!.getBoundingClientRect();
+      return {ratio:left.width/canvas.width,bottom:left.bottom,width:left.width,overflow:document.documentElement.scrollWidth>innerWidth};
     });
-    expect(bounds.ratio).toBeGreaterThanOrEqual(.34);
-    expect(bounds.ratio).toBeLessThanOrEqual(.41);
+    expect(bounds.ratio).toBeGreaterThanOrEqual(.95);
+    expect(bounds.width).toBeGreaterThan(width-360);
     expect(bounds.bottom).toBeLessThanOrEqual(800);
-    expect(bounds.right).toBeLessThanOrEqual(bounds.railLeft+1);
     expect(bounds.overflow).toBe(false);
       await page.getByRole('button',{name:'章节速览',exact:true}).click();
     const title=await page.locator('.reader-chapters .chapter-copy > summary').first().innerText();
@@ -113,41 +123,45 @@ for (const width of [1024, 1440, 1920]) {
 }
 
 
-test('inline review guards evidence, retains edits on failure, and submits the chosen sources', async ({page}) => {
-  const fixture = new NotiqueApiFixture(); fixture.enableSummaryFirstFlow(); fixture.completeSummary(); fixture.completeFacts();
-  fixture.allowMutation('POST','/api/v1/claims/claim-summary-pending/verdicts');
+test('same-page correction retains edits on failure and submits the exact source version', async ({page}) => {
+  const fixture = apiFixture(); fixture.enableSummaryFirstFlow(); fixture.completeSummary(); fixture.completeFacts();
+  const decisionPath = '/api/v2/review-cards/card-claim-summary-pending/decisions';
+  fixture.allowMutation('POST', decisionPath);
   await fixture.install(page);
   await page.goto('/?project=project-a&event=event-a&view=simple');
-  await page.locator('.rail-pending-list button').filter({hasText:'预算上限是 120 万美元'}).click();
-  await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop = 100);
-  const position = await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop);
-  await page.locator('.inline-review-view').getByRole('button',{name:'修改后确认'}).click();
-  const editor = page.locator('.edit-form');
+  const bullet = page.getByTestId('bullet-claim-summary-pending');
+  await bullet.getByRole('button',{name:'原话',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'原话与出处'})).toContainText('预算上限是 120 万美元。');
+  await page.getByRole('button',{name:'返回记录',exact:true}).click();
+  await bullet.getByRole('button',{name:'改一下',exact:true}).click();
+  const editor = bullet.locator('form');
   await expect(editor).toBeVisible();
-  expect(await page.locator('.reader-reading-scroll').evaluate(e => e.scrollTop)).toBe(position);
-  await editor.getByLabel('修改后的陈述').fill('预算上限调整为 110 万美元');
-  await expect(editor.getByRole('button',{name:'保存并确认'})).toBeDisabled();
-  await editor.locator('.edit-evidence input').first().check();
-  await expect(editor.getByRole('button',{name:'保存并确认'})).toBeEnabled();
+  await editor.getByRole('textbox',{name:'修改重点'}).fill('预算上限调整为 110 万美元');
+  await expect(editor.getByRole('button',{name:'保存修改',exact:true})).toBeEnabled();
   let fail = true;
-  await page.route('**/claims/claim-summary-pending/verdicts', async route => {
+  await page.route(`**${decisionPath}`, async route => {
     if (fail) { fail = false; await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'TEMPORARILY_UNAVAILABLE',message:'请重试'}})}); }
     else await route.fallback();
   });
-  await editor.getByRole('button',{name:'保存并确认'}).click();
-  await expect(editor.getByLabel('修改后的陈述')).toHaveValue('预算上限调整为 110 万美元');
-  await expect(page.locator('.embedded-review')).toContainText('连不上服务');
-  await editor.getByRole('button',{name:'保存并确认'}).click();
+  await editor.getByRole('button',{name:'保存修改',exact:true}).click();
+  await expect(editor.getByRole('textbox',{name:'修改重点'})).toHaveValue('预算上限调整为 110 万美元');
+  await expect(page.getByRole('alert')).toContainText('请重试');
+  await editor.getByRole('button',{name:'保存修改',exact:true}).click();
   await expect(editor).toHaveCount(0);
   await expect(page).toHaveURL(/view=simple/);
-  const write = fixture.writes.find(w=>w.path.endsWith('/verdicts'))!;
-  expect(write.body).toMatchObject({action:'edit', edit:{statement:'预算上限调整为 110 万美元',retain_existing_evidence:false}});
+  await expect(bullet).toContainText('预算上限调整为 110 万美元');
+  await expect(bullet).toContainText('已采纳');
+  const write = fixture.writes.find(w=>w.path === decisionPath)!;
+  expect(write.idempotencyKey).toBeTruthy();
+  expect(write.body).toMatchObject({operation:'edit', expectedContextVersion:8, expectedCardRevision:1,
+    members:[{claimId:'claim-summary-pending',claimVersionId:'claim-summary-pending-version-1',operation:'edit',newText:'预算上限调整为 110 万美元',origin:'source_statement',evidenceRefIds:['evidence-claim-summary-pending']}]});
+  fixture.assertNoUnexpectedWrites();
 });
 
 
 
 test('long audio reader scrolls back to the top and keeps its dock inside resized windows', async ({page}) => {
-  const fixture = new NotiqueApiFixture();
+  const fixture = apiFixture();
   fixture.enableSummaryFirstFlow(); fixture.completeSummary(); fixture.completeFacts();
   fixture.readerAudioMode = true;
   await fixture.install(page);
@@ -165,6 +179,7 @@ test('long audio reader scrolls back to the top and keeps its dock inside resize
   });
   await page.setViewportSize({width:1440,height:800});
   await page.goto('/?project=project-a&event=event-a&view=simple');
+  await page.getByRole('button', {name:'查看原文',exact:true}).click();
   const reader = page.locator('.reader-reading-scroll');
   const dock = page.locator('.reader-audio-player');
   await expect(dock).toBeVisible();
@@ -187,7 +202,7 @@ test('long audio reader scrolls back to the top and keeps its dock inside resize
     expect(box.x).toBeGreaterThanOrEqual(pane.x);
     expect(box.x + box.width).toBeLessThanOrEqual(pane.x + pane.width);
   }
-  await page.locator('.reader-chapters .chapter-time').last().click();
+  await page.locator('.inline-chapter .chapter-time').last().click();
   await expect(page.locator('.transcript-turn.selected').first()).toBeInViewport();
   expect(await page.evaluate(() => scrollY)).toBe(0);
   await page.getByRole('slider', {name:'录音进度'}).fill('2');
@@ -203,14 +218,17 @@ test('long audio reader scrolls back to the top and keeps its dock inside resize
   await page.getByRole('button', {name:'回到播放位置'}).click();
   await expect.poll(() => reader.evaluate(e => e.scrollTop)).toBeGreaterThan(100);
   await dock.locator('.audio-play-button').click();
-  // Crossing the compact layout breakpoint must not leave the dock overlapping the action sheet.
+  // The source reader uses the whole canvas at narrower PC windows, with no decision sheet over the audio dock.
   await page.setViewportSize({width:900,height:620});
   await page.mouse.move(500,350); await page.mouse.wheel(0,1200);
   await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(100);
   const compactDock = (await dock.boundingBox())!;
-  const sheet = (await page.locator('.reader-action-rail').boundingBox())!;
+  const compactPane = (await page.locator('.reader-reading-pane').boundingBox())!;
+  await expect(page.locator('.reader-action-rail')).toHaveCount(0);
   expect(compactDock.y + compactDock.height).toBeLessThanOrEqual(620);
-  expect(sheet.y + sheet.height).toBeLessThanOrEqual(compactDock.y);
+  // The fixed dock includes the source canvas's one-pixel border.
+  expect(compactDock.x).toBeGreaterThanOrEqual(compactPane.x-1);
+  expect(compactDock.x + compactDock.width).toBeLessThanOrEqual(compactPane.x + compactPane.width+1);
   await page.setViewportSize({width:1440,height:800});
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(801);

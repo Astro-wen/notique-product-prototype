@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant S as 服务端
+    participant W as 后台任务
+    U->>F: 添加材料
+    F->>S: 上传并提交材料版本
+    S->>S: 保存材料与分析意图
+    S-->>F: 返回已保存和运行 ID
+    S->>W: 投递分析
+    F->>S: 读取已有进度
+    S-->>F: 逐字稿与部分覆盖结果
+    F-->>U: 先读可用内容，可离开
+    W->>S: 保存阶段结果与完整覆盖
+    U->>F: 再次打开
+    F->>S: 读取现有运行与快照
+    S-->>F: 返回最新结果

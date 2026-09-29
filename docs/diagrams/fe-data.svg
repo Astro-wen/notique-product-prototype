@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="450" viewBox="0 0 1000 450">
+  <rect x="0" y="0" width="1000" height="450" fill="#FFFFFF"/>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111">
+    <text x="30" y="36" font-size="22">批阅后的数据更新</text>
+  </g>
+  <g fill="none" stroke="#111111" stroke-width="1.8" stroke-linejoin="round">
+    <polyline points="140,112 176,112"/>
+    <polyline points="358,112 394,112"/>
+    <polyline points="556,112 592,112"/>
+    <polyline points="734,112 770,112"/>
+    <polyline points="871,150 871,195 490,195 490,233"/>
+    <polyline points="776,195 776,233"/>
+    <polyline points="776,303 776,358"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="178,112 169,107 169,117"/>
+    <polygon points="396,112 387,107 387,117"/>
+    <polygon points="594,112 585,107 585,117"/>
+    <polygon points="772,112 763,107 763,117"/>
+    <polygon points="490,235 485,226 495,226"/>
+    <polygon points="776,235 771,226 781,226"/>
+    <polygon points="776,360 771,351 781,351"/>
+  </g>
+  <g fill="#EAF2FC" stroke="#111111" stroke-width="1.2">
+    <rect x="30" y="74" width="110" height="76" rx="10"/>
+    <rect x="178" y="74" width="180" height="76" rx="10"/>
+    <rect x="396" y="74" width="160" height="76" rx="10"/>
+    <rect x="594" y="74" width="140" height="76" rx="10"/>
+    <rect x="772" y="74" width="198" height="76" rx="10"/>
+    <rect x="395" y="235" width="190" height="68" rx="10"/>
+    <rect x="681" y="235" width="190" height="68" rx="10"/>
+    <rect x="681" y="360" width="190" height="64" rx="10"/>
+  </g>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" font-size="20" text-anchor="middle">
+    <text x="85" y="119">用户批阅</text>
+    <text x="268" y="105">提交决定</text>
+    <text x="268" y="133">与基准版本</text>
+    <text x="476" y="119">后端原子保存</text>
+    <text x="664" y="119">返回新版本</text>
+    <text x="871" y="119">刷新统一快照</text>
+    <text x="490" y="276">要点立即更新</text>
+    <text x="776" y="276">概要正在更新</text>
+    <text x="776" y="399">新版本正文</text>
+  </g>
+  <g font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" fill="#111111" font-size="18">
+    <text x="798" y="337">等待后台结果</text>
+    <text x="30" y="418">注：版本过旧的响应会被丢弃。</text>
+  </g>
+</svg>

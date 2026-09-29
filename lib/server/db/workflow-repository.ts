@@ -5,10 +5,7 @@ import {
   planProjectWorkflow,
   projectNeedsScenarioConfirmation,
 } from "@/lib/domain/project-workflow";
-import {
-  expireStaleAssetUploads,
-  getProject,
-} from "@/lib/server/db/core-repository";
+import { getProject } from "@/lib/server/db/core-repository";
 import type { RequestScope } from "@/lib/server/http/context";
 import type {
   ExtractionModelStageName,
@@ -63,7 +60,6 @@ export async function getWorkflowSnapshot(
   projectId: string,
 ): Promise<WorkflowSnapshotRecord> {
   const project = await getProject(scope, projectId);
-  await expireStaleAssetUploads(scope, { projectId });
   const result = await getD1()
     .prepare(
       `WITH material_counts AS (

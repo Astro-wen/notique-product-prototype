@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {workflowDatabase,seed,claim,relation,SCOPE,T} from './helpers/workflow-database.mjs';
+import {dispatchWorkflowCommand} from '../lib/server/workflow/commands.ts';
+import {readWorkspace} from '../lib/server/workflow/snapshot-store.ts';
+import {buildRecordText} from '../lib/domain/workflow-v2.ts';
+const read=db=>readWorkspace(db,SCOPE,'e',{},T);
+const send=(db,path,body,key=crypto.randomUUID())=>dispatchWorkflowCommand(db,SCOPE,path.split('/'),body,key);
+async function decide(db,id,operation,extra={}) {const s=await read(db),card=s.reviewCards.find(c=>c.memberRefs.some(r=>r.claimId===id));return send(db,`review-cards/${card.id}/decisions`,{expectedContextVersion:s.contextVersion,expectedCardRevision:card.revision,operation,members:[{...card.memberRefs.find(r=>r.claimId===id),operation,...extra}]});}
+async function setup(t,{completed=false,cancelled=false,edited=false}={}) {const f=await workflowDatabase();t.after(f.close);seed(f.sqlite);await decide(f.db,'action','accept_action');
+ if(completed||cancelled) {const s=await read(f.db);await send(f.db,'actions/action/transitions',{expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,operation:cancelled?'cancel':'complete'});}
+ if(edited) await decide(f.db,'action','edit',{newText:'向供应商确认报价',origin:'user_input',evidenceRefIds:[]});
+ claim(f.sqlite,'new-action','next_action','向厂家确认交期');relation(f.sqlite,'new-basis','new-action','question','informed_by','proposed');
+ const old=f.sqlite.prepare("SELECT current_version_id FROM claims WHERE id='action'").get().current_version_id;
+ f.sqlite.prepare("INSERT INTO claim_relations(id,workspace_id,project_id,type,source_claim_version_id,target_claim_version_id,context_version,status) VALUES ('action-conflict','ws','p','supersedes','new-action_v1',?,0,'proposed')").run(old);
+ return f;
+}
+async function resolve(db,mode,extra={}) {const s=await read(db),card=s.reviewCards.find(c=>c.id==='wfc_new-action'),conflict=card.conflicts[0];
+ const body={expectedContextVersion:s.contextVersion,expectedCardRevision:card.revision,operation:'resolve_conflict',members:[{...conflict.candidateRef,operation:'resolve_conflict',conflictChoice:{mode,existingRef:{claimId:conflict.existing.claimId,claimVersionId:conflict.existing.claimVersionId},candidateRef:conflict.candidateRef,...extra}}]};
+ const key=crypto.randomUUID();return {receipt:await send(db,`review-cards/${card.id}/decisions`,body,key),body,key};}
+async function undo(db,id) {const s=await read(db),d=s.recentDecisions.find(d=>d.id===id);return send(db,`decisions/${id}/revert`,{expectedContextVersion:s.contextVersion,expectedDecisionRevision:d.revision});}
+for(const mode of ['keep_existing','use_candidate','coexist']) test(`action conflict ${mode} preserves execution and has atomic undo`,async t=>{
+ const {db,sqlite}=await setup(t,{completed:true});const first=await read(db);assert.equal(first.reviewCards.find(c=>c.id==='wfc_new-action').conflicts[0].existingActionState,'completed');
+ const saved=await resolve(db,mode,mode==='coexist'?{applicability:'供应商负责报价，厂家负责交期'}:{});assert.deepEqual(await send(db,'review-cards/wfc_new-action/decisions',saved.body,saved.key),saved.receipt);
+ let s=await read(db);const current=s.actions.find(a=>a.id==='new-action');assert.equal(Boolean(current),mode!=='keep_existing');if(current){assert.equal(current.executionState,'open');assert.equal(current.basisState,'current');assert.deepEqual(current.questionRefs.map(r=>r.claimId),['question']);}
+ assert.equal(s.actions.some(a=>a.id==='action'),mode!=='use_candidate');assert.equal(s.actionHistory.length,mode==='use_candidate'?1:0);
+ if(mode==='use_candidate'){assert.equal(s.actionHistory[0].executionState,'completed');assert.equal(s.actionHistory[0].replacementRef.claimId,'new-action');assert.doesNotMatch(buildRecordText({...s,title:'记录',scope:'mixed',format:'plain_text'}),/向供应商询价/);}
+ if(mode==='coexist'){assert.equal(s.actions.find(a=>a.id==='action').executionState,'completed');assert.equal(s.bullets.filter(b=>b.applicability).length,2);}
+ await undo(db,saved.receipt.mutationId);s=await read(db);assert.equal(s.actions.length,1);assert.equal(s.actions[0].id,'action');assert.equal(s.actions[0].executionState,'completed');assert.equal(s.actionHistory.length,0);assert.equal(s.bullets.find(b=>b.id==='new-action').reviewState,'draft');assert.equal(sqlite.prepare("SELECT count(*) n FROM action_metadata WHERE claim_id='new-action'").get().n,0);assert.equal(sqlite.prepare("SELECT status FROM claim_relations WHERE id='new-basis'").get().status,'proposed');
+});
+test('replacement retains completion recorded against an earlier action wording',async t=>{const {db}=await setup(t,{completed:true,edited:true});const saved=await resolve(db,'use_candidate');let s=await read(db);assert.equal(s.actionHistory[0].executionState,'completed');assert.equal(s.actionHistory[0].text,'向供应商确认报价');await undo(db,saved.receipt.mutationId);s=await read(db);assert.equal(s.actions[0].executionState,'completed');});
+test('cancelled original does not cancel its independent replacement',async t=>{const {db}=await setup(t,{cancelled:true});await resolve(db,'use_candidate');const s=await read(db);assert.equal(s.actions[0].executionState,'open');assert.equal(s.actionHistory[0].executionState,'cancelled');});
+test('replacement preserves the previous outcome and answers without moving them to the new action',async t=>{
+ const {db}=await setup(t);let s=await read(db);await send(db,'actions/action/outcomes',{expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,text:'供应商回复十二万元',evidenceRefs:[],resolveQuestions:[{questionId:'question',revision:s.questions[0].revision,answerText:'费用十二万元'}],completeAction:true});
+ await resolve(db,'use_candidate');s=await read(db);assert.equal(s.actions[0].latestOutcome,null);assert.equal(s.actions[0].executionState,'open');assert.equal(s.actionHistory[0].latestOutcome.text,'供应商回复十二万元');assert.equal(s.actionHistory[0].executionState,'completed');assert.equal(s.questions[0].resolutionState,'resolved');assert.match(s.bullets.find(b=>b.id===s.questions[0].answerRefs[0].claimId).text,/十二万/);
+});
+test('executing the replacement blocks undo of its acceptance',async t=>{const {db}=await setup(t,{completed:true});const saved=await resolve(db,'use_candidate');const s=await read(db);await send(db,'actions/new-action/transitions',{expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,operation:'complete'});await assert.rejects(undo(db,saved.receipt.mutationId),e=>e.code==='dependency_conflict');assert.equal((await read(db)).actionHistory[0].executionState,'completed');});
+test('a source or basis change during replacement rolls back the whole decision',async t=>{
+ for(const race of ['source','basis','completion']){const {db,sqlite}=await setup(t,{completed:true});const batch=db.batch;db.batch=async ss=>{if(race==='source')sqlite.prepare("UPDATE assets SET current_version_id=NULL").run();else if(race==='basis')sqlite.prepare("UPDATE claims SET workflow_revision=workflow_revision+1 WHERE id='question'").run();else sqlite.prepare("UPDATE claim_relations SET status='inactive' WHERE type='resolves' AND target_claim_version_id='action_v1'").run();return batch(ss);};
+ await assert.rejects(resolve(db,'use_candidate'),e=>e.code==='version_conflict');assert.equal(sqlite.prepare("SELECT review_status FROM claims WHERE id='new-action'").get().review_status,'pending');assert.notEqual(sqlite.prepare("SELECT lifecycle_status FROM claims WHERE id='action'").get().lifecycle_status,'superseded');}
+});
+test('incompatible types and a replacement depending on the original need correction first',async t=>{
+ const {db,sqlite}=await setup(t);sqlite.prepare("UPDATE claims SET type='fact' WHERE id='new-action'").run();await assert.rejects(resolve(db,'use_candidate'),e=>e.code==='dependency_conflict');sqlite.prepare("UPDATE claims SET type='next_action' WHERE id='new-action'").run();relation(sqlite,'circular-basis','new-action','action','informed_by','proposed');await assert.rejects(resolve(db,'use_candidate'),e=>e.code==='dependency_conflict');await resolve(db,'keep_existing');assert.equal((await read(db)).actions[0].id,'action');
+});
+test('history hides unavailable source wording and follows consecutive approved replacements',async t=>{
+ const {db,sqlite}=await setup(t,{completed:true});await resolve(db,'use_candidate');claim(sqlite,'third-action','next_action','向物流确认送达');relation(sqlite,'third-conflict','third-action','new-action','supersedes','proposed');relation(sqlite,'third-basis','third-action','question','informed_by','proposed');let s=await read(db),card=s.reviewCards.find(c=>c.id==='wfc_third-action');await send(db,'review-cards/wfc_third-action/decisions',{expectedContextVersion:s.contextVersion,expectedCardRevision:card.revision,operation:'resolve_conflict',members:[{claimId:'third-action',claimVersionId:'third-action_v1',operation:'resolve_conflict',conflictChoice:{mode:'use_candidate',existingRef:{claimId:'new-action',claimVersionId:'new-action_v1'},candidateRef:{claimId:'third-action',claimVersionId:'third-action_v1'}}}]});s=await read(db);assert.equal(s.actionHistory.length,2);assert.ok(s.actionHistory.every(a=>a.replacementRef.claimId==='third-action'));assert.equal(s.actions[0].executionState,'open');sqlite.prepare("UPDATE evidence_refs SET structural_validation_status='invalid' WHERE id='action_ev'").run();assert.equal((await read(db)).actionHistory.find(a=>a.id==='action').text,null);
+});
+
+
+test('legacy action metadata writes are checked during replacement and undo',async t=>{
+ const {db,sqlite}=await setup(t);const batch=db.batch;db.batch=async ss=>{sqlite.prepare("UPDATE action_metadata SET owner_hint='新的负责人' WHERE claim_id='action'").run();return batch(ss);};await assert.rejects(resolve(db,'use_candidate'),e=>e.code==='version_conflict');db.batch=batch;
+ const saved=await resolve(db,'use_candidate');sqlite.prepare("UPDATE action_metadata SET owner_hint='后续修改' WHERE claim_id='new-action'").run();await assert.rejects(undo(db,saved.receipt.mutationId),e=>e.code==='version_conflict');assert.equal((await read(db)).actions[0].ownerHint,'后续修改');
+});
+
+
+test('current answers from a retired action can still be corrected and withdrawn',async t=>{
+ const {db,sqlite}=await setup(t);let s=await read(db);await send(db,'actions/action/outcomes',{expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,text:'供应商回复十二万元',evidenceRefs:[],resolveQuestions:[{questionId:'question',revision:s.questions[0].revision,answerText:'费用十二万元'}],completeAction:true});await resolve(db,'use_candidate');s=await read(db);const o=s.questions[0].latestOutcome;
+ await send(db,`outcomes/${o.id}/corrections`,{expectedContextVersion:s.contextVersion,expectedOutcomeRevision:o.revision,operation:'replace',replacement:{text:'更新报价十三万元',evidenceRefs:[],resolveQuestions:[{questionId:'question',revision:s.questions[0].revision,answerText:'费用十三万元'}]}});s=await read(db);assert.equal(s.actionHistory[0].executionState,'completed');assert.equal(s.actionHistory[0].latestOutcome.text,'更新报价十三万元');assert.equal(s.actions[0].executionState,'open');assert.match(s.bullets.find(b=>b.id===s.questions[0].answerRefs[0].claimId).text,/十三万元/);
+ claim(sqlite,'independent-question','open_question','安装日期是多少？');s=await read(db);await assert.rejects(send(db,`outcomes/${o.id}/corrections`,{expectedContextVersion:s.contextVersion,expectedOutcomeRevision:s.questions.find(q=>q.id==='question').latestOutcome.revision,operation:'replace',replacement:{text:'周末',evidenceRefs:[],resolveQuestions:[{questionId:'independent-question',revision:1,answerText:'周末'}]}}),e=>e.code==='dependency_conflict');
+ await send(db,`outcomes/${o.id}/corrections`,{expectedContextVersion:s.contextVersion,expectedOutcomeRevision:s.questions.find(q=>q.id==='question').latestOutcome.revision,operation:'withdraw'});s=await read(db);assert.equal(s.questions.find(q=>q.id==='question').resolutionState,'open');assert.equal(s.actionHistory[0].executionState,'completed');assert.equal(s.actions[0].executionState,'open');
+});

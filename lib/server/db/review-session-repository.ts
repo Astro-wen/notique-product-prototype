@@ -1,6 +1,6 @@
 import { getD1 } from "@/db";
 import { ApiFault } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { assertRequestAccess, requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
 import {
   findMutationReplay,
   mutationReplayStatement,
@@ -231,17 +231,28 @@ export async function getReviewSession(
   return row ? sessionById(scope, String(row.id)) : null;
 }
 
-async function persistReplayForExistingSession(
+async function persistReplayForSession(
   scope: RequestScope,
-  projectId: string,
+  endpointScope: string,
   session: ReviewSessionRecord,
+  expectedStatus: "active" | "completed",
   idempotencyKey: string,
   requestHash: string,
-): Promise<void> {
-  const endpointScope = `projects/${projectId}/review-sessions`;
+): Promise<string> {
   const timestamp = now();
+  const guardId = id("guard");
+  const db = getD1();
   try {
-    await getD1().batch([
+    await db.batch([
+      db.prepare(`INSERT INTO mutation_guards (id, guard_value, created_at)
+        SELECT ?, CASE WHEN EXISTS (
+          SELECT 1 FROM review_sessions rs
+          JOIN projects p ON p.id=rs.project_id AND p.workspace_id=rs.workspace_id
+          WHERE rs.id=? AND rs.workspace_id=? AND rs.project_id=? AND rs.actor_id=?
+            AND rs.status=? AND p.deleted_at IS NULL
+        ) THEN 1 ELSE 0 END, ?`)
+        .bind(guardId,session.id,scope.workspaceId,session.project_id,scope.actorId,expectedStatus,timestamp),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -250,7 +261,9 @@ async function persistReplayForExistingSession(
         { reviewSessionId: session.id },
         timestamp,
       ),
+      db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
     ]);
+    return session.id;
   } catch {
     const replay = await findMutationReplay<{ reviewSessionId: string }>(
       scope,
@@ -258,7 +271,9 @@ async function persistReplayForExistingSession(
       idempotencyKey,
       {},
     );
-    if (!replay.response) throw new ApiFault(409, "IDEMPOTENCY_CONFLICT", "Review session start could not be replayed.");
+    if (replay.response) return replay.response.reviewSessionId;
+    await assertRequestAccess(scope, "write");
+    throw new ApiFault(409, "REVIEW_SESSION_CONFLICT", "Review session changed before its receipt could be saved.");
   }
 }
 
@@ -278,14 +293,15 @@ export async function startReviewSession(
 
   const existing = await activeSession(scope, projectId);
   if (existing) {
-    await persistReplayForExistingSession(
+    const receiptSessionId = await persistReplayForSession(
       scope,
-      projectId,
+      endpointScope,
       existing,
+      "active",
       idempotencyKey,
       replay.requestHash,
     );
-    return existing;
+    return sessionById(scope, receiptSessionId);
   }
 
   const counts = await pendingCounts(scope, projectId);
@@ -382,6 +398,7 @@ export async function startReviewSession(
            ) THEN 1 ELSE 0 END, ?`,
         )
         .bind(guardId, reviewSessionId, scope.workspaceId, scope.actorId, timestamp),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -400,16 +417,18 @@ export async function startReviewSession(
       {},
     );
     if (recovered.response) return sessionById(scope, recovered.response.reviewSessionId);
+    await assertRequestAccess(scope, "write");
     const concurrent = await activeSession(scope, projectId);
     if (concurrent) {
-      await persistReplayForExistingSession(
+      const receiptSessionId = await persistReplayForSession(
         scope,
-        projectId,
+        endpointScope,
         concurrent,
+        "active",
         idempotencyKey,
         replay.requestHash,
       );
-      return concurrent;
+      return sessionById(scope, receiptSessionId);
     }
     throw error;
   }
@@ -432,17 +451,8 @@ export async function completeReviewSession(
 
   const session = await sessionById(scope, sessionId);
   if (session.status === "completed") {
-    await getD1().batch([
-      mutationReplayStatement(
-        scope,
-        endpointScope,
-        idempotencyKey,
-        replay.requestHash,
-        { reviewSessionId: session.id },
-        now(),
-      ),
-    ]);
-    return session;
+    const receiptSessionId = await persistReplayForSession(scope, endpointScope, session, "completed", idempotencyKey, replay.requestHash);
+    return sessionById(scope, receiptSessionId);
   }
   if (session.status !== "active") {
     throw new ApiFault(409, "REVIEW_SESSION_CONFLICT", "Review session is not active.");
@@ -517,6 +527,7 @@ export async function completeReviewSession(
           scope.workspaceId,
           scope.actorId,
         ),
+      requestWriteGuard(db,scope,guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -535,6 +546,12 @@ export async function completeReviewSession(
       {},
     );
     if (recovered.response) return sessionById(scope, recovered.response.reviewSessionId);
+    await assertRequestAccess(scope, "write");
+    const concurrent = await sessionById(scope, sessionId);
+    if (concurrent.status === "completed") {
+      const receiptSessionId = await persistReplayForSession(scope, endpointScope, concurrent, "completed", idempotencyKey, replay.requestHash);
+      return sessionById(scope, receiptSessionId);
+    }
     throw new ApiFault(
       409,
       "REVIEW_SESSION_CONFLICT",

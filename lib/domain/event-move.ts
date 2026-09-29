@@ -31,6 +31,17 @@ export const MOVED_TABLES = [
   "evidence_refs",
   "ai_draft_assessments",
   "claim_occurrence_candidates",
+  "workflow_cards",
+  "workflow_decisions",
+  "workflow_mention_decisions",
+  "review_progress",
+  "workflow_narratives",
+  "derived_dependencies",
+  "workflow_snapshots",
+  "action_metadata",
+  "workflow_outcomes",
+  "workflow_changes",
+  "workflow_outbox",
 ] as const;
 
 export type MovedTable = (typeof MOVED_TABLES)[number];

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="450" viewBox="0 0 1000 450" role="img" aria-labelledby="title desc">
+  <title id="title">后端模块关系</title>
+  <desc id="desc">M1 材料与分析产生候选信息，交给 M2 信息与批阅。M2 将已采纳要点与行动交给 M3 行动与结果，M3 的答案与新版本回流 M2。三个模块共用信息账本与版本依赖，由读模型形成当前重点、最近变化、未决问题和下一步。</desc>
+  <rect x="0" y="0" width="1000" height="450" fill="#ffffff"/>
+  <g fill="none" stroke="#111111" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
+    <polyline points="260,164 387,164"/>
+    <polyline points="610,164 767,164"/>
+    <polyline points="870,119 870,56 500,56 500,116"/>
+    <polyline points="145,210 145,277"/>
+    <polyline points="500,210 500,277"/>
+    <polyline points="870,210 870,277"/>
+    <polyline points="500,339 500,390"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="390,164 380,159 380,169"/>
+    <polygon points="770,164 760,159 760,169"/>
+    <polygon points="500,120 495,110 505,110"/>
+    <polygon points="145,280 140,270 150,270"/>
+    <polygon points="500,280 495,270 505,270"/>
+    <polygon points="870,280 865,270 875,270"/>
+    <polygon points="500,393 495,383 505,383"/>
+  </g>
+  <g fill="#e9f3ff" stroke="#8aaed1" stroke-width="1.5">
+    <rect x="30" y="120" width="230" height="90" rx="12"/>
+    <rect x="390" y="120" width="220" height="90" rx="12"/>
+    <rect x="770" y="120" width="200" height="90" rx="12"/>
+    <rect x="30" y="280" width="940" height="59" rx="12"/>
+    <rect x="150" y="393" width="700" height="47" rx="12"/>
+  </g>
+  <g fill="#111111" font-family="Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif" text-anchor="middle">
+    <text x="145" y="173" font-size="22">M1 材料与分析</text>
+    <text x="500" y="173" font-size="22">M2 信息与批阅</text>
+    <text x="870" y="173" font-size="22">M3 行动与结果</text>
+    <text x="325" y="149" font-size="18">候选信息</text>
+    <text x="690" y="149" font-size="18">已采纳要点/行动</text>
+    <text x="685" y="42" font-size="20">答案与新版本回流</text>
+    <text x="500" y="317" font-size="22">信息账本与版本依赖</text>
+    <text x="551" y="372" font-size="18">读模型</text>
+    <text x="500" y="424" font-size="20">当前重点 / 最近变化 / 未决问题 / 下一步</text>
+  </g>
+</svg>

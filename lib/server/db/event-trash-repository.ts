@@ -14,6 +14,7 @@ import {
   type TrashBlockerCounts,
 } from "@/lib/domain/event-trash";
 import { getEvent } from "@/lib/server/db/core-repository";
+import { locationChangeWorkflowStatements } from "@/lib/server/db/event-move-repository";
 import {
   findMutationReplay,
   mutationReplayStatement,
@@ -25,7 +26,7 @@ import {
   runCancellationBatch,
 } from "@/lib/server/db/run-cancellation-repository";
 import { ApiFault } from "@/lib/server/http/api";
-import type { RequestScope } from "@/lib/server/http/context";
+import { assertRequestAccess, requestWriteGuard, type RequestScope } from "@/lib/server/http/context";
 import type {
   EventRecord,
   EventTrashPreviewRecord,
@@ -147,6 +148,7 @@ export async function moveEventToTrash(
   const binId = recordTrashProjectId(scope.workspaceId);
   const timestamp = now();
   const guardId = id("guard");
+  const changeId = id("location");
   const providerRequests = await activeProviderRequestIds("event", eventId, scope.workspaceId);
   const db = getD1();
   // 场景没确认之前，只有序号为 1 的记录能替项目定场景。把它移走，剩下的记录就
@@ -274,6 +276,8 @@ export async function moveEventToTrash(
               updated_at = ?
         WHERE id = ? AND workspace_id = ?`,
     ).bind(eventId, scope.workspaceId, eventId, scope.workspaceId, timestamp, sourceProjectId, scope.workspaceId),
+    ...locationChangeWorkflowStatements(db, scope, sourceProjectId, eventId, timestamp, changeId),
+    requestWriteGuard(db, scope, guardId),
     mutationReplayStatement(
       scope,
       endpointScope,
@@ -288,6 +292,7 @@ export async function moveEventToTrash(
   try {
     await db.batch(statements);
   } catch (error) {
+    await assertRequestAccess(scope, "write");
     const recovered = await findMutationReplay<{ event_id: string; project_id: string }>(
       scope,
       endpointScope,
@@ -366,11 +371,13 @@ export async function restoreEvent(
   const binId = recordTrashProjectId(scope.workspaceId);
   const timestamp = now();
   const guardId = id("guard");
+  const changeId = id("location");
   const db = getD1();
   const sequenceTaken = `EXISTS (SELECT 1 FROM events WHERE project_id = ? AND workspace_id = ? AND sequence_no = ?)`;
   const hasClaims = `EXISTS (SELECT 1 FROM claims WHERE event_id = ? AND workspace_id = ?)`;
 
-  await db.batch([
+  try {
+    await db.batch([
     db.prepare(
       `INSERT INTO mutation_guards (id, guard_value, created_at)
        SELECT ?, CASE WHEN EXISTS (
@@ -480,9 +487,17 @@ export async function restoreEvent(
       eventId, scope.workspaceId,
     ),
     db.prepare(`DELETE FROM trashed_events WHERE event_id = ? AND workspace_id = ?`).bind(eventId, scope.workspaceId),
+    ...locationChangeWorkflowStatements(db, scope, targetId, eventId, timestamp, changeId),
+    requestWriteGuard(db, scope, guardId),
     mutationReplayStatement(scope, endpointScope, idempotencyKey, replay.requestHash, { eventId }, timestamp),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
-  ]);
+    ]);
+  } catch (error) {
+    await assertRequestAccess(scope, "write");
+    const recovered = await findMutationReplay<{ eventId: string }>(scope, endpointScope, idempotencyKey, {});
+    if (recovered.response) return getEvent(scope, recovered.response.eventId).then((value) => value.event);
+    throw error;
+  }
   return getEvent(scope, eventId).then((value) => value.event);
 }
 

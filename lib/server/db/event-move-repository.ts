@@ -13,6 +13,7 @@ import {
   type MoveBlockerCounts,
 } from "@/lib/domain/event-move";
 import { getEvent } from "@/lib/server/db/core-repository";
+import { assertRequestAccess, requestWriteGuard } from "@/lib/server/http/context";
 import {
   findMutationReplay,
   mutationReplayStatement,
@@ -41,6 +42,53 @@ function now(): string {
 
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+/** A location change may alter the visible project even when the record has
+ * no claims. Give it a fresh narrative task key instead of reusing the same
+ * context-version key, which may already belong to a completed job. */
+export function locationChangeWorkflowStatements(
+  db: D1Database,
+  scope: RequestScope,
+  projectId: string,
+  eventId: string,
+  timestamp: string,
+  changeId: string,
+): D1PreparedStatement[] {
+  return [
+    db.prepare(`UPDATE workflow_narratives SET freshness='stale',updated_at=?
+      WHERE workspace_id=? AND project_id=? AND freshness<>'stale'`)
+      .bind(timestamp, scope.workspaceId, projectId),
+    db.prepare(`UPDATE action_metadata AS a SET basis_state='needs_review',updated_at=?
+      WHERE a.workspace_id=? AND a.project_id=? AND a.basis_state='current'
+        AND (EXISTS (SELECT 1 FROM json_each(a.basis_version_refs_json) frozen
+          LEFT JOIN claims c ON c.id=json_extract(frozen.value,'$.claimId')
+            AND c.workspace_id=a.workspace_id AND c.project_id=a.project_id
+          WHERE c.id IS NULL OR c.current_version_id<>json_extract(frozen.value,'$.claimVersionId')
+            OR c.review_status='rejected' OR c.lifecycle_status IN ('withdrawn','superseded'))
+        OR EXISTS (SELECT 1 FROM claims action_claim JOIN claim_relations r
+          ON r.source_claim_version_id=action_claim.current_version_id
+          WHERE action_claim.id=a.claim_id AND r.type='informed_by' AND r.status='active'
+            AND NOT EXISTS (SELECT 1 FROM json_each(a.basis_version_refs_json) frozen
+              WHERE json_extract(frozen.value,'$.claimVersionId')=r.target_claim_version_id)))`)
+      .bind(timestamp, scope.workspaceId, projectId),
+    db.prepare(`DELETE FROM workflow_snapshots WHERE workspace_id=? AND project_id=?`)
+      .bind(scope.workspaceId, projectId),
+    db.prepare(`INSERT INTO workflow_outbox
+      (id,workspace_id,project_id,event_id,kind,task_key,input_revision,payload_json,available_at,created_at,updated_at)
+      SELECT 'wjob_'||lower(hex(randomblob(16))),e.workspace_id,e.project_id,e.id,'narrative',
+        'narrative:location:'||?||':'||e.id,p.context_version,
+        json_object('eventId',e.id,'contextVersion',p.context_version),?,?,?
+      FROM events e JOIN projects p ON p.id=e.project_id AND p.workspace_id=e.workspace_id
+      WHERE e.workspace_id=? AND e.project_id=? AND p.deleted_at IS NULL
+        AND e.material_status<>'archived' AND (e.id=? OR EXISTS (
+          SELECT 1 FROM workflow_narratives n WHERE n.workspace_id=e.workspace_id
+            AND n.project_id=e.project_id AND n.freshness='stale'
+            AND (n.event_id=e.id OR n.event_id IS NULL)))
+      ON CONFLICT(workspace_id,task_key) DO NOTHING`)
+      .bind(changeId, new Date(Date.parse(timestamp)+2000).toISOString(), timestamp, timestamp,
+        scope.workspaceId, projectId, eventId),
+  ];
 }
 
 async function blockerCounts(context: BlockerContext): Promise<MoveBlockerCounts> {
@@ -144,6 +192,7 @@ export async function moveEvent(
   };
   const timestamp = now();
   const guardId = id("guard");
+  const changeId = id("location");
   const db = getD1();
   try {
     await db.batch([
@@ -210,6 +259,9 @@ export async function moveEvent(
             WHERE id = ? AND workspace_id = ?`,
         )
         .bind(timestamp, preview.source_project_id, scope.workspaceId),
+      ...locationChangeWorkflowStatements(db, scope, preview.source_project_id, eventId, timestamp, changeId),
+      ...locationChangeWorkflowStatements(db, scope, targetProjectId, eventId, timestamp, changeId),
+      requestWriteGuard(db, scope, guardId),
       mutationReplayStatement(
         scope,
         endpointScope,
@@ -221,6 +273,7 @@ export async function moveEvent(
       db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
     ]);
   } catch (error) {
+    await assertRequestAccess(scope, "write");
     const recovered = await findMutationReplay<{ eventId: string }>(
       scope,
       endpointScope,

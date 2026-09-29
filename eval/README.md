@@ -1,5 +1,7 @@
 # Notique 离线评测
 
+工作流 V2 的材料准备、盲测冻结、逐条裁决和三轮完整数据集评分见[模型验收执行说明](../docs/WORKFLOW_V2_MODEL_ACCEPTANCE.md)。跨 Event 聚合使用 `scripts/aggregate-eval-sweeps.mjs`，保留底层 Run 审计，缺少独立执行与人工裁决依据时资格为未知。
+
 这个目录只保存评测格式和说明，不保存“看起来像真实结果”的演示数字。
 
 正式评测需要两份 JSON：
@@ -38,7 +40,7 @@ npm run eval:merge:synthetic-transcripts
 - Claim 没有 Evidence 时，`claimsWithEvidence` 和 `evidenceIdValidity` 都会失败。
 - 三次一致性包含未匹配 Ground Truth 的幻觉内容，也会识别同一 Run 中的重复 Claim。
 - 正式样本至少包含三个场景，每个场景有 3 到 5 次 Event。
-- 每个 Event 的 Ground Truth 必须有 5 到 10 条 material Claims。超过 10 条会让“最多输出 10 条”和 80% Recall 互相冲突，Runner 会把这种样本判为不合格，并给出十条上限下每次 Event 的理论最高 Recall。
+- 每个 Event 的 Ground Truth 必须有 5 到 10 条 material Claims。超过 10 条会让审核上限与正式样本口径不一致，Runner 会把这种样本判为不合格，并给出十条上限下每次 Event 的理论最高 Recall。当前正式 Recall 门槛为90%。
 - Timestamp 对每个 Evidence 区间分别计算最短距离，不用两个不连续引用之间的大区间覆盖答案。
 - `viewLeakageCount` 必须经过审查后明确填写。缺失不会默认成零。
 - Brief 必须使用 `current_status`、`change_1`、`change_2`、`question_1`、`question_2`、`risk` 六个不同槽位。每项都要有唯一且有效的来源。
@@ -97,3 +99,5 @@ npm run eval:export-run -- \
 导出结果符合 `notique-eval-predictions.v1` 的基础结构，同时保留 Model、Prompt、Schema、模型参数、Context 哈希、输入清单、Claims、Evidence、Relations、Views、Token 和延迟。详细限制与评审步骤见 [生产 Run 导出说明](./PRODUCTION_RUN_EXPORT.md)。
 
 重复提供多个 `--run-id` 时，导出器只接受同一个 Project、同一个 Event、同一份 Input Snapshot 与 Input Manifest、同一个 Context Snapshot 与 Context Version。这样三次一致性只比较同一测试用例的重复运行，不会混入输入材料或项目状态的变化。
+
+全量验收先为每个 Event 导出并裁决三次结果，再通过 sweep manifest 把每轮完整数据集聚合成一份 Run。每条引用使用显式人工判断，未填的支持度保持原有未评审状态。完整步骤和文件示例见上面的模型验收执行说明。

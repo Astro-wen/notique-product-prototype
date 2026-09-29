@@ -106,8 +106,8 @@ function arm(name, tokenScale = 1) {
       { stage: "verify", attempt: 1, status: "succeeded", reasoning_effort: "high", prompt_version: "claim-extraction-prompt.v9:verify", schema_version: "claim-verification.v4", input_tokens: 40, output_tokens: 10, duration_ms: 500 },
     ],
     artifactRuns: [
-      { kind: "summary", status: "succeeded", reasoning_effort: "high", prompt_version: "event-summary-prompt.v2", schema_version: "event-summary.v2" },
-      { kind: "readable_transcript", status: "succeeded", reasoning_effort: "high", prompt_version: "readable-transcript-prompt.v2", schema_version: "readable-transcript.v1" },
+      { kind: "summary", status: "succeeded", reasoning_effort: "high", prompt_version: "event-summary-prompt.v2", schema_version: "event-summary.v2", input_tokens: 10 * tokenScale, output_tokens: 2 * tokenScale, cached_tokens: 0, duration_ms: 100 },
+      { kind: "readable_transcript", status: "succeeded", reasoning_effort: "high", prompt_version: "readable-transcript-prompt.v2", schema_version: "readable-transcript.v1", input_tokens: 10 * tokenScale, output_tokens: 2 * tokenScale, cached_tokens: 0, duration_ms: 100 },
     ],
   }));
   return {
@@ -189,12 +189,31 @@ test("completed A/B adjudication calculates hard gates and the 25 percent token 
   });
   assert.equal(report.control.gates.pass, true);
   assert.equal(report.treatment.gates.pass, true);
-  assert.equal(report.comparison.tokenIncrease, 0.2);
+  assert.ok(Math.abs(report.comparison.tokenIncrease - 0.2) < 1e-12);
   assert.equal(report.enableDraftContext, true);
   assert.equal(report.treatment.metrics.actionOwnerAccuracy.value, 1);
   assert.equal(report.treatment.metrics.actionDueAccuracy.value, 1);
   assert.equal(report.treatment.metrics.actionSourceAccuracy.value, 1);
   assert.equal(report.treatment.metrics.actionFieldAccuracy.value, 1);
+});
+
+test("missing artifact token telemetry blocks the A/B token ceiling decision", () => {
+  const control = arm("control");
+  const treatment = arm("treatment", 1.2);
+  delete treatment.runs[0].artifactRuns[0].input_tokens;
+  const report = buildScoredComparison({
+    control,
+    treatment,
+    controlAdjudication: completeAdjudication(control),
+    treatmentAdjudication: completeAdjudication(treatment),
+    groundTruth: truth,
+    actionGroundTruth: actionTruth,
+  });
+  assert.equal(report.treatment.metrics.usage.inputTokens, null);
+  assert.equal(report.comparison.tokenIncrease, null);
+  assert.equal(report.comparison.factTokenIncrease, 0.2);
+  assert.equal(report.enableDraftContext, false);
+  assert.equal(report.gates.checks.find((check) => check.name === "token_increase").passed, false);
 });
 
 test("CLIs require an explicit paid-call flag and resolve an offline scoring directory", () => {

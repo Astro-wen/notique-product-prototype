@@ -1,3 +1,4 @@
+import { ANALYSIS_SOURCE_SQL } from "@/lib/server/workflow/analysis-service";
 import { classifyActionStatement } from "@/lib/domain/action-classification";
 import { canResolveClaim } from "@/lib/domain/relation-policy";
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
@@ -34,7 +35,7 @@ import type { ClaimWithVersion, TranscriptSegment } from "@/lib/domain/types";
 import {
   INVENTORY_SCHEMA_VERSION,
   TWO_STAGE_EXTRACTION_PROMPT_VERSION,
-  VERIFICATION_SCHEMA_VERSION,
+  verificationContractForRun,
   assessVerificationEscalation,
   selectPreferredVerificationForReview,
   toFinalExtractClaimsOutput,
@@ -73,6 +74,9 @@ import {
 } from "@/lib/server/jobs/model-stage-contract";
 import { parseJson } from "@/lib/server/http/api";
 import { sha256Hex } from "@/lib/server/storage/keys";
+import { selectSameIntentGroups, type SameIntentGroupProposal } from "@/lib/domain/same-intent-groups";
+import { sameIntentGroupStatements } from "@/lib/server/jobs/same-intent-groups";
+import { selectEarlyActionOverlaps, type EarlyActionEvidence } from "@/lib/server/jobs/early-action-overlap";
 
 type Row = Record<string, unknown>;
 
@@ -1341,6 +1345,8 @@ async function persistModelOutput(
   },
   pipelineWarnings: Array<Record<string, unknown>> = [],
   draftLinkCandidates: DraftLinkCandidate[] = [],
+  sameIntentGroups: SameIntentGroupProposal[] = [],
+  overlapRetry = 0,
 ): Promise<ExtractionProcessResult> {
   const validatedOutputJson = JSON.stringify(output);
   const validatedOutputBytes = new TextEncoder().encode(validatedOutputJson).byteLength;
@@ -1375,6 +1381,36 @@ async function persistModelOutput(
   if (!projectRow || Number(projectRow.context_version) !== Number(run.context_version)) {
     throw new ProcessingFault("CLAIM_VERSION_CONFLICT", "Project context changed during extraction.");
   }
+  const newActions = prepared.newClaims.filter(candidate => candidate.model.type === "next_action");
+  // Summary-backed human actions do not advance the frozen context. Read the
+  // latest pending versions after model validation, then guard ledger_version
+  // in the same batch as publication. A concurrent write causes a local retry
+  // with the already-paid model output instead of another model request.
+  const overlapLedgerVersion = newActions.length ? Number(projectRow.ledger_version) : null;
+  const manualRows = newActions.length ? (await getD1().prepare(
+    `SELECT c.id AS claim_id,c.current_version_id AS version_id,v.statement,
+       (SELECT COALESCE(json_group_array(json_object('assetVersionId',er.asset_version_id,'segmentIdsJson',er.segment_ids_json)),'[]')
+          FROM evidence_refs er WHERE er.workspace_id=c.workspace_id AND er.project_id=c.project_id
+            AND er.claim_version_id=c.current_version_id AND er.evidence_role IN ('direct','corroborating')
+            AND er.structural_validation_status='valid' AND er.kind IN ('text','transcript')) AS evidence_json
+       FROM claims c JOIN claim_versions v ON v.id=c.current_version_id AND v.claim_id=c.id
+      WHERE c.workspace_id=? AND c.project_id=? AND c.event_id=? AND c.extraction_run_id=?
+        AND c.source='human' AND c.type='next_action' AND c.review_status='pending'
+        AND c.lifecycle_status='active' AND NOT EXISTS (
+          SELECT 1 FROM card_members cm WHERE cm.workspace_id=c.workspace_id AND cm.claim_id=c.id)
+      ORDER BY c.created_at,c.id`,
+  ).bind(run.workspace_id,run.project_id,run.event_id,run.id).all<Row>()).results ?? [] : [];
+  const alreadyGrouped = new Set(selectSameIntentGroups(sameIntentGroups,prepared.newClaims.map(candidate=>candidate.model))
+    .groups.map(group=>group.action_claim_key));
+  const overlaps = selectEarlyActionOverlaps(manualRows.map(row=>({
+    claimId:String(row.claim_id),versionId:String(row.version_id),statement:String(row.statement),
+    evidence:parseJson<EarlyActionEvidence[]>(String(row.evidence_json ?? '[]'),[]),
+  })),newActions.filter(candidate=>!alreadyGrouped.has(candidate.model.client_claim_key)).map(candidate=>({
+    claimId:candidate.claimId,versionId:candidate.versionId,
+    clientClaimKey:candidate.model.client_claim_key,statement:candidate.model.statement,
+    confidence:candidate.model.confidence,
+    evidence:candidate.evidence.filter(ref=>ref.evidenceRole!=='contextual' && (ref.kind==='text'||ref.kind==='transcript')),
+  })));
   const needsScenario =
     String(projectRow.scenario_status) === "assessing" &&
     String(projectRow.scenario_assessment_run_id) === String(run.id);
@@ -1393,8 +1429,13 @@ async function persistModelOutput(
          SELECT ?, CASE WHEN EXISTS (
            SELECT 1 FROM extraction_runs r
            JOIN projects p ON p.id = r.project_id AND p.workspace_id = r.workspace_id
+           JOIN events e ON e.id=r.event_id AND e.project_id=r.project_id AND e.workspace_id=r.workspace_id
           WHERE r.id = ? AND r.status = 'processing' AND r.lease_owner = ?
-           AND p.context_version = r.context_version
+           AND p.context_version = r.context_version AND p.deleted_at IS NULL
+           AND e.material_status<>'archived' AND e.active_run_id=r.id
+           AND (json_extract(r.model_params_json,'$.workflow_source_revision') IS NULL OR e.source_revision=json_extract(r.model_params_json,'$.workflow_source_revision'))
+           AND NOT EXISTS (SELECT 1 FROM json_each(r.input_manifest_json) item LEFT JOIN asset_versions av ON av.id=json_extract(item.value,'$.asset_version_id') LEFT JOIN assets a ON a.id=av.asset_id
+             WHERE a.id IS NULL OR a.workspace_id<>r.workspace_id OR a.event_id<>r.event_id OR a.current_version_id<>av.id OR a.current_version_id IS NULL OR a.processing_status<>'ready')
             AND NOT EXISTS (
               SELECT 1 FROM extraction_model_stages processing_stage
                WHERE processing_stage.run_id = r.id
@@ -1407,12 +1448,13 @@ async function persistModelOutput(
             AND NOT EXISTS (
               SELECT 1 FROM claim_occurrence_candidates WHERE extraction_run_id = r.id
             )
+            AND (? IS NULL OR p.ledger_version = ?)
             ${needsScenario
               ? "AND p.scenario_status = 'assessing' AND p.scenario_assessment_run_id = r.id"
               : ""}
          ) THEN 1 ELSE 0 END, ?`,
       )
-      .bind(guardId, run.id, owner, timestamp),
+      .bind(guardId, run.id, owner, overlapLedgerVersion, overlapLedgerVersion, timestamp),
   ];
   for (const candidate of prepared.newClaims) {
     statements.push(
@@ -1488,6 +1530,25 @@ async function persistModelOutput(
             timestamp,
           ),
       ),
+    );
+  }
+  statements.push(...sameIntentGroupStatements(db,{
+    workspaceId:String(run.workspace_id),projectId:String(run.project_id),eventId:String(run.event_id),runId:String(run.id),contextVersion:Number(run.context_version),timestamp,
+  },sameIntentGroups,prepared.newClaims,prepared.warnings));
+  for (const pair of overlaps) {
+    const cardId=`wfc_${pair.model.claimId}`;
+    statements.push(
+      db.prepare(`INSERT INTO workflow_cards
+        (id,workspace_id,project_id,event_id,group_key,revision,kind,title,needs_decision,reason_code,reason,disposition,created_at,updated_at)
+        VALUES (?,?,?,?,?,1,'action',?,1,'action_choice','同一原话的两条行动建议，请逐条决定','active',?,?)`)
+        .bind(cardId,run.workspace_id,run.project_id,run.event_id,
+          `action_overlap:${encodeURIComponent(JSON.stringify({v:1,runId:String(run.id),clientClaimKey:pair.model.clientClaimKey,
+            manualRef:{claimId:pair.manual.claimId,claimVersionId:pair.manual.versionId},
+            modelRef:{claimId:pair.model.claimId,claimVersionId:pair.model.versionId}}))}`,pair.manual.statement,timestamp,timestamp),
+      ...[pair.manual,pair.model].map((member,index)=>db.prepare(
+        `INSERT INTO card_members (id,workspace_id,card_id,claim_id,claim_version_id,role,created_at)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).bind(id('wcm'),run.workspace_id,cardId,member.claimId,member.versionId,index===0?'primary':'context',timestamp)),
     );
   }
   const newClaimByClientKey = new Map(
@@ -1624,7 +1685,29 @@ async function persistModelOutput(
       ),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   );
-  await db.batch(statements);
+  // Publish the record and durable narrative intent together. The scheduled
+  // consumer can finish the overview after the originating page has closed.
+  statements.push(
+    db.prepare("UPDATE workflow_narratives SET freshness='stale',updated_at=? WHERE workspace_id=? AND project_id=? AND (event_id=? OR event_id IS NULL)").bind(timestamp,run.workspace_id,run.project_id,run.event_id),
+    db.prepare('DELETE FROM workflow_snapshots WHERE workspace_id=? AND project_id=?').bind(run.workspace_id,run.project_id),
+    db.prepare(`INSERT INTO workflow_outbox (id,workspace_id,project_id,event_id,kind,task_key,input_revision,payload_json,available_at,created_at,updated_at)
+      SELECT ?,workspace_id,project_id,event_id,'narrative',?,context_version,json_object('eventId',event_id,'contextVersion',context_version),?,?,? FROM extraction_runs WHERE id=?
+      ON CONFLICT(workspace_id,task_key) DO NOTHING`).bind(id('wjob'),`narrative-publish:${run.id}`,new Date(Date.parse(timestamp)+2000).toISOString(),timestamp,timestamp,run.id),
+  );
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (overlapLedgerVersion !== null && overlapRetry < 3) {
+      const latest = await first(`SELECT context_version,ledger_version FROM projects WHERE id=? AND workspace_id=?`,
+        [run.project_id,run.workspace_id]);
+      if (latest && Number(latest.context_version)===Number(run.context_version)
+        && Number(latest.ledger_version)!==overlapLedgerVersion) {
+        return persistModelOutput(run,owner,output,contextPack,manifestRows,segments,usage,
+          pipelineWarnings,draftLinkCandidates,sameIntentGroups,overlapRetry+1);
+      }
+    }
+    throw error;
+  }
   return {
     runId: String(run.id),
     status,
@@ -1965,6 +2048,8 @@ export async function processExtractionRun(
     const pipelineEnabled = frozenModelParams.two_pass_pipeline === true;
     let finalOutput: ExtractClaimsOutput;
     let acceptedDraftLinks: DraftLinkCandidate[] = [];
+    let acceptedSameIntentGroups: SameIntentGroupProposal[] = [];
+    const verificationContract=verificationContractForRun(frozenModelParams);
     let finalUsage: ModelUsage;
     const pipelineWarnings: Array<Record<string, unknown>> = [];
 
@@ -2016,8 +2101,8 @@ export async function processExtractionRun(
         inventory: inventoryStage.output,
         readable_transcript_segments: verificationContext.new_event.readable_transcript_segments,
         stage: "verify",
-        prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
-        schema: VERIFICATION_SCHEMA_VERSION,
+        prompt: verificationContract.promptVersion,
+        schema: verificationContract.schemaVersion,
       }));
       const verifierProvider = createModelProvider(getBindings(), {
         provider: providerName,
@@ -2082,8 +2167,8 @@ export async function processExtractionRun(
             provider: providerName,
             model: modelName,
             reasoningEffort: verifierEffort,
-            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify`,
-            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            promptVersion: `${verificationContract.promptVersion}:verify`,
+            schemaVersion: verificationContract.schemaVersion,
             inputHash: verifyInputHash,
             validate: (value) => validateVerificationOutput(
               value,
@@ -2093,7 +2178,7 @@ export async function processExtractionRun(
             invoke: (stageOptions) => verifierProvider.verifyClaims(
               verificationContext,
               inventoryStage.output,
-              { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
+              { ...stageOptions, verificationSchemaVersion: verificationContract.schemaVersion, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
             ),
           });
         } catch (error) {
@@ -2137,8 +2222,8 @@ export async function processExtractionRun(
             provider: providerName,
             model: modelName,
             reasoningEffort: escalationEffort,
-            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
-            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            promptVersion: `${verificationContract.promptVersion}:verify_escalated`,
+            schemaVersion: verificationContract.schemaVersion,
             inputHash: escalatedInputHash,
             details: { escalation_reasons: storedEscalationReasons },
             validate: (value) => validateVerificationOutput(
@@ -2151,6 +2236,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               {
                 ...stageOptions,
+                verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
                 backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
                 qualityFeedback: [
@@ -2218,8 +2304,8 @@ export async function processExtractionRun(
             provider: providerName,
             model: modelName,
             reasoningEffort: escalationEffort,
-            promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:verify_escalated`,
-            schemaVersion: VERIFICATION_SCHEMA_VERSION,
+            promptVersion: `${verificationContract.promptVersion}:verify_escalated`,
+            schemaVersion: verificationContract.schemaVersion,
           inputHash: escalatedInputHash,
           details: { escalation_reasons: assessment.reasons },
             validate: (value) => validateVerificationOutput(
@@ -2232,6 +2318,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               {
                 ...stageOptions,
+                verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
                 backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
                 qualityFeedback: [
@@ -2309,6 +2396,7 @@ export async function processExtractionRun(
       }
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
       acceptedDraftLinks = acceptedVerification.draft_link_candidates;
+      acceptedSameIntentGroups = acceptedVerification.same_intent_groups ?? [];
       finalUsage = completedUsage ?? aggregateUsage(usages);
       const persistedUsage = await persistedExtractionUsage(String(leased.id));
       if (persistedUsage) finalUsage = persistedUsage;
@@ -2347,6 +2435,7 @@ export async function processExtractionRun(
       finalUsage,
       pipelineWarnings,
       acceptedDraftLinks,
+      acceptedSameIntentGroups,
     );
   } catch (error) {
     const frozenModelParams = parseJson<Record<string, unknown>>(
@@ -2424,11 +2513,19 @@ async function restartAfterContextChange(
     .map((item) => item?.asset_version_id)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
   try {
+    const trackedRevision = parseJson<{workflow_source_revision?:number}>(String(run.model_params_json), {}).workflow_source_revision;
+    const currentSource = trackedRevision === undefined ? null : await getD1().prepare(ANALYSIS_SOURCE_SQL)
+      .bind(run.workspace_id, run.event_id).first<{stamp:string}>();
+    if (trackedRevision !== undefined && (!currentSource || JSON.parse(currentSource.stamp).sourceRevision !== trackedRevision)) {
+      throw new ProcessingFault("CLAIM_VERSION_CONFLICT", "材料已有更新，请按当前材料重新整理");
+    }
     const { run: successor } = await createExtractionRun(
       { workspaceId: String(run.workspace_id), actorId: "system:notique-extraction" },
       String(run.event_id),
       contextRestartIdempotencyKey(String(run.id)),
       assetVersionIds,
+      false,
+      currentSource ? {sourceRevision:trackedRevision!,guard:{sql:`(${ANALYSIS_SOURCE_SQL})=?`,values:[run.workspace_id,run.event_id,currentSource.stamp]}} : undefined,
     );
     await getD1()
       .prepare(

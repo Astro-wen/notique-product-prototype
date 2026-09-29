@@ -1,0 +1,20 @@
+.page {max-width: 960px; padding-top: 28px;}
+.page h2 {font-size: 18px; line-height: 1.5; margin: 0; font-weight: 600;}
+.page p {font-size: 14px; line-height: 1.8;}
+.page section {margin-bottom: 20px;}
+.heading {display: flex; align-items: center; justify-content: space-between; gap: 24px;}
+.authorization dl {display: grid; gap: 14px; margin: 24px 0; font-size: 14px;}
+.authorization dl > div {display: flex; gap: 24px;}
+.authorization dt {width: 90px; flex: none; color: #59657b;}
+.authorization dd {margin: 0; overflow-wrap: anywhere;}
+.buttons {display: flex; align-items: center; gap: 10px; margin: 20px 0;}
+.help {color: #59657b;}
+.connection blockquote {background: #f5f6f8; border-radius: 6px; padding: 16px 20px; margin: 20px 0; font-size: 14px; line-height: 1.8;}
+.connection details {border-top: 1px solid #e6e6e8; padding-top: 18px; margin-top: 20px;}
+.connection summary {cursor: pointer; font-size: 14px; color: #59657b; width: fit-content;}
+.connection summary:focus-visible {outline: 2px solid #2d56cf; outline-offset: 3px;}
+.endpoint {display: block; margin: 16px 0; overflow-wrap: anywhere; font-size: 13px;}
+
+.page .authorization {margin-bottom: 20px;}
+.brand {display: inline-flex; align-items: center; gap: 8px;}
+.brand svg {color: #2d56cf; flex: none;}

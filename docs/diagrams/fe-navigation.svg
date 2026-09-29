@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="450" viewBox="0 0 1000 450" role="img" aria-labelledby="title desc">
+  <title id="title">前端页面导航：本次记录同页处理</title>
+  <desc id="desc">首页直接添加材料后进入本次记录。重点、少量待拍板和跟进在同页处理，可复制记录或随时离开。仅在需要时展开原话、集中批阅或全部行动，不要求按顺序完成。再次跟进时，从关注变化与下一步的事项回顾点击继续这件事，进入下一次记录。</desc>
+  <rect width="1000" height="450" fill="#FFFFFF"/>
+  <g fill="none" stroke="#111111" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+    <polyline points="220,120 295,120"/>
+    <polyline points="685,120 755,120"/>
+    <polyline points="490,200 490,244 320,244 320,267" stroke-dasharray="6 5"/>
+    <polyline points="490,244 530,244 530,267" stroke-dasharray="6 5"/>
+    <polyline points="530,244 760,244 760,267" stroke-dasharray="6 5"/>
+    <polyline points="295,393 755,393"/>
+  </g>
+  <g fill="#111111">
+    <polygon points="295,120 285,115 285,125"/>
+    <polygon points="755,120 745,115 745,125"/>
+    <polygon points="320,267 315,257 325,257"/>
+    <polygon points="530,267 525,257 535,257"/>
+    <polygon points="760,267 755,257 765,257"/>
+    <polygon points="755,393 745,388 745,398"/>
+  </g>
+  <g fill="#EAF3FF" stroke="#93B5DC" stroke-width="1.5">
+    <rect x="40" y="80" width="180" height="80" rx="10"/>
+    <rect x="295" y="40" width="390" height="160" rx="12"/>
+    <rect x="755" y="80" width="205" height="80" rx="10"/>
+    <rect x="240" y="267" width="160" height="54" rx="10"/>
+    <rect x="445" y="267" width="170" height="54" rx="10"/>
+    <rect x="670" y="267" width="180" height="54" rx="10"/>
+    <rect x="40" y="356" width="255" height="76" rx="10"/>
+    <rect x="755" y="363" width="205" height="62" rx="10"/>
+  </g>
+  <g font-family="PingFang SC, Noto Sans SC, Microsoft YaHei, sans-serif" fill="#111111" text-anchor="middle">
+    <text x="130" y="111" font-size="22">首页</text>
+    <text x="130" y="143" font-size="18">直接添加材料</text>
+    <text x="490" y="82" font-size="22">本次记录</text>
+    <text x="490" y="126" font-size="20">重点 · 少量待拍板 · 跟进</text>
+    <text x="490" y="169" font-size="18">同页处理</text>
+    <text x="857.5" y="112" font-size="20">复制记录</text>
+    <text x="857.5" y="143" font-size="20">随时离开</text>
+    <text x="320" y="302" font-size="20">展开原话</text>
+    <text x="530" y="302" font-size="20">集中批阅</text>
+    <text x="760" y="302" font-size="20">全部行动</text>
+    <text x="167.5" y="386" font-size="22">事项回顾</text>
+    <text x="167.5" y="416" font-size="18">聚焦变化与下一步</text>
+    <text x="857.5" y="402" font-size="22">下一次记录</text>
+    <text x="525" y="377" font-size="20">继续这件事</text>
+  </g>
+  <g font-family="PingFang SC, Noto Sans SC, Microsoft YaHei, sans-serif" font-size="18" fill="#333333">
+    <text x="40" y="282">可选视图</text>
+    <text x="40" y="309">需要时再打开</text>
+    <text x="510" y="226">可选</text>
+    <text x="706" y="102">或</text>
+    <text x="444" y="424">再次跟进时</text>
+  </g>
+</svg>

@@ -78,6 +78,7 @@ function verification(overrides = {}) {
       reason: "Retained as a material atomic fact.",
     }],
     draft_link_candidates: [],
+    same_intent_groups: [],
     quality_review: {
       unresolved_conflict_keys: [],
       compound_claim_keys: [],
@@ -152,7 +153,7 @@ test("a succeeded Agent B stage is reused only for the exact frozen input", () =
     ["model", "another-model"],
     ["reasoningEffort", "xhigh"],
     ["promptVersion", "claim-extraction-prompt.v10:verify"],
-    ["schemaVersion", "claim-verification.v5"],
+    ["schemaVersion", "claim-verification.future"],
   ]) {
     assert.equal(
       canReuseSucceededModelStage(persisted, frozenVerifyInput({ [field]: value })),
@@ -242,6 +243,18 @@ test("confirmed context requires null scenario assessment", () => {
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => issue.message.includes("must not be reassessed")));
   assert.equal(validateVerificationOutput(verification(), inventory(), context("confirmed-scenario")).valid, true);
+});
+
+test("verification carries explicit same-intent pairs without combining the atomic claims", () => {
+  const proposed = verification({claims: [
+    finalClaim({client_claim_key: "record", type: "decision", statement: "We agreed to request the quote."}),
+    finalClaim({client_claim_key: "action", type: "next_action", statement: "Request the quote."}),
+  ], candidate_dispositions: [{inventory_key: "inv-1", outcome: "included", final_claim_keys: ["record"], reason: "Retained agreement."}],
+  same_intent_groups: [{group_key: "quote", record_claim_key: "record", action_claim_key: "action", reason: "The same explicitly stated agreement.", confidence: 0.98}]});
+  const result = validateVerificationOutput(proposed, inventory());
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+  assert.equal(result.output.claims.length, 2);
+  assert.deepEqual(result.output.same_intent_groups, proposed.same_intent_groups);
 });
 
 test("final extraction helper removes verifier bookkeeping and preserves schema v3", () => {
