@@ -4,7 +4,12 @@
 
 这是 Notique 的内部验证系统。它把 Project、Event、Transcript、照片和文件保存到服务端，生成待审核的 Claim，并把每条 Claim 连接回原始证据。只有人工确认且仍然有效的 Claim 才能进入事项概况、时间线、决定、偏好、待确认问题和风险等正式结果。
 
-当前代码不包含示例 Claim、假 AI 结果或浏览器本地 Verdict。AI 服务未配置时，提取请求会明确返回 `MODEL_PROVIDER_NOT_CONFIGURED`。
+业务工作区不包含示例 Claim、假 AI 结果或浏览器本地 Verdict。AI 服务未配置时，提取请求会明确返回 `MODEL_PROVIDER_NOT_CONFIGURED`。
+
+## 设计与接入方案
+
+- [前端设计说明](docs/DESIGN_SYSTEM.md)：本地访问 `http://localhost:3000/design-system` 查看可交互组件库，示例为明确标注的合成内容，不写入业务数据。
+- [MCP 接入方案](docs/MCP_STRATEGY.md)：官方方案比较、现有代码适配、权限要求和降本验证；目前为实施设计，尚未启用 MCP。
 
 ## 当前范围
 

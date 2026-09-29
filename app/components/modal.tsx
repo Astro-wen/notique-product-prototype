@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import { X } from "lucide-react";
 import { Dialog } from "radix-ui";
+import { NqIconButton } from "./notique-ui";
 
 export function Modal({
   title,
@@ -51,7 +52,7 @@ export function Modal({
               </Dialog.Description>
             </div>
             <Dialog.Close asChild disabled={!dismissible}>
-              <button className="icon-button" aria-label="关闭" disabled={!dismissible}><X aria-hidden="true" /></button>
+              <NqIconButton label="关闭" disabled={!dismissible}><X aria-hidden="true" /></NqIconButton>
             </Dialog.Close>
           </header>
           {children}

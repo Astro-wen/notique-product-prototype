@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
 import { ArrowRight, FileText, Images, Mic, Upload } from "lucide-react";
+import { NqActionCard } from "./notique-ui";
 import { greetingFor } from "@/lib/domain/greeting";
 
 export type LandingHeroProps = {
@@ -135,26 +136,10 @@ export function LandingHero({
       </header>
 
       <div className="landing-actions">
-        <button type="button" className={`landing-action${recorderOpen ? " is-active" : ""}`} disabled={busy} onClick={onRecord}>
-          <span className="landing-action-mark record" aria-hidden="true"><Mic /></span>
-          <strong>直接录音</strong>
-          <small>{recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"}</small>
-        </button>
-        <button type="button" className="landing-action" disabled={busy} onClick={onPickAudio}>
-          <span className="landing-action-mark audio" aria-hidden="true"><Upload /></span>
-          <strong>上传音频</strong>
-          <small>分出说话人和时间点</small>
-        </button>
-        <button type="button" className="landing-action" disabled={busy} onClick={onPickTranscript}>
-          <span className="landing-action-mark text" aria-hidden="true"><FileText /></span>
-          <strong>上传文件</strong>
-          <small>已有逐字稿直接进来，跳过转写</small>
-        </button>
-        <button type="button" className="landing-action" disabled={busy} onClick={onPickPhoto}>
-          <span className="landing-action-mark photo" aria-hidden="true"><Images /></span>
-          <strong>上传图片</strong>
-          <small>手写笔记、白板、纸质材料</small>
-        </button>
+        <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"} active={recorderOpen} disabled={busy} onClick={onRecord} />
+        <NqActionCard icon={Upload} kind="audio" title="上传音频" description="分出说话人和时间点" disabled={busy} onClick={onPickAudio} />
+        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿直接进来，跳过转写" disabled={busy} onClick={onPickTranscript} />
+        <NqActionCard icon={Images} kind="photo" title="上传图片" description="手写笔记、白板、纸质材料" disabled={busy} onClick={onPickPhoto} />
       </div>
 
       <button type="button" className="landing-dropzone" disabled={busy} onClick={() => fileRef.current?.click()}>

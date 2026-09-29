@@ -99,7 +99,7 @@ test("the no-project screen is a landing page, not an empty copy of the workspac
   assert.match(page, /\{!project && <LandingHero/);
   // 四个入口对应四种材料，说明文字各说各的事，不重复。
   for (const entry of ["直接录音", "上传音频", "上传文件", "上传图片"]) {
-    assert.ok(landing.includes(`<strong>${entry}</strong>`), `落地页缺少入口：${entry}`);
+    assert.ok(landing.includes(`title="${entry}"`), `落地页缺少入口：${entry}`);
   }
   // 拖放区照旧是主入口，整块落地页都是放置目标。
   assert.match(landing, /landing-dropzone/);

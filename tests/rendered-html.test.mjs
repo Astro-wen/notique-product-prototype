@@ -4,9 +4,13 @@ import test from "node:test";
 
 async function builtPageSource() {
   const assets = await readdir(new URL("../dist/client/assets/", import.meta.url));
-  const pageAsset = assets.find((name) => /^page-.*\.js$/.test(name));
-  assert.ok(pageAsset, "the production build must emit a page client asset");
-  return readFile(new URL(`../dist/client/assets/${pageAsset}`, import.meta.url), "utf8");
+  // Several routes emit page-* chunks. Locate the workspace by its unique
+  // startup preference instead of assuming the first page is the homepage.
+  const pages = await Promise.all(assets.filter((name) => /^page-.*\.js$/.test(name))
+    .map((name) => readFile(new URL(`../dist/client/assets/${name}`, import.meta.url), "utf8")));
+  const workspacePages = pages.filter((source) => source.includes("notique.ui.public-workspace-acknowledged"));
+  assert.equal(workspacePages.length, 1, "the build must contain one workspace page entry");
+  return workspacePages[0];
 }
 
 test("production build contains the real-data shell without seeded AI output", async () => {
