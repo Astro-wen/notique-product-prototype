@@ -392,7 +392,7 @@ PM截图复核确认旧完成状态在核对弹窗和历史区可见，新行动
 
 模型验收增加多次沟通的三轮聚合、材料哈希去重、配置与来源版本对照、人工逐条支持度及裁决校验。缺失支持度保留未评审，费用未知保留未知。正式门槛及实际命令在WORKFLOW_V2_MODEL_ACCEPTANCE.md。现有合成资料是工程用例，正式30份授权或脱敏材料、标注裁决、独立运行和费用对照继续单独验收。
 
-1088项全量工程测试全部通过，类型检查、完整lint、生产构建及包内敏感信息审计通过。1440×900和1366×768共142条新版PC路径全部通过，包含重复行动选择、刷新、撤销、部分采纳和延期。工程日志为/private/tmp/notique-v2-final-engineering.log，PC日志为/private/tmp/notique-v2-final-pc.log，截图在/private/tmp/notique-v2-final-pc。另迁移3份旧浏览器测试的入口和合成API快照，两档PC共24条通过，覆盖原文、章节、播放、同页纠错及503后保留输入重试。日志为/private/tmp/notique-legacy-browser-complete.log。其余11份旧浏览器套件的72个场景尚未全部迁移或验证。
+1088项全量工程测试全部通过，类型检查、完整lint、生产构建及包内敏感信息审计通过。1440×900和1366×768共142条新版PC路径全部通过，包含重复行动选择、刷新、撤销、部分采纳和延期。工程日志为/private/tmp/notique-v2-final-engineering.log，PC日志为/private/tmp/notique-v2-final-pc.log，截图在/private/tmp/notique-v2-final-pc。另迁移3份旧浏览器测试的入口和合成API快照，两档PC共24条通过，覆盖原文、章节、播放、同页纠错及503后保留输入重试。日志为/private/tmp/notique-legacy-browser-complete.log。原样执行项目管理、键盘菜单与焦点、回收站、风险一致性和音频转换的5份旧套件，两档PC共28条通过，日志为/private/tmp/notique-legacy-retained-pc.log。本轮合计194次PC验收通过，其余6份旧浏览器套件的58个场景尚未全部迁移或验证。
 
 前后端飞书规范分别同步至revision 83及73。ReviewCard.actionOverlap和5.9中的逐项核对、冻结版本及撤销规则与本地两份规范及契约一致。各10个章节和7个原画板保留，规范同步证据为/private/tmp/notique-feishu-action-overlap-sync/verification.json。
 
