@@ -1,5 +1,7 @@
 # Notique Evidence POC
 
+> 开发协作统一使用 `main` 和同一份本地工作区。开始前请读 [AGENTS.md](AGENTS.md)；GitHub Pages 是静态入口，完整应用通过 Sites 单独发布。
+
 这是 Notique 的内部验证系统。它把 Project、Event、Transcript、照片和文件保存到服务端，生成待审核的 Claim，并把每条 Claim 连接回原始证据。只有人工确认且仍然有效的 Claim 才能进入事项概况、时间线、决定、偏好、待确认问题和风险等正式结果。
 
 当前代码不包含示例 Claim、假 AI 结果或浏览器本地 Verdict。AI 服务未配置时，提取请求会明确返回 `MODEL_PROVIDER_NOT_CONFIGURED`。

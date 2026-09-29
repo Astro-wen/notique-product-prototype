@@ -1,5 +1,7 @@
 # Notique AI — 新 Codex Project 交接入口
 
+> **历史交接记录**：2026-09-28 起，当前目录、分支和发布规则以 [AGENTS.md](../AGENTS.md) 为准。`publish-main`、`ux/live-copy` 已退役，统一使用 `main`。下文的版本号、分支和验收数据只代表当时状态。
+
 更新日期：2026-08-30
 
 > 新 Project 请先完整阅读本文件，再读 `tests/ACCEPTANCE_CHECKLIST.md`。不要只依据旧版 `CLAUDE_HANDOFF.md` 或 `ERIC_MVP_PROGRESS.md` 判断当前状态；它们仍含 v23 等历史记录。
