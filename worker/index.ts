@@ -9,6 +9,7 @@ import {
 } from "@/lib/server/jobs/outbox";
 import {
   dispatchTranscriptionRun,
+  wakeTranscriptionRun,
 } from "@/lib/server/jobs/transcription-outbox";
 import {
   dispatchEventAiArtifactRun,
@@ -21,6 +22,7 @@ interface Env {
   DB: D1Database;
   EVIDENCE: R2Bucket;
   APP_ENV?: string;
+  WORKFLOW_SCHEDULER_TOKEN?: string;
   AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
   INTERNAL_WORKSPACE_ID?: string;
   IMAGES: {
@@ -206,7 +208,12 @@ const worker = {
       }
       try {
         const input = await dispatchInput(request);
+        const independentlyScheduled = env.APP_ENV !== "local"
+          && Boolean(env.WORKFLOW_SCHEDULER_TOKEN?.trim());
         if ("heartbeatEventId" in input) {
+          if (independentlyScheduled) {
+            return dispatchResponse({ accepted: true, kind: "all", scheduled: true }, requestId, 202);
+          }
           // An untargeted kick is the workspace's recovery heartbeat. It used
           // to dispatch the extraction outbox and nothing else, because the
           // rest was "owned by the one-minute Cron trigger" — which does not
@@ -271,6 +278,20 @@ const worker = {
               message: error instanceof Error ? error.message : "Unexpected error",
             });
           }));
+        } else if (independentlyScheduled) {
+          // The durable message is executed by the independent scheduler,
+          // whose request stays alive through the audio provider response.
+          const state = await wakeTranscriptionRun(workspaceId, input.runId);
+          if (state === "missing") {
+            return dispatchError(404, "PROJECT_SCOPE_VIOLATION", "Run was not found.", requestId);
+          }
+          return dispatchResponse({
+            accepted: true,
+            scheduled: true,
+            kind: input.kind,
+            run_id: input.runId,
+            run_status: state === "queued" ? "queued" : run.status,
+          }, requestId, 202);
         } else if (env.APP_ENV === "local") {
           // Local development has no Cron trigger and no 30-second HTTP
           // waitUntil cutoff, so keep the immediate smoke-test experience.

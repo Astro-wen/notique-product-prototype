@@ -434,6 +434,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
         <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
         <div className={styles.bullets}>{topic.bullets.map(renderBullet)}</div>
         {topic.actions.length>0 && <div className={styles.topicFollowups}><h4>跟进与结果</h4>{topic.actions.map(renderAction)}</div>}
+        {topic.relatedActionRefs.length>0 && <div className={styles.relatedFollowups}>{topic.relatedActionRefs.map(ref=>{const action=snapshot.actions.find(a=>a.claimRef.claimId===ref.claimId && a.claimRef.claimVersionId===ref.claimVersionId);return action?<button key={action.id} onClick={()=>showFollowup(action.id)} aria-label={`查看相关跟进：${titleFor(action.id)}`}>相关跟进：{titleFor(action.id)}</button>:null;})}</div>}
       </section>)}</div>}
       {filter==='decisions' && snapshot.actions.length>0 && <div className={styles.followups}><h3>跟进与结果</h3>{snapshot.actions.map(renderAction)}</div>}
       {filter==='decisions' && priorities.length>priorityLimit && <div className={styles.priorityRemainder}><span>先处理这 {prioritySelection.length} 项，还有 {priorities.length-priorityLimit} 项。</span><NqButton variant="secondary" onClick={()=>setPriorityLimit(value=>value+5)}>再看 5 项</NqButton></div>}

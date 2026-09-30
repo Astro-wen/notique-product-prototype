@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFile} from 'node:fs/promises';
+import {Miniflare, Log} from 'miniflare';
 import worker, {recover} from '../infra/recovery/worker.mjs';
 const privateText = 'SYNTHETIC_PRIVATE_RECOVERY_VALUE';
 const env = {WORKFLOW_RECOVERY_TOKEN: privateText};
@@ -54,4 +56,35 @@ test('redirect responses stop after the fixed request without forwarding credent
   }, log: (...args) => logs.push(args)});
   assert.equal(calls, 1);
   assert.deepEqual(logs, [['notique_recovery', {state: 'http_failed', status: 307}]]);
+});
+
+test('the actual Workers runtime accepts the scheduled request and rejects a redirect', async () => {
+  const source = await readFile(new URL('../infra/recovery/worker.mjs', import.meta.url), 'utf8');
+  const script = source.replace('export default {', 'const recoveryWorker = {') + `
+export default {async fetch(_request, env) {
+  const logs = [], original = console.log; let pending;
+  console.log = (...args) => logs.push(args);
+  try {recoveryWorker.scheduled({}, env, {waitUntil(promise) {pending = promise;}}); await pending;}
+  finally {console.log = original;}
+  return Response.json(logs);
+}};`;
+  const calls = []; let status = 200;
+  const runtime = new Miniflare({modules: true, script,
+    // The installed workerd binary supports this date. Production uses 2026-09-29.
+    compatibilityDate: '2026-05-22', compatibilityFlags: ['global_fetch_strictly_public'],
+    bindings: env, log: new Log(0), outboundService: request => {
+      calls.push({url: request.url, method: request.method, redirect: request.redirect, authorization: request.headers.get('Authorization')});
+      return status === 200 ? Response.json(payload()) : new Response(null, {status, headers: {Location: 'https://example.com/'}});
+    }});
+  try {
+    const first = await runtime.dispatchFetch('http://localhost/runtime-test');
+    assert.equal((await first.json())[0][1].state, 'succeeded');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, 'POST'); assert.equal(calls[0].authorization, 'Bearer ' + privateText);
+    assert.equal(calls[0].url, 'https://notique-evidence-workspace.uclae2e12.chatgpt.site/api/internal/jobs/sweep');
+    status = 307;
+    const second = await runtime.dispatchFetch('http://localhost/runtime-test');
+    assert.deepEqual(await second.json(), [['notique_recovery', {state: 'http_failed', status: 307}]]);
+    assert.equal(calls.length, 2);
+  } finally {await runtime.dispose();}
 });

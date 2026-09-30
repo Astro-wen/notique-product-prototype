@@ -1,10 +1,12 @@
-.workspace { --record-blue: #2d56cf; width: min(1080px, 100%); margin: 0 auto; padding: 24px 32px 64px; color: #0d0d0d; font-family: "Noto Sans TC", "PingFang TC", "PingFang SC", sans-serif; }
-.workspace :global(.button) { border-radius: 6px; min-height: 36px; font-size: 14px; padding: 8px 12px; box-shadow: none; }
+.workspace { --record-blue: #2d56cf; width: min(1080px, 100%); margin: 0 auto; padding: 24px 32px 64px; color: #0d0d0d; font-family: var(--font-sans); }
+.workspace :global(.button) { border-radius: 6px; min-height: 36px; font-size: 14px; line-height: 20px; font-weight: 400; padding: 6px 16px; box-shadow: none; }
 .workspace :global(.button.primary) { background: #0d0d0d; color: #fff; border-color: #0d0d0d; }
-.workspace :global(.button.primary:hover) { background: #303030; }
+.workspace :global(.button.primary:hover:not(:disabled)) { background: #59657b; }
 .workspace :global(.button.secondary) { background: white; color: #0d0d0d; border: 1px solid #e6e6e8; }
 .workspace :global(.button.quiet) { color: #59657b; background: transparent; }
-.workspace :global(.button.quiet:hover) { color: var(--record-blue); background: #f2f5ff; }
+.workspace :global(.button.secondary:hover:not(:disabled)) { background: #e6e6e8; }
+.workspace :global(.button.quiet:hover:not(:disabled)) { color: var(--record-blue); background: #f3f4f6; }
+.workspace :global(.button.primary:disabled), .workspace :global(.button.secondary:disabled) { background: #e6e6e8; color: #a0a0a0; border-color: #e6e6e8; opacity: 1; }
 .workspace button:focus-visible, .workspace summary:focus-visible, .workspace a:focus-visible { outline: 2px solid var(--record-blue); outline-offset: 3px; }
 .topbar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e6e6e8; padding-bottom: 22px; font-size: 14px; }
 .topbar a, .footer span { display: inline-flex; align-items: center; gap: 8px; color: #59657b; text-decoration: none; }
@@ -210,3 +212,6 @@
 .topic .bullet { border: 0; border-bottom: 1px solid #e6e6e8; border-radius: 0; }
 .topic .bullet:last-child { border-bottom: 0; }
 .topic .action:last-child { border-bottom: 0; }
+.relatedFollowups { display: grid; gap: 4px; border-top: 1px solid #e6e6e8; margin-top: 12px; padding-top: 10px; }
+.relatedFollowups button { min-height: 36px; padding: 6px 0; border: 0; background: transparent; color: var(--record-blue); text-align: left; font-size: 14px; line-height: 20px; cursor: pointer; }
+.relatedFollowups button:hover { text-decoration: underline; text-underline-offset: 3px; }

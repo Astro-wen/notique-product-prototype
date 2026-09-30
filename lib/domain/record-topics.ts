@@ -1,6 +1,6 @@
-import type { Action, Bullet, WorkspaceSnapshot } from '../shared/workflow-v2.ts';
+import type { Action, Bullet, VersionRef, WorkspaceSnapshot } from '../shared/workflow-v2.ts';
 
-export type RecordTopic = { key: string; title: string; bullets: Bullet[]; actions: Action[] };
+export type RecordTopic = { key: string; title: string; bullets: Bullet[]; actions: Action[]; relatedActionRefs: VersionRef[] };
 const versionKey = (r: {claimId:string;claimVersionId:string}) => JSON.stringify([r.claimId,r.claimVersionId]);
 
 /** Topic membership affects layout only. It never establishes a ledger relation
@@ -31,7 +31,7 @@ export function recordTopics(snapshot: WorkspaceSnapshot, visible: readonly Bull
   const groups=new Map<string,RecordTopic>();
   const ensure=(topic:{key:string;title:string})=>{
     let group=groups.get(topic.key);
-    if(!group){group={...topic,bullets:[],actions:[]};groups.set(topic.key,group);}
+    if(!group){group={...topic,bullets:[],actions:[],relatedActionRefs:[]};groups.set(topic.key,group);}
     return group;
   };
   const fallback={key:'_notique_unassigned',title:assignment.size?'其他要点':'本次讨论'};
@@ -48,9 +48,22 @@ export function recordTopics(snapshot: WorkspaceSnapshot, visible: readonly Bull
     ensure(topic).bullets.push(b);
     for(const r of b.claimRefs)bulletTopics.set(versionKey(r),topic);
   }
+  const actionTopics=new Map<string,string>();
   for(const action of snapshot.actions) {
     const topic=topicFor([action.claimRef]) ?? bulletTopics.get(versionKey(action.claimRef)) ?? topicFor(action.questionRefs) ?? topicFor(action.basisDetails.flatMap(b=>b.currentRef?[b.currentRef]:[])) ?? fallback;
     ensure(topic).actions.push(action);
+    actionTopics.set(versionKey(action.claimRef),topic.key);
+  }
+  // A shared follow-up has one authoritative action card. Other visible
+  // matters link to its exact version through existing ledger relationships.
+  // No keyword inference or duplicate execution state is introduced here.
+  for(const action of snapshot.actions) {
+    for(const ref of [...action.questionRefs,...action.basisDetails.flatMap(b=>b.currentRef?[b.currentRef]:[])]) {
+      const topic=assignment.get(versionKey(ref));
+      if(!topic || topic.key===actionTopics.get(versionKey(action.claimRef)))continue;
+      const group=groups.get(topic.key);
+      if(group && !group.relatedActionRefs.some(r=>versionKey(r)===versionKey(action.claimRef)))group.relatedActionRefs.push(action.claimRef);
+    }
   }
   return [...groups.values()];
 }

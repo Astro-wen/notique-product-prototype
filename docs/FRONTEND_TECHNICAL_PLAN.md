@@ -295,6 +295,8 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 
 连接入口携带当前工作区地址，返回时恢复原事项和沟通。登录回跳保留相同地址，返回路径限定为本平台首页路由。
 
+六个只读工具沿用现有结果。get_record_views 的 record 与 get_project_brief 分别返回批阅、执行和问题解答状态。已完成或取消的行动、已回答的问题继续可读。latestOutcome 返回结果修订、新鲜度及精确引用，旧结果按历史展示。用户在网页保存采纳、执行与答案。连接页展示账号的读取授权，助手安装状态由调用方确认。
+
 ### 5.14 复述信息与原事项
 
 复述信息随本次沟通读取，保留模型关联状态、本次原话及冻结的原信息版本。待核对关联展示为再次提及，阅读和混合复制即可带走。关联已经确认且原版本仍有效时，沿用原记录、行动或问题的ID，完成与答案状态继续承接。原事项修改、类型改变、被替代或不可访问时，原版本与当前内容分开显示。材料或段落不在本次授权范围内时收起对应正文。项目待办及问题按稳定ID计数，原卡片保持自身沟通归属。
@@ -371,7 +373,7 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 | ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 |
 | ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 |
 | Bullet | id、text、claimRefs、reviewState、origin、sourceStatus、applicability?、conflictWith? | reviewState=draft/accepted，origin=source_statement/ai_suggestion/user_input/user_selection。用户选录保留原话，缺失或过期出处显式展示 并存答案的适用情况随要点展示与导出。conflictWith 保存仍待选择的旧信息精确版本，复制时标明新旧信息待选择。 |
-| Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 |
+| Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 |
 | DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null。用户核对就绪原话后，可确认或采用支持度为fully_supports或unreviewed的草稿。AI支持状态与人工采纳分别保留。部分支持和不支持通过修改补齐 |
 | DecisionMember | claimId、claimVersionId、operation、newText?、origin?、evidenceRefIds?、conflictChoice?、questionChange?、factChange? | questionChange 仅用于问题 edit。answerChoices 携带全部现有有效答案的 VersionRef 和 mode=keep/reopen，最多100条。keep 关联到新版问题，reopen 解除当前问题关联，共享答案保留其他问题用途。整次决定和撤销恢复原子处理。结果修正与撤回沿 reason.questionEdit.predecessorRelationId 关系链处理，同一答案、同一问题之外的独立关联保留。 factChange 仅用于普通信息 edit，questionChoices 携带当前回答的全部问题 VersionRef 和 mode=keep/reopen，最多100条。keep 使用新信息版本回答原问题，reopen 解除该条支持并按其他答案重算。已确认的替代与并存关系追加新版本关系并保留原决定及适用情况。原行动依据保持冻结，用户另行核对。结果撤回沿同一答案、同一问题的 questionEdit 与 factEdit 关系链处理。 |
 | MutationReceipt | mutationId、contextVersion、changedRefs、affectedViews、refreshState | 原子提交后的回执。changedRefs 含 entityType、id、revision。refreshState=current/updating，前端按目标版本读取快照 |
@@ -475,7 +477,7 @@ sequenceDiagram
     S-->>F: 返回最新结果
 ```
 
-材料提交成功后服务端持久化分析任务。逐字稿或部分要点可用时先展示，进度明确标明尚未覆盖的部分。退出页面后任务按服务端调度继续。
+材料提交成功后服务端持久化分析任务。逐字稿或部分要点可用时先展示，进度明确标明尚未覆盖的部分。退出页面后任务按服务端调度继续。生产配置独立调度后，派发接口的202与scheduled:true表示任务已交后台。前端继续读取逐字稿、要点和概要进度，以对应阶段的终态判断完成。
 
 ### 9.2 批阅与自动成稿
 

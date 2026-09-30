@@ -1,5 +1,5 @@
-import {claimSourceStatus,projectWorkspace} from '../../domain/workflow-projection.ts';
-import {currentRecordBullets} from '../../domain/workflow-v2.ts';
+import {claimSourceStatus,projectWorkspace,type ProjectionLedger} from '../../domain/workflow-projection.ts';
+import type {VersionRef,WorkspaceSnapshot} from '../../shared/workflow-v2.ts';
 import {projectOverview} from '../workflow/overview-service.ts';
 import {digestValue,findWorkflowEvent,loadWorkflowLedger,WorkflowFault,type WorkflowScope} from '../workflow/snapshot-store.ts';
 export type ReadArgs={project_id?:string;record_id?:string;evidence_id?:string;cursor?:string;limit?:number;views?:string[]};
@@ -15,6 +15,43 @@ function page<T>(items:T[],args:ReadArgs,stamp:string,maxChars=24000) {
  for(let i=index;i<items.length && selected.length<(args.limit??20);i++){const length=JSON.stringify(items[i]).length;if(length>maxChars)throw new WorkflowFault(422,'dependency_conflict','这项内容较长，请通过原文片段读取。');if(size+length>maxChars)break;selected.push(items[i]);size+=length;}
  const next=index+selected.length;return {items:selected,nextCursor:next<items.length?encode({stamp,index:next,offset:0}):null};
 }
+const sameRef=(a:VersionRef,b:VersionRef)=>a.claimId===b.claimId && a.claimVersionId===b.claimVersionId;
+function jsonFragments(serialized:string):string[] {
+ const fragments:string[]=[];let offset=0;
+ while(offset<serialized.length){let end=Math.min(offset+8000,serialized.length);if(end<serialized.length && /[\uD800-\uDBFF]/.test(serialized[end-1]))end--;fragments.push(serialized.slice(offset,end));offset=end;}
+ return fragments;
+}
+/** Large state/association rows must remain readable within the same page budget. */
+function boundedEntries(entries:Array<Record<string,unknown>>):Array<Record<string,unknown>> {
+ return entries.flatMap(entry=>{
+  const serialized=JSON.stringify(entry);if(serialized.length<=24000)return [entry];
+  const fragments=jsonFragments(serialized);
+  return fragments.map((content,partIndex)=>({view:entry.view,kind:entry.kind,id:entry.id,eventId:entry.eventId,format:'json_fragment',fragmentOf:'entry',partIndex,partCount:fragments.length,content}));
+ });
+}
+/** Transport the authoritative workspace projection, without the UI's answer
+ * substitution or open-only filters. Review, execution and resolution differ. */
+function workflowEntries(ledger:ProjectionLedger,snapshot:WorkspaceSnapshot,eventId:string):Array<Record<string,unknown>> {
+ const claims=new Map(ledger.claims.map(c=>[c.id,c]));
+ const versionReady=(ref:VersionRef)=>{
+  const evidence=ledger.evidence.filter(e=>e.claim_version_id===ref.claimVersionId && e.evidence_role!=='contextual');
+  return evidence.length>0 && evidence.every(e=>e.availability==='ready' && e.structural_validation_status==='valid');
+ };
+ const entries=snapshot.bullets.map(b=>{
+  const action=snapshot.actions.find(a=>b.claimRefs.some(r=>sameRef(r,a.claimRef)));
+  const question=snapshot.questions.find(q=>b.claimRefs.some(r=>sameRef(r,q.claimRef)));
+  const claim=claims.get(b.id);
+  const answerToQuestionRefs=snapshot.questions.filter(q=>q.answerRefs.some(a=>b.claimRefs.some(r=>sameRef(r,a)))).map(q=>({...q.claimRef,revision:q.revision}));
+  const resultForActionRefs=snapshot.actions.filter(a=>a.latestOutcome?.resultRefs?.some(result=>b.claimRefs.some(r=>sameRef(r,result)))).map(a=>({...a.claimRef,revision:a.revision}));
+  return {...b,kind:claim?.type==='next_action'?'action':claim?.type==='open_question'?'question':'record_bullet',claimType:claim?.type,eventId:claim?.event_id ?? eventId,text:b.sourceStatus==='ready'?b.text:null,
+   ...(action?{...action,basisDetails:action.basisDetails.map(basis=>({...basis,acceptedText:versionReady(basis.acceptedRef)?basis.acceptedText:null,currentText:basis.sourceStatus==='ready'?basis.currentText:null})),...(b.sourceStatus!=='ready'?{ownerHint:undefined,dueAt:undefined}:{})}:{}),
+   ...(question ?? {}),...(answerToQuestionRefs.length?{answerToQuestionRefs}:{}),...(resultForActionRefs.length?{resultForActionRefs}:{})};
+ });
+ return [...entries,...(snapshot.actionHistory ?? []).map(action=>{
+  const replacement=action.replacementRef?claims.get(action.replacementRef.claimId):null;
+  return {...action,kind:'action_history',eventId:claims.get(action.id)?.event_id ?? eventId,reviewState:'accepted',lifecycleState:'superseded',text:action.sourceStatus==='ready'?action.text:null,replacementText:replacement && claimSourceStatus(replacement,ledger.evidence)==='ready'?action.replacementText:null};
+ })];
+}
 async function record(db:D1Database,scope:WorkflowScope,id:string) {const projectId=await findWorkflowEvent(db,scope,id);const ledger=await loadWorkflowLedger(db,scope,projectId);return {projectId,ledger,snapshot:projectWorkspace(ledger,id,new Date().toISOString(),'')};}
 export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,args:ReadArgs) {
  const now=new Date().toISOString();
@@ -26,12 +63,26 @@ export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,
   const ledger=await loadWorkflowLedger(db,scope,args.project_id!);const rows=ledger.events.toSorted((a,b)=>b.occurred_at.localeCompare(a.occurred_at)||a.id.localeCompare(b.id)).map(e=>({id:e.id,title:e.title,occurredAt:e.occurred_at,sourceRevision:e.source_revision,analysisState:ledger.runs.find(r=>r.id===e.active_run_id)?.status ?? 'not_generated'}));return {kind:'records',contextVersion:ledger.contextVersion,...page(rows,args,await digestValue(rows))};
  }
  if(name==='get_project_brief'){
-  const ledger=await loadWorkflowLedger(db,scope,args.project_id!);const brief=projectOverview(ledger,now);const entries=[...brief.currentBullets.filter(b=>b.reviewState==='accepted' && !['next_action','open_question'].includes(ledger.claims.find(c=>c.id===b.id)?.type ?? '')).map(b=>({kind:'accepted_fact',id:b.id,text:b.sourceStatus==='ready'?b.text:null,sourceStatus:b.sourceStatus,claimRefs:b.claimRefs,eventId:b.eventId})),...brief.openQuestions.map(q=>{const c=ledger.claims.find(c=>c.id===q.id)!;return {kind:'open_question',id:q.id,text:claimSourceStatus(c,ledger.evidence)==='ready'?c.statement:null,claimRefs:[q.claimRef],eventId:q.eventId};}),...brief.nextActions.map(a=>{const c=ledger.claims.find(c=>c.id===a.id)!;return {kind:'action',id:a.id,text:claimSourceStatus(c,ledger.evidence)==='ready'?c.statement:null,claimRefs:[a.claimRef],executionState:a.executionState,basisState:a.basisState,eventId:a.eventId};})];
-  return {kind:'project_brief',contextVersion:ledger.contextVersion,counts:brief.counts,...page(entries,args,await digestValue(entries))};
+  const ledger=await loadWorkflowLedger(db,scope,args.project_id!);const brief=projectOverview(ledger,now);
+  const projected=ledger.events.toSorted((a,b)=>b.occurred_at.localeCompare(a.occurred_at)||a.id.localeCompare(b.id)).flatMap(event=>workflowEntries(ledger,projectWorkspace(ledger,event.id,now,''),event.id));
+  const byEntry=new Map<string,Record<string,unknown>>();
+  for(const entry of projected.filter(entry=>entry.kind!=='record_bullet' || entry.reviewState==='accepted')){
+   const key=`${entry.kind}:${entry.id}`,previous=byEntry.get(key);
+   const merged:Record<string,unknown>={...(previous ?? entry),kind:entry.kind==='record_bullet'?'accepted_fact':entry.kind};
+   // The same answer can appear in its source record and in several question
+   // records. Deduplication must retain every projected exact association.
+   for(const field of ['answerToQuestionRefs','resultForActionRefs']){
+    const refs=[...((previous?.[field] as VersionRef[] | undefined) ?? []),...((entry[field] as VersionRef[] | undefined) ?? [])];
+    if(refs.length)merged[field]=[...new Map(refs.map(ref=>[JSON.stringify(ref),ref])).values()];
+   }
+   byEntry.set(key,merged);
+  }
+  const entries=[...byEntry.values()];
+  return {kind:'project_brief',contextVersion:ledger.contextVersion,counts:brief.counts,...page(boundedEntries(entries),args,await digestValue({contextVersion:ledger.contextVersion,entries}))};
  }
  if(name==='get_record_views'){
-  const {projectId,snapshot}=await record(db,scope,args.record_id!);const views=args.views ?? ['record'];const entries:Array<Record<string,unknown>>=[];
-  if(views.includes('record'))for(const b of currentRecordBullets(snapshot.bullets,snapshot.questions))entries.push({view:'record',...b,text:b.sourceStatus==='ready'?b.text:null});
+  const {projectId,ledger,snapshot}=await record(db,scope,args.record_id!);const views=args.views ?? ['record'];const entries:Array<Record<string,unknown>>=[];
+  if(views.includes('record'))for(const entry of workflowEntries(ledger,snapshot,args.record_id!))entries.push({view:'record',...entry});
   if(views.includes('record'))for(const mention of snapshot.reaffirmedMentions ?? [])entries.push({view:'record',...mention,memberKind:mention.kind,kind:'reaffirmed_mention'});
   if(views.includes('summary')){const n=snapshot.narrative;if(n?.text)for(const sentence of n.sentenceRefs)entries.push({view:'summary',...sentence,freshness:n.freshness,basedOnContextVersion:n.basedOnContextVersion});else entries.push({view:'summary',state:n?.freshness ?? 'not_generated'});}
   for(const kind of views.filter(v=>!['record','summary'].includes(v))){
@@ -47,11 +98,10 @@ export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,
    if(!ready){entries.push({view:kind,id:a.id,version:a.artifact_version,state:'stale',generationState,content:null});continue;}
    const serialized=JSON.stringify(JSON.parse(a.content_json));
    // Fragment offsets preserve UTF-16 boundaries so rejoining yields exact JSON.
-   const fragments:string[]=[];let offset=0;
-   while(offset<serialized.length){let end=Math.min(offset+12000,serialized.length);if(end<serialized.length && /[\uD800-\uDBFF]/.test(serialized[end-1]))end--;fragments.push(serialized.slice(offset,end));offset=end;}
+   const fragments=jsonFragments(serialized);
    fragments.forEach((content,partIndex)=>entries.push({view:kind,id:a.id,version:a.artifact_version,createdAt:a.created_at,state:'generated',generationState,reviewState:'draft',format:'json_fragment',partIndex,partCount:fragments.length,content}));
   }
-  return {kind:'record_views',contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,...page(entries,args,await digestValue(entries))};
+  return {kind:'record_views',contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,...page(boundedEntries(entries),args,await digestValue({contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,entries}))};
  }
  if(name==='get_record_excerpt'){
   const {projectId,ledger,snapshot}=await record(db,scope,args.record_id!);const rows=await query<{id:string;asset_version_id:string;ordinal:number;speaker:string|null;start_ms:number|null;end_ms:number|null;text_raw:string}>(db,`SELECT s.id,s.asset_version_id,s.ordinal,s.speaker,s.start_ms,s.end_ms,s.text_raw FROM text_segments s JOIN assets a ON a.id=s.asset_id AND a.current_version_id=s.asset_version_id WHERE s.workspace_id=? AND s.project_id=? AND s.event_id=? AND a.workspace_id=s.workspace_id AND a.project_id=s.project_id AND a.event_id=s.event_id AND a.processing_status='ready' AND COALESCE(a.failure_code,'') NOT IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED') AND COALESCE(json_extract(a.metadata_json,'$.analysis_source'),1)<>0 AND COALESCE(json_extract(a.metadata_json,'$.artifact_kind'),'')<>'readable_transcript' AND COALESCE(json_extract(a.metadata_json,'$.transcription_chunk'),0)<>1 AND (json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NULL OR EXISTS(SELECT 1 FROM assets audio WHERE audio.workspace_id=a.workspace_id AND audio.project_id=a.project_id AND audio.event_id=a.event_id AND audio.kind='audio' AND audio.current_version_id=json_extract(a.metadata_json,'$.source_audio_asset_version_id'))) ORDER BY s.asset_version_id,s.ordinal,s.id`,scope.workspaceId,projectId,args.record_id);

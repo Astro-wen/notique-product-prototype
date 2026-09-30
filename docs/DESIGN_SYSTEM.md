@@ -1,42 +1,40 @@
 # Notique 前端视觉库
 
-当前为有来源的视觉适配，尚未严格复用官网全部组件。2026-09-29 的 PC 实测已清理 `.interface-refresh` 中主按钮、文字链接、阅读导航及选中原文的旧绿色覆盖，保留绿色表示完成状态。其他页面与官网登录后组件仍需逐一核对 DOM、实际计算样式和交互状态。
-
-访问 `/design-system`；可下载 `/design-system/tokens.json`。实现位于 `app/components/notique-ui.tsx`，设计变量及样式集中在 `app/globals.css`。
+访问 `/design-system`，设计变量下载地址为 `/design-system/tokens.json`。项目管理与视觉库复用 `NqProjectCard`，批阅操作与视觉库复用 `NqButton`。实现集中在 `app/components/notique-ui.tsx`、`app/globals.css` 和记录工作区样式。
 
 ## 来源与验证范围
 
-2026-09-28 实际访问 [Notique](https://app.notiqueai.com/)，读取公开 CSS 和 JavaScript。无登录会话，仅直接验证了登录页；预加载资源揭示了部分内部组件结构，但不代表已核对登录后的全部页面。官网是 Nuxt/Vue，本项目是 React/Radix，因此复用视觉约定、结构和组件边界，不把编译后的整站脚本搬入应用。
+2026-09-30 通过已登录的 [Notique](https://app.notiqueai.com/) 实际查看项目管理、时间线和原文页面，读取 DOM、计算样式、31份发布 CSS，并检查相关编译 JavaScript。采集记录位于被 Git 忽略的 `outputs/notique-reference/2026-09-30/`。样式依据、组件约定与实现顺序位于 `docs/notique-design/`。
 
-| 来源 | 已观察到的内容 | 本项目适配 |
+| 组件 | 官网实测 | 本项目应用 |
 | --- | --- | --- |
-| `/_nuxt/entry.BCNbfqNB.css` | 黑色主按钮、蓝色强调、6px 圆角；Noto Sans TC/PingFang；灰色辅助文字 | 全局色彩、字体栈、按钮基础样式 |
-| `/_nuxt/BaseDialog.CXMeE5hw.css` 和 `T1rEUKba.js` | 确认/取消按钮、disabled、弹窗标题；8px 圆角、半透明黑遮罩 | 保留现有 Radix 的焦点、键盘和关闭行为，统一外观 |
-| `/_nuxt/FirstProjectPage.CzmkR8DO.css` 和 `DYea4HJt.js` | 居中空状态、42px 高轮廓按钮、新建入口 | 统一按钮尺寸与内容层级，不复制业务状态 |
-| `/_nuxt/MainContentTopToolBar.DIN1QIIq.css` 和 `D25oXMHT.js` | 工具栏与页面状态相关控制 | 仅提取样式参考，未引入其业务代码 |
-| `/_nuxt/default.B0DCKadC.css` | 页面、导航和卡片基础规则 | 白色面板、浅底色、边框层次 |
+| 基础样式 | 画布 #f5f6f8、主文字 #0d0d0d、辅助 #59657b、分隔 #e6e6e8 | 全局变量与共用字体栈 |
+| 项目卡 | 高89px、最大宽305px、16px圆角、2px边框、标题14px/21px | NqProjectCard，同一组件用于项目管理与视觉库 |
+| 项目状态 | 悬停与选中浅蓝 #e5f0ff、品牌蓝边框 | 项目卡悬停、批量选中 |
+| 按钮 | 36/42/44px、6px圆角、普通操作14px/20px | NqButton 的 compact/regular/large |
+| 禁用操作 | 底色 #e6e6e8、文字 #a0a0a0、opacity 1 | 共用实心与轮廓按钮 |
+| 原文块 | 16px/26px、12px 16px留白、8px圆角 | 实际原文面板与视觉库 |
+| 弹窗 | 标题、关闭、确认/取消及禁用状态 | 现有 Radix Modal，保留焦点与键盘行为 |
 
-参考资源的本地副本在被 Git 忽略的 `outputs/notique-reference/`。以上是观测时的带哈希 URL，未来发布可能改变。无账号凭据、官网客户数据或商业宣传图片进入代码。
+官网为 Nuxt/Vue，本项目为 React/Radix。发布 CSS 和 DOM 提供样式与结构依据，组件通过本项目的共用实现接入。编译资源采集和应用源码复用分别记录。
 
 ## 视觉约定
 
-黑色 #0d0d0d 用于文字及主要操作；#59657b 用于辅助文字；#4b75f2 用于品牌强调；#e6e6e8 用于分隔。#f9fafb 画布、#edf2ff 选中背景和深蓝 #2d56cf 是本项目适配值。深蓝用于白底小字和带白字的强调按钮，避免直接照搬浅色造成可读性不足。状态绿色保留给成功/已确认，不与导航混用。
+字体栈沿用 Noto Sans TC、PingFang TC、Roboto 和系统后备字体。正文16px，标签14px，辅助信息12px。项目卡圆角16px、按钮6px、原文和弹窗8px。品牌蓝 #4b75f2 用于选中与链接，深蓝 #2d56cf 用于小字和白字强调操作。绿色表示已确认或完成。键盘焦点与状态文字继续保留。
 
-常用正文 16px、标签 14px，辅助文字至少 12px；现有业务页面仍有历史尺寸，未宣称全面完成字号审计。字体优先使用用户系统已安装的中文字体，不额外下载官网字体文件。按钮 6px、卡片 10px、弹窗 8px 圆角。已有 `--brand-green*` 变量暂时保留为蓝色兼容别名，避免一次性改动全部业务选择器。
+tokens.json 将官网观测值与可读性适配值分开记录。业务信息继续遵循主题分组、批阅、问题回答、行动执行和结果回流的现有接口。
 
 ## 可复用组件
 
-- `NqButton`：primary / secondary / quiet / accent / danger，disabled 和 loading；默认 type=button。
-- `NqIconButton`：要求 label，用于弹窗关闭等图标操作。
-- `NqActionCard`：复用到首页录音、音频、文字、图片入口；保留现有上传和录音回调。
-- `NqSurface`：带统一边框、留白和圆角的内容面板。
-- `NqStatus`：info / success / pending / error；状态必须有文字。
-- `Modal`：继续复用现有 Radix 对话框，不另起一套焦点管理。
+- NqButton：primary、secondary、quiet、accent、danger，三种尺寸及 loading/disabled
+- NqProjectCard：名称直接打开项目，更多操作提供重命名、关联文件夹、导出和删除
+- NqIconButton：提供明确可读的操作名称
+- NqActionCard：首页录音、音频、文字与图片入口
+- NqSurface、NqStatus：内容容器与带文字的状态
+- Modal：复用 Radix 的关闭、焦点返回和键盘行为
 
-视觉库有按钮状态、字段、四类记录入口、支持键盘的 Tabs、行动建议采纳/撤销和可关闭的弹窗示例。示例全部为本地组件状态，不请求麦克风、不上传、不触发付费模型、不修改项目。
+## PC验收
 
-## 本次范围与后续
+视觉库实测1440×900：按钮36px、项目卡305×89px、原文16px/26px与12px 16px留白，无横向溢出。通过项目示例菜单打开弹窗，Escape关闭后焦点返回原菜单按钮。项目管理实际卡片为89px高，名称点击进入项目，更多菜单保留独立入口。
 
-已应用全局变量、按钮、上传卡片、弹窗、项目卡片的选中/悬停色。保留 main 已精简的产品流程，不恢复手写事实、手写行动、负责人或截止日期表单。
-
-后续拿到授权的登录后页面或源码组件库时，再核对真实导航、列表密度、阅读面板和响应式布局。当前交付是有来源的风格适配及组件库，不能称为官网全部界面的像素级同步。
+1366×768实际项目列表与原文面板无横向溢出。批量选择显示已选数量和浅蓝状态，退出后恢复普通入口。生产发布后页面和主题跟进链接按发布验收记录补齐。工程测试、页面点击与模型质量分别记录。

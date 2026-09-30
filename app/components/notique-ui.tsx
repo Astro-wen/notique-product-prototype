@@ -6,10 +6,11 @@ import type { LucideIcon } from "lucide-react";
 type NqButtonProps = ComponentProps<"button"> & {
   variant?: "primary" | "secondary" | "quiet" | "accent" | "danger";
   loading?: boolean;
+  size?: "compact" | "regular" | "large";
 };
 
-export function NqButton({ variant = "primary", loading = false, disabled, className = "", children, type = "button", ...props }: NqButtonProps) {
-  return <button {...props} type={type} className={`button ${variant} ${className}`} disabled={disabled || loading} aria-busy={loading || undefined}>
+export function NqButton({ variant = "primary", size = "compact", loading = false, disabled, className = "", children, type = "button", ...props }: NqButtonProps) {
+  return <button {...props} type={type} className={`button ${variant} nq-size-${size} ${className}`} disabled={disabled || loading} aria-busy={loading || undefined}>
     <span className="nq-button-content">{loading && <i className="spinner" aria-hidden="true" />}{children}</span>
   </button>;
 }
@@ -32,4 +33,17 @@ export function NqSurface({ children, className = "", ...props }: ComponentProps
 
 export function NqStatus({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "success" | "pending" | "error" }) {
   return <span className={`nq-status ${tone}`}>{children}</span>;
+}
+
+export function NqProjectCard({ title, description, selected = false, onOpen, folder, records, modified, controls, className = "", ...props }: Omit<ComponentProps<"article">, "title" | "children" | "onClick"> & {
+  title: string; description?: string; selected?: boolean; onOpen: () => void;
+  folder: ReactNode; records: ReactNode; modified: ReactNode; controls: ReactNode;
+}) {
+  return <article {...props} className={`pi-item${selected ? " is-selected" : ""} ${className}`} onClick={event=>{
+    if (!(event.target as HTMLElement).closest("button,input,[role='menuitem']")) onOpen();
+  }}>
+    <div className="pi-item-top">{controls}</div>
+    <div className="pi-item-main"><button className="pi-title" title={description || `打开 ${title}`} onClick={onOpen}>{title}</button><div className="pi-associations">{folder}</div></div>
+    <span className="pi-event-count">{records}</span><span className="pi-date">{modified}</span>
+  </article>;
 }

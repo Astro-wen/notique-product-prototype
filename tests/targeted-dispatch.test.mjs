@@ -3,9 +3,191 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import ts from "typescript";
 import { statementContaining } from "./helpers/ui-source.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const dispatchDependencies = [
+  "dispatchWorkflowOutbox", "handleImageOptimization", "DEFAULT_DEVICE_SIZES",
+  "DEFAULT_IMAGE_SIZES", "handler", "dispatchExtractionRun", "recoverAndDispatch",
+  "sweepAndDispatch", "dispatchTranscriptionRun", "wakeTranscriptionRun",
+  "dispatchEventAiArtifactRun", "dispatchEventAiArtifactsForExtraction",
+  "sweepAndDispatchEventAiArtifacts",
+];
+const dispatchWorkerFactory = readFile(path.join(root, "worker/index.ts"), "utf8")
+  .then(source => {
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    }).outputText.replace(/^import\b[\s\S]*?;\s*/gm, "")
+      .replace(/export default worker;\s*$/, "return worker;");
+    return new Function(...dispatchDependencies, compiled);
+  });
+
+async function dispatchFixture(t, overrides = {}) {
+  const database = new DatabaseSync(":memory:");
+  t.after(() => database.close());
+  for (const table of ["transcription_runs", "extraction_runs", "event_ai_artifact_runs"]) {
+    database.exec(`CREATE TABLE ${table} (id TEXT PRIMARY KEY, workspace_id TEXT, status TEXT)`);
+    database.prepare(`INSERT INTO ${table} VALUES (?, ?, ?)`).run("owned", "ws_internal", "queued");
+    database.prepare(`INSERT INTO ${table} VALUES (?, ?, ?)`).run("foreign", "ws_other", "queued");
+  }
+  const calls = [];
+  const pending = [];
+  let queries = 0;
+  const dependencies = Object.fromEntries(dispatchDependencies.map(name => [name, async (...args) => {
+    calls.push({ name, args });
+    return name === "wakeTranscriptionRun" ? overrides.wakeState ?? "queued" : {};
+  }]));
+  dependencies.DEFAULT_DEVICE_SIZES = [];
+  dependencies.DEFAULT_IMAGE_SIZES = [];
+  dependencies.handler = { fetch: () => { throw new Error("Unexpected application route"); } };
+  const worker = (await dispatchWorkerFactory)(...dispatchDependencies.map(name => dependencies[name]));
+  const env = {
+    APP_ENV: "production", AUTH_GATEWAY: "chatgpt", INTERNAL_WORKSPACE_ID: "ws_internal",
+    ...overrides,
+    DB: {
+      prepare(sql) {
+        queries++;
+        const statement = database.prepare(sql);
+        return { bind: (...args) => ({ first: async () => statement.get(...args) ?? null }) };
+      },
+    },
+  };
+  const ctx = { waitUntil: promise => pending.push(promise), passThroughOnException() {} };
+  return {
+    calls, pending,
+    get queryCount() { return queries; },
+    async request(body = "", headers = {}, method = "POST") {
+      return worker.fetch(new Request("https://notique.test/api/v1/jobs/dispatch", {
+        method,
+        headers: {
+          origin: "https://notique.test", "sec-fetch-site": "same-origin",
+          "oai-authenticated-user-id": "synthetic-user", ...headers,
+        },
+        ...(method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+      }), env, ctx);
+    },
+    settle: () => Promise.allSettled(pending),
+    schedule: () => worker.scheduled({}, env, ctx),
+  };
+}
+
+test("a configured independent scheduler acknowledges browser heartbeats without executing work", async t => {
+  const fixture = await dispatchFixture(t, { WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" });
+  for (const body of ["", { event_id: "synthetic-event" }]) {
+    const response = await fixture.request(body);
+    assert.equal(response.status, 202);
+    assert.deepEqual((await response.json()).data, { accepted: true, kind: "all", scheduled: true });
+  }
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(fixture.pending.length, 0);
+  assert.equal(fixture.queryCount, 0);
+});
+
+test("scheduled audio dispatch makes the existing scoped message due without calling a provider", async t => {
+  const fixture = await dispatchFixture(t, { WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" });
+  const response = await fixture.request({ kind: "transcription", run_id: "owned" });
+  assert.equal(response.status, 202);
+  assert.equal(response.headers.get("x-notique-dispatch-stream"), null);
+  const body = await response.json();
+  assert.deepEqual(body.data, {
+    accepted: true, scheduled: true, kind: "transcription", run_id: "owned", run_status: "queued",
+  });
+  assert.doesNotMatch(JSON.stringify(body), /synthetic-scheduler-token/);
+  assert.deepEqual(fixture.calls, [{ name: "wakeTranscriptionRun", args: ["ws_internal", "owned"] }]);
+  assert.equal(fixture.pending.length, 0);
+});
+
+test("scheduler acknowledgements preserve browser authentication, origin, input and run ownership checks", async t => {
+  const fixture = await dispatchFixture(t, { WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" });
+  for (const [body, headers, status] of [
+    ["", { "oai-authenticated-user-id": "" }, 401],
+    ["", { origin: "https://other.test" }, 401],
+    ["", { "sec-fetch-site": "cross-site" }, 401],
+    ["{", {}, 400],
+    [{ kind: "unknown", run_id: "owned" }, {}, 400],
+    [{ kind: "transcription", run_id: "foreign" }, {}, 404],
+    [{ kind: "transcription", run_id: "missing" }, {}, 404],
+  ]) {
+    const response = await fixture.request(body, headers);
+    assert.equal(response.status, status);
+  }
+  assert.equal((await fixture.request("", {}, "GET")).status, 405);
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(fixture.pending.length, 0);
+});
+
+test("a run disappearing during its scheduled wake returns a scoped error without processing", async t => {
+  const fixture = await dispatchFixture(t, {
+    WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token", wakeState: "missing",
+  });
+  const response = await fixture.request({ kind: "transcription", run_id: "owned" });
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error.code, "PROJECT_SCOPE_VIOLATION");
+  assert.deepEqual(fixture.calls, [{ name: "wakeTranscriptionRun", args: ["ws_internal", "owned"] }]);
+});
+
+test("browser heartbeats retain compatible recovery when scheduling is absent or local", async t => {
+  for (const overrides of [
+    {}, { WORKFLOW_SCHEDULER_TOKEN: "  " },
+    { APP_ENV: "local", WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" },
+  ]) {
+    const fixture = await dispatchFixture(t, overrides);
+    const response = await fixture.request({ event_id: "synthetic-event" });
+    assert.equal(response.status, 202);
+    assert.deepEqual((await response.json()).data, { accepted: true, kind: "all" });
+    await fixture.settle();
+    assert.deepEqual(fixture.calls, [
+      { name: "recoverAndDispatch", args: [{ commission: { eventId: "synthetic-event" } }] },
+      { name: "sweepAndDispatchEventAiArtifacts", args: [] },
+      { name: "dispatchWorkflowOutbox", args: [] },
+    ]);
+    assert.equal(fixture.pending.length, 1);
+  }
+});
+
+test("audio keeps its compatibility stream without scheduling and its immediate local dispatch", async t => {
+  for (const overrides of [{}, { WORKFLOW_SCHEDULER_TOKEN: "  " }]) {
+    const fixture = await dispatchFixture(t, overrides);
+    const response = await fixture.request({ kind: "transcription", run_id: "owned" });
+    assert.equal(response.status, 202);
+    assert.equal(response.headers.get("x-notique-dispatch-stream"), "transcription");
+    assert.deepEqual((await response.json()).data, {
+      accepted: true, kind: "transcription", run_id: "owned", run_status: "queued",
+    });
+    assert.deepEqual(fixture.calls, [{ name: "dispatchTranscriptionRun", args: ["ws_internal", "owned"] }]);
+    assert.equal(fixture.pending.length, 0);
+  }
+  const local = await dispatchFixture(t, { APP_ENV: "local", WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" });
+  const response = await local.request({ kind: "transcription", run_id: "owned" });
+  assert.equal(response.headers.get("x-notique-dispatch-stream"), null);
+  assert.equal((await response.json()).data.accepted, true);
+  await local.settle();
+  assert.deepEqual(local.calls, [{ name: "dispatchTranscriptionRun", args: ["ws_internal", "owned"] }]);
+  assert.equal(local.pending.length, 1);
+});
+
+test("targeted extraction, artifacts and the worker scheduled handler retain their execution paths", async t => {
+  const fixture = await dispatchFixture(t, { WORKFLOW_SCHEDULER_TOKEN: "synthetic-scheduler-token" });
+  for (const kind of ["extraction", "artifact"]) {
+    const response = await fixture.request({ kind, run_id: "owned" });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).data.kind, kind);
+  }
+  await fixture.settle();
+  assert.deepEqual(fixture.calls.map(x => x.name), [
+    "dispatchExtractionRun", "dispatchEventAiArtifactsForExtraction", "dispatchEventAiArtifactRun",
+  ]);
+  fixture.schedule();
+  await fixture.settle();
+  assert.deepEqual(fixture.calls.slice(3), [
+    { name: "sweepAndDispatch", args: [{ commission: false }] },
+    { name: "sweepAndDispatchEventAiArtifacts", args: [] },
+    { name: "dispatchWorkflowOutbox", args: [] },
+  ]);
+});
 
 test("browser dispatch accepts one workspace-scoped Run and returns before processing", async () => {
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
@@ -19,7 +201,7 @@ test("browser dispatch accepts one workspace-scoped Run and returns before proce
   );
 });
 
-test("production audio keeps the HTTP request open instead of losing the queued Run", async () => {
+test("production audio without independent scheduling retains its streaming fallback", async () => {
   const worker = await readFile(path.join(root, "worker/index.ts"), "utf8");
   const transcription = await readFile(
     path.join(root, "lib/server/jobs/transcription-outbox.ts"),
@@ -29,7 +211,6 @@ test("production audio keeps the HTTP request open instead of losing the queued 
   assert.match(worker, /streamTranscriptionDispatch[\s\S]*setInterval\(\(\) => controller\.enqueue/);
   assert.match(worker, /return streamTranscriptionDispatch\(workspaceId, input\.runId, requestId, run\.status\)/);
   assert.doesNotMatch(worker, /await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
-  assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\{ commission: false \}\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
@@ -293,7 +474,7 @@ test("a finished transcript starts the rest of the pipeline itself", async () =>
   assert.match(outbox, /catch \(error\) \{\s*console\.error\("transcription_downstream_start_failed"/);
 });
 
-test("an open workspace runs the recovery the Cron trigger does not", async () => {
+test("an open workspace retains recovery for environments without independent scheduling", async () => {
   // Established against production: an extraction Run created while nothing
   // watched stayed 'queued' with its updated_at untouched for minutes, and
   // four Events whose transcripts had been ready for days had no Run at all.
