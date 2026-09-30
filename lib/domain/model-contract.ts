@@ -3,7 +3,12 @@ import type { ClaimType, EvidenceRole } from "./types";
 import type { ContextPack } from "./context-pack";
 
 export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v3" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
+export const LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.4" as const;
+export type ClaimExtractionPromptVersion = typeof LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CLAIM_EXTRACTION_PROMPT_VERSION;
+export function isClaimExtractionPromptVersion(value: unknown): value is ClaimExtractionPromptVersion {
+  return value === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+}
 
 export const MODEL_CONTRACT_LIMITS = {
   claims: 24,
@@ -87,7 +92,7 @@ export type ModelUsage = {
 export interface ModelProvider {
   readonly provider: string;
   readonly model: string;
-  extractClaims(input: ContextPack, signal?: AbortSignal): Promise<{
+  extractClaims(input: ContextPack, signal?: AbortSignal, promptVersion?: ClaimExtractionPromptVersion): Promise<{
     output: ExtractClaimsOutput;
     usage: ModelUsage;
   }>;

@@ -2,6 +2,7 @@ import { projectWorkspace, type ProjectionLedger } from '../../domain/workflow-p
 import { parseWorkflowRequest, type WorkspaceQuery, type WorkspaceSnapshot } from '../../shared/workflow-v2.ts';
 
 export type WorkflowScope = { workspaceId: string; actorId: string; access: 'members' | 'demo' };
+export const WORKFLOW_SNAPSHOT_PROJECTION_VERSION = 'workflow-v2-projection.v2';
 export class WorkflowFault extends Error {
   status: number;
   code: 'not_found' | 'forbidden' | 'version_conflict' | 'cursor_expired' | 'snapshot_busy' | 'dependency_conflict' | 'idempotency_conflict' | 'run_limit';
@@ -69,7 +70,12 @@ const fields = {
   actions: collection('action_metadata x', ['x.claim_id','x.basis_version_refs_json','x.basis_state','x.cancelled_at','x.owner_hint','x.due_at'], ownedEvent),
   outcomes: collection('workflow_outcomes x', ['x.id','x.subject_claim_id','x.revision','v.text','v.answer_claim_version_ids_json','v.relation_ids_json','v.withdrawn_at','x.updated_at'], ownedEvent, 'JOIN outcome_versions v ON v.id = x.current_version_id AND v.outcome_id = x.id AND v.workspace_id = p.workspace_id'),
   narrativeJobs: collection('workflow_outbox x', ['x.event_id','x.input_revision','x.state','x.error_code','x.created_at'], `${ownedEvent} AND x.kind='narrative'`),
-  narratives: collection('workflow_narratives x', ['x.event_id','x.text','x.sentence_refs_json','x.based_on_context_version','x.freshness','x.scope_kind','x.created_at'], owned),
+  narratives: collection('workflow_narratives x', ['x.event_id','x.text','x.sentence_refs_json','x.based_on_context_version','x.freshness','x.scope_kind','x.created_at',
+    `(SELECT json_extract(j.payload_json,'$.checkpoint.promptVersion') FROM workflow_outbox j
+      WHERE j.workspace_id=x.workspace_id AND j.project_id=x.project_id AND j.event_id=x.event_id
+        AND j.kind='narrative' AND j.state='succeeded' AND j.input_revision=x.based_on_context_version
+        AND json_extract(j.payload_json,'$.checkpoint.inputHash')=x.input_hash
+      ORDER BY j.updated_at DESC,j.id DESC LIMIT 1) AS prompt_version`], owned),
   assets: collection('assets x', ['x.id','x.event_id','x.current_version_id','x.processing_status','x.kind','x.metadata_json'], `${ownedEvent} AND ${analysisSource}`),
   segments: collection('text_segments x', ['x.id','x.event_id','x.asset_version_id','x.ordinal'], ownedEvent),
   runs: collection('extraction_runs x', ['x.id','x.event_id','x.status','x.input_manifest_json','x.created_at'], ownedEvent),
@@ -114,19 +120,19 @@ export async function readWorkspace(db: D1Database, scope: WorkflowScope, eventI
   const projected = projectWorkspace(ledger,eventId,timestamp,'');
   // Fingerprint includes source availability and current decisions, so legacy writes
   // cannot accidentally serve an old cached body even before V1 invalidation is wired.
-  const fingerprint = await digestValue({ workspace:scope.workspaceId, actor:scope.actorId, projectId, eventId, projected:{...projected,reviewProgress:undefined} });
+  const fingerprint = await digestValue({ projectionVersion:WORKFLOW_SNAPSHOT_PROJECTION_VERSION, workspace:scope.workspaceId, actor:scope.actorId, projectId, eventId, projected:{...projected,reviewProgress:undefined} });
   const window = Math.floor(Date.parse(timestamp) / 900_000);
   let snapshot = { ...projected, snapshotId: `wss_${fingerprint}_${window}` };
   if (query.snapshotId) {
     const cached = await db.prepare(`SELECT payload_json FROM workflow_snapshots WHERE id = ? AND workspace_id = ? AND project_id = ? AND event_id = ? AND actor_id = ? AND expires_at > ?`)
       .bind(query.snapshotId,scope.workspaceId,projectId,eventId,scope.actorId,timestamp).first<{payload_json:string}>();
     if (!cached) throw new WorkflowFault(409,'cursor_expired','这份列表已更新，请从当前记录继续');
-    const saved = JSON.parse(cached.payload_json) as {fingerprint:string;snapshot:WorkspaceSnapshot};
-    if (saved.fingerprint !== fingerprint) throw new WorkflowFault(409,'cursor_expired','内容或来源已变化，请重新读取记录');
+    const saved = JSON.parse(cached.payload_json) as {projectionVersion?:string;fingerprint:string;snapshot:WorkspaceSnapshot};
+    if (saved.projectionVersion !== WORKFLOW_SNAPSHOT_PROJECTION_VERSION || saved.fingerprint !== fingerprint) throw new WorkflowFault(409,'cursor_expired','内容或来源已变化，请重新读取记录');
     snapshot = saved.snapshot;
   } else {
     await db.prepare(`INSERT INTO workflow_snapshots (id,workspace_id,project_id,event_id,actor_id,context_version,source_revision,payload_json,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`)
-      .bind(snapshot.snapshotId,scope.workspaceId,projectId,eventId,scope.actorId,snapshot.contextVersion,snapshot.sourceRevision,JSON.stringify({fingerprint,snapshot}),new Date((window+1)*900_000).toISOString(),timestamp).run();
+      .bind(snapshot.snapshotId,scope.workspaceId,projectId,eventId,scope.actorId,snapshot.contextVersion,snapshot.sourceRevision,JSON.stringify({projectionVersion:WORKFLOW_SNAPSHOT_PROJECTION_VERSION,fingerprint,snapshot}),new Date((window+1)*900_000).toISOString(),timestamp).run();
   }
   const start = query.cursor ? Number(query.cursor) : 0;
   if (!Number.isSafeInteger(start) || start < 0 || (query.cursor !== undefined && !/^\d+$/.test(query.cursor)) || start > snapshot.reviewCards.length) throw new WorkflowFault(409,'cursor_expired','列表位置无效，请重新读取');

@@ -2,7 +2,7 @@ import { questionChangePlan, type QuestionChangeBatch } from './question-change.
 import { factChangePlan, type FactChangeBatch } from './fact-change.ts';
 import { conflictDecisionPlan } from './conflict-decision.ts';
 import { decisionState } from './decision-state.ts';
-import { acceptActionBasis, relationGuard } from './action-basis.ts';
+import { acceptActionBasis, actionMetadataGuard, relationGuard } from './action-basis.ts';
 import { claimGuard, type WriteContext } from './ledger-write.ts';
 import { reviewDeferralPlan } from './review-deferral.ts';
 import { claimSourceStatus, projectWorkspace, actionBasisRefs, resolveActionBasis, type ProjectionLedger } from '../../domain/workflow-projection.ts';
@@ -99,6 +99,7 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
     const questionPlan=editingQuestion?questionChangePlan(ctx,ledger,current,workspace.questions.find(q=>q.id===current.id)!,member,nextVersion,questionBatch):null;
     const factPlan=editingFact?factChangePlan(ctx,ledger,current,member,factBatch):null;
     const before = {...decisionState(current),preExistingRelations:related,cardState:card,relationStates:questionPlan?.beforeRelations ?? factPlan?.beforeRelations ?? basisPlan?.beforeRelations ?? [],actionMetadata:ledger.actions.find(a=>a.claim_id===current.id) ?? null,versionId:current.current_version_id,reviewStatus:current.review_status,lifecycleStatus:current.lifecycle_status,workflowRevision:current.workflow_revision};
+    const editedActionMetadata=editingAction && before.actionMetadata?{...before.actionMetadata,owner_hint:null,due_at:null}:null;
     const nextRevision = current.workflow_revision+1;
     const nextStatus = operation === 'reject' ? 'rejected' : 'verified';
     const verdictId = mutationId('vdt'), memberId = mutationId('wdm');
@@ -113,13 +114,14 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
         statements.push(bind('INSERT INTO user_notes (id,workspace_id,project_id,claim_id,verdict_id,author_id,body,created_at) VALUES (?,?,?,?,?,?,?,?)',noteId,scope.workspaceId,projectId,current.id,verdictId,scope.actorId,member.newText!,timestamp));
         statements.push(bind(`INSERT INTO evidence_refs (id,workspace_id,project_id,event_id,claim_version_id,kind,user_note_id,evidence_role,provenance_grade,structural_validation_status,semantic_support_verdict,created_at) VALUES (?,?,?,?,?,'user_note',?,'direct','secondary','valid','fully_supports',?)`,mutationId('evr'),scope.workspaceId,projectId,eventId,nextVersion,noteId,timestamp));
       }
+      if(editedActionMetadata)statements.push(bind('UPDATE action_metadata SET owner_hint=NULL,due_at=NULL,updated_at=? WHERE claim_id=? AND workspace_id=?',timestamp,current.id,scope.workspaceId));
     }
     statements.push(
       bind('INSERT INTO verdicts (id,workspace_id,project_id,claim_id,action,base_version_id,new_version_id,user_id,workflow_decision_id,workflow_member_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',verdictId,scope.workspaceId,projectId,current.id,operation==='accept_action'?'confirm':operation,current.current_version_id,operation==='edit'?nextVersion:null,scope.actorId,decisionId,memberId,timestamp),
       bind(`UPDATE claims SET current_version_id=?,review_status=?,workflow_revision=?,confidence=CASE WHEN ?='edit' THEN NULL ELSE confidence END,needs_additional_evidence=CASE WHEN ?='edit' THEN 0 ELSE needs_additional_evidence END,updated_at=? WHERE id=? AND workspace_id=?`,nextVersion,nextStatus,nextRevision,operation,operation,timestamp,current.id,scope.workspaceId),
       bind('DELETE FROM card_members WHERE card_id=? AND workspace_id=? AND claim_id=?',card.id,scope.workspaceId,current.id),
       bind('INSERT INTO card_members (id,workspace_id,card_id,claim_id,claim_version_id,role,created_at) VALUES (?,?,?,?,?,\'primary\',?)',mutationId('wcm'),scope.workspaceId,card.id,current.id,nextVersion,timestamp),
-      bind('INSERT INTO decision_members (id,workspace_id,decision_id,claim_id,verdict_id,before_version_id,after_version_id,before_state_json,after_state_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',memberId,scope.workspaceId,decisionId,current.id,verdictId,current.current_version_id,nextVersion,JSON.stringify(before),JSON.stringify({...before,versionId:nextVersion,reviewStatus:nextStatus,workflowRevision:nextRevision,relationStates:questionPlan?.afterRelations ?? factPlan?.afterRelations ?? basisPlan?.afterRelations ?? [],...(questionPlan?{lifecycleStatus:questionPlan.lifecycleStatus,resolvedAt:questionPlan.resolvedAt}:{}),...(basisPlan?{actionMetadata:{...before.actionMetadata,claim_id:current.id,basis_version_refs_json:JSON.stringify(basisPlan.basis),basis_state:'current'}}:{})}),timestamp),
+      bind('INSERT INTO decision_members (id,workspace_id,decision_id,claim_id,verdict_id,before_version_id,after_version_id,before_state_json,after_state_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',memberId,scope.workspaceId,decisionId,current.id,verdictId,current.current_version_id,nextVersion,JSON.stringify(before),JSON.stringify({...before,versionId:nextVersion,reviewStatus:nextStatus,workflowRevision:nextRevision,relationStates:questionPlan?.afterRelations ?? factPlan?.afterRelations ?? basisPlan?.afterRelations ?? [],...(questionPlan?{lifecycleStatus:questionPlan.lifecycleStatus,resolvedAt:questionPlan.resolvedAt}:{}),...(basisPlan?{actionMetadata:basisPlan.actionMetadata}:{}),...(editingAction?{actionMetadata:editedActionMetadata}:{})}),timestamp),
     );
     if(basisPlan) statements.push(...basisPlan.statements);
     if(factPlan)statements.push(...factPlan.statements);
@@ -132,6 +134,7 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
       AND (er.kind='user_note' AND EXISTS (SELECT 1 FROM user_notes n WHERE n.id=er.user_note_id AND n.workspace_id=er.workspace_id AND n.project_id=er.project_id AND n.claim_id=?) OR a.workspace_id=er.workspace_id AND a.project_id=er.project_id AND a.event_id=er.event_id AND a.current_version_id=er.asset_version_id AND a.processing_status='ready')
       AND (?<>'confirm' OR er.evidence_role='contextual' OR er.semantic_support_verdict='fully_supports'))`,values:[evidenceId,scope.workspaceId,current.current_version_id,current.id,operation]});
     if (operation==='edit') guards.push(relationGuard(ledger,current,ctx));
+    if(editingAction)guards.push(actionMetadataGuard(current.id,before.actionMetadata,ctx));
     if(basisPlan) guards.push(...basisPlan.guards);
     if(questionPlan) guards.push(...questionPlan.guards);
     if(factPlan)guards.push(...factPlan.guards);

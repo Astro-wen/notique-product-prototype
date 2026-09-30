@@ -1,6 +1,6 @@
 import { currentRecordBullets } from '../../domain/workflow-v2.ts';
 import { projectWorkspace, type ProjectionLedger } from '../../domain/workflow-projection.ts';
-import { WORKFLOW_NARRATIVE_PROMPT_VERSION, WORKFLOW_NARRATIVE_SCHEMA_VERSION, validateWorkflowNarrative, workflowNarrativeSentences, type WorkflowNarrativeInput, type WorkflowNarrativeOutput, type WorkflowNarrativeProvider } from '../../domain/workflow-narrative.ts';
+import { WORKFLOW_NARRATIVE_PROMPT_VERSION, WORKFLOW_NARRATIVE_SCHEMA_VERSION, isWorkflowNarrativePromptVersion, validateWorkflowNarrative, workflowNarrativeSentences, type WorkflowNarrativeInput, type WorkflowNarrativeOutput, type WorkflowNarrativeProvider } from '../../domain/workflow-narrative.ts';
 import type { ModelUsage } from '../../domain/model-contract.ts';
 import { PROJECT_LEDGER_SQL, digestValue } from './snapshot-store.ts';
 import { mutationId } from './transaction.ts';
@@ -130,9 +130,15 @@ export async function publishNarrative(db: D1Database, job: NarrativeJob, cp: Ch
     await db.batch([
       db.prepare(`INSERT INTO mutation_guards (id,guard_value,created_at) SELECT ?,CASE WHEN EXISTS (SELECT 1 FROM workflow_outbox WHERE ${leaseWhere}) AND (? IS (SELECT stamp FROM (${PUBLISH_STAMP_SQL}))) AND EXISTS (SELECT 1 FROM events WHERE id=? AND workspace_id=? AND project_id=? AND source_revision=? AND material_status<>'archived') THEN 1 ELSE 0 END,?`)
         .bind(guard,...leaseValues(job,now),cp.sourceStamp,...sourceBinds(job),job.event_id,job.workspace_id,job.project_id,cp.input.sourceRevision,now),
-      db.prepare(`INSERT INTO workflow_narratives (id,workspace_id,project_id,event_id,scope_key,scope_kind,based_on_context_version,text,sentence_refs_json,freshness,input_hash,created_at,updated_at) VALUES (?,?,?,?,?,'mixed',?,?,?,'current',?,?,?)
-        ON CONFLICT(workspace_id,scope_key,scope_kind,based_on_context_version) DO UPDATE SET text=excluded.text,sentence_refs_json=excluded.sentence_refs_json,freshness='current',input_hash=excluded.input_hash,updated_at=excluded.updated_at`)
-        .bind(id,job.workspace_id,job.project_id,job.event_id,job.event_id,cp.input.contextVersion,sentences.map(s=>s.text).join(' '),JSON.stringify(sentences),cp.inputHash,now,now),
+      db.prepare(`INSERT INTO workflow_narratives (id,workspace_id,project_id,event_id,scope_key,scope_kind,based_on_context_version,text,sentence_refs_json,freshness,input_hash,created_at,updated_at) VALUES (?,?,?,?,?,'mixed',?,?,?,?,?,?,?)
+        ON CONFLICT(workspace_id,scope_key,scope_kind,based_on_context_version) DO UPDATE SET text=excluded.text,sentence_refs_json=excluded.sentence_refs_json,freshness=excluded.freshness,input_hash=excluded.input_hash,updated_at=excluded.updated_at
+        WHERE excluded.freshness='current' OR NOT EXISTS (SELECT 1 FROM workflow_outbox prior
+          WHERE prior.workspace_id=workflow_narratives.workspace_id AND prior.project_id=workflow_narratives.project_id
+            AND prior.event_id=workflow_narratives.event_id AND prior.kind='narrative' AND prior.state='succeeded'
+            AND prior.input_revision=workflow_narratives.based_on_context_version
+            AND json_extract(prior.payload_json,'$.checkpoint.inputHash')=workflow_narratives.input_hash
+            AND json_extract(prior.payload_json,'$.checkpoint.promptVersion')=?)`)
+        .bind(id,job.workspace_id,job.project_id,job.event_id,job.event_id,cp.input.contextVersion,sentences.map(s=>s.text).join(' '),JSON.stringify(sentences),cp.promptVersion === WORKFLOW_NARRATIVE_PROMPT_VERSION ? 'current' : 'stale',cp.inputHash,now,now,WORKFLOW_NARRATIVE_PROMPT_VERSION),
       db.prepare(`DELETE FROM derived_dependencies WHERE workspace_id=? AND derived_type='narrative' AND derived_id=(SELECT id FROM workflow_narratives WHERE workspace_id=? AND scope_key=? AND scope_kind='mixed' AND based_on_context_version=?)`).bind(job.workspace_id,job.workspace_id,job.event_id,cp.input.contextVersion),
       ...refs.map(r => db.prepare(`INSERT INTO derived_dependencies (id,workspace_id,project_id,event_id,derived_type,derived_id,claim_version_id,scope) SELECT ?,?,?,?,'narrative',id,?,'mixed' FROM workflow_narratives WHERE workspace_id=? AND scope_key=? AND scope_kind='mixed' AND based_on_context_version=?`).bind(mutationId('dep'),job.workspace_id,job.project_id,job.event_id,r.claimVersionId,job.workspace_id,job.event_id,cp.input.contextVersion)),
       db.prepare('DELETE FROM workflow_snapshots WHERE workspace_id=? AND project_id=?').bind(job.workspace_id,job.project_id),
@@ -166,7 +172,7 @@ async function runJob(db: D1Database, job: NarrativeJob, runner: NarrativeRunner
       await checkpoint(db,job,cp,clock());
     }
     if(Date.parse(clock())-Date.parse(cp.startedAt ?? job.created_at)>=MAX_AGE_MS) {await release(db,job,clock(),'failed','NARRATIVE_RETRY_EXHAUSTED');if(cp.providerResponseId)await runner.cancelProvider?.(cp.config,cp.providerResponseId).catch(()=>undefined);return 'failed';}
-    if(cp.schemaVersion!==WORKFLOW_NARRATIVE_SCHEMA_VERSION || cp.promptVersion!==WORKFLOW_NARRATIVE_PROMPT_VERSION) {await release(db,job,clock(),'failed','NARRATIVE_CONTRACT_CHANGED');return 'failed';}
+    if(cp.schemaVersion!==WORKFLOW_NARRATIVE_SCHEMA_VERSION || !isWorkflowNarrativePromptVersion(cp.promptVersion)) {await release(db,job,clock(),'failed','NARRATIVE_CONTRACT_CHANGED');return 'failed';}
     if(cp.input.bullets.length>200 || cp.input.bullets.reduce((n,b)=>n+b.text.length,0)>40000) {await release(db,job,clock(),'failed','NARRATIVE_INPUT_LIMIT');return 'failed';}
     if (!cp.output && cp.input.bullets.length) {
       if (!cp.providerResponseId) {
@@ -175,6 +181,7 @@ async function runJob(db: D1Database, job: NarrativeJob, runner: NarrativeRunner
       }
       const frozen=cp;
       const result=await runner.provider(cp.config).summarizeWorkflow(cp.input,{
+        workflowNarrativePromptVersion:cp.promptVersion,
         idempotencyKey:`notique:${job.id}:${cp.inputHash}:${cp.generation ?? 0}`,
         ...(cp.providerResponseId?{resumeProviderResponseId:cp.providerResponseId}:{}),qualityFeedback:cp.feedback,
         backgroundStallMs:5*60_000,

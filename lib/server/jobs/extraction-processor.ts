@@ -26,6 +26,7 @@ import {
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
+  isClaimExtractionPromptVersion,
   validateExtractClaimsOutput,
   type ExtractClaimsOutput,
   type ModelEvidence,
@@ -34,7 +35,7 @@ import {
 import type { ClaimWithVersion, TranscriptSegment } from "@/lib/domain/types";
 import {
   INVENTORY_SCHEMA_VERSION,
-  TWO_STAGE_EXTRACTION_PROMPT_VERSION,
+  inventoryContractForRun,
   verificationContractForRun,
   assessVerificationEscalation,
   selectPreferredVerificationForReview,
@@ -1984,12 +1985,12 @@ export async function processExtractionRun(
   let completedUsage: ModelUsage | null = null;
   try {
     if (
-      String(leased.prompt_version) !== CLAIM_EXTRACTION_PROMPT_VERSION ||
+      !isClaimExtractionPromptVersion(leased.prompt_version) ||
       String(leased.schema_version) !== CLAIM_EXTRACTION_SCHEMA_VERSION
     ) {
       throw new ProcessingFault(
         "STALE_MODEL_CONTRACT",
-        "Extraction run was created for an older prompt or schema and must be submitted again.",
+        "Extraction run uses an unsupported frozen prompt or schema.",
         {
           run_prompt_version: leased.prompt_version,
           run_schema_version: leased.schema_version,
@@ -2050,6 +2051,7 @@ export async function processExtractionRun(
     let acceptedDraftLinks: DraftLinkCandidate[] = [];
     let acceptedSameIntentGroups: SameIntentGroupProposal[] = [];
     const verificationContract=verificationContractForRun(frozenModelParams);
+    const inventoryContract=inventoryContractForRun(frozenModelParams);
     let finalUsage: ModelUsage;
     const pipelineWarnings: Array<Record<string, unknown>> = [];
 
@@ -2065,7 +2067,7 @@ export async function processExtractionRun(
         run_input_hash: leased.input_hash,
         context_snapshot_hash: input.contextSnapshotHash,
         stage: "inventory",
-        prompt: TWO_STAGE_EXTRACTION_PROMPT_VERSION,
+        prompt: inventoryContract.promptVersion,
         schema: INVENTORY_SCHEMA_VERSION,
       }));
       const inventoryContext: ContextPack = {
@@ -2078,13 +2080,13 @@ export async function processExtractionRun(
         provider: providerName,
         model: modelName,
         reasoningEffort: inventoryEffort,
-        promptVersion: `${TWO_STAGE_EXTRACTION_PROMPT_VERSION}:inventory`,
+        promptVersion: `${inventoryContract.promptVersion}:inventory`,
         schemaVersion: INVENTORY_SCHEMA_VERSION,
         inputHash: inventoryInputHash,
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (stageOptions) => inventoryProvider.inventoryClaims(
           inventoryContext,
-          { ...stageOptions, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
+          { ...stageOptions, extractionPromptVersion: inventoryContract.promptVersion, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
         ),
       });
       completedUsage = inventoryStage.usage;
@@ -2178,7 +2180,7 @@ export async function processExtractionRun(
             invoke: (stageOptions) => verifierProvider.verifyClaims(
               verificationContext,
               inventoryStage.output,
-              { ...stageOptions, verificationSchemaVersion: verificationContract.schemaVersion, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
+              { ...stageOptions, extractionPromptVersion: verificationContract.promptVersion, verificationSchemaVersion: verificationContract.schemaVersion, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
             ),
           });
         } catch (error) {
@@ -2236,6 +2238,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               {
                 ...stageOptions,
+                extractionPromptVersion: verificationContract.promptVersion,
                 verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
                 backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
@@ -2318,6 +2321,7 @@ export async function processExtractionRun(
               inventoryStage.output,
               {
                 ...stageOptions,
+                extractionPromptVersion: verificationContract.promptVersion,
                 verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
                 backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
@@ -2408,7 +2412,7 @@ export async function processExtractionRun(
         maxOutputTokens,
         timeoutMs,
       });
-      const result = await provider.extractClaims(input.contextPack);
+      const result = await provider.extractClaims(input.contextPack, undefined, leased.prompt_version);
       completedUsage = result.usage;
       finalOutput = result.output;
       finalUsage = result.usage;

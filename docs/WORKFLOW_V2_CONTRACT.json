@@ -208,7 +208,7 @@
     {
       "name": "Action",
       "fields": "id、claimRef、revision、executionState、questionRefs、basisState、basisDetails、latestOutcome、ownerHint?、dueAt?",
-      "rules": "id 等于 next_action 的 claimId，revision 映射 claims.workflowRevision。executionState=open/completed/cancelled，basisState=current/needs_review。basisDetails 包含 acceptedRef、acceptedText、currentRef、currentText、sourceStatus。不可访问来源正文为 null。依据变化以 accepted_change 计入待拍板，已采纳行动显示核对依据入口。accept_action 可显式核对已采纳行动的新依据，保留执行状态。edit 修正已采纳行动文字，完成记录按稳定行动 ID 保留。已确认的 use_candidate 替代可跨信息 ID 解析 currentRef，冻结依据在用户再次核对后更新。替代路径歧义或失效时保留 needs_review latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 questionRefs 按稳定问题 ID 读取当前版本，冻结依据在用户核对后更新。"
+      "rules": "id 等于 next_action 的 claimId，revision 映射 claims.workflowRevision。executionState=open/completed/cancelled，basisState=current/needs_review。basisDetails 包含 acceptedRef、acceptedText、currentRef、currentText、sourceStatus。不可访问来源正文为 null。依据变化以 accepted_change 计入待拍板，已采纳行动显示核对依据入口。accept_action 可显式核对已采纳行动的新依据，保留执行状态。edit 修正已采纳行动文字，完成记录按稳定行动 ID 保留。已确认的 use_candidate 替代可跨信息 ID 解析 currentRef，冻结依据在用户再次核对后更新。替代路径歧义或失效时保留 needs_review latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 questionRefs 按稳定问题 ID 读取当前版本，冻结依据在用户核对后更新。 首次采纳从精确版本的normalized_value继承owner与合法完整日期due_at。已有metadata连空值一起保持权威。修改行动文字清空负责人和日期提示，撤销完整恢复。"
     },
     {
       "name": "ActionHistoryEntry",
@@ -283,12 +283,12 @@
     {
       "name": "RetryAnalysisRequest",
       "fields": "expectedRunRevision、stageIds",
-      "rules": "限当前运行中已失败且允许重试的阶段 权限、材料、当前运行和阶段修订在重试事务内核对。成功阶段保留，仅恢复失败项，旧请求回执只存运行ID"
+      "rules": "限当前运行中允许重试的失败阶段，或已成功但提示词过期的概要阶段。事务核对权限、材料、当前运行与阶段修订。过期概要从现有重点重建，保留提取阶段及旧任务审计。旧请求回执只存运行ID"
     },
     {
       "name": "AnalysisRun",
       "fields": "id、revision、state、stages、coverage、inputRevision、retryable",
-      "rules": "state=queued/running/partial/succeeded/failed/cancelled。coverage=成功片段数/总片段数及未完成范围 revision 为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET 不投递任务。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算"
+      "rules": "state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算"
     },
     {
       "name": "WorkspaceQuery / OverviewQuery",
@@ -318,7 +318,7 @@
   ],
   "modelVerification": {
     "schemaVersion": "claim-verification.v5",
-    "promptVersion": "claim-extraction-prompt.v9.3",
+    "promptVersion": "claim-extraction-prompt.v9.4",
     "legacySchemaVersion": "claim-verification.v4",
     "legacyPromptVersion": "claim-extraction-prompt.v9.2",
     "frozenRunParam": "verification_schema_version",
@@ -334,6 +334,11 @@
       "next_action"
     ],
     "publication": "Existing extraction transaction with exact published member versions",
-    "legacyRecovery": "Preserve the frozen schema, prompt, provider response ID, successful stages and usage"
+    "legacyRecovery": "Preserve the frozen schema, prompt, provider response ID, successful stages and usage",
+    "previousPromptVersion": "claim-extraction-prompt.v9.3",
+    "frozenPromptParams": [
+      "inventory_prompt_version",
+      "verification_prompt_version"
+    ]
   }
 }

@@ -2,6 +2,7 @@ import { actionBasisRefs, resolveActionBasis, claimOrigin, claimSourceStatus, ty
 import { asRef, claimGuard, evidenceGuards, statement, type WriteContext } from './ledger-write.ts';
 import { WorkflowFault } from './snapshot-store.ts';
 import { mutationId, type MutationPlan } from './transaction.ts';
+import { normalizedActionAttributes } from '../../domain/action-attributes.ts';
 
 /** Detect old writers that change relations without advancing project context. */
 export function relationGuard(ledger:ProjectionLedger, claim:LedgerClaim, ctx:WriteContext):MutationPlan['guards'][number] {
@@ -20,6 +21,10 @@ export function actionMetadataGuard(actionId:string,meta:ProjectionLedger['actio
 /** A user's explicit confirmation freezes the current basis. Historical links
  * remain as inactive audit rows and the action's execution history is retained. */
 export function acceptActionBasis(ctx:WriteContext,ledger:ProjectionLedger,action:LedgerClaim) {
+  const previousMetadata=ledger.actions.find(a=>a.claim_id===action.id) ?? null;
+  // Once metadata exists it is authoritative, including explicit unknowns.
+  // Initial acceptance inherits only this exact version's normalized fields.
+  const attributes=previousMetadata?{ownerHint:previousMetadata.owner_hint,dueAt:previousMetadata.due_at}:normalizedActionAttributes(action.normalized_value_json);
   const prior=actionBasisRefs(ledger,action);
   const paths=prior.map(ref=>{
     const resolved=resolveActionBasis(ledger,ref);
@@ -31,7 +36,8 @@ export function acceptActionBasis(ctx:WriteContext,ledger:ProjectionLedger,actio
   const guardedClaims=[...new Map(paths.flatMap(p=>p.path.map(c=>[c.id,c] as const))).values()];
   const basis=sources.map(asRef);
   const statements:D1PreparedStatement[]=[];
-  const guards:MutationPlan['guards']=[relationGuard(ledger,action,ctx),...guardedClaims.flatMap(c=>[claimGuard(c,ctx.scope),relationGuard(ledger,c,ctx)])];
+  const guards:MutationPlan['guards']=[actionMetadataGuard(action.id,previousMetadata,ctx),relationGuard(ledger,action,ctx),...guardedClaims.flatMap(c=>[claimGuard(c,ctx.scope),relationGuard(ledger,c,ctx)])];
+  if(!previousMetadata)guards.push({sql:'EXISTS (SELECT 1 FROM claim_versions WHERE id=? AND claim_id=? AND normalized_value_json IS ?)',values:[action.current_version_id,action.id,action.normalized_value_json]});
   for(const c of sources) {
     const candidates=ledger.evidence.filter(e=>e.claim_version_id===c.current_version_id && e.evidence_role!=='contextual');
     const notes=candidates.filter(e=>e.kind==='user_note');
@@ -53,7 +59,8 @@ export function acceptActionBasis(ctx:WriteContext,ledger:ProjectionLedger,actio
       VALUES (?,?,?,'informed_by',?,?,?,'active',?,?)`,id,ctx.scope.workspaceId,ctx.projectId,action.current_version_id,b.claimVersionId,ctx.contextVersion,JSON.stringify({decisionId:ctx.decisionId,operation:'accept_action'}),ctx.timestamp));
     statements.push(statement(ctx,"INSERT INTO relation_verdicts (id,relation_id,action,base_relation_status,user_id,created_at) VALUES (?,?,'confirm','proposed',?,?)",mutationId('rvdt'),id,ctx.scope.actorId,ctx.timestamp));
   }
-  statements.push(statement(ctx,`INSERT INTO action_metadata (claim_id,workspace_id,project_id,event_id,basis_version_refs_json,basis_state,created_at,updated_at) VALUES (?,?,?,?,?,'current',?,?)
-    ON CONFLICT(claim_id) DO UPDATE SET basis_version_refs_json=excluded.basis_version_refs_json,basis_state='current',updated_at=excluded.updated_at`,action.id,ctx.scope.workspaceId,ctx.projectId,action.event_id,JSON.stringify(basis),ctx.timestamp,ctx.timestamp));
-  return {statements,guards,basis,beforeRelations,afterRelations};
+  const actionMetadata={...previousMetadata,claim_id:action.id,basis_version_refs_json:JSON.stringify(basis),basis_state:'current',cancelled_at:previousMetadata?.cancelled_at ?? null,owner_hint:attributes.ownerHint ?? null,due_at:attributes.dueAt ?? null};
+  statements.push(statement(ctx,`INSERT INTO action_metadata (claim_id,workspace_id,project_id,event_id,basis_version_refs_json,basis_state,owner_hint,due_at,created_at,updated_at) VALUES (?,?,?,?,?,'current',?,?,?,?)
+    ON CONFLICT(claim_id) DO UPDATE SET basis_version_refs_json=excluded.basis_version_refs_json,basis_state='current',updated_at=excluded.updated_at`,action.id,ctx.scope.workspaceId,ctx.projectId,action.event_id,JSON.stringify(basis),actionMetadata.owner_hint,actionMetadata.due_at,ctx.timestamp,ctx.timestamp));
+  return {statements,guards,basis,beforeRelations,afterRelations,actionMetadata};
 }

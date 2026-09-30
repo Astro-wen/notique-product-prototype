@@ -12,7 +12,7 @@ import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
 } from "@/lib/domain/model-contract";
-import { VERIFICATION_SCHEMA_VERSION } from "@/lib/domain/two-stage-extraction";
+import { TWO_STAGE_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION, VERIFICATION_SCHEMA_VERSION } from "@/lib/domain/two-stage-extraction";
 import { parseTranscript } from "@/lib/domain/transcript";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
@@ -2552,6 +2552,8 @@ export async function createExtractionRun(
       escalation_reasoning_effort: escalationReasoningEffort,
       two_pass_pipeline: pipelineEnabled,
       verification_schema_version: pipelineEnabled ? VERIFICATION_SCHEMA_VERSION : null,
+      inventory_prompt_version: pipelineEnabled ? TWO_STAGE_EXTRACTION_PROMPT_VERSION : null,
+      verification_prompt_version: pipelineEnabled ? VERIFICATION_PROMPT_VERSION : null,
       draft_context: draftContextEnabled,
       draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
@@ -2639,7 +2641,7 @@ export async function createExtractionRun(
     verifier_reasoning_effort: verifierReasoningEffort,
     escalation_reasoning_effort: escalationReasoningEffort,
     two_pass_pipeline: pipelineEnabled,
-    ...(pipelineEnabled ? {verification_schema_version: VERIFICATION_SCHEMA_VERSION} : {}),
+    ...(pipelineEnabled ? {verification_schema_version: VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: TWO_STAGE_EXTRACTION_PROMPT_VERSION, verification_prompt_version: VERIFICATION_PROMPT_VERSION} : {}),
     draft_context: draftContextEnabled,
     draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,

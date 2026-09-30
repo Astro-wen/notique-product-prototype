@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { workflowDatabase, seed, relation, claim, insert, T } from './workflow-database.mjs';
 import {seedReaffirmedRecord} from './reaffirmed-fixture.mjs';
+import {WORKFLOW_NARRATIVE_PROMPT_VERSION,WORKFLOW_NARRATIVE_SCHEMA_VERSION} from '../../lib/domain/workflow-narrative.ts';
 
 /** Local integration tests add their own named project to the development DB.
  * Existing projects are never rewritten. Call cleanup for exactly this ID. */
@@ -97,6 +98,7 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
         runs:local.prepare('SELECT id,status,model_params_json FROM extraction_runs WHERE project_id=? ORDER BY created_at,id').all(projectId),
         modelStages:local.prepare('SELECT count(*) n FROM extraction_model_stages WHERE run_id IN (SELECT id FROM extraction_runs WHERE project_id=?)').get(projectId).n,
         artifacts:local.prepare('SELECT count(*) n FROM event_ai_artifact_runs WHERE project_id=?').get(projectId).n,
+        narratives:local.prepare("SELECT id,state,payload_json FROM workflow_outbox WHERE project_id=? AND kind='narrative' ORDER BY created_at,id").all(projectId),
       };
     },
     failAnalysis(){
@@ -116,12 +118,23 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
     finishReplacement(runId){
       local.prepare("UPDATE extraction_runs SET status='cancelled',updated_at=? WHERE id=? AND project_id=?").run(new Date().toISOString(),runId,ids.get('p'));
     },
-    seedNarrative(){
+    /** @param {{promptVersion?:string}} [options] */
+    seedNarrative({promptVersion=WORKFLOW_NARRATIVE_PROMPT_VERSION}={}){
       const projectId=ids.get('p'),eventId=ids.get('e');
       const context=local.prepare('SELECT context_version FROM projects WHERE id=?').get(projectId).context_version;
       const claims=local.prepare("SELECT c.id,c.current_version_id,c.review_status,v.statement FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.project_id=? AND c.review_status<>'rejected' AND c.lifecycle_status NOT IN ('withdrawn','superseded') ORDER BY c.id").all(projectId);
       const sentences=claims.map(c=>({text:c.statement,claimRefs:[{claimId:c.id,claimVersionId:c.current_version_id}],reviewState:c.review_status==='verified'?'accepted':'draft'}));
-      local.prepare("INSERT INTO workflow_narratives (id,workspace_id,project_id,event_id,scope_key,scope_kind,based_on_context_version,text,sentence_refs_json,freshness,input_hash) VALUES (?,?,?,?,?,'mixed',?,?,?,'current','synthetic-ui-output')").run(`${prefix}_narrative_${context}`,workspaceId,projectId,eventId,eventId,context,sentences.map(s=>s.text).join(' '),JSON.stringify(sentences));
+      const inputHash=`synthetic-ui-output:${prefix}:${context}:${promptVersion}`;
+      local.prepare("INSERT INTO workflow_narratives (id,workspace_id,project_id,event_id,scope_key,scope_kind,based_on_context_version,text,sentence_refs_json,freshness,input_hash) VALUES (?,?,?,?,?,'mixed',?,?,?,'current',?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,sentence_refs_json=excluded.sentence_refs_json,input_hash=excluded.input_hash")
+        .run(`${prefix}_narrative_${context}`,workspaceId,projectId,eventId,eventId,context,sentences.map(s=>s.text).join(' '),JSON.stringify(sentences),inputHash);
+      const jobId=`${prefix}_narrative_${context}_${promptVersion.replaceAll(/[^a-zA-Z0-9]/g,'_')}`;
+      const timestamp=new Date().toISOString();
+      const payload=JSON.stringify({checkpoint:{schemaVersion:WORKFLOW_NARRATIVE_SCHEMA_VERSION,promptVersion,inputHash,input:{contextVersion:context},providerResponseId:null}});
+      local.prepare("INSERT INTO workflow_outbox (id,workspace_id,project_id,event_id,kind,task_key,input_revision,state,payload_json,available_at,created_at,updated_at) VALUES (?,?,?,?,'narrative',?,?,'succeeded',?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json,updated_at=excluded.updated_at")
+        .run(jobId,workspaceId,projectId,eventId,jobId,context,payload,timestamp,timestamp,timestamp);
+      // The insert-only no-paid-work guard cancels fixture jobs. This saved
+      // synthetic result is terminal; restoring that state cannot call a model.
+      local.prepare("UPDATE workflow_outbox SET state='succeeded',error_code=NULL WHERE id=? AND project_id=?").run(jobId,projectId);
       local.prepare('DELETE FROM workflow_snapshots WHERE project_id=?').run(projectId);
     },
     cleanup(){

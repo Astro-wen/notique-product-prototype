@@ -9,22 +9,34 @@ import type {
 } from "./model-contract";
 // The explicit extension keeps Node's native TypeScript runner and the
 // application bundler resolving this same source module identically.
-import { CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
+import { CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 
-export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
+export const LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION = LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION;
+export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
 export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
 export const LEGACY_VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
 export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v5" as const;
-export const VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
+export const LEGACY_VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
+export const VERIFICATION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
 export type VerificationSchemaVersion = typeof VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
+export type ExtractionStagePromptVersion = typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
 
-export function verificationContractForRun(params:Record<string,unknown>):{schemaVersion:VerificationSchemaVersion;promptVersion:string} {
-  const version=params.verification_schema_version;
-  if(version===undefined || version===LEGACY_VERIFICATION_SCHEMA_VERSION)return {schemaVersion:LEGACY_VERIFICATION_SCHEMA_VERSION,promptVersion:TWO_STAGE_EXTRACTION_PROMPT_VERSION};
-  if(version===VERIFICATION_SCHEMA_VERSION)return {schemaVersion:VERIFICATION_SCHEMA_VERSION,promptVersion:VERIFICATION_PROMPT_VERSION};
-  throw new Error('Unsupported frozen verification schema.');
+export function inventoryContractForRun(params:Record<string,unknown>):{schemaVersion:typeof INVENTORY_SCHEMA_VERSION;promptVersion:ExtractionStagePromptVersion} {
+  const promptVersion=params.inventory_prompt_version ?? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+  if(promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion!==TWO_STAGE_EXTRACTION_PROMPT_VERSION)throw new Error('Unsupported frozen inventory prompt.');
+  return {schemaVersion:INVENTORY_SCHEMA_VERSION,promptVersion};
+}
+
+export function verificationContractForRun(params:Record<string,unknown>):{schemaVersion:VerificationSchemaVersion;promptVersion:ExtractionStagePromptVersion} {
+  const version=params.verification_schema_version ?? LEGACY_VERIFICATION_SCHEMA_VERSION;
+  if(version!==LEGACY_VERIFICATION_SCHEMA_VERSION && version!==VERIFICATION_SCHEMA_VERSION)throw new Error('Unsupported frozen verification schema.');
+  const promptVersion=params.verification_prompt_version ?? (version===LEGACY_VERIFICATION_SCHEMA_VERSION?LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION:LEGACY_VERIFICATION_PROMPT_VERSION);
+  if(promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion!==LEGACY_VERIFICATION_PROMPT_VERSION && promptVersion!==VERIFICATION_PROMPT_VERSION)throw new Error('Unsupported frozen verification prompt.');
+  if(version===LEGACY_VERIFICATION_SCHEMA_VERSION && promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION)throw new Error('Unsupported frozen legacy verification prompt.');
+  if(version===VERIFICATION_SCHEMA_VERSION && promptVersion!==LEGACY_VERIFICATION_PROMPT_VERSION && promptVersion!==VERIFICATION_PROMPT_VERSION)throw new Error('Unsupported frozen verification prompt.');
+  return {schemaVersion:version,promptVersion};
 }
 
 export const TWO_STAGE_EXTRACTION_LIMITS = {
@@ -128,6 +140,8 @@ export interface TwoStageModelProvider extends ModelProvider {
 }
 
 export type ModelStageRequestOptions = {
+  extractionPromptVersion?: ExtractionStagePromptVersion;
+  workflowNarrativePromptVersion?: 'workflow-narrative-prompt.v1' | 'workflow-narrative-prompt.v2';
   verificationSchemaVersion?: VerificationSchemaVersion;
   signal?: AbortSignal;
   idempotencyKey?: string;

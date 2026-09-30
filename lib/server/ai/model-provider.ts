@@ -8,12 +8,16 @@ import {
 } from "@/lib/domain/model-config";
 import {
   CLAIM_EXTRACTION_SCHEMA_VERSION,
+  CLAIM_EXTRACTION_PROMPT_VERSION,
+  LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION,
+  isClaimExtractionPromptVersion,
   decodeProviderNormalizedValues,
   MODEL_CONTRACT_LIMITS,
   ModelProviderNotConfiguredError,
   UnconfiguredModelProvider,
   validateExtractClaimsOutput,
   type ModelUsage,
+  type ClaimExtractionPromptVersion,
 } from "@/lib/domain/model-contract";
 import type { RuntimeBindings } from "@/db";
 import {
@@ -38,6 +42,9 @@ import {
   INVENTORY_SCHEMA_VERSION,
   TWO_STAGE_EXTRACTION_LIMITS,
   VERIFICATION_SCHEMA_VERSION,
+  LEGACY_VERIFICATION_SCHEMA_VERSION,
+  inventoryContractForRun,
+  verificationContractForRun,
   validateInventoryOutput,
   validateVerificationOutput,
   type InventoryOutput,
@@ -517,6 +524,15 @@ function contextForPrompt(input: ContextPack): ContextPack {
   };
 }
 
+function taskAtomicityInstructions(): string[] {
+  return [
+    "One concrete task is one atomic next_action. Keep its explicitly linked owner, deliverable and deadline in the same claim. A task's owner or deadline is an attribute of that task, not an additional person_role, timing or requirement claim.",
+    "Example: '小陈负责在10月8日前整理两家供应商的报价' produces one next_action with that complete statement and owner='小陈'. It does not produce separate claims for collecting quotes and the task's deadline.",
+    "Keep independent budgets, approval rules, project-wide milestones, risks, unresolved questions and distinct tasks in separate claims, including when they occur in one sentence. An independent approval condition remains a separate record even when it affects a task.",
+    "For next_action normalized_value, use the scalar key owner for an explicitly stated responsible party and due_at for a supported complete calendar date in YYYY-MM-DD form. The strict provider envelope represents these as entries with key and value. An unknown owner is absent. A year must be stated in the source or supported by explicit Context Pack information; preserve an unresolved month/day or relative deadline verbatim in the statement and leave due_at absent. Never infer a year from the current clock or guess a timezone.",
+  ];
+}
+
 function sharedTwoStagePromptPrefix(input: ContextPack): string {
   return [
     "NOTIQUE SHARED EVIDENCE CONTEXT",
@@ -962,7 +978,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   async summarizeWorkflow(input: WorkflowNarrativeInput, options?: ModelStageRequestOptions) {
     const result = await this.requestStructuredOutput(
       { new_event: { event_id: input.eventId, transcript_segments: [], readable_transcript_segments: [], photos: [], documents: [] } },
-      workflowNarrativePrompt(input, options?.qualityFeedback),
+      workflowNarrativePrompt(input, options?.qualityFeedback, options?.workflowNarrativePromptVersion),
       'workflow_narrative', workflowNarrativeSchema(), options,
     );
     try { return { output: validateWorkflowNarrative(result.value, input), usage: result.usage }; }
@@ -1155,12 +1171,14 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 
   async inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions) {
+    const promptVersion=inventoryContractForRun({inventory_prompt_version:options?.extractionPromptVersion ?? CLAIM_EXTRACTION_PROMPT_VERSION}).promptVersion;
+    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
     const prompt = [
       sharedTwoStagePromptPrefix(input),
       "STAGE: ATOMIC FACT INVENTORY",
       "Build an exhaustive inventory of atomic, evidence-backed business propositions in the new event.",
       "Return up to 24 atomic candidates. Do not apply the final ten-item review limit and do not create relations or lifecycle decisions.",
-      "Split separate amounts, dates, decisions, assignments, requirements, questions, risks, conditions, approvals, and next actions.",
+      ...(atomicTasks ? taskAtomicityInstructions() : ["Split separate amounts, dates, decisions, assignments, requirements, questions, risks, conditions, approvals, and next actions."]),
       "Critical is a rare omission-intolerant fact: money or approved scope, legal or safety exposure, final approval authority, a responsible party whose omission changes accountability, a committed milestone, or an unresolved blocker that can stop the project. Do not mark a fact critical merely because it contains any date, amount, assignment, follow-up, repeated fact, or administrative step. Return at most 10 critical candidates; keep other supported material facts with critical=false. Explain every critical choice in critical_reason.",
       "A photo supports only visible observations. Never infer agreement, liability, causation, structural status, hidden conditions, or price from an image.",
       `Return strict JSON matching ${INVENTORY_SCHEMA_VERSION}.`,
@@ -1212,6 +1230,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
 
   async verifyClaims(input: ContextPack, inventory: InventoryOutput, options?: ModelStageRequestOptions) {
     const version=options?.verificationSchemaVersion ?? VERIFICATION_SCHEMA_VERSION;
+    const promptVersion=verificationContractForRun({verification_schema_version:version,verification_prompt_version:options?.extractionPromptVersion ?? (version===LEGACY_VERIFICATION_SCHEMA_VERSION?LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION:CLAIM_EXTRACTION_PROMPT_VERSION)}).promptVersion;
+    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
     const scenarioInstruction = input.project.scenario === null
       ? "Return exactly 2 or 3 distinct scenario candidates grounded in this event."
       : "The project scenario is already confirmed; scenario_assessment must be null.";
@@ -1224,7 +1244,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "Return no more than 24 final claims. Preserve every critical supported proposition before lower-priority administrative details.",
       "Every inventory key must receive exactly one disposition. included or merged must map to exactly one final client_claim_key; dropped items must map to none and require a specific reason.",
       "You may add a missed final claim only when it has valid source evidence in the Context Pack.",
-      "Use reaffirmed only for a semantically identical existing atomic fact. Split any new value, date, condition, assignment, decision, resolution, risk, or next step into a new claim.",
+      atomicTasks
+        ? "Use reaffirmed only for a semantically identical existing atomic fact. A changed value, date, owner, condition, decision, resolution, risk or task needs a new claim. A revised task retains its supported task attributes together."
+        : "Use reaffirmed only for a semantically identical existing atomic fact. Split any new value, date, condition, assignment, decision, resolution, risk, or next step into a new claim.",
       "For a real-estate buyer journey, actively check budget and financing, target areas, must-haves, preferences and conditions, dealbreakers, decision makers, purchase timing, property feedback, open questions, and next actions. Do not invent an item to fill a category.",
       "Use type next_action only for a concrete future action. A current state such as having no mortgage pre-approval is property_fact, not an action. Do not rewrite a missing prerequisite as a promised task; extract a separate action only when explicitly supported. Put an explicitly stated owner and due date/deadline in normalized_value when present; leave them absent when the source does not say.",
       "Use supersedes for a changed current value; resolves for a final answer or satisfied prerequisite; contradicts for incompatible active facts that remain unresolved; informed_by for context only.",
@@ -1233,7 +1255,11 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "Only emit a relation when your confidence in it is at least 0.85. Below that, omit the relation and describe the doubt in the claim's uncertainty field instead; a relation under 0.85 forces a full re-verification pass.",
       "draft_context contains unreviewed suggestions only. It may help detect continuity, but it is not Evidence, cannot be used for reaffirmed, and cannot be a formal relation target or change any lifecycle.",
       "When a final claim may relate to a draft_context item, emit a draft_link_candidate using the exact draft claim/version IDs and one of same, changed, conflicting, or possibly_answered. Return an empty array when no safe draft link exists.",
-      "Atomicity is a hard requirement. Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Never merge separate amounts, dates, approvals, assignments, risks, questions, or lifecycle changes to fit a display budget. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order.",
+      ...(atomicTasks ? [
+        ...taskAtomicityInstructions(),
+        "When inventory separately lists attributes of the same concrete task, preserve every inventory key using outcome=merged with the same single final next_action client_claim_key. Its statement and normalized_value together retain every supported task attribute. This is one task, not a compound claim. Independent propositions retain separate final keys.",
+        "Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order.",
+      ] : ["Atomicity is a hard requirement. Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Never merge separate amounts, dates, approvals, assignments, risks, questions, or lifecycle changes to fit a display budget. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order."]),
       ...(version===VERIFICATION_SCHEMA_VERSION?[
         "same_intent_groups may group one new decision and one new next_action only when they express the same explicitly stated original agreement. Retain both independently supported atomic claims. Use their exact final client_claim_key values, a unique group_key, reason and confidence at least 0.85. Return [] when no safe pair exists.",
         "Return at most 12 disjoint pairs. Each claim may belong to one pair. Similar topic, identical text or shared source segments alone do not establish the same intent. Separate independent questions, new conditions, changed values and distinct actions. Reaffirmed and duplicate claims retain their existing identity and cannot enter a new pair.",
@@ -1297,7 +1323,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     return { output: validated.output, usage: result.usage };
   }
 
-  async extractClaims(input: ContextPack, signal?: AbortSignal) {
+  async extractClaims(input: ContextPack, signal?: AbortSignal, promptVersion: ClaimExtractionPromptVersion = CLAIM_EXTRACTION_PROMPT_VERSION) {
+    if(!isClaimExtractionPromptVersion(promptVersion))throw new ModelProviderRequestError('Unsupported frozen extraction prompt.',null);
+    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
     if (this.provider === "deepseek" && input.new_event.photos.length) {
       throw new ModelProviderRequestError(
         "The configured DeepSeek chat adapter does not accept image inputs.",
@@ -1323,7 +1351,10 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         "A photo supports only visible observations, not agreement, intent, payment, liability, causation, or hidden conditions.",
         scenarioInstruction,
         "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and preserve up to 24. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
-        "One Claim must express exactly one independently reviewable business proposition. Split a sentence when it contains separate dates, assignments, amounts, conditions, risks, questions, approvals, or next steps. An explicit business decision may include the reason that directly explains that decision when the reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' may stay together because it is one proposition.",
+        ...(atomicTasks ? [
+          ...taskAtomicityInstructions(),
+          "An explicit business decision may include its direct reason when that reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' is one proposition.",
+        ] : ["One Claim must express exactly one independently reviewable business proposition. Split a sentence when it contains separate dates, assignments, amounts, conditions, risks, questions, approvals, or next steps. An explicit business decision may include the reason that directly explains that decision when the reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' may stay together because it is one proposition."]),
         "Represent the resulting business state once. Do not create a second Claim merely saying that a person mentioned, confirmed, repeated, sent, or acknowledged the same fact. A communication act is a separate Claim only when the act itself is a contractual, approval, delivery, notice, or audit requirement.",
         "Use disposition=reaffirmed only when the event repeats one existing atomic fact without changing or adding any decision, date, person, amount, state, condition, or next step. For reaffirmed, copy the target statement, type, and normalized_value exactly from verified_context; set both target IDs; and return relations=[].",
         "If one source sentence repeats an old fact and also introduces new information, emit the unchanged old fact as a reaffirmed occurrence and split every material change, resolution, decision, date, assignment, state, risk, or next step into one or more new atomic claims. Never hide new information inside a reaffirmed statement.",

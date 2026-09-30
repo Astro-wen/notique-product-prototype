@@ -252,7 +252,7 @@ DecisionRequest.operation=review_members 时，members.operation 使用 confirm/
 
 用户在整理期间补充的行动与稍后模型建议若针对同一件事，ReviewCard.actionOverlap 返回人工和模型的精确版本。提取发布事务使用 action_overlap: 分组，人工成员为主，模型成员为相关内容，来源与含义均匹配才合为一张行动卡。分组键以 URI 编码的 JSON 冻结 v=1、runId、clientClaimKey、manualRef 与 modelRef。币种、小数、比较符号和英文词边界参与匹配。服务端保留两条 claim、版本和出处，待确认计数按一张卡计算。review_members 可一次采纳一条、拒绝另一条，也可逐条处理。只处理一条时卡片仍为 active，另一条继续待确认。全部处理后为 processed。撤销校验分组和未改动成员，成员或版本漂移时退回独立卡片。撤销本次修改时按决定的完整前后快照恢复原版本和原组。
 
-模型分组复用既有复核步骤。新运行将 verification_schema_version 冻结为 claim-verification.v5，复核提示词使用 claim-extraction-prompt.v9.3。same_intent_groups 最多12组，携带 group_key、record_claim_key、action_claim_key、reason 和 confidence。每组引用一条独立的新 decision 和一条新 next_action，每个成员只属于一组，置信度至少0.85。发布时按已通过材料校验的成员映射精确版本，在原提取事务保存 informed_by、workflow_cards 和 card_members。成员缺失、类型改变、分组重叠或置信度不足时保留独立草稿并保存原因。旧运行继续使用原 v4 响应及 v9.2 提示词，沿原供应商请求取回结果，成功阶段和用量保留。
+模型分组复用既有复核步骤。新运行将 verification_schema_version 冻结为 claim-verification.v5，盘点与复核提示词使用 claim-extraction-prompt.v9.4，inventory_prompt_version 与 verification_prompt_version 随输入哈希冻结。旧运行继续采用各自冻结的9.2或9.3文案。same_intent_groups 最多12组，携带 group_key、record_claim_key、action_claim_key、reason 和 confidence。每组引用一条独立的新 decision 和一条新 next_action，每个成员只属于一组，置信度至少0.85。发布时按已通过材料校验的成员映射精确版本，在原提取事务保存 informed_by、workflow_cards 和 card_members。成员缺失、类型改变、分组重叠或置信度不足时保留独立草稿并保存原因。旧运行继续使用原 v4 响应及 v9.2 提示词，沿原供应商请求取回结果，成功阶段和用量保留。
 
 同组成员涉及已采纳内容变化时，仍展示一个新旧信息核对入口，优先显示产生差异的成员。用户选择采用、保留或分别适用后，未处理成员继续保留草稿，原分组及稳定行动 ID 保持。其他差异仍按自身关系要求核对。撤销恢复成员、关系及原冲突。保存期间同组成员类型、分组标识或成员关系变化时，整次提交回滚。
 
@@ -365,7 +365,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null |
 | DecisionMember | claimId、claimVersionId、operation、newText?、origin?、evidenceRefIds?、conflictChoice?、questionChange?、factChange? | questionChange 仅用于问题 edit。answerChoices 携带全部现有有效答案的 VersionRef 和 mode=keep/reopen，最多100条。keep 关联到新版问题，reopen 解除当前问题关联，共享答案保留其他问题用途。整次决定和撤销恢复原子处理。结果修正与撤回沿 reason.questionEdit.predecessorRelationId 关系链处理，同一答案、同一问题之外的独立关联保留。 factChange 仅用于普通信息 edit，questionChoices 携带当前回答的全部问题 VersionRef 和 mode=keep/reopen，最多100条。keep 使用新信息版本回答原问题，reopen 解除该条支持并按其他答案重算。已确认的替代与并存关系追加新版本关系并保留原决定及适用情况。原行动依据保持冻结，用户另行核对。结果撤回沿同一答案、同一问题的 questionEdit 与 factEdit 关系链处理。 |
 | MutationReceipt | mutationId、contextVersion、changedRefs、affectedViews、refreshState | 原子提交后的回执。changedRefs 含 entityType、id、revision。refreshState=current/updating，前端按目标版本读取快照 |
-| Action | id、claimRef、revision、executionState、questionRefs、basisState、basisDetails、latestOutcome、ownerHint?、dueAt? | id 等于 next_action 的 claimId，revision 映射 claims.workflowRevision。executionState=open/completed/cancelled，basisState=current/needs_review。basisDetails 包含 acceptedRef、acceptedText、currentRef、currentText、sourceStatus。不可访问来源正文为 null。依据变化以 accepted_change 计入待拍板，已采纳行动显示核对依据入口。accept_action 可显式核对已采纳行动的新依据，保留执行状态。edit 修正已采纳行动文字，完成记录按稳定行动 ID 保留。已确认的 use_candidate 替代可跨信息 ID 解析 currentRef，冻结依据在用户再次核对后更新。替代路径歧义或失效时保留 needs_review latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 questionRefs 按稳定问题 ID 读取当前版本，冻结依据在用户核对后更新。 |
+| Action | id、claimRef、revision、executionState、questionRefs、basisState、basisDetails、latestOutcome、ownerHint?、dueAt? | id 等于 next_action 的 claimId，revision 映射 claims.workflowRevision。executionState=open/completed/cancelled，basisState=current/needs_review。basisDetails 包含 acceptedRef、acceptedText、currentRef、currentText、sourceStatus。不可访问来源正文为 null。依据变化以 accepted_change 计入待拍板，已采纳行动显示核对依据入口。accept_action 可显式核对已采纳行动的新依据，保留执行状态。edit 修正已采纳行动文字，完成记录按稳定行动 ID 保留。已确认的 use_candidate 替代可跨信息 ID 解析 currentRef，冻结依据在用户再次核对后更新。替代路径歧义或失效时保留 needs_review latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 questionRefs 按稳定问题 ID 读取当前版本，冻结依据在用户核对后更新。 首次采纳从精确版本的normalized_value继承owner与合法完整日期due_at。已有metadata连空值一起保持权威。修改行动文字清空负责人和日期提示，撤销完整恢复。 |
 | ActionHistoryEntry | id、claimRef、text、sourceStatus、executionState、replacementRef、replacementText、latestOutcome | 已替代行动的只读历史。text 与 replacementText 在对应来源不可访问时为 null，replacementRef 沿已确认替代链指向当前行动，无法确定时为 null。executionState 与 latestOutcome 保留原行动的执行记录，新行动按自身ID维护状态及结果。历史行动结果可以通过当前问题修正或撤回，修正范围限该结果原有的问题。 |
 | LatestOutcome | id、revision、text、answerRefs、updatedAt、freshness? | freshness=current/stale。text 保留结果当时的文字，answerRefs 仅含当前有效答案。相关答案变化后收起为上次结果，当前答案继续在重点中显示。原答案来源失效时正文为空。 |
 | Question | id、claimRef、revision、resolutionState、answerRefs、latestOutcome | revision 映射 claims.workflowRevision。resolutionState=open/resolved，存在有效已采纳答案才可 resolved latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 已有答案的问题仍可修改，逐条确认答案适用后保存新问题版本，行动完成状态保持。 |
@@ -380,8 +380,8 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | ReportRequest | expectedContextVersion、scope、eventIds、format | scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本 |
 | ReportSnapshot | id、contextVersion、scope、content、createdAt | 确定性文本或 Markdown 成稿，引用、覆盖范围和未决问题随结果保存 |
 | StartAnalysisRequest | sourceRevision、mode | mode=initial/reorganize。原始材料确认保存时在同一事务递增sourceRevision并保存初始分析意图，initial复用同一输入，reorganize为显式操作。派生转写与内部音频分块沿用原始提交 |
-| RetryAnalysisRequest | expectedRunRevision、stageIds | 限当前运行中已失败且允许重试的阶段 权限、材料、当前运行和阶段修订在重试事务内核对。成功阶段保留，仅恢复失败项，旧请求回执只存运行ID |
-| AnalysisRun | id、revision、state、stages、coverage、inputRevision、retryable | state=queued/running/partial/succeeded/failed/cancelled。coverage=成功片段数/总片段数及未完成范围 revision 为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET 不投递任务。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算 |
+| RetryAnalysisRequest | expectedRunRevision、stageIds | 限当前运行中允许重试的失败阶段，或已成功但提示词过期的概要阶段。事务核对权限、材料、当前运行与阶段修订。过期概要从现有重点重建，保留提取阶段及旧任务审计。旧请求回执只存运行ID |
+| AnalysisRun | id、revision、state、stages、coverage、inputRevision、retryable | state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算 |
 | WorkspaceQuery / OverviewQuery | cursor?、snapshotId?、limit?、minContextVersion? | limit 默认20、最大50。翻页沿用 snapshotId，失效返回409。提交后读取携带 minContextVersion=回执版本 |
 | McpConnectionRequest | enabled | enabled 为 boolean。开启与断开仅改变当前已验证账号的 mcp:read 授权，参数只含 enabled。浏览器提交使用同源 POST。 |
 | McpConnectionStatus | authenticated、enabled、scope、endpoint、expiresAt、accountEmail | scope=mcp:read，endpoint=/mcp。authenticated=false 时 enabled=false，accountEmail=null。开启需同时核实网关主体与邮箱、工作空间成员及独立只读授权。expiresAt 为 ISO 时间或 null，授权期30天。已授权表示读取授权，以调用方插件页确认安装状态。 |
@@ -432,6 +432,12 @@ WorkspaceSnapshot 默认包含完整可读记录，每条保留 draft 或 accept
 narrative-jobs.ts 消费 workflow_outbox，同一沟通合并待执行修改，静默窗口2秒，连续修改最多等待10秒。新租约递增 fencingToken，过期任务由下一执行器领取。providerResponseId、冻结输入、模型配置、修复次数与校验后输出保存在检查点。
 
 生成输入复用 currentRecordBullets，包含草稿、已采纳内容、当前答案、未决选择、适用范围和覆盖范围。workflow-narrative.v1 校验完整版本集合，服务端根据引用计算逐句状态。供应商返回结构错误或引用错误时修复一次，暂时失败按退避重试，单阶段最多3次自动尝试。
+
+同一具体任务的事项、负责人和任务截止日组成一条next_action。盘点阶段保留独立命题，复核阶段可将同一任务的多个候选通过merged映射到同一最终版本，候选处置继续逐项核对。独立预算、审批条件、全局期限和另一项任务分别保存。明确负责人使用normalized_value.owner，完整日期使用due_at，缺少年份或日期依据时保留原句。
+
+首次采纳将精确版本的负责人和合法完整日期写入action_metadata。已有metadata的字段及空值保持权威，文字修改清空旧提示，撤销恢复对应字段。字段保存、版本、依据和回执在同一事务完成，提交前核对并发修改。
+
+概要提示词v2区分平台批阅状态与原话语气。draft表示尚未批阅，ai_suggestion表示平台候选行动，原文的明确责任、承诺、建议和条件按text保留。旧任务按冻结v1提示词续取已有响应，已发布概要通过精确inputHash关联原任务提示词版本。旧版概要标为stale并保持可读，显式更新复用analysis retry接口，从当前重点创建新的v2概要任务。GET继续只读，提取结果和旧审计保留。
 
 源账本由单次查询冻结，发布事务再次核对原始账本、上下文、源修订和租约。旧任务保留用量审计并投递当前输入。相同创建请求沿用供应商幂等键，后台轮询读取已有响应，租约丢失后的迟到用量写入独立审计数组。概要与精确版本依赖在同一事务发布。
 

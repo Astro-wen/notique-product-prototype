@@ -3,8 +3,12 @@ import { parseWorkflowRequest, type ActionTransitionRequest, type MutationReceip
 import { loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { commitWorkflowMutation, type MutationPlan } from './transaction.ts';
 import { claimGuard, decisionEnvelope, humanClaim, resolveRelation, statement, type WriteContext } from './ledger-write.ts';
+import { normalizedActionAttributes } from '../../domain/action-attributes.ts';
+import { actionMetadataGuard } from './action-basis.ts';
 
 export function actionTransitionPlan(ctx:WriteContext,ledger:ProjectionLedger,action:LedgerClaim,operation:ActionTransitionRequest['operation']):MutationPlan {
+  const metadata=ledger.actions.find(a=>a.claim_id===action.id) ?? null;
+  const attributes=metadata?{ownerHint:metadata.owner_hint,dueAt:metadata.due_at}:normalizedActionAttributes(action.normalized_value_json);
   const state=projectWorkspace(ledger,action.event_id,ctx.timestamp,'').actions.find(a=>a.id===action.id);
   if(!state) throw new WorkflowFault(409,'dependency_conflict','请先将这条建议加入跟进');
   const allowed=operation==='complete'?state.executionState==='open':operation==='reopen'?state.executionState!=='open':state.executionState!=='cancelled';
@@ -24,10 +28,12 @@ export function actionTransitionPlan(ctx:WriteContext,ledger:ProjectionLedger,ac
       WHERE workspace_id=? AND project_id=? AND target_claim_version_id IN (SELECT id FROM claim_versions WHERE claim_id=?) AND type='resolves' AND status='active'`,ctx.scope.actorId,ctx.timestamp,ctx.scope.workspaceId,ctx.projectId,action.id));
     statements.push(statement(ctx,`UPDATE claim_relations SET status='inactive' WHERE workspace_id=? AND project_id=? AND target_claim_version_id IN (SELECT id FROM claim_versions WHERE claim_id=?) AND type='resolves' AND status='active'`,ctx.scope.workspaceId,ctx.projectId,action.id));
   }
-  statements.push(statement(ctx,`INSERT INTO action_metadata (claim_id,workspace_id,project_id,event_id,basis_version_refs_json,cancelled_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
-    ON CONFLICT(claim_id) DO UPDATE SET cancelled_at=excluded.cancelled_at,updated_at=excluded.updated_at`,action.id,ctx.scope.workspaceId,ctx.projectId,action.event_id,JSON.stringify(actionBasisRefs(ledger,action)),operation==='cancel'?ctx.timestamp:null,ctx.timestamp,ctx.timestamp));
+  statements.push(statement(ctx,`INSERT INTO action_metadata (claim_id,workspace_id,project_id,event_id,basis_version_refs_json,cancelled_at,owner_hint,due_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(claim_id) DO UPDATE SET cancelled_at=excluded.cancelled_at,updated_at=excluded.updated_at`,action.id,ctx.scope.workspaceId,ctx.projectId,action.event_id,JSON.stringify(actionBasisRefs(ledger,action)),operation==='cancel'?ctx.timestamp:null,attributes.ownerHint,attributes.dueAt,ctx.timestamp,ctx.timestamp));
   statements.push(statement(ctx,`UPDATE claims SET workflow_revision=workflow_revision+1,lifecycle_status=?,resolved_at=?,updated_at=? WHERE id=? AND workspace_id=?`,operation==='complete'?'resolved':'active',operation==='complete'?ctx.timestamp:null,ctx.timestamp,action.id,ctx.scope.workspaceId));
-  return {statements,guards:[claimGuard(action,ctx.scope)],changedRefs,invalidatedVersionIds:[action.current_version_id],basisInvalidatedVersionIds:[],kind:operation};
+  const guards:MutationPlan['guards']=[claimGuard(action,ctx.scope),actionMetadataGuard(action.id,metadata,ctx)];
+  if(!metadata)guards.push({sql:'EXISTS (SELECT 1 FROM claim_versions WHERE id=? AND claim_id=? AND normalized_value_json IS ?)',values:[action.current_version_id,action.id,action.normalized_value_json]});
+  return {statements,guards,changedRefs,invalidatedVersionIds:[action.current_version_id],basisInvalidatedVersionIds:[],kind:operation};
 }
 export async function transitionAction(db:D1Database,scope:WorkflowScope,input:{projectId:string;eventId:string;actionId:string;key:string;request:ActionTransitionRequest}):Promise<MutationReceipt> {
   const request=parseWorkflowRequest('ActionTransitionRequest',input.request);

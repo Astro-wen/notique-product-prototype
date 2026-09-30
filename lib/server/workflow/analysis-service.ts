@@ -2,11 +2,12 @@ import { projectCoverage, readJson, type ProjectionLedger } from '../../domain/w
 import { parseWorkflowRequest, type AnalysisRun, type AnalysisState, type RetryAnalysisRequest, type StartAnalysisRequest } from '../../shared/workflow-v2.ts';
 import { digestValue, findWorkflowEvent, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { mutationId } from './transaction.ts';
+import { WORKFLOW_NARRATIVE_PROMPT_VERSION } from '../../domain/workflow-narrative.ts';
 
 type Row = Record<string, unknown>;
 type ModelStage = { id:string; stage:string; attempt:number; status:string; error_code:string|null; updated_at:string };
 type Artifact = { id:string; kind:string; status:string; error_code:string|null; updated_at:string };
-type NarrativeJob = { id:string; state:string; error_code:string|null; input_revision:number; payload_json:string; updated_at:string };
+type NarrativeJob = { id:string; state:string; error_code:string|null; input_revision:number; payload_json:string; created_at:string; updated_at:string };
 const published = (status:unknown) => ['succeeded','completed_with_warnings'].includes(String(status));
 const state = (status:unknown):AnalysisState => status==='processing'||status==='running'?'running':published(status)?'succeeded':(['queued','failed','cancelled'].includes(String(status))?status as AnalysisState:'failed');
 const repairable = (code:string|null) => !code || !/(?:VERSION_CONFLICT|SOURCE|ARCHIVED|DELETED|BUDGET|TOO_MANY|ASSET_TOO_LARGE|NOT_CONFIGURED|CANCEL|QA_MODEL_DISABLED)/.test(code);
@@ -23,7 +24,7 @@ const ANALYSIS_SQL = `SELECT r.*,e.source_revision,e.active_run_id,e.material_st
  ${editor} AS can_edit,${sourceObject} AS source_stamp,${assetsSql} AS assets,
  (SELECT COALESCE(json_group_array(json_object('id',s.id,'stage',s.stage,'attempt',s.attempt,'status',s.status,'error_code',s.error_code,'updated_at',s.updated_at)), '[]') FROM extraction_model_stages s WHERE s.run_id=r.id) AS stages,
  (SELECT COALESCE(json_group_array(json_object('id',a.id,'kind',a.kind,'status',a.status,'error_code',a.error_code,'updated_at',a.updated_at)), '[]') FROM event_ai_artifact_runs a WHERE a.extraction_run_id=r.id AND a.workspace_id=r.workspace_id AND a.event_id=r.event_id AND a.kind<>'readable_transcript') AS artifacts,
- (SELECT COALESCE(json_group_array(json_object('id',j.id,'state',j.state,'error_code',j.error_code,'input_revision',j.input_revision,'payload_json',j.payload_json,'updated_at',j.updated_at)), '[]') FROM workflow_outbox j WHERE j.workspace_id=r.workspace_id AND j.project_id=r.project_id AND j.event_id=r.event_id AND j.kind='narrative' AND j.input_revision=p.context_version AND e.active_run_id=r.id AND j.state<>'cancelled') AS narratives,
+ (SELECT COALESCE(json_group_array(json_object('id',j.id,'state',j.state,'error_code',j.error_code,'input_revision',j.input_revision,'payload_json',j.payload_json,'created_at',j.created_at,'updated_at',j.updated_at)), '[]') FROM workflow_outbox j WHERE j.workspace_id=r.workspace_id AND j.project_id=r.project_id AND j.event_id=r.event_id AND j.kind='narrative' AND j.input_revision=p.context_version AND e.active_run_id=r.id AND j.state<>'cancelled') AS narratives,
  (SELECT COALESCE(json_group_array(json_object('id',s.id,'event_id',s.event_id,'asset_version_id',s.asset_version_id,'ordinal',s.ordinal)), '[]') FROM text_segments s WHERE s.workspace_id=e.workspace_id AND s.event_id=e.id) AS segments
  FROM extraction_runs r JOIN events e ON e.id=r.event_id AND e.workspace_id=r.workspace_id AND e.project_id=r.project_id JOIN projects p ON p.id=e.project_id AND p.workspace_id=e.workspace_id
  WHERE r.workspace_id=? AND r.id=? AND e.material_status<>'archived' AND p.deleted_at IS NULL AND ${access}`;
@@ -41,7 +42,7 @@ function artifacts(row:Row):Artifact[] {
  return [...new Map(readJson<Artifact[]>(String(row.artifacts),[]).toSorted((a,b)=>a.updated_at.localeCompare(b.updated_at)||a.id.localeCompare(b.id)).map(s=>[s.kind,s])).values()];
 }
 function narrative(row:Row):NarrativeJob|undefined {
- return readJson<NarrativeJob[]>(String(row.narratives),[]).toSorted((a,b)=>b.updated_at.localeCompare(a.updated_at)||b.id.localeCompare(a.id))[0];
+ return readJson<NarrativeJob[]>(String(row.narratives),[]).toSorted((a,b)=>b.created_at.localeCompare(a.created_at)||b.updated_at.localeCompare(a.updated_at)||b.id.localeCompare(a.id))[0];
 }
 function sourceIds(row:Row):string[] {
  return readJson<ProjectionLedger['assets']>(String(row.assets),[]).filter(a=>a.kind!=='audio' && a.processing_status==='ready' && a.current_version_id).map(a=>a.current_version_id!).sort();
@@ -66,7 +67,11 @@ export async function mapAnalysisRun(row:Row):Promise<AnalysisRun> {
  if(!model.length || !published(row.status) && model.every(s=>s.status==='succeeded') || row.status==='failed' && !stages.some(s=>s.retryable)) stages.push({id:`${row.id}:extraction`,name:input.two_pass_pipeline?'整理记录':'提取重点',state:extractionState,retryable:extractionRetry,errorCode:row.error_code as string|null});
  for(const a of artifacts(row)) stages.push({id:a.id,name:({summary:'原文概要',chapters:'章节整理',speakers:'发言摘要',key_points:'原文要点',overview:'原文总览'} as Record<string,string>)[a.kind]??'整理原文',state:state(a.status),retryable:current && a.status==='failed' && repairable(a.error_code),errorCode:a.error_code});
  const job=narrative(row);
- if(job) stages.push({id:job.id,name:'更新全文概要',state:state(job.state),retryable:current && job.state==='failed' && repairable(job.error_code),errorCode:job.error_code});
+ if(job) {
+  const promptVersion=readJson<{checkpoint?:{promptVersion?:string}}>(job.payload_json,{}).checkpoint?.promptVersion;
+  const outdated=job.state==='succeeded' && promptVersion!==WORKFLOW_NARRATIVE_PROMPT_VERSION;
+  stages.push({id:job.id,name:'更新全文概要',state:state(job.state),retryable:current && (outdated || job.state==='failed' && repairable(job.error_code)),errorCode:outdated?'NARRATIVE_PROMPT_OUTDATED':job.error_code});
+ }
  const coverage=projectCoverage({events:[{id:String(row.event_id),active_run_id:String(row.id),source_revision:Number(row.source_revision),title:'',occurred_at:''}],assets:readJson<ProjectionLedger['assets']>(String(row.assets),[]),segments:readJson<ProjectionLedger['segments']>(String(row.segments),[]),runs:[{id:String(row.id),event_id:String(row.event_id),status:String(row.status),input_manifest_json:String(row.input_manifest_json)}]},String(row.event_id));
  const hasFailure=stages.some(s=>s.state==='failed');
  const pending=stages.some(s=>['queued','running'].includes(s.state));
@@ -139,7 +144,7 @@ export async function retryAnalysis(db:D1Database,scope:WorkflowScope,runId:stri
  const mapped=await mapAnalysisRun(row);
  if(mapped.revision!==request.expectedRunRevision)throw new WorkflowFault(409,'version_conflict','分析进度已有变化，请重新读取');
  const selected=request.stageIds.map(id=>mapped.stages.find(s=>s.id===id));
- if(selected.some(s=>!s||s.state!=='failed'||!s.retryable))throw new WorkflowFault(409,'dependency_conflict','请选择当前允许重试的失败阶段');
+ if(selected.some(s=>!s||!s.retryable||s.state!=='failed' && !(s.state==='succeeded' && s.errorCode==='NARRATIVE_PROMPT_OUTDATED')))throw new WorkflowFault(409,'dependency_conflict','请选择当前可重试或更新的阶段');
  const guard=sourceGuard(scope,String(row.event_id),String(row.source_stamp));
  const statements:D1PreparedStatement[]=[];
  const model=modelStages(row);
@@ -167,7 +172,7 @@ export async function retryAnalysis(db:D1Database,scope:WorkflowScope,runId:stri
  }
  const job=narrative(row);
  if(job && request.stageIds.includes(job.id)){
-  appendGuard(`EXISTS (SELECT 1 FROM workflow_outbox WHERE id=? AND workspace_id=? AND state='failed' AND updated_at=? AND payload_json=?)`,job.id,scope.workspaceId,job.updated_at,job.payload_json);
+  appendGuard(`EXISTS (SELECT 1 FROM workflow_outbox WHERE id=? AND workspace_id=? AND state=? AND updated_at=? AND payload_json=?)`,job.id,scope.workspaceId,job.state,job.updated_at,job.payload_json);
   // A fresh job preserves the failed attempt and its paid usage history. Its
   // checkpoint is rebuilt from the current record rather than reviving stale text.
   statements.push(db.prepare(`INSERT INTO workflow_outbox (id,workspace_id,project_id,event_id,kind,task_key,input_revision,payload_json,available_at,created_at,updated_at) VALUES (?,?,?,?,'narrative',?,?,?, ?,?,?)`).bind(mutationId('wjob'),scope.workspaceId,row.project_id,row.event_id,`narrative-retry:${job.id}:${key}`,row.current_context_version,JSON.stringify(narrativeRetryPayload(job,row,timestamp)),timestamp,timestamp,timestamp));
@@ -180,6 +185,7 @@ export async function retryAnalysis(db:D1Database,scope:WorkflowScope,runId:stri
 function narrativeRetryPayload(job:NarrativeJob,row:Row,timestamp:string):Record<string,unknown> {
  const old=readJson<Record<string,unknown>>(job.payload_json,{});
  const cp=old.checkpoint as Record<string,unknown>|undefined;
+ if(job.state==='succeeded' || cp?.promptVersion!==undefined && cp.promptVersion!==WORKFLOW_NARRATIVE_PROMPT_VERSION || String(job.error_code).includes('CONTRACT_CHANGED'))return {eventId:row.event_id,contextVersion:row.current_context_version};
  if(cp?.providerResponseId && !String(job.error_code).includes('INVALID')) {delete old.auditUsage;return {...old,checkpoint:{...cp,startedAt:timestamp,attempt:0,repairCount:0,transportFailures:0,usage:[]}};}
  return {eventId:row.event_id,contextVersion:row.current_context_version};
 }

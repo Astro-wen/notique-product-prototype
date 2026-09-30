@@ -1,6 +1,7 @@
 import { recordCounts } from './workflow-v2.ts';
 import { projectReaffirmedMentions, type LedgerMention } from './reaffirmed-mentions.ts';
 import { outcomeRelationIds } from './workflow-relations.ts';
+import { WORKFLOW_NARRATIVE_PROMPT_VERSION } from './workflow-narrative.ts';
 import type { Action, ActionHistoryEntry, Bullet, ContentOrigin, Coverage, LatestOutcome, Narrative, Question, ReviewCard, ReviewMember, SourceStatus, VersionRef, WorkspaceSnapshot } from '../shared/workflow-v2.ts';
 
 export type LedgerClaim = {
@@ -47,7 +48,7 @@ export type ProjectionLedger = {
   actions: Array<{ claim_id: string; basis_version_refs_json: string; basis_state: string; cancelled_at: string | null; owner_hint: string | null; due_at: string | null }>;
   outcomes: Array<{ id: string; subject_claim_id: string; revision: number; text: string; answer_claim_version_ids_json: string; relation_ids_json?: string; withdrawn_at: string | null; updated_at: string }>;
   narrativeJobs?: Array<{event_id:string;input_revision:number;state:string;error_code:string|null;created_at:string}>;
-  narratives: Array<{ event_id: string | null; text: string; sentence_refs_json: string; based_on_context_version: number; freshness: Narrative['freshness']; scope_kind: Narrative['scope']; created_at: string }>;
+  narratives: Array<{ event_id: string | null; text: string; sentence_refs_json: string; based_on_context_version: number; freshness: Narrative['freshness']; scope_kind: Narrative['scope']; created_at: string; prompt_version?: string | null }>;
   assets: Array<{ id: string; event_id: string; current_version_id: string | null; processing_status: string; kind: string; metadata_json: string }>;
   segments: Array<{ id: string; event_id: string; asset_version_id: string; ordinal: number }>;
   runs: Array<{ id: string; event_id: string; status: string; input_manifest_json: string; created_at?: string }>;
@@ -328,7 +329,7 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
   // can carry an old narrative with a larger number than its new project's
   // current version, so compare against the current project before recency.
   const stored = ledger.narratives.filter(n => n.event_id === eventId && n.scope_kind === 'mixed').sort((a,b) =>
-    Number(b.based_on_context_version === ledger.contextVersion && b.freshness === 'current') - Number(a.based_on_context_version === ledger.contextVersion && a.freshness === 'current') ||
+    Number(b.based_on_context_version === ledger.contextVersion && b.freshness === 'current' && b.prompt_version === WORKFLOW_NARRATIVE_PROMPT_VERSION) - Number(a.based_on_context_version === ledger.contextVersion && a.freshness === 'current' && a.prompt_version === WORKFLOW_NARRATIVE_PROMPT_VERSION) ||
     Number(b.based_on_context_version === ledger.contextVersion) - Number(a.based_on_context_version === ledger.contextVersion) ||
     b.created_at.localeCompare(a.created_at) || b.based_on_context_version - a.based_on_context_version)[0];
   let narrative: Narrative | null = null;
@@ -336,7 +337,7 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
     const sentences = readJson<Narrative['sentenceRefs']>(stored.sentence_refs_json, []);
     const valid = sentences.length > 0 && sentences.every(s => s.claimRefs.length > 0 && s.claimRefs.every(r => { const c = byVersion.get(r.claimVersionId); return c?.id === r.claimId && current(c) && claimSourceStatus(c,ledger.evidence) === 'ready'; }) && s.reviewState === (s.claimRefs.every(r => accepted(byVersion.get(r.claimVersionId)!)) ? 'accepted' : 'draft'));
     const accessible = sentences.every(s => s.claimRefs.every(r => { const c=ledger.claims.find(c=>c.id===r.claimId); const refs=ledger.evidence.filter(e=>e.claim_version_id===r.claimVersionId && e.evidence_role!=='contextual'); return c && refs.length>0 && refs.every(e=>e.availability==='ready' && e.structural_validation_status==='valid'); }));
-    narrative = { text: accessible ? stored.text : '', sentenceRefs: accessible ? sentences : [], basedOnContextVersion: stored.based_on_context_version, scope: stored.scope_kind, freshness: valid && stored.based_on_context_version === ledger.contextVersion ? stored.freshness : 'stale' };
+    narrative = { text: accessible ? stored.text : '', sentenceRefs: accessible ? sentences : [], basedOnContextVersion: stored.based_on_context_version, scope: stored.scope_kind, freshness: valid && stored.based_on_context_version === ledger.contextVersion && stored.prompt_version === WORKFLOW_NARRATIVE_PROMPT_VERSION ? stored.freshness : 'stale' };
   }
   const narrativeJob=(ledger.narrativeJobs ?? []).filter(j=>j.event_id===eventId && j.input_revision===ledger.contextVersion && j.state!=='cancelled').toSorted((a,b)=>b.created_at.localeCompare(a.created_at))[0];
   if(narrativeJob && ['queued','running','failed'].includes(narrativeJob.state)) {

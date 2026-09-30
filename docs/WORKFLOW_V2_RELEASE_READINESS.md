@@ -2,7 +2,7 @@
 
 检查日期：2026-09-29，America/Los_Angeles。
 
-当前结论：工作流V2已发布至Sites版本82，源提交217c23d5c9dd758c603f5ccb005ae28aa78c1f19与GitHub main一致，旧资料及新增接口读取通过。以下第1节保留版本81的发布前基线。独立后台恢复补丁已通过1094项完整工程测试，最终部署和实际恢复继续记录于WORKFLOW_V2_IMPLEMENTATION_STATUS.md。线上备份可恢复性、个人MCP登录和真实助手调用采用独立验收。
+当前结论：工作流V2和独立后台恢复已发布至Sites版本83，源提交5d099da28cadc7235567159c16a767b3245f2b5c，运行环境revision13。GitHub云端恢复实跑返回200，三类队列均成功，首次403的客户端标识问题已修复。本轮1139项工程检查和308条PC路径通过。以下第1节保留版本81的发布前基线，最终源码对齐与隔离示例的完整产出记录于WORKFLOW_V2_IMPLEMENTATION_STATUS.md。个人MCP登录、真实助手调用、模型质量和独立试用分别验收。
 
 ## 1. 已核实的线上基线
 
@@ -180,8 +180,15 @@ Worker Cron 使用 `scheduled` handler 配合实际注册的 Cron Trigger。[Clo
 
 ## 8. 独立恢复后备入口
 
-新增.github/workflows/recover-background-jobs.yml，每5分钟错峰运行，支持workflow_dispatch，串行并发。Python标准库向固定Site的维护入口发送请求，禁止重定向，最多3次重试，遵守30秒重试提示。日志仅输出固定队列状态和白名单计数。
+新增.github/workflows/recover-background-jobs.yml，每5分钟错峰运行，支持workflow_dispatch，串行并发。Python标准库使用Notique-Recovery/1.0客户端标识，向固定Site的维护入口发送请求，禁止重定向，最多3次重试，遵守30秒重试提示。日志仅输出固定队列状态和白名单计数。
 
 独立WORKFLOW_RECOVERY_TOKEN只授权sweep入口，GitHub使用NOTIQUE_RECOVERY_TOKEN。配置采用新增秘密值，原INTERNAL_JOB_TOKEN和全部现有环境值保留。该身份调用commission:false，消费已提交任务及持久化材料意图，旧内部身份维持原扫描权限。实际outbox用例验证恢复身份不会调用旧材料自动扫描，其他内部dispatch入口拒绝该恢复身份。
 
-83项专项检查通过，runner的9个离线Python案例覆盖重定向、401、503、网络重试、超限响应和安全日志。完整1094项工程检查、类型、lint、构建及包内秘密审计通过。最终云端调用、实际任务恢复和新版source SHA另行记录。GitHub定时任务可能延迟，公开仓库60天无活动会停用调度，该机制当前用于后备恢复。[GitHub定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+83项专项检查通过，runner的9个离线Python案例覆盖重定向、401、503、网络重试、超限响应和安全日志。请求标识修复后16项聚焦检查及完整1094项工程检查、类型、lint、构建和包内秘密审计再次通过。GitHub独立执行记录36648873645于2026-09-30 00:09:10 UTC返回200，extraction、event_ai_artifacts和workflow均成功，workflow实际取得1项任务并保存待续状态。实际示例产出和最终source SHA另行记录。GitHub定时任务可能延迟，公开仓库60天无活动会停用调度，该机制当前用于后备恢复。[GitHub定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+
+
+## 9. 任务与概要修复的发布检查
+
+新任务采用提取提示词9.4和概要提示词v2。旧付费检查点、成功提取阶段与旧概要审计按冻结版本保留。首次采纳行动继承精确版本的负责人和完整日期，已有空值、人工文字修改与撤销均按当前规范处理。
+
+1139项完整工程测试、typecheck、lint、构建及包内秘密审计通过。314次PC检查中308条通过，6条原手机专属检查跳过。飞书规范revision89与79和本地逐字一致。此次修复的真实模型行为以线上合成材料第二轮产出另行记录。
