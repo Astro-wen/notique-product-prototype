@@ -15,6 +15,23 @@ const definitions=[
 ] as const;
 const MAX_REQUEST_BYTES=16384;
 const discoveryMethods=new Set(['server/discover','initialize','notifications/initialized','ping','tools/list']);
+const loggedMethods=new Set([...discoveryMethods,'tools/call']);
+const loggedVersions=new Set(['2025-03-26','2025-06-18','2025-11-25','2026-07-28']);
+/** Diagnose protocol rejection without recording identity, tool arguments or material. */
+function logProtocolRejection(request:Request,body:unknown,responseBody:ArrayBuffer):void {
+ const message=body && typeof body==='object' && !Array.isArray(body)?body as Record<string,unknown>:{};
+ const params=message.params && typeof message.params==='object'?message.params as Record<string,unknown>:{};
+ let errorCode:number|null=null;
+ try{const result=JSON.parse(new TextDecoder().decode(responseBody));if(Number.isSafeInteger(result?.error?.code))errorCode=result.error.code;}catch{}
+ const header=request.headers.get('mcp-protocol-version');
+ console.warn('mcp_protocol_rejected',{
+  method:typeof message.method==='string' && loggedMethods.has(message.method)?message.method:'unknown',
+  protocolHeader:header && loggedVersions.has(header)?header:header?'other':'absent',
+  initializeVersion:typeof params.protocolVersion==='string' && loggedVersions.has(params.protocolVersion)?params.protocolVersion:params.protocolVersion?'other':'absent',
+  hasRequestMeta:Object.hasOwn(params,'_meta'),
+  errorCode,
+ });
+}
 /** Discovery returns fixed tool schemas. Every data-bearing call still needs consent. */
 async function readMcpBody(request:Request,signal:AbortSignal):Promise<unknown> {
  if(Number(request.headers.get('content-length'))>MAX_REQUEST_BYTES)throw new McpLimitFault(413,'INPUT_LIMIT','连接请求过大，请减少参数后重试。');
@@ -79,6 +96,7 @@ export async function handleMcpRequest(request:Request,db:D1Database,env:McpRunt
   const response=await handler.fetch(request,{parsedBody});const body=await response.arrayBuffer();
   if(!discovery)await assertMcpRead(db,identity);
   if(body.byteLength>250000)return Response.json({error:{code:'OUTPUT_LIMIT',message:'请减少每页数量并继续分页读取。'}},{status:413,headers});
+  if(response.status===400)logProtocolRejection(request,parsedBody,body);
   return new Response(response.status===204||response.status===202 && body.byteLength===0?null:body,{status:response.status,headers:{...Object.fromEntries(response.headers),...headers}});
   })(),()=>{controller.abort();void handler?.close();});
  }catch(error){

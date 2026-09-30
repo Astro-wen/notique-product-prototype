@@ -136,3 +136,14 @@ test('pinned modern protocol discovers server capabilities and tool schemas befo
  await setMcpConnection(f.db,identity,ENV,false);await assert.rejects(client.callTool({name:'get_record_views',arguments:{record_id:'e'}}),/FORBIDDEN/);
  assert.deepEqual(unchanged(f.sqlite),before);
 });
+
+test('protocol rejection diagnostics contain fixed metadata without identity or material',async t=>{
+ const f=await workflowDatabase({through:25});t.after(f.close);seed(f.sqlite);
+ const logs=[],warn=console.warn;console.warn=(...args)=>logs.push(args);t.after(()=>{console.warn=warn;});
+ const privateText='SYNTHETIC_PRIVATE_MCP_VALUE';
+ const body={jsonrpc:'2.0',id:privateText,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:privateText,version:'1.0'}}};
+ const response=await handleMcpRequest(new Request('http://localhost/mcp',{method:'POST',headers:{...headers,'Content-Type':'application/json',Accept:'application/json, text/event-stream','MCP-Protocol-Version':'2026-07-28'},body:JSON.stringify(body)}),f.db,ENV);
+ assert.equal(response.status,400);
+ assert.deepEqual(logs,[['mcp_protocol_rejected',{method:'initialize',protocolHeader:'2026-07-28',initializeVersion:'2025-11-25',hasRequestMeta:false,errorCode:-32020}]]);
+ assert.doesNotMatch(JSON.stringify(logs),/SYNTHETIC_PRIVATE_MCP_VALUE|owner@example.com|sites-user/);
+});
