@@ -237,6 +237,12 @@ export type ReportSnapshot = {
 export type StartAnalysisRequest = { sourceRevision: number; mode: "initial" | "reorganize" };
 export type RetryAnalysisRequest = { expectedRunRevision: number; stageIds: string[] };
 export type AnalysisState = "queued" | "running" | "partial" | "succeeded" | "failed" | "cancelled";
+export type AnalysisQualityNotes = {
+  omittedStatements: string[];
+  inventoryLimitReached: boolean;
+  finalClaimLimitReached: boolean;
+  followUpOmitted: boolean;
+};
 export type AnalysisRun = {
   id: string;
   revision: number;
@@ -245,6 +251,7 @@ export type AnalysisRun = {
   coverage: Coverage;
   inputRevision: number;
   retryable: boolean;
+  qualityNotes?: AnalysisQualityNotes;
 };
 export type WorkspaceQuery = { cursor?: string; snapshotId?: string; limit?: number; minContextVersion?: number };
 export type OverviewQuery = WorkspaceQuery;
@@ -327,6 +334,19 @@ function timestamp(value: unknown, field: string): string {
   const year = Number(v.slice(0, 4));
   if (month < 1 || month > 12 || day < 1 || day > ([31, (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0) || Number(v.slice(11, 13)) > 23) invalid(field, "日期无效");
   return new Date(v).toISOString();
+}
+export function parseAnalysisQualityNotes(value: unknown): AnalysisQualityNotes {
+  const v=record(value,"qualityNotes");
+  keys(v,["omittedStatements","inventoryLimitReached","finalClaimLimitReached","followUpOmitted"],"qualityNotes");
+  for(const name of ["inventoryLimitReached","finalClaimLimitReached","followUpOmitted"]) {
+    if(typeof v[name]!=="boolean") invalid(`qualityNotes.${name}`,"应为布尔值");
+  }
+  return {
+    omittedStatements:unique(list(v.omittedStatements,"qualityNotes.omittedStatements",(value,path)=>text(value,path,8000),0,200),value=>value,"qualityNotes.omittedStatements"),
+    inventoryLimitReached:v.inventoryLimitReached as boolean,
+    finalClaimLimitReached:v.finalClaimLimitReached as boolean,
+    followUpOmitted:v.followUpOmitted as boolean,
+  };
 }
 function context(v: RecordValue): ContextWrite { return { expectedContextVersion: integer(v.expectedContextVersion, "expectedContextVersion") }; }
 

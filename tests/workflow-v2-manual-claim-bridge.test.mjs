@@ -9,7 +9,7 @@ import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 import { consumeNarrativeJobs } from '../lib/server/workflow/narrative-jobs.ts';
 import { WORKFLOW_NARRATIVE_SCHEMA_VERSION } from '../lib/domain/workflow-narrative.ts';
 import { CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
-import { INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION } from '../lib/domain/two-stage-extraction.ts';
+import { INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from '../lib/domain/two-stage-extraction.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const dbModule = 'data:text/javascript,' + encodeURIComponent(
@@ -239,7 +239,10 @@ test('an action written during a paid extraction stage lets facts publish and th
     .run(CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION,
       JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]),
       JSON.stringify({ two_pass_pipeline: true, verification_uses_readable: false,
-        verification_schema_version: VERIFICATION_SCHEMA_VERSION }));
+        inventory_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION,
+        inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates,
+        verification_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION, verification_schema_version: VERIFICATION_SCHEMA_VERSION,
+        final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY }));
   insert(sqlite, 'event_ai_artifact_runs', {
     id: 'summary-run', workspace_id: 'ws', project_id: 'p', event_id: 'e', extraction_run_id: 'run',
     kind: 'summary', status: 'succeeded', idempotency_key: 'summary-run', input_hash: 'summary',

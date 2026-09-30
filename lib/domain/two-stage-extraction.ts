@@ -9,44 +9,62 @@ import type {
 } from "./model-contract";
 // The explicit extension keeps Node's native TypeScript runner and the
 // application bundler resolving this same source module identically.
-import { CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
+import { CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 import type { WorkflowNarrativePromptVersion } from "./workflow-narrative.ts";
 
 export const LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION = LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION;
 export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
-export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
+export const LEGACY_INVENTORY_SCHEMA_VERSION = "claim-inventory.v3" as const;
+export const INVENTORY_SCHEMA_VERSION = "claim-inventory.v4" as const;
+export type InventorySchemaVersion = typeof LEGACY_INVENTORY_SCHEMA_VERSION | typeof INVENTORY_SCHEMA_VERSION;
 export const LEGACY_VERIFICATION_SCHEMA_VERSION = "claim-verification.v4" as const;
-export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v5" as const;
+export const ATOMIC_VERIFICATION_SCHEMA_VERSION = "claim-verification.v5" as const;
+export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v6" as const;
 export const LEGACY_VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
 export const VERIFICATION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
-export type VerificationSchemaVersion = typeof VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
-export type ExtractionStagePromptVersion = typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+export type VerificationSchemaVersion = typeof VERIFICATION_SCHEMA_VERSION | typeof ATOMIC_VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
+export type ExtractionStagePromptVersion = typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+export const EXTRACTION_RETENTION_POLICY = "explicit-followups.v1" as const;
 
-export function inventoryContractForRun(params:Record<string,unknown>):{schemaVersion:typeof INVENTORY_SCHEMA_VERSION;promptVersion:ExtractionStagePromptVersion} {
-  const promptVersion=params.inventory_prompt_version ?? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION;
-  if(promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion!==TWO_STAGE_EXTRACTION_PROMPT_VERSION)throw new Error('Unsupported frozen inventory prompt.');
-  return {schemaVersion:INVENTORY_SCHEMA_VERSION,promptVersion};
+export function inventoryContractForRun(params: Record<string, unknown>): {schemaVersion: InventorySchemaVersion; promptVersion: ExtractionStagePromptVersion; candidateLimit: 24 | 64} {
+  const promptVersion = params.inventory_prompt_version ?? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+  if (promptVersion !== LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion !== ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== TWO_STAGE_EXTRACTION_PROMPT_VERSION) throw new Error("Unsupported frozen inventory prompt.");
+  const modern = promptVersion === TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+  const schemaVersion = modern ? INVENTORY_SCHEMA_VERSION : LEGACY_INVENTORY_SCHEMA_VERSION;
+  const candidateLimit = modern ? 64 : 24;
+  if (params.inventory_schema_version !== undefined && params.inventory_schema_version !== schemaVersion) throw new Error("Unsupported frozen inventory schema.");
+  if (params.inventory_candidate_limit !== undefined && params.inventory_candidate_limit !== candidateLimit) throw new Error("Unsupported frozen inventory limit.");
+  return {schemaVersion, promptVersion, candidateLimit};
 }
 
-export function verificationContractForRun(params:Record<string,unknown>):{schemaVersion:VerificationSchemaVersion;promptVersion:ExtractionStagePromptVersion} {
-  const version=params.verification_schema_version ?? LEGACY_VERIFICATION_SCHEMA_VERSION;
-  if(version!==LEGACY_VERIFICATION_SCHEMA_VERSION && version!==VERIFICATION_SCHEMA_VERSION)throw new Error('Unsupported frozen verification schema.');
-  const promptVersion=params.verification_prompt_version ?? (version===LEGACY_VERIFICATION_SCHEMA_VERSION?LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION:LEGACY_VERIFICATION_PROMPT_VERSION);
-  if(promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion!==LEGACY_VERIFICATION_PROMPT_VERSION && promptVersion!==VERIFICATION_PROMPT_VERSION)throw new Error('Unsupported frozen verification prompt.');
-  if(version===LEGACY_VERIFICATION_SCHEMA_VERSION && promptVersion!==LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION)throw new Error('Unsupported frozen legacy verification prompt.');
-  if(version===VERIFICATION_SCHEMA_VERSION && promptVersion!==LEGACY_VERIFICATION_PROMPT_VERSION && promptVersion!==VERIFICATION_PROMPT_VERSION)throw new Error('Unsupported frozen verification prompt.');
-  return {schemaVersion:version,promptVersion};
+export function verificationContractForRun(params: Record<string, unknown>): {schemaVersion: VerificationSchemaVersion; promptVersion: ExtractionStagePromptVersion; claimLimit: 24 | 64} {
+  const version = params.verification_schema_version ?? LEGACY_VERIFICATION_SCHEMA_VERSION;
+  if (version !== LEGACY_VERIFICATION_SCHEMA_VERSION && version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && version !== VERIFICATION_SCHEMA_VERSION) throw new Error("Unsupported frozen verification schema.");
+  const promptVersion = params.verification_prompt_version ?? (version === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? LEGACY_VERIFICATION_PROMPT_VERSION : VERIFICATION_PROMPT_VERSION);
+  const allowed: readonly unknown[] = version === LEGACY_VERIFICATION_SCHEMA_VERSION ? [LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION] : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? [LEGACY_VERIFICATION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION] : [VERIFICATION_PROMPT_VERSION];
+  if (!allowed.includes(promptVersion)) throw new Error("Unsupported frozen verification prompt.");
+  const claimLimit = version === VERIFICATION_SCHEMA_VERSION ? 64 : 24;
+  if (params.final_claim_limit !== undefined && params.final_claim_limit !== claimLimit) throw new Error("Unsupported frozen final claim limit.");
+  if (params.retention_policy !== undefined && params.retention_policy !== EXTRACTION_RETENTION_POLICY) throw new Error("Unsupported frozen retention policy.");
+  return {schemaVersion: version, promptVersion: promptVersion as ExtractionStagePromptVersion, claimLimit};
 }
 
 export const TWO_STAGE_EXTRACTION_LIMITS = {
-  inventoryCandidates: 24,
-  finalClaims: MODEL_CONTRACT_LIMITS.claims,
+  inventoryCandidates: 64,
+  finalClaims: 64,
   dispositionReasonLength: MODEL_CONTRACT_LIMITS.explanationLength,
-  qualityFlags: 24,
-  draftLinks: 24,
+  qualityFlags: 64,
+  draftLinks: 64,
 } as const;
+
+export function inventoryCandidateLimit(version: InventorySchemaVersion): 24 | 64 {
+  return version === INVENTORY_SCHEMA_VERSION ? 64 : 24;
+}
+export function verificationClaimLimit(version: VerificationSchemaVersion): 24 | 64 {
+  return version === VERIFICATION_SCHEMA_VERSION ? 64 : 24;
+}
 
 export type InventoryCandidate = {
   inventory_key: string;
@@ -62,7 +80,7 @@ export type InventoryCandidate = {
 };
 
 export type InventoryOutput = {
-  schema_version: typeof INVENTORY_SCHEMA_VERSION;
+  schema_version: InventorySchemaVersion;
   event_id: string;
   candidates: InventoryCandidate[];
 };
@@ -184,6 +202,7 @@ export type VerificationEscalationReason =
   | "verification_contract_invalid"
   | "inventory_candidate_unmapped"
   | "critical_candidate_dropped"
+  | "supported_followup_dropped"
   | "low_confidence_relation"
   | "unresolved_conflict"
   | "compound_claim"
@@ -194,6 +213,7 @@ export type VerificationEscalation = {
   reasons: VerificationEscalationReason[];
   unmappedInventoryKeys: string[];
   droppedCriticalInventoryKeys: string[];
+  droppedFollowUpInventoryKeys: string[];
   lowConfidenceRelationClaimKeys: string[];
 };
 
@@ -287,14 +307,15 @@ export function validateInventoryOutput(value: unknown): ContractValidation<Inve
   const issues: ModelContractIssue[] = [];
   if (!record(value)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
   exactKeys(value, ["schema_version", "event_id", "candidates"], "$", issues);
-  if (value.schema_version !== INVENTORY_SCHEMA_VERSION) {
+  if (value.schema_version !== INVENTORY_SCHEMA_VERSION && value.schema_version !== LEGACY_INVENTORY_SCHEMA_VERSION) {
     issues.push({ path: "$.schema_version", message: "Unsupported inventory schema version." });
   }
   boundedString(value.event_id, "$.event_id", issues, MODEL_CONTRACT_LIMITS.identifierLength);
-  if (!Array.isArray(value.candidates) || value.candidates.length > TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates) {
+  const candidateLimit = inventoryCandidateLimit(value.schema_version as InventorySchemaVersion);
+  if (!Array.isArray(value.candidates) || value.candidates.length > candidateLimit) {
     issues.push({
       path: "$.candidates",
-      message: `Candidates must be an array with at most ${TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates} items.`,
+      message: `Candidates must be an array with at most ${candidateLimit} items.`,
     });
   } else {
     const seenKeys = new Set<string>();
@@ -410,9 +431,10 @@ export function validateVerificationOutput(
   const { value: repairedValue, repairs } = repairVerificationOutput(rawValue);
   const value = repairedValue as Record<string, unknown>;
   const legacy=value.schema_version===LEGACY_VERIFICATION_SCHEMA_VERSION;
+  const claimLimit = verificationClaimLimit(value.schema_version as VerificationSchemaVersion);
   exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review", ...(legacy?[]:["same_intent_groups"])], "$", issues);
   if(!legacy)issues.push(...sameIntentGroupIssues(value.same_intent_groups));
-  if (value.schema_version !== VERIFICATION_SCHEMA_VERSION && !legacy) {
+  if (value.schema_version !== VERIFICATION_SCHEMA_VERSION && value.schema_version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && !legacy) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
   }
   if (value.event_id !== inventory.event_id) {
@@ -424,7 +446,7 @@ export function validateVerificationOutput(
     event_id: value.event_id,
     scenario_assessment: value.scenario_assessment,
     claims: value.claims,
-  }, context);
+  }, context, {maxClaims: claimLimit});
   issues.push(...claimValidation.issues.filter((issue) => !issue.path.startsWith("$.schema_version")));
   if (context?.project.scenario === null && value.scenario_assessment === null) {
     issues.push({ path: "$.scenario_assessment", message: "An unassessed project requires two or three scenario candidates." });
@@ -479,7 +501,7 @@ export function validateVerificationOutput(
       disposition.final_claim_keys,
       `${path}.final_claim_keys`,
       issues,
-      TWO_STAGE_EXTRACTION_LIMITS.finalClaims,
+      claimLimit,
     );
     references.forEach((key, refIndex) => {
       if (!finalKeys.has(key)) issues.push({ path: `${path}.final_claim_keys[${refIndex}]`, message: "Unknown final claim key." });
@@ -504,10 +526,10 @@ export function validateVerificationOutput(
   const availableDraftTargets = new Map(
     (context?.draft_context?.claims ?? []).map((claim) => [claim.claimId, claim]),
   );
-  if (!Array.isArray(value.draft_link_candidates) || value.draft_link_candidates.length > TWO_STAGE_EXTRACTION_LIMITS.draftLinks) {
+  if (!Array.isArray(value.draft_link_candidates) || value.draft_link_candidates.length > claimLimit) {
     issues.push({
       path: "$.draft_link_candidates",
-      message: `Expected an array with at most ${TWO_STAGE_EXTRACTION_LIMITS.draftLinks} draft links.`,
+      message: `Expected an array with at most ${claimLimit} draft links.`,
     });
   } else {
     const seenDraftLinks = new Set<string>();
@@ -549,9 +571,9 @@ export function validateVerificationOutput(
     issues.push({ path: "$.quality_review", message: "Expected an object." });
   } else {
     exactKeys(value.quality_review, ["unresolved_conflict_keys", "compound_claim_keys", "reaffirmed_issue_claim_keys"], "$.quality_review", issues);
-    boundedUniqueStrings(value.quality_review.unresolved_conflict_keys, "$.quality_review.unresolved_conflict_keys", issues, TWO_STAGE_EXTRACTION_LIMITS.qualityFlags);
+    boundedUniqueStrings(value.quality_review.unresolved_conflict_keys, "$.quality_review.unresolved_conflict_keys", issues, claimLimit);
     for (const field of ["compound_claim_keys", "reaffirmed_issue_claim_keys"] as const) {
-      const refs = boundedUniqueStrings(value.quality_review[field], `$.quality_review.${field}`, issues, TWO_STAGE_EXTRACTION_LIMITS.finalClaims);
+      const refs = boundedUniqueStrings(value.quality_review[field], `$.quality_review.${field}`, issues, claimLimit);
       refs.forEach((key, index) => {
         if (!finalKeys.has(key)) issues.push({ path: `$.quality_review.${field}[${index}]`, message: "Unknown final claim key." });
       });
@@ -612,6 +634,10 @@ export function assessVerificationEscalation(
     })
     .map((candidate) => candidate.inventory_key);
   if (droppedCriticalInventoryKeys.length) reasons.add("critical_candidate_dropped");
+  const droppedFollowUpInventoryKeys = value.schema_version === VERIFICATION_SCHEMA_VERSION
+    ? inventory.candidates.filter(candidate => (candidate.type === "open_question" || candidate.type === "next_action") && ["lower_priority", undefined].includes(dispositionByKey.get(candidate.inventory_key)?.outcome as "lower_priority" | undefined)).map(candidate => candidate.inventory_key)
+    : [];
+  if (droppedFollowUpInventoryKeys.length) reasons.add("supported_followup_dropped");
 
   const lowConfidenceRelationClaimKeys: string[] = [];
   if (Array.isArray(value.claims)) value.claims.forEach((claim) => {
@@ -633,6 +659,7 @@ export function assessVerificationEscalation(
     reasons: [...reasons],
     unmappedInventoryKeys,
     droppedCriticalInventoryKeys,
+    droppedFollowUpInventoryKeys,
     lowConfidenceRelationClaimKeys: [...new Set(lowConfidenceRelationClaimKeys)],
   };
 }
@@ -646,6 +673,7 @@ function reviewIssueVector(
   // questionable-reaffirmed claim is still on screen and editable.
   return [
     assessment.droppedCriticalInventoryKeys.length,
+    assessment.droppedFollowUpInventoryKeys.length,
     assessment.unmappedInventoryKeys.length,
     output.quality_review.unresolved_conflict_keys.length,
     assessment.lowConfidenceRelationClaimKeys.length,
@@ -674,4 +702,24 @@ export function selectPreferredVerificationForReview(
   return candidateIsBetter
     ? { output: candidate, assessment: candidateAssessment, selected: "candidate" }
     : { output: base, assessment: baseAssessment, selected: "base" };
+}
+
+/** Known omissions are derived from the paid candidate/disposition ledger. */
+export function verificationCoverageWarnings(inventory: InventoryOutput, verification: VerificationOutput): Array<Record<string, unknown>> {
+  const warnings: Array<Record<string, unknown>> = [];
+  const dispositions = new Map(verification.candidate_dispositions.map(item => [item.inventory_key, item]));
+  for (const candidate of inventory.candidates) {
+    const disposition = dispositions.get(candidate.inventory_key);
+    if (!disposition || disposition.outcome === "lower_priority") warnings.push({
+      code: "MODEL_CANDIDATE_OMITTED", inventory_key: candidate.inventory_key,
+      statement: candidate.statement, type: candidate.type,
+      outcome: disposition ? "lower_priority" : "unmapped",
+      reason: disposition?.reason ?? "No final disposition was returned for this source-supported candidate.",
+    });
+  }
+  if (inventory.schema_version === INVENTORY_SCHEMA_VERSION && inventory.candidates.length >= 64) warnings.push({code: "MODEL_INVENTORY_LIMIT_REACHED", limit: 64, observed: inventory.candidates.length});
+  if (verification.schema_version === VERIFICATION_SCHEMA_VERSION && verification.claims.length >= 64) warnings.push({code: "MODEL_FINAL_CLAIM_LIMIT_REACHED", limit: 64, observed: verification.claims.length});
+  const followups = verification.schema_version === VERIFICATION_SCHEMA_VERSION ? inventory.candidates.filter(candidate => (candidate.type === "open_question" || candidate.type === "next_action") && (!dispositions.has(candidate.inventory_key) || dispositions.get(candidate.inventory_key)?.outcome === "lower_priority")).map(candidate => candidate.inventory_key) : [];
+  if (followups.length) warnings.push({code: "MODEL_SUPPORTED_FOLLOWUP_OMITTED", inventory_keys: followups});
+  return warnings;
 }

@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { workflowDatabase, seed, SCOPE, T } from './helpers/workflow-database.mjs';
-import { CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
-import { INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
+import { CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
+import { INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
 import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 
 // Real adapter, processor, run builder and transaction; all provider responses
@@ -42,12 +42,12 @@ const finalClaims = () => [
   claim('approval', 'requirement', '采购须店长审批。'),
   claim('sketch', 'next_action', '小林负责在2026年10月10日前提交草图。', { owner: '小林', due_at: '2026-10-10' }),
 ];
-function inventory() {
+function inventory(version = INVENTORY_SCHEMA_VERSION) {
   const specs = [['quote-work', 'requirement', '需要整理两家供应商的报价。'], ['quote-owner', 'person_role', '小陈负责整理两家供应商的报价。'], ['quote-date', 'timing', '两家供应商报价须在2026年10月8日前整理完成。'], ['budget', 'budget', '预算上限人民币三万元。'], ['approval', 'requirement', '采购须店长审批。'], ['sketch', 'next_action', '小林负责在2026年10月10日前提交草图。']];
-  return { schema_version: INVENTORY_SCHEMA_VERSION, event_id: 'e', candidates: specs.map(([key, type, statement]) => ({ inventory_key: key, type, statement, normalized_value: null, materiality: 'high', critical: true, critical_reason: 'Supported material task or independent constraint.', confidence: 0.98, atomicity: 'atomic', evidence })) };
+  return { schema_version: version, event_id: 'e', candidates: specs.map(([key, type, statement]) => ({ inventory_key: key, type, statement, normalized_value: null, materiality: 'high', critical: true, critical_reason: 'Supported material task or independent constraint.', confidence: 0.98, atomicity: 'atomic', evidence })) };
 }
 function verification(version = VERIFICATION_SCHEMA_VERSION) {
-  return { schema_version: version, event_id: 'e', scenario_assessment: null, claims: finalClaims(), candidate_dispositions: inventory().candidates.map(c => ({ inventory_key: c.inventory_key, outcome: c.inventory_key.startsWith('quote-') ? 'merged' : 'included', final_claim_keys: [c.inventory_key.startsWith('quote-') ? 'quote' : c.inventory_key], reason: 'Task attributes retained together; independent facts retained separately.' })), draft_link_candidates: [], quality_review: { unresolved_conflict_keys: [], compound_claim_keys: [], reaffirmed_issue_claim_keys: [] }, ...(version === VERIFICATION_SCHEMA_VERSION ? { same_intent_groups: [] } : {}) };
+  return { schema_version: version, event_id: 'e', scenario_assessment: null, claims: finalClaims(), candidate_dispositions: inventory().candidates.map(c => ({ inventory_key: c.inventory_key, outcome: c.inventory_key.startsWith('quote-') ? 'merged' : 'included', final_claim_keys: [c.inventory_key.startsWith('quote-') ? 'quote' : c.inventory_key], reason: 'Task attributes retained together; independent facts retained separately.' })), draft_link_candidates: [], quality_review: { unresolved_conflict_keys: [], compound_claim_keys: [], reaffirmed_issue_claim_keys: [] }, ...(version !== LEGACY_VERIFICATION_SCHEMA_VERSION ? { same_intent_groups: [] } : {}) };
 }
 function decodedVerification(version) {
   const value = verification(version);
@@ -64,7 +64,7 @@ async function setup(t) {
   return f;
 }
 function queue(sqlite, { runPrompt = CLAIM_EXTRACTION_PROMPT_VERSION, schema = VERIFICATION_SCHEMA_VERSION, frozen = true, pipeline = true } = {}) {
-  sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'").run(runPrompt, CLAIM_EXTRACTION_SCHEMA_VERSION, JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]), JSON.stringify({ two_pass_pipeline: pipeline, verification_uses_readable: false, ...(schema ? { verification_schema_version: schema } : {}), ...(frozen ? { inventory_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION, verification_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION } : {}) }));
+  sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'").run(runPrompt, CLAIM_EXTRACTION_SCHEMA_VERSION, JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]), JSON.stringify({ two_pass_pipeline: pipeline, verification_uses_readable: false, ...(schema ? { verification_schema_version: schema } : {}), ...(frozen ? { inventory_prompt_version: runPrompt, verification_prompt_version: runPrompt } : {}) }));
 }
 function model(t, answer) {
   const requests = [];
@@ -102,17 +102,18 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
 });
 
-for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
+for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
   const { sqlite } = await setup(t); queue(sqlite, { runPrompt, schema, frozen });
   const requests = model(t, (r, n) => {
     if (r.method === 'GET') return { id: 'synthetic_paid_verify', status: 'completed', output_text: JSON.stringify(verification(schema)), usage };
-    return r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION ? { id: `synthetic_inventory_${n}`, status: 'completed', output_text: JSON.stringify(inventory()), usage } : { id: 'synthetic_paid_verify', status: 'queued' };
+    const inventoryVersion = r.body.text.format.schema.properties.schema_version.enum[0];
+    return String(inventoryVersion).startsWith('claim-inventory.') ? { id: `synthetic_inventory_${n}`, status: 'completed', output_text: JSON.stringify(inventory(inventoryVersion)), usage } : { id: 'synthetic_paid_verify', status: 'queued' };
   });
   assert.equal((await processExtractionRun('run')).status, 'background_pending');
   const paidInventory = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='inventory'").get();
   const paidVerify = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
-  assert.equal(paidInventory.prompt_version, `${frozen ? CLAIM_EXTRACTION_PROMPT_VERSION : LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION}:inventory`);
-  assert.equal(paidVerify.prompt_version, `${frozen ? CLAIM_EXTRACTION_PROMPT_VERSION : schema === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION : LEGACY_VERIFICATION_PROMPT_VERSION}:verify`);
+  assert.equal(paidInventory.prompt_version, `${frozen ? runPrompt : LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION}:inventory`);
+  assert.equal(paidVerify.prompt_version, `${frozen ? runPrompt : schema === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION : LEGACY_VERIFICATION_PROMPT_VERSION}:verify`);
   for (const request of requests) {
     if (frozen) assert.match(promptOf(request), /One concrete task is one atomic next_action/);
     else assert.doesNotMatch(promptOf(request), /One concrete task is one atomic next_action/);
@@ -124,11 +125,11 @@ for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, 
 });
 
 test('paid old inventory resumes with GET before the old v5 verifier is invoked', async t => {
-  const { sqlite } = await setup(t); queue(sqlite, { runPrompt: LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, schema: VERIFICATION_SCHEMA_VERSION, frozen: false });
+  const { sqlite } = await setup(t); queue(sqlite, { runPrompt: LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, schema: ATOMIC_VERIFICATION_SCHEMA_VERSION, frozen: false });
   const requests = model(t, (r, n) => {
-    if (r.method === 'GET') return { id: 'synthetic_paid_inventory', status: 'completed', output_text: JSON.stringify(inventory()), usage };
-    if (r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION) return { id: 'synthetic_paid_inventory', status: 'queued' };
-    return { id: `synthetic_verify_${n}`, status: 'completed', output_text: JSON.stringify(verification()), usage };
+    if (r.method === 'GET') return { id: 'synthetic_paid_inventory', status: 'completed', output_text: JSON.stringify(inventory(LEGACY_INVENTORY_SCHEMA_VERSION)), usage };
+    if (r.body.text.format.schema.properties.schema_version.enum[0] === LEGACY_INVENTORY_SCHEMA_VERSION) return { id: 'synthetic_paid_inventory', status: 'queued' };
+    return { id: `synthetic_verify_${n}`, status: 'completed', output_text: JSON.stringify(verification(ATOMIC_VERIFICATION_SCHEMA_VERSION)), usage };
   });
   assert.equal((await processExtractionRun('run')).status, 'background_pending');
   const before = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='inventory'").get();
@@ -151,7 +152,7 @@ for (const version of [LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_
 test('unknown frozen versions fail before provider payment; implicit old contracts remain unchanged', async t => {
   assert.equal(inventoryContractForRun({}).promptVersion, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION);
   assert.equal(verificationContractForRun({}).promptVersion, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION);
-  assert.equal(verificationContractForRun({ verification_schema_version: VERIFICATION_SCHEMA_VERSION }).promptVersion, LEGACY_VERIFICATION_PROMPT_VERSION);
+  assert.equal(verificationContractForRun({ verification_schema_version: ATOMIC_VERIFICATION_SCHEMA_VERSION }).promptVersion, LEGACY_VERIFICATION_PROMPT_VERSION);
   assert.throws(() => inventoryContractForRun({ inventory_prompt_version: 'invented' }));
   assert.throws(() => verificationContractForRun({ verification_schema_version: LEGACY_VERIFICATION_SCHEMA_VERSION, verification_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION }));
   const { sqlite } = await setup(t); queue(sqlite); const params = JSON.parse(sqlite.prepare("SELECT model_params_json FROM extraction_runs WHERE id='run'").get().model_params_json); params.inventory_prompt_version = 'invented'; sqlite.prepare("UPDATE extraction_runs SET model_params_json=? WHERE id='run'").run(JSON.stringify(params));

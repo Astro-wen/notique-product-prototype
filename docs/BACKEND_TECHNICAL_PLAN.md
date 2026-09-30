@@ -227,6 +227,12 @@ HTTP 与 MCP 经过身份和资源权限进入服务层。业务事务写入账�
 
 失败重试限当前材料与运行中允许重试的阶段。提取重试保留已成功的模型阶段、输出、用量和供应商请求 ID，恢复现有 outbox。原文概要与全文概要保存新任务，旧失败记录与用量审计保留。有可恢复响应时先继续读取它，已确认无效的响应使用新请求。提取重试同时核对成员权限、项目版本、材料版本、当前运行、阶段修订和并发配额。原话范围变更后通过重新整理产生新运行。
 
+新提取使用claim-extraction-prompt.v9.5、claim-inventory.v4和claim-verification.v6，候选与最终重点分别上限64条。明确未决问题、负责人承诺和所属事项优先保留，训练中的例子保持训练语境。旧v9.2至v9.4运行沿用原schema、24条限制与已发出响应。候选处置账本派生已知遗漏和容量提示。输出tokens、超时及最多三阶段继续冻结，预算耗尽记录MODEL_OUTPUT_TOKEN_LIMIT并保留用量。
+
+原文范围处理完成与业务信息保留分别显示。当前运行有已知遗漏或容量提示时，记录页显示需要回看原文，并按需展开未保留的内容。问题或行动遗漏提供明确提示，用户可从原文补充。提示来自已保存的核对结果，读取继续沿用当前权限与材料版本。
+
+助手读取get_record_views时同步获取qualityFlags的三个容量与跟进遗漏标志，以及omittedCandidateCount的已知遗漏数量。record视图将未保留候选作为omitted_candidate条目分页返回，retentionState为not_retained，claimRefs与evidenceRefIds为空。概要视图只给标志，正文按需读取。提示变化纳入cursor修订，当前材料权限与源修订校验共用AnalysisRun读取。
+
 记录页显示简短进度，阶段详情按需展开。重试失败部分一次恢复可重试的失败项，重新整理保留现有记录。存在未保存输入时先保存或取消。分析和概要在等待或运行状态下每3秒读取，终态停止，关闭页面后的执行由服务端持久化队列承担。
 
 
@@ -385,7 +391,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | ReportSnapshot | id、contextVersion、scope、content、createdAt | 确定性文本或 Markdown 成稿，引用、覆盖范围和未决问题随结果保存 |
 | StartAnalysisRequest | sourceRevision、mode | mode=initial/reorganize。原始材料确认保存时在同一事务递增sourceRevision并保存初始分析意图，initial复用同一输入，reorganize为显式操作。派生转写与内部音频分块沿用原始提交 |
 | RetryAnalysisRequest | expectedRunRevision、stageIds | 限当前运行中允许重试的失败阶段，或已成功但提示词过期的概要阶段。事务核对权限、材料、当前运行与阶段修订。过期概要从现有重点重建，保留提取阶段及旧任务审计。旧请求回执只存运行ID |
-| AnalysisRun | id、revision、state、stages、coverage、inputRevision、retryable | state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算 |
+| AnalysisRun | id、revision、state、stages、coverage、inputRevision、retryable、qualityNotes? | state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围，表示原文处理范围。qualityNotes返回已知遗漏与容量提示，含omittedStatements、inventoryLimitReached、finalClaimLimitReached、followUpOmitted，最多200条去重文字，每条最多8000字符，仅返回当前材料版本的允许读取内容。业务信息召回另行核对。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算 |
 | WorkspaceQuery / OverviewQuery | cursor?、snapshotId?、limit?、minContextVersion? | limit 默认20、最大50。翻页沿用 snapshotId，失效返回409。提交后读取携带 minContextVersion=回执版本 |
 | McpConnectionRequest | enabled | enabled 为 boolean。开启与断开仅改变当前已验证账号的 mcp:read 授权，参数只含 enabled。浏览器提交使用同源 POST。 |
 | McpConnectionStatus | authenticated、enabled、scope、endpoint、expiresAt、accountEmail | scope=mcp:read，endpoint=/mcp。authenticated=false 时 enabled=false，accountEmail=null。开启需同时核实网关主体与邮箱、工作空间成员及独立只读授权。expiresAt 为 ISO 时间或 null，授权期30天。已授权表示读取授权，以调用方插件页确认安装状态。连接时的工具发现只返回固定名称与参数，读取记录需有有效授权。 |

@@ -9,7 +9,7 @@ import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 import { selectEarlyActionOverlaps } from '../lib/server/jobs/early-action-overlap.ts';
 import { frozenActionOverlapRefs } from '../lib/domain/workflow-projection.ts';
 import { CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
-import { INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION } from '../lib/domain/two-stage-extraction.ts';
+import { INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from '../lib/domain/two-stage-extraction.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const dbModule = 'data:text/javascript,' + encodeURIComponent(
@@ -69,7 +69,11 @@ async function fixture(t) {
   f.sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'")
     .run(CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION,
       JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]),
-      JSON.stringify({ two_pass_pipeline: true, verification_uses_readable: false, verification_schema_version: VERIFICATION_SCHEMA_VERSION }));
+      JSON.stringify({ two_pass_pipeline: true, verification_uses_readable: false,
+        inventory_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION,
+        inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates,
+        verification_prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION, verification_schema_version: VERIFICATION_SCHEMA_VERSION,
+        final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY }));
   insert(f.sqlite,'event_ai_artifact_runs',{ id:'summary-run',workspace_id:'ws',project_id:'p',event_id:'e',extraction_run_id:'run',
     kind:'summary',status:'succeeded',idempotency_key:'summary-run',input_hash:'summary',input_manifest_json:'[{"asset_version_id":"av"}]',
     provider:'test',model:'test',reasoning_effort:'low',prompt_version:'test',schema_version:'test',next_attempt_at:T,queued_at:T });

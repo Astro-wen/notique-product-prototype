@@ -11,7 +11,8 @@
     "evidenceTool": "get_evidence",
     "evidenceArgument": "evidence_id",
     "evidenceRules": "引用条目所使用的当前精确 claimVersion，经过成员权限、材料版本、结构有效性与 ready 检查。没有原始出处的用户补充返回空数组。",
-    "freshnessRules": "概要 freshness 与原始出处可用性独立。概要因上下文变化而 stale 时，仍为当前版本的有效出处可读，旧版本出处不作为当前编号返回。"
+    "freshnessRules": "概要 freshness 与原始出处可用性独立。概要因上下文变化而 stale 时，仍为当前版本的有效出处可读，旧版本出处不作为当前编号返回。",
+    "qualityRules": "get_record_views可返回qualityFlags，仅含inventoryLimitReached、finalClaimLimitReached、followUpOmitted三个布尔值，omittedCandidateCount单独返回0至200的已知遗漏条数。record视图分页返回kind=omitted_candidate、retentionState=not_retained、analysisRunId、eventId、text及空claimRefs/evidenceRefIds。内容表示未保留候选，业务召回与coverage分别读取。summary视图仅给标志，遗漏正文从record按需读取。提示变更使cursor失效，旧来源提示按当前修订校验隐藏。"
   },
   "codeBaseline": "c86be0108c32a1ec8e846df65e2a2933e39c2420",
   "note": "API 与字段说明清单。第二轮产品修订采用同页记录、就地拍板和单目标答案回流。实现阶段在 lib/shared/workflow-v2.ts 定义可编译类型与运行时校验。",
@@ -298,8 +299,8 @@
     },
     {
       "name": "AnalysisRun",
-      "fields": "id、revision、state、stages、coverage、inputRevision、retryable",
-      "rules": "state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算"
+      "fields": "id、revision、state、stages、coverage、inputRevision、retryable、qualityNotes?",
+      "rules": "state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围，表示原文处理范围。qualityNotes返回已知遗漏与容量提示，含omittedStatements、inventoryLimitReached、finalClaimLimitReached、followUpOmitted，最多200条去重文字，每条最多8000字符，仅返回当前材料版本的允许读取内容。业务信息召回另行核对。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算"
     },
     {
       "name": "WorkspaceQuery / OverviewQuery",
@@ -362,5 +363,17 @@
       "workflow-narrative-prompt.v4"
     ],
     "grouping": "以用户可独立推进的事项组织同一次概要，保留精确引用与各项状态。"
+  },
+  "extractionCoverage": {
+    "promptVersion": "claim-extraction-prompt.v9.5",
+    "inventorySchemaVersion": "claim-inventory.v4",
+    "verificationSchemaVersion": "claim-verification.v6",
+    "candidateLimit": 64,
+    "finalClaimLimit": 64,
+    "retentionPolicy": "explicit-followups.v1",
+    "frozenLegacyRules": "v9.2至v9.4沿用各自schema与24条限制，继续既有响应、用量和请求身份。",
+    "priorityRules": "保留来源明确的未决问题、负责人承诺和所属事项，训练中的举例保留训练语境。已知遗漏及容量提示从候选处置账本派生。",
+    "sourceRules": "原文范围处理覆盖与业务信息召回分别验收。qualityNotes仅返回可信当前源修订下的固定提示与原文内容。",
+    "budgetRules": "沿用冻结的输出tokens、超时和阶段上限。输出预算耗尽以MODEL_OUTPUT_TOKEN_LIMIT终态记录，保留已有用量。"
   }
 }

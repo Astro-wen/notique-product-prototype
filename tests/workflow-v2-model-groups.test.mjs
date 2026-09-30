@@ -5,7 +5,7 @@ import {sameIntentGroupStatements} from '../lib/server/jobs/same-intent-groups.t
 import {selectSameIntentGroups} from '../lib/domain/same-intent-groups.ts';
 import {readWorkspace} from '../lib/server/workflow/snapshot-store.ts';
 import {decideRecord} from '../lib/server/workflow/record-decision.ts';
-import {verificationContractForRun,validateVerificationOutput,VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION} from '../lib/domain/two-stage-extraction.ts';
+import {verificationContractForRun,validateVerificationOutput,VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION} from '../lib/domain/two-stage-extraction.ts';
 import {canResumeProcessingModelStage,canReuseSucceededModelStage} from '../lib/server/jobs/model-stage-contract.ts';
 const proposal=(extra={})=>({group_key:'quote',record_claim_key:'agreement',action_claim_key:'action',reason:'One explicitly stated agreement.',confidence:0.98,...extra});
 const members=()=>[{claimId:'agreement',versionId:'agreement_v1',model:{client_claim_key:'agreement',type:'decision',disposition:'new',statement:'约定向供应商询价'}},{claimId:'action',versionId:'action_v1',model:{client_claim_key:'action',type:'next_action',disposition:'new',statement:'向供应商询价'}}];
@@ -44,13 +44,13 @@ test('later SQL failure rolls back group, members and proposed relation together
  assert.equal(sqlite.prepare('SELECT count(*) n FROM workflow_cards').get().n,0);assert.equal(sqlite.prepare('SELECT count(*) n FROM card_members').get().n,0);assert.equal(sqlite.prepare('SELECT count(*) n FROM claim_relations').get().n,before);
 });
 test('legacy paid stage stays exactly reusable and resumable after grouping protocol upgrade',()=>{
- const c=verificationContractForRun({});assert.deepEqual(c,{schemaVersion:LEGACY_VERIFICATION_SCHEMA_VERSION,promptVersion:LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION});
+ const c=verificationContractForRun({});assert.deepEqual(c,{schemaVersion:LEGACY_VERIFICATION_SCHEMA_VERSION,promptVersion:LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION,claimLimit:24});
  const frozen={provider:'openai',model:'test',reasoningEffort:'high',promptVersion:`${c.promptVersion}:verify`,schemaVersion:c.schemaVersion,inputHash:'old-unchanged-hash'};
  const persisted={provider:'openai',model:'test',reasoning_effort:'high',prompt_version:frozen.promptVersion,schema_version:frozen.schemaVersion,input_hash:frozen.inputHash};
  assert.equal(canReuseSucceededModelStage({...persisted,status:'succeeded'},frozen),true);assert.equal(canResumeProcessingModelStage({...persisted,status:'processing'},frozen),true);
  const upgraded=verificationContractForRun({verification_schema_version:VERIFICATION_SCHEMA_VERSION});assert.equal(upgraded.schemaVersion,VERIFICATION_SCHEMA_VERSION);assert.notEqual(upgraded.promptVersion,c.promptVersion);assert.throws(()=>verificationContractForRun({verification_schema_version:'invented'}));
 });
 test('legacy verification remains valid with no fabricated groups; new version requires the explicit array',()=>{
- const inventory={schema_version:INVENTORY_SCHEMA_VERSION,event_id:'e',candidates:[]},v={schema_version:LEGACY_VERIFICATION_SCHEMA_VERSION,event_id:'e',scenario_assessment:null,claims:[],candidate_dispositions:[],draft_link_candidates:[],quality_review:{unresolved_conflict_keys:[],compound_claim_keys:[],reaffirmed_issue_claim_keys:[]}};
- assert.equal(validateVerificationOutput(v,inventory).valid,true);assert.equal(validateVerificationOutput({...v,schema_version:VERIFICATION_SCHEMA_VERSION},inventory).valid,false);assert.equal(validateVerificationOutput({...v,schema_version:VERIFICATION_SCHEMA_VERSION,same_intent_groups:[]},inventory).valid,true);
+ const inventory={schema_version:LEGACY_INVENTORY_SCHEMA_VERSION,event_id:'e',candidates:[]},v={schema_version:LEGACY_VERIFICATION_SCHEMA_VERSION,event_id:'e',scenario_assessment:null,claims:[],candidate_dispositions:[],draft_link_candidates:[],quality_review:{unresolved_conflict_keys:[],compound_claim_keys:[],reaffirmed_issue_claim_keys:[]}};
+ assert.equal(validateVerificationOutput(v,inventory).valid,true);assert.equal(validateVerificationOutput({...v,schema_version:VERIFICATION_SCHEMA_VERSION},{...inventory,schema_version:INVENTORY_SCHEMA_VERSION}).valid,false);assert.equal(validateVerificationOutput({...v,schema_version:VERIFICATION_SCHEMA_VERSION,same_intent_groups:[]},{...inventory,schema_version:INVENTORY_SCHEMA_VERSION}).valid,true);
 });

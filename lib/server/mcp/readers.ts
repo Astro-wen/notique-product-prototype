@@ -1,6 +1,7 @@
 import {claimSourceStatus,projectWorkspace,type ProjectionLedger} from '../../domain/workflow-projection.ts';
-import type {VersionRef,WorkspaceSnapshot} from '../../shared/workflow-v2.ts';
+import type {AnalysisRun,VersionRef,WorkspaceSnapshot} from '../../shared/workflow-v2.ts';
 import {projectOverview} from '../workflow/overview-service.ts';
+import {readAnalysisRun} from '../workflow/analysis-service.ts';
 import {digestValue,findWorkflowEvent,loadWorkflowLedger,WorkflowFault,type WorkflowScope} from '../workflow/snapshot-store.ts';
 export type ReadArgs={project_id?:string;record_id?:string;evidence_id?:string;cursor?:string;limit?:number;views?:string[]};
 export const MCP_VIEWS=['record','summary','legacy_summary','chapters','speakers','overview','key_points','readable_transcript'] as const;
@@ -93,9 +94,22 @@ export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,
  }
  if(name==='get_record_views'){
   const {projectId,ledger,snapshot}=await record(db,scope,args.record_id!);const views=args.views ?? ['record'];const entries:Array<Record<string,unknown>>=[];
+  const runId=ledger.events.find(event=>event.id===args.record_id)?.active_run_id;
+  // The analysis reader checks the active run, exact current material revision
+  // and membership. Its text stays in paged entries, never response metadata.
+  let analysis:AnalysisRun|null=null;
+  if(runId)try{analysis=await readAnalysisRun(db,scope,runId);}catch(error){
+   // A removed historical run cannot hide otherwise authorized saved views.
+   // Main record/ledger authorization and the transport's final check remain.
+   if(!(error instanceof WorkflowFault && error.code==='not_found'))throw error;
+  }
+  const qualityNotes=analysis?.inputRevision===snapshot.sourceRevision?analysis.qualityNotes:undefined;
+  const qualityFlags=qualityNotes?{inventoryLimitReached:qualityNotes.inventoryLimitReached,finalClaimLimitReached:qualityNotes.finalClaimLimitReached,followUpOmitted:qualityNotes.followUpOmitted}:undefined;
+  const omittedCandidateCount=qualityNotes?.omittedStatements.length;
   const evidenceRefIds=originalEvidenceReader(ledger);
   if(views.includes('record'))for(const entry of workflowEntries(ledger,snapshot,args.record_id!,evidenceRefIds))entries.push({view:'record',...entry});
   if(views.includes('record'))for(const mention of snapshot.reaffirmedMentions ?? [])entries.push({view:'record',...mention,memberKind:mention.kind,kind:'reaffirmed_mention'});
+  if(views.includes('record'))qualityNotes?.omittedStatements.forEach((text,index)=>entries.push({view:'record',kind:'omitted_candidate',id:`omitted_candidate:${runId}:${index}`,eventId:args.record_id,analysisRunId:runId,retentionState:'not_retained',text,claimRefs:[],evidenceRefIds:[]}));
   if(views.includes('summary')){const n=snapshot.narrative;if(n?.text)for(const sentence of n.sentenceRefs)entries.push({view:'summary',...sentence,evidenceRefIds:evidenceRefIds(sentence.claimRefs),freshness:n.freshness,basedOnContextVersion:n.basedOnContextVersion});else entries.push({view:'summary',state:n?.freshness ?? 'not_generated'});}
   for(const kind of views.filter(v=>!['record','summary'].includes(v))){
    const storageKind=kind==='legacy_summary'?'summary':kind;
@@ -113,7 +127,7 @@ export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,
    const fragments=jsonFragments(serialized);
    fragments.forEach((content,partIndex)=>entries.push({view:kind,id:a.id,version:a.artifact_version,createdAt:a.created_at,state:'generated',generationState,reviewState:'draft',format:'json_fragment',partIndex,partCount:fragments.length,content}));
   }
-  return {kind:'record_views',contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,...page(boundedEntries(entries),args,await digestValue({contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,entries}))};
+  return {kind:'record_views',contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,...(qualityFlags?{qualityFlags,omittedCandidateCount}:{}),...page(boundedEntries(entries),args,await digestValue({contextVersion:snapshot.contextVersion,sourceRevision:snapshot.sourceRevision,coverage:snapshot.coverage,qualityFlags,omittedCandidateCount,qualityNotes,entries}))};
  }
  if(name==='get_record_excerpt'){
   const {projectId,ledger,snapshot}=await record(db,scope,args.record_id!);const rows=await query<{id:string;asset_version_id:string;ordinal:number;speaker:string|null;start_ms:number|null;end_ms:number|null;text_raw:string}>(db,`SELECT s.id,s.asset_version_id,s.ordinal,s.speaker,s.start_ms,s.end_ms,s.text_raw FROM text_segments s JOIN assets a ON a.id=s.asset_id AND a.current_version_id=s.asset_version_id WHERE s.workspace_id=? AND s.project_id=? AND s.event_id=? AND a.workspace_id=s.workspace_id AND a.project_id=s.project_id AND a.event_id=s.event_id AND a.processing_status='ready' AND COALESCE(a.failure_code,'') NOT IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED') AND COALESCE(json_extract(a.metadata_json,'$.analysis_source'),1)<>0 AND COALESCE(json_extract(a.metadata_json,'$.artifact_kind'),'')<>'readable_transcript' AND COALESCE(json_extract(a.metadata_json,'$.transcription_chunk'),0)<>1 AND (json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NULL OR EXISTS(SELECT 1 FROM assets audio WHERE audio.workspace_id=a.workspace_id AND audio.project_id=a.project_id AND audio.event_id=a.event_id AND audio.kind='audio' AND audio.current_version_id=json_extract(a.metadata_json,'$.source_audio_asset_version_id'))) ORDER BY s.asset_version_id,s.ordinal,s.id`,scope.workspaceId,projectId,args.record_id);

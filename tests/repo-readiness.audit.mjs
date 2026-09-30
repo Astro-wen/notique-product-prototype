@@ -1668,12 +1668,12 @@ test("provider schema and server validator share bounded output limits", async (
   );
   assert.match(
     provider,
-    /validateExtractClaimsOutput\(decoded\.value\)/,
+    /validateExtractClaimsOutput\(decoded\.value,\s*undefined,\s*\{\s*maxClaims:\s*extractionClaimLimit\(promptVersion\)\s*\}\)/,
     "provider output must cross the authoritative structural validator before it reaches the processor",
   );
   assert.match(
     processor,
-    /validateExtractClaimsOutput\(finalOutput,\s*input\.contextPack\)/,
+    /validateExtractClaimsOutput\(finalOutput,\s*input\.contextPack,\s*\{\s*maxClaims:\s*pipelineEnabled\s*\?\s*verificationContract\.claimLimit\s*:\s*extractionClaimLimit\(leased\.prompt_version\)\s*\}\)/,
     "the processor must revalidate provider output structure before persistence",
   );
   assert.match(

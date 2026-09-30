@@ -4,10 +4,18 @@ import type { ContextPack } from "./context-pack";
 
 export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v3" as const;
 export const LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.4" as const;
-export type ClaimExtractionPromptVersion = typeof LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CLAIM_EXTRACTION_PROMPT_VERSION;
+export const ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.4" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.5" as const;
+export type ClaimExtractionPromptVersion = typeof LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CLAIM_EXTRACTION_PROMPT_VERSION;
 export function isClaimExtractionPromptVersion(value: unknown): value is ClaimExtractionPromptVersion {
-  return value === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+  return value === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION || value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+}
+
+export function hasAtomicTaskExtraction(value: unknown): boolean {
+  return value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+}
+export function extractionClaimLimit(promptVersion: ClaimExtractionPromptVersion): 24 | 64 {
+  return promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? 64 : 24;
 }
 
 export const MODEL_CONTRACT_LIMITS = {
@@ -456,7 +464,7 @@ function validateEvidence(value: unknown, path: string, issues: ModelContractIss
   }
 }
 
-export function validateExtractClaimsOutput(value: unknown, context?: ContextPack): {
+export function validateExtractClaimsOutput(value: unknown, context?: ContextPack, options: {maxClaims?: 24 | 64} = {}): {
   valid: boolean;
   issues: ModelContractIssue[];
   output: ExtractClaimsOutput | null;
@@ -482,8 +490,9 @@ export function validateExtractClaimsOutput(value: unknown, context?: ContextPac
       });
     }
   }
-  if (!Array.isArray(value.claims) || value.claims.length > MODEL_CONTRACT_LIMITS.claims) {
-    issues.push({ path: "$.claims", message: `Claims must be an array with at most ${MODEL_CONTRACT_LIMITS.claims} items.` });
+  const maxClaims = options.maxClaims ?? MODEL_CONTRACT_LIMITS.claims;
+  if (!Array.isArray(value.claims) || value.claims.length > maxClaims) {
+    issues.push({ path: "$.claims", message: `Claims must be an array with at most ${maxClaims} items.` });
   } else value.claims.forEach((claim, index) => {
     const path = `$.claims[${index}]`;
     if (!record(claim)) return issues.push({ path, message: "Expected an object." });

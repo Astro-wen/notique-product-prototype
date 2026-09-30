@@ -29,13 +29,13 @@ const json=body=>new Response(JSON.stringify(body),{headers:{'content-type':'app
 const usage={input_tokens:20,output_tokens:10,input_tokens_details:{cached_tokens:0}};
 const evidence=[{kind:'text',asset_version_id:'av',segment_ids:['seg'],quote_hint:'请询价。',evidence_role:'direct'}];
 const atom=(key,type)=>({client_claim_key:key,disposition:'new',reaffirmed_target_claim_id:null,reaffirmed_target_version_id:null,type,statement:type==='decision'?'约定向供应商询价':'向供应商询价',normalized_value:null,materiality:'high',confidence:0.98,needs_additional_evidence:false,uncertainty:null,evidence,relations:[]});
-function inventory(){return {schema_version:INVENTORY_SCHEMA_VERSION,event_id:'e',candidates:[['agreement','decision'],['action','next_action']].map(([key,type])=>({inventory_key:key,type,statement:atom(key,type).statement,normalized_value:null,materiality:'high',critical:false,critical_reason:null,confidence:0.98,atomicity:'atomic',evidence}))};}
-function verification(version,groups){return {schema_version:version,event_id:'e',scenario_assessment:null,claims:[atom('agreement','decision'),atom('action','next_action')],candidate_dispositions:['agreement','action'].map(key=>({inventory_key:key,outcome:'included',final_claim_keys:[key],reason:'Retained supported atomic proposition.'})),draft_link_candidates:[],quality_review:{unresolved_conflict_keys:[],compound_claim_keys:[],reaffirmed_issue_claim_keys:[]},...(version===VERIFICATION_SCHEMA_VERSION?{same_intent_groups:groups}: {})};}
+function inventory(version=INVENTORY_SCHEMA_VERSION){return {schema_version:version,event_id:'e',candidates:[['agreement','decision'],['action','next_action']].map(([key,type])=>({inventory_key:key,type,statement:atom(key,type).statement,normalized_value:null,materiality:'high',critical:false,critical_reason:null,confidence:0.98,atomicity:'atomic',evidence}))};}
+function verification(version,groups){return {schema_version:version,event_id:'e',scenario_assessment:null,claims:[atom('agreement','decision'),atom('action','next_action')],candidate_dispositions:['agreement','action'].map(key=>({inventory_key:key,outcome:'included',final_claim_keys:[key],reason:'Retained supported atomic proposition.'})),draft_link_candidates:[],quality_review:{unresolved_conflict_keys:[],compound_claim_keys:[],reaffirmed_issue_claim_keys:[]},...(version!==LEGACY_VERIFICATION_SCHEMA_VERSION?{same_intent_groups:groups}: {})};}
 const groups=[{group_key:'quote',record_claim_key:'agreement',action_claim_key:'action',reason:'The same explicitly stated agreement.',confidence:0.98}];
 async function setup(t,{legacy=false}={}){
  const f=await workflowDatabase();t.after(f.close);seed(f.sqlite);f.sqlite.exec('DELETE FROM claims');
  f.sqlite.prepare("UPDATE projects SET scenario='general',scenario_status='confirmed'").run();
- f.sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'").run(CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION,JSON.stringify([{asset_version_id:'av',sha256:'synthetic',parser_version:'test',kind:'text'}]),JSON.stringify({two_pass_pipeline:true,verification_uses_readable:false,...(legacy?{}:{verification_schema_version:VERIFICATION_SCHEMA_VERSION})}));
+ f.sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'").run(legacy?'claim-extraction-prompt.v9.2':CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION,JSON.stringify([{asset_version_id:'av',sha256:'synthetic',parser_version:'test',kind:'text'}]),JSON.stringify({two_pass_pipeline:true,verification_uses_readable:false,...(legacy?{}:{inventory_prompt_version:CLAIM_EXTRACTION_PROMPT_VERSION,verification_schema_version:VERIFICATION_SCHEMA_VERSION})}));
  globalThis.notiqueGroupTest={db:f.db,bindings:{AI_PROVIDER:'openai',AI_MODEL:'synthetic-model',AI_API_KEY:'synthetic-test-key',AI_API_BASE_URL:'https://model.invalid/v1',AI_VERIFICATION_USES_READABLE:'0'}};
  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;delete globalThis.notiqueGroupTest;});return f;
 }
@@ -45,7 +45,7 @@ test('real extraction publishes a proposed pair in the existing two paid-stage s
  globalThis.fetch=async (url,init)=>{
   assert.ok(String(url).startsWith('https://model.invalid/'));const body=JSON.parse(init.body);requests.push(body);
   const version=body.text.format.schema.properties.schema_version.enum[0];
-  return json({id:`synthetic_${requests.length}`,status:'completed',output_text:JSON.stringify(version===INVENTORY_SCHEMA_VERSION?inventory():verification(version,groups)),usage});
+  return json({id:`synthetic_${requests.length}`,status:'completed',output_text:JSON.stringify(String(version).startsWith('claim-inventory.')?inventory(version):verification(version,groups)),usage});
  };
  const r=await processExtractionRun('run');assert.equal(r.status,'succeeded',JSON.stringify({result:r,error:sqlite.prepare("SELECT error_details_json FROM extraction_runs WHERE id='run'").get()}));assert.equal(requests.length,2);assert.equal(r.persistedClaims,2);
  assert.equal(requests[1].text.format.schema.properties.same_intent_groups.maxItems,12);assert.ok(requests[1].text.format.schema.required.includes('same_intent_groups'));
@@ -57,14 +57,14 @@ test('real extraction publishes a proposed pair in the existing two paid-stage s
 
 test('invalid semantic group keeps successful claims and an audited warning without an extra model pass',async t=>{
  const {db,sqlite}=await setup(t);let calls=0;
- globalThis.fetch=async (url,init)=>{assert.ok(String(url).startsWith('https://model.invalid/'));const v=JSON.parse(init.body).text.format.schema.properties.schema_version.enum[0];calls++;return json({id:`synthetic_${calls}`,status:'completed',output_text:JSON.stringify(v===INVENTORY_SCHEMA_VERSION?inventory():verification(v,[{...groups[0],action_claim_key:'missing'}])),usage});};
+ globalThis.fetch=async (url,init)=>{assert.ok(String(url).startsWith('https://model.invalid/'));const v=JSON.parse(init.body).text.format.schema.properties.schema_version.enum[0];calls++;return json({id:`synthetic_${calls}`,status:'completed',output_text:JSON.stringify(String(v).startsWith('claim-inventory.')?inventory(v):verification(v,[{...groups[0],action_claim_key:'missing'}])),usage});};
  const r=await processExtractionRun('run');assert.equal(r.status,'completed_with_warnings',JSON.stringify({result:r,error:sqlite.prepare("SELECT error_details_json FROM extraction_runs WHERE id='run'").get()}));assert.equal(calls,2);assert.equal(r.persistedClaims,2);assert.equal(sqlite.prepare('SELECT count(*) n FROM workflow_cards').get().n,0);
  assert.equal(JSON.parse(sqlite.prepare("SELECT error_details_json FROM extraction_runs WHERE id='run'").get().error_details_json).warnings[0].code,'SAME_INTENT_GROUP_NOT_PERSISTED');assert.equal((await readWorkspace(db,SCOPE,'e',{},T)).bullets.length,2);
 });
 
 test('legacy queued run still receives the original schema and keeps its existing model contract',async t=>{
  const {sqlite}=await setup(t,{legacy:true}),requests=[];
- globalThis.fetch=async (url,init)=>{assert.ok(String(url).startsWith('https://model.invalid/'));const body=JSON.parse(init.body);requests.push(body);const v=body.text.format.schema.properties.schema_version.enum[0];return json({id:`synthetic_${requests.length}`,status:'completed',output_text:JSON.stringify(v===INVENTORY_SCHEMA_VERSION?inventory():verification(v,[])),usage});};
+ globalThis.fetch=async (url,init)=>{assert.ok(String(url).startsWith('https://model.invalid/'));const body=JSON.parse(init.body);requests.push(body);const v=body.text.format.schema.properties.schema_version.enum[0];return json({id:`synthetic_${requests.length}`,status:'completed',output_text:JSON.stringify(String(v).startsWith('claim-inventory.')?inventory(v):verification(v,[])),usage});};
  const r=await processExtractionRun('run');assert.equal(r.status,'succeeded',JSON.stringify({result:r,error:sqlite.prepare("SELECT error_details_json FROM extraction_runs WHERE id='run'").get()}));assert.equal(requests.length,2);assert.equal(requests[1].text.format.schema.properties.schema_version.enum[0],LEGACY_VERIFICATION_SCHEMA_VERSION);assert.ok(!requests[1].text.format.schema.required.includes('same_intent_groups'));
  const stage=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();assert.equal(stage.schema_version,LEGACY_VERIFICATION_SCHEMA_VERSION);assert.equal(stage.prompt_version,'claim-extraction-prompt.v9.2:verify');assert.equal(sqlite.prepare('SELECT count(*) n FROM workflow_cards').get().n,0);
 });
@@ -75,7 +75,7 @@ test('already paid legacy verification resumes with GET and reuses the exact suc
   assert.ok(String(url).startsWith('https://model.invalid/'));requests.push({url:String(url),method:init.method});
   if(init.method==='GET')return json({id:'synthetic_legacy_verify',status:'completed',output_text:JSON.stringify(verification(LEGACY_VERIFICATION_SCHEMA_VERSION,[])),usage});
   const v=JSON.parse(init.body).text.format.schema.properties.schema_version.enum[0];
-  return v===INVENTORY_SCHEMA_VERSION?json({id:'synthetic_inventory',status:'completed',output_text:JSON.stringify(inventory()),usage}):json({id:'synthetic_legacy_verify',status:'queued'});
+  return String(v).startsWith('claim-inventory.')?json({id:'synthetic_inventory',status:'completed',output_text:JSON.stringify(inventory(v)),usage}):json({id:'synthetic_legacy_verify',status:'queued'});
  };
  const first=await processExtractionRun('run');assert.equal(first.status,'background_pending');const paidInventory=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='inventory'").get(),oldVerify=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
  assert.equal(oldVerify.schema_version,LEGACY_VERIFICATION_SCHEMA_VERSION);assert.equal(oldVerify.provider_request_id,'synthetic_legacy_verify');
@@ -89,7 +89,7 @@ test('source drift before publication rolls back claims, groups and relations wh
  globalThis.fetch=async(url,init)=>{
   assert.ok(String(url).startsWith('https://model.invalid/'));const v=JSON.parse(init.body).text.format.schema.properties.schema_version.enum[0];calls++;
   if(v===VERIFICATION_SCHEMA_VERSION)sqlite.prepare("UPDATE assets SET current_version_id=NULL WHERE id='asset'").run();
-  return json({id:`synthetic_${calls}`,status:'completed',output_text:JSON.stringify(v===INVENTORY_SCHEMA_VERSION?inventory():verification(v,groups)),usage});
+  return json({id:`synthetic_${calls}`,status:'completed',output_text:JSON.stringify(String(v).startsWith('claim-inventory.')?inventory(v):verification(v,groups)),usage});
  };
  const result=await processExtractionRun('run');assert.notEqual(result.status,'succeeded');assert.notEqual(result.status,'completed_with_warnings');assert.equal(calls,2);
  for(const table of ['claims','claim_versions','workflow_cards','card_members','mutation_guards'])assert.equal(sqlite.prepare(`SELECT count(*) n FROM ${table}`).get().n,0,table);

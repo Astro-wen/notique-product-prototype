@@ -179,7 +179,7 @@ test("validates a bounded atomic inventory with evidence", () => {
   assert.equal(result.output?.candidates.length, 1);
 });
 
-test("inventory rejects more than 24 candidates, non-atomic facts, missing evidence, and duplicate keys", () => {
+test("inventory rejects more than 64 candidates, non-atomic facts, missing evidence, and duplicate keys", () => {
   const overflow = Array.from({ length: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates + 1 }, (_, index) =>
     candidate({ inventory_key: `inv-${index}` }));
   assert.equal(validateInventoryOutput(inventory(overflow)).valid, false);
@@ -403,6 +403,7 @@ test("clean verification does not escalate", () => {
     reasons: [],
     unmappedInventoryKeys: [],
     droppedCriticalInventoryKeys: [],
+    droppedFollowUpInventoryKeys: [],
     lowConfidenceRelationClaimKeys: [],
   });
 });

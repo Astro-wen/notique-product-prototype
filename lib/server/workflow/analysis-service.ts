@@ -1,5 +1,7 @@
 import { projectCoverage, readJson, type ProjectionLedger } from '../../domain/workflow-projection.ts';
-import { parseWorkflowRequest, type AnalysisRun, type AnalysisState, type RetryAnalysisRequest, type StartAnalysisRequest } from '../../shared/workflow-v2.ts';
+import { parseWorkflowRequest, parseAnalysisQualityNotes, type AnalysisRun, type AnalysisState, type RetryAnalysisRequest, type StartAnalysisRequest } from '../../shared/workflow-v2.ts';
+import { extractionCoverageSummary } from '../../domain/extraction-coverage.ts';
+import { extractionClaimLimit, isClaimExtractionPromptVersion } from '../../domain/model-contract.ts';
 import { digestValue, findWorkflowEvent, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { mutationId } from './transaction.ts';
 import { WORKFLOW_NARRATIVE_PROMPT_VERSION } from '../../domain/workflow-narrative.ts';
@@ -10,7 +12,7 @@ type Artifact = { id:string; kind:string; status:string; error_code:string|null;
 type NarrativeJob = { id:string; state:string; error_code:string|null; input_revision:number; payload_json:string; created_at:string; updated_at:string };
 const published = (status:unknown) => ['succeeded','completed_with_warnings'].includes(String(status));
 const state = (status:unknown):AnalysisState => status==='processing'||status==='running'?'running':published(status)?'succeeded':(['queued','failed','cancelled'].includes(String(status))?status as AnalysisState:'failed');
-const repairable = (code:string|null) => !code || !/(?:VERSION_CONFLICT|SOURCE|ARCHIVED|DELETED|BUDGET|TOO_MANY|ASSET_TOO_LARGE|NOT_CONFIGURED|CANCEL|QA_MODEL_DISABLED)/.test(code);
+const repairable = (code:string|null) => !code || !/(?:VERSION_CONFLICT|SOURCE|ARCHIVED|DELETED|BUDGET|OUTPUT_TOKEN_LIMIT|TOO_MANY|ASSET_TOO_LARGE|NOT_CONFIGURED|CANCEL|QA_MODEL_DISABLED)/.test(code);
 const currentSources = `COALESCE(json_extract(a.metadata_json,'$.analysis_source'),1)<>0 AND COALESCE(json_extract(a.metadata_json,'$.artifact_kind'),'')<>'readable_transcript'
   AND COALESCE(json_extract(a.metadata_json,'$.transcription_chunk'),0)<>1 AND COALESCE(a.failure_code,'') NOT IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED')
   AND (json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NULL OR EXISTS (SELECT 1 FROM assets audio WHERE audio.workspace_id=a.workspace_id AND audio.event_id=a.event_id AND audio.kind='audio' AND audio.current_version_id=json_extract(a.metadata_json,'$.source_audio_asset_version_id')))`;
@@ -79,7 +81,14 @@ export async function mapAnalysisRun(row:Row):Promise<AnalysisRun> {
  // Opaque equality token: GET stays read-only even when the legacy executor
  // changes stage state. It is deliberately separate from business versions.
  const revision=parseInt((await digestValue(row)).slice(0,13),16)+1;
- return {id:String(row.id),revision,state:overall,stages,coverage,inputRevision:input.workflow_source_revision??(sameManifest(row)?Number(row.source_revision):0),retryable:stages.some(s=>s.retryable)};
+ const qualitySourceCurrent=current && (input.workflow_source_revision===undefined?Number(row.source_revision)===0:input.workflow_source_revision===Number(row.source_revision));
+ const qualityNotes=qualitySourceCurrent?parseAnalysisQualityNotes(extractionCoverageSummary(readJson<unknown>(String(row.error_details_json),{}))):null;
+ if(qualityNotes && published(row.status) && isClaimExtractionPromptVersion(row.prompt_version)) {
+  const output=readJson<{claims?:unknown[]}>(String(row.validated_output_json),{});
+  if(Array.isArray(output.claims) && output.claims.length>=extractionClaimLimit(row.prompt_version)) qualityNotes.finalClaimLimitReached=true;
+ }
+ return {id:String(row.id),revision,state:overall,stages,coverage,inputRevision:input.workflow_source_revision??(sameManifest(row)?Number(row.source_revision):0),retryable:stages.some(s=>s.retryable),
+  ...(qualityNotes && (qualityNotes.omittedStatements.length || qualityNotes.inventoryLimitReached || qualityNotes.finalClaimLimitReached || qualityNotes.followUpOmitted)?{qualityNotes}:{})};
 }
 export async function readAnalysisRun(db:D1Database,scope:WorkflowScope,runId:string):Promise<AnalysisRun> {
  return mapAnalysisRun(await loadAnalysis(db,scope,runId));

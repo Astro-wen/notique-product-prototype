@@ -9,8 +9,9 @@ import {
 import {
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   CLAIM_EXTRACTION_PROMPT_VERSION,
-  LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION,
   isClaimExtractionPromptVersion,
+  hasAtomicTaskExtraction,
+  extractionClaimLimit,
   decodeProviderNormalizedValues,
   MODEL_CONTRACT_LIMITS,
   ModelProviderNotConfiguredError,
@@ -40,7 +41,8 @@ import {
 } from "@/lib/server/ai/openai-background";
 import {
   INVENTORY_SCHEMA_VERSION,
-  TWO_STAGE_EXTRACTION_LIMITS,
+  type InventorySchemaVersion,
+  verificationClaimLimit,
   VERIFICATION_SCHEMA_VERSION,
   LEGACY_VERIFICATION_SCHEMA_VERSION,
   inventoryContractForRun,
@@ -63,7 +65,7 @@ export class ModelTimeoutError extends Error {
 }
 
 export class ModelOutputInvalidError extends Error {
-  readonly code = "MODEL_OUTPUT_INVALID";
+  readonly code: "MODEL_OUTPUT_INVALID" | "MODEL_OUTPUT_TOKEN_LIMIT" = "MODEL_OUTPUT_INVALID";
 
   constructor(
     readonly issues: Array<{ path: string; message: string }>,
@@ -71,6 +73,14 @@ export class ModelOutputInvalidError extends Error {
   ) {
     super("The model provider returned output that does not match the extraction contract.");
     this.name = "ModelOutputInvalidError";
+  }
+}
+
+export class ModelOutputBudgetExhaustedError extends ModelOutputInvalidError {
+  readonly code = "MODEL_OUTPUT_TOKEN_LIMIT";
+  constructor(usage: ModelUsage) {
+    super([{path: "$.provider_response.status", message: "Model output reached the frozen token budget before completing the contract."}], usage);
+    this.name = "ModelOutputBudgetExhaustedError";
   }
 }
 
@@ -156,7 +166,16 @@ export async function cancelBackgroundResponses(
     })));
 }
 
-function extractionJsonSchema() {
+function followUpCoverageInstructions(): string[] {
+  return [
+    "Walk every raw source segment before returning. Inventory each explicitly unresolved business question and each concrete promised owner action independently, including attendance counts, unbooked dates, prerequisites, who will ask whom, and dependencies. An action to seek an answer and the unanswered question are two independently supported propositions.",
+    "Preserve the named business subject and owning matter when source context establishes it. Resolve supported pronouns and remainder amounts from surrounding source turns: a training reserve remains a training reserve, not a context-free amount. Keep proposed, approximate, conditional, confirmed and unresolved qualifiers. Never invent an owner, deadline or affiliation.",
+    "Keep hypothetical training exercises and example workflow behavior inside their stated training context. Do not turn an illustrative exercise into an actual implementation project or commitment.",
+    "Within the bound, include supported business questions and owner commitments before generic exercise requirements and incidental context. Keep atomic claims independent; do not fuse unrelated facts merely to fit. Any lower-priority candidate must have an explicit disposition and reason in verification.",
+  ];
+}
+
+function extractionJsonSchema(maxClaims: 24 | 64 = MODEL_CONTRACT_LIMITS.claims) {
   const nullableIdentifier = {
     anyOf: [
       { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
@@ -256,7 +275,7 @@ function extractionJsonSchema() {
       },
       claims: {
         type: "array",
-        maxItems: MODEL_CONTRACT_LIMITS.claims,
+        maxItems: maxClaims,
         items: {
           type: "object",
           additionalProperties: false,
@@ -370,7 +389,7 @@ function extractionJsonSchema() {
   };
 }
 
-function inventoryJsonSchema() {
+function inventoryJsonSchema(version: InventorySchemaVersion, candidateLimit: 24 | 64) {
   const extraction = extractionJsonSchema();
   const claim = extraction.properties.claims.items;
   return {
@@ -378,11 +397,11 @@ function inventoryJsonSchema() {
     additionalProperties: false,
     required: ["schema_version", "event_id", "candidates"],
     properties: {
-      schema_version: { type: "string", enum: [INVENTORY_SCHEMA_VERSION] },
+      schema_version: { type: "string", enum: [version] },
       event_id: claim.properties.client_claim_key,
       candidates: {
         type: "array",
-        maxItems: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates,
+        maxItems: candidateLimit,
         items: {
           type: "object",
           additionalProperties: false,
@@ -415,14 +434,15 @@ function inventoryJsonSchema() {
 }
 
 function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION_SCHEMA_VERSION) {
-  const extraction = extractionJsonSchema();
+  const claimLimit = verificationClaimLimit(version);
+  const extraction = extractionJsonSchema(claimLimit);
   return {
     type: "object",
     additionalProperties: false,
     required: [
       "schema_version", "event_id", "scenario_assessment", "claims",
       "candidate_dispositions", "draft_link_candidates", "quality_review",
-      ...(version===VERIFICATION_SCHEMA_VERSION?["same_intent_groups"]:[]),
+      ...(version!==LEGACY_VERIFICATION_SCHEMA_VERSION?["same_intent_groups"]:[]),
     ],
     properties: {
       schema_version: { type: "string", enum: [version] },
@@ -431,7 +451,7 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
       claims: extraction.properties.claims,
       candidate_dispositions: {
         type: "array",
-        maxItems: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates,
+        maxItems: claimLimit,
         items: {
           type: "object",
           additionalProperties: false,
@@ -444,7 +464,7 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
             },
             final_claim_keys: {
               type: "array",
-              maxItems: MODEL_CONTRACT_LIMITS.claims,
+              maxItems: claimLimit,
               items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
             },
             reason: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.explanationLength },
@@ -453,7 +473,7 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
       },
       draft_link_candidates: {
         type: "array",
-        maxItems: TWO_STAGE_EXTRACTION_LIMITS.draftLinks,
+        maxItems: claimLimit,
         items: {
           type: "object",
           additionalProperties: false,
@@ -471,7 +491,7 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
           },
         },
       },
-      ...(version===VERIFICATION_SCHEMA_VERSION?{same_intent_groups:{
+      ...(version!==LEGACY_VERIFICATION_SCHEMA_VERSION?{same_intent_groups:{
         type:"array",maxItems:12,items:{
           type:"object",additionalProperties:false,
           required:["group_key","record_claim_key","action_claim_key","reason","confidence"],
@@ -491,17 +511,17 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
         properties: {
           unresolved_conflict_keys: {
             type: "array",
-            maxItems: TWO_STAGE_EXTRACTION_LIMITS.qualityFlags,
+            maxItems: claimLimit,
             items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
           },
           compound_claim_keys: {
             type: "array",
-            maxItems: MODEL_CONTRACT_LIMITS.claims,
+            maxItems: claimLimit,
             items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
           },
           reaffirmed_issue_claim_keys: {
             type: "array",
-            maxItems: MODEL_CONTRACT_LIMITS.claims,
+            maxItems: claimLimit,
             items: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
           },
         },
@@ -947,6 +967,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         providerRequestId: body.id ?? response.headers.get("x-request-id"),
       };
       try {
+        const version = (schema.properties as {schema_version?: {enum?: unknown[]}} | undefined)?.schema_version?.enum?.[0];
+        if ((version === INVENTORY_SCHEMA_VERSION || version === VERIFICATION_SCHEMA_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
         const content = isOpenAi
           ? openAiResponseText(body)
           : body.choices?.[0]?.message?.content;
@@ -1171,23 +1193,26 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 
   async inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions) {
-    const promptVersion=inventoryContractForRun({inventory_prompt_version:options?.extractionPromptVersion ?? CLAIM_EXTRACTION_PROMPT_VERSION}).promptVersion;
-    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
+    const contract=inventoryContractForRun({inventory_prompt_version:options?.extractionPromptVersion ?? CLAIM_EXTRACTION_PROMPT_VERSION});
+    const promptVersion=contract.promptVersion;
+    const coverage = promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION;
+    const atomicTasks=hasAtomicTaskExtraction(promptVersion);
     const prompt = [
       sharedTwoStagePromptPrefix(input),
       "STAGE: ATOMIC FACT INVENTORY",
       "Build an exhaustive inventory of atomic, evidence-backed business propositions in the new event.",
-      "Return up to 24 atomic candidates. Do not apply the final ten-item review limit and do not create relations or lifecycle decisions.",
+      coverage ? "Return up to 64 atomic candidates. Collect business propositions before prioritizing; UI pagination is independent of this extraction budget. Do not create relations or lifecycle decisions." : "Return up to 24 atomic candidates. Do not apply the final ten-item review limit and do not create relations or lifecycle decisions.",
+      ...(coverage ? followUpCoverageInstructions() : []),
       ...(atomicTasks ? taskAtomicityInstructions() : ["Split separate amounts, dates, decisions, assignments, requirements, questions, risks, conditions, approvals, and next actions."]),
-      "Critical is a rare omission-intolerant fact: money or approved scope, legal or safety exposure, final approval authority, a responsible party whose omission changes accountability, a committed milestone, or an unresolved blocker that can stop the project. Do not mark a fact critical merely because it contains any date, amount, assignment, follow-up, repeated fact, or administrative step. Return at most 10 critical candidates; keep other supported material facts with critical=false. Explain every critical choice in critical_reason.",
+      coverage ? "Mark a proposition critical when its omission changes approved money or scope, accountability, approval authority, a committed milestone, legal or safety exposure, or an unresolved project blocker. Explain every critical choice in critical_reason. Independently retain every source-supported unanswered business question and concrete owner commitment even when critical=false." : "Critical is a rare omission-intolerant fact: money or approved scope, legal or safety exposure, final approval authority, a responsible party whose omission changes accountability, a committed milestone, or an unresolved blocker that can stop the project. Do not mark a fact critical merely because it contains any date, amount, assignment, follow-up, repeated fact, or administrative step. Return at most 10 critical candidates; keep other supported material facts with critical=false. Explain every critical choice in critical_reason.",
       "A photo supports only visible observations. Never infer agreement, liability, causation, structural status, hidden conditions, or price from an image.",
-      `Return strict JSON matching ${INVENTORY_SCHEMA_VERSION}.`,
+      `Return strict JSON matching ${contract.schemaVersion}.`,
     ].join("\n\n");
     const result = await this.requestStructuredOutput(
       input,
       prompt,
       "notique_claim_inventory",
-      inventoryJsonSchema(),
+      inventoryJsonSchema(contract.schemaVersion, contract.candidateLimit),
       options,
     );
     let candidateValue = result.value;
@@ -1225,13 +1250,17 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }
+    if (validated.output.schema_version !== contract.schemaVersion) {
+      throw new ModelOutputInvalidError([{path:"$.schema_version", message:"Output does not match the frozen inventory schema."}], result.usage);
+    }
     return { output: validated.output, usage: result.usage };
   }
 
   async verifyClaims(input: ContextPack, inventory: InventoryOutput, options?: ModelStageRequestOptions) {
     const version=options?.verificationSchemaVersion ?? VERIFICATION_SCHEMA_VERSION;
-    const promptVersion=verificationContractForRun({verification_schema_version:version,verification_prompt_version:options?.extractionPromptVersion ?? (version===LEGACY_VERIFICATION_SCHEMA_VERSION?LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION:CLAIM_EXTRACTION_PROMPT_VERSION)}).promptVersion;
-    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
+    const promptVersion=verificationContractForRun({verification_schema_version:version,...(options?.extractionPromptVersion ? {verification_prompt_version:options.extractionPromptVersion} : {})}).promptVersion;
+    const atomicTasks=hasAtomicTaskExtraction(promptVersion);
+    const coverage = version === VERIFICATION_SCHEMA_VERSION;
     const scenarioInstruction = input.project.scenario === null
       ? "Return exactly 2 or 3 distinct scenario candidates grounded in this event."
       : "The project scenario is already confirmed; scenario_assessment must be null.";
@@ -1241,7 +1270,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       "Audit the supplied atomic inventory against the complete Context Pack, then produce the final human-review queue.",
       "When readable_transcript_segments are present, use them only as a readability aid. They may clarify punctuation or sentence boundaries, but they are not Evidence. Every final evidence item must cite the authoritative raw transcript_segments IDs and exact raw wording.",
       scenarioInstruction,
-      "Return no more than 24 final claims. Preserve every critical supported proposition before lower-priority administrative details.",
+      coverage ? "Return no more than 64 final claims. Preserve critical supported propositions, every explicit unanswered business question, and concrete owner commitments before generic requirements or incidental context." : "Return no more than 24 final claims. Preserve every critical supported proposition before lower-priority administrative details.",
+      ...(coverage ? followUpCoverageInstructions() : []),
       "Every inventory key must receive exactly one disposition. included or merged must map to exactly one final client_claim_key; dropped items must map to none and require a specific reason.",
       "You may add a missed final claim only when it has valid source evidence in the Context Pack.",
       atomicTasks
@@ -1258,9 +1288,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       ...(atomicTasks ? [
         ...taskAtomicityInstructions(),
         "When inventory separately lists attributes of the same concrete task, preserve every inventory key using outcome=merged with the same single final next_action client_claim_key. Its statement and normalized_value together retain every supported task attribute. This is one task, not a compound claim. Independent propositions retain separate final keys.",
-        "Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order.",
+        coverage ? "Preserve up to 64 independently supported facts; the UI handles presentation limits separately. If a candidate is omitted, retain its inventory key and give a concrete disposition reason. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order." : "Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order.",
       ] : ["Atomicity is a hard requirement. Preserve up to 24 independently supported facts; the UI handles presentation limits separately. Never merge separate amounts, dates, approvals, assignments, risks, questions, or lifecycle changes to fit a display budget. Quote the raw transcript verbatim, including repeated words. For a multi-segment quote include every intervening segment ID in source order."]),
-      ...(version===VERIFICATION_SCHEMA_VERSION?[
+      ...(version!==LEGACY_VERIFICATION_SCHEMA_VERSION?[
         "same_intent_groups may group one new decision and one new next_action only when they express the same explicitly stated original agreement. Retain both independently supported atomic claims. Use their exact final client_claim_key values, a unique group_key, reason and confidence at least 0.85. Return [] when no safe pair exists.",
         "Return at most 12 disjoint pairs. Each claim may belong to one pair. Similar topic, identical text or shared source segments alone do not establish the same intent. Separate independent questions, new conditions, changed values and distinct actions. Reaffirmed and duplicate claims retain their existing identity and cannot enter a new pair.",
       ]:[]),
@@ -1320,12 +1350,15 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, result.usage);
     }
+    if (validated.output.schema_version !== version) {
+      throw new ModelOutputInvalidError([{path:"$.schema_version", message:"Output does not match the frozen verification schema."}], result.usage);
+    }
     return { output: validated.output, usage: result.usage };
   }
 
   async extractClaims(input: ContextPack, signal?: AbortSignal, promptVersion: ClaimExtractionPromptVersion = CLAIM_EXTRACTION_PROMPT_VERSION) {
     if(!isClaimExtractionPromptVersion(promptVersion))throw new ModelProviderRequestError('Unsupported frozen extraction prompt.',null);
-    const atomicTasks=promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION;
+    const atomicTasks=hasAtomicTaskExtraction(promptVersion);
     if (this.provider === "deepseek" && input.new_event.photos.length) {
       throw new ModelProviderRequestError(
         "The configured DeepSeek chat adapter does not accept image inputs.",
@@ -1350,7 +1383,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         "Only cite IDs present in the Context Pack. Do not invent quotes, IDs, timestamps, or facts.",
         "A photo supports only visible observations, not agreement, intent, payment, liability, causation, or hidden conditions.",
         scenarioInstruction,
-        "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and preserve up to 24. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
+        ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? followUpCoverageInstructions() : []),
+        promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? "Identify every evidence-backed business proposition, preserve up to 64, and keep unresolved questions and concrete owner commitments ahead of generic background. Do not combine independent propositions to fit the budget." : "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and preserve up to 24. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
         ...(atomicTasks ? [
           ...taskAtomicityInstructions(),
           "An explicit business decision may include its direct reason when that reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' is one proposition.",
@@ -1360,7 +1394,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         "If one source sentence repeats an old fact and also introduces new information, emit the unchanged old fact as a reaffirmed occurrence and split every material change, resolution, decision, date, assignment, state, risk, or next step into one or more new atomic claims. Never hide new information inside a reaffirmed statement.",
         "Relation policy: use supersedes only when the same subject now has a changed value, state, assignment, or decision and the old value is no longer current. Use resolves when the new Claim gives a final answer or closure to an active open question, risk, concern, explicitly uncertain Claim, prerequisite, blocker, or outstanding condition. Satisfying a prerequisite is resolves, not supersedes. Use contradicts only when two incompatible active Claims remain unresolved. Use informed_by when the target provides context but is neither changed nor closed. Never attach both supersedes and resolves to the same target.",
         "The verified Context includes lifecycleStatus, uncertainty, openedAt, lastRepeatedAt, and repeatCount. Use these fields to distinguish an unanswered question from a fact that merely changed.",
-        "Within the 24-claim safety bound, retain all supported material facts and prioritize explicit decisions, material changed values, resolved questions or prerequisites, commitments, budgets, requirements, constraints, assignments, material risks, and material photo observations. A deliberately repeated material decision, requirement, preference, budget, or constraint must be retained as a reaffirmed occurrence before administrative timing or low-value communication acts. Only incidental repetition and minor observations have lower priority.",
+        promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? "Within the 64-claim safety bound, retain independently supported critical propositions, unanswered business questions and concrete owner commitments first, then explicit decisions, material changed values, resolved prerequisites, budgets, requirements, constraints, risks and material observations. Keep deliberately reaffirmed material facts before incidental repetition." : "Within the 24-claim safety bound, retain all supported material facts and prioritize explicit decisions, material changed values, resolved questions or prerequisites, commitments, budgets, requirements, constraints, assignments, material risks, and material photo observations. A deliberately repeated material decision, requirement, preference, budget, or constraint must be retained as a reaffirmed occurrence before administrative timing or low-value communication acts. Only incidental repetition and minor observations have lower priority.",
         "A photo should support a business Claim when it visibly corroborates that Claim. Create a standalone photo property_fact only when the visible condition materially changes scope, risk, cost, responsibility, or the next action. Do not create claims for incidental visual clutter.",
         "Set needs_additional_evidence=true when the available evidence does not fully establish the proposition or when an open question still needs an answer. A straightforward unresolved question may have uncertainty=null. Set uncertainty only when two or more values or interpretations remain plausible; then include at least two alternatives, one precise follow-up question, and set needs_additional_evidence=true. Never return uncertainty with needs_additional_evidence=false.",
         "normalized_value must be null or an entries envelope with unique scalar key/value pairs. Use null when no useful normalization exists.",
@@ -1418,7 +1452,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
                 type: "json_schema",
                 name: "notique_claim_extraction",
                 strict: true,
-                schema: extractionJsonSchema(),
+                schema: extractionJsonSchema(extractionClaimLimit(promptVersion)),
               },
             },
           }
@@ -1475,6 +1509,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         providerRequestId: body.id ?? response.headers.get("x-request-id"),
       };
       try {
+        if (promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
         const providerContent = isOpenAi
           ? openAiResponseText(body)
           : body.choices?.[0]?.message?.content;
@@ -1486,7 +1521,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         // Provider output is validated for shape and bounded values here. Context-sensitive
         // relation and occurrence targets are checked again against the leased ledger in the
         // processor. A stale or mistyped relation must not discard otherwise grounded Claims.
-        const validated = validateExtractClaimsOutput(decoded.value);
+        const validated = validateExtractClaimsOutput(decoded.value, undefined, {maxClaims: extractionClaimLimit(promptVersion)});
         if (!validated.valid || !validated.output) {
           throw new ModelOutputInvalidError(validated.issues, usage);
         }

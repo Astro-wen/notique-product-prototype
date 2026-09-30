@@ -1,3 +1,4 @@
+import { extractionCoverageSummary } from "@/lib/domain/extraction-coverage";
 import type {
   AssetRecord,
   AssetVersionRecord,
@@ -145,10 +146,7 @@ export function extractionRunRecord(
   stages: ExtractionRunRecord["stages"] = [],
 ): ExtractionRunRecord {
   return {
-    omitted_statements: parseJson<{ warnings?: Array<{ code?: string; statement?: string; omitted_statements?: string[] }> }>(nullableText(row, "error_details_json"), {})?.warnings
-      ?.flatMap((warning) => warning.code === "CLAIM_WITHOUT_VALID_EVIDENCE" && typeof warning.statement === "string"
-        ? [warning.statement] : warning.code === "MODEL_QUALITY_GATE_UNRESOLVED" && Array.isArray(warning.omitted_statements)
-          ? warning.omitted_statements.filter((statement) => typeof statement === "string") : []) ?? [],
+    omitted_statements: extractionCoverageSummary(parseJson(nullableText(row, "error_details_json"), {})).omittedStatements,
     id: text(row, "id"),
     project_id: text(row, "project_id"),
     event_id: text(row, "event_id"),

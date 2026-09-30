@@ -102,3 +102,7 @@ flowchart LR
 平台连接沿用当前 Site 的 App 与插件，发布带 mcp capability 的同一 main 源码后获取正式连接资料。用户安装后以真实只读调用验收身份、资源范围、撤销与零新增模型任务。本地测试身份用于工程验证，平台登录与真实助手连接以线上结果为准。
 
 连接页有两步：先核对当前账号并点击“开启只读授权”，再在助手中安装 Notique；账号授权与插件安装是不同状态。有效授权期30天，点击“断开授权”撤销该账号读取权限，助手侧安装单独在其插件页管理。“通过连接地址接入”仅在有效授权下允许复制地址。当前没有分助手安装状态卡片、三个配套 Skill 或推荐任务按钮，这些仍属后续交付。
+
+### 已知遗漏与材料覆盖
+
+get_record_views的coverage表示原文范围处理状态。存在当前材料的已知遗漏或容量提示时，同时返回qualityFlags，含inventoryLimitReached、finalClaimLimitReached和followUpOmitted三个布尔值，omittedCandidateCount单独给出0至200条已知遗漏数量。record视图按分页返回omitted_candidate条目，retentionState为not_retained，带analysisRunId、eventId与text。claimRefs和evidenceRefIds为空，助手将它解释为未保留候选，再按需回读原文。summary视图只返回标志，正文从record视图按需读取。提示更新使分页游标失效，当前权限和源修订校验沿用AnalysisRun服务。

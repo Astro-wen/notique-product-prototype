@@ -27,6 +27,7 @@ import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   isClaimExtractionPromptVersion,
+  extractionClaimLimit,
   validateExtractClaimsOutput,
   type ExtractClaimsOutput,
   type ModelEvidence,
@@ -34,10 +35,10 @@ import {
 } from "@/lib/domain/model-contract";
 import type { ClaimWithVersion, TranscriptSegment } from "@/lib/domain/types";
 import {
-  INVENTORY_SCHEMA_VERSION,
   inventoryContractForRun,
   verificationContractForRun,
   assessVerificationEscalation,
+  verificationCoverageWarnings,
   selectPreferredVerificationForReview,
   toFinalExtractClaimsOutput,
   validateInventoryOutput,
@@ -52,6 +53,7 @@ import {
   ModelBackgroundPendingError,
   ModelBackgroundStalledError,
   ModelOutputInvalidError,
+  ModelOutputBudgetExhaustedError,
   ModelProviderRequestError,
   ModelTimeoutError,
 } from "@/lib/server/ai/model-provider";
@@ -202,6 +204,7 @@ function errorCode(error: unknown): string {
   if (error instanceof ModelBackgroundPendingError) return error.code;
   if (error instanceof ModelBackgroundStalledError) return error.code;
   if (error instanceof ModelTimeoutError) return "MODEL_TIMEOUT";
+  if (error instanceof ModelOutputBudgetExhaustedError) return error.code;
   if (error instanceof ModelOutputInvalidError) return "MODEL_OUTPUT_INVALID";
   if (error instanceof ModelProviderRequestError) return "MODEL_PROVIDER_REQUEST_FAILED";
   if (error instanceof ProcessingFault) return error.code;
@@ -2052,6 +2055,9 @@ export async function processExtractionRun(
     let acceptedSameIntentGroups: SameIntentGroupProposal[] = [];
     const verificationContract=verificationContractForRun(frozenModelParams);
     const inventoryContract=inventoryContractForRun(frozenModelParams);
+    if (pipelineEnabled && inventoryContract.candidateLimit !== verificationContract.claimLimit) {
+      throw new ProcessingFault("MODEL_CONTRACT_UNSUPPORTED", "Frozen extraction stage capacities do not match.");
+    }
     let finalUsage: ModelUsage;
     const pipelineWarnings: Array<Record<string, unknown>> = [];
 
@@ -2068,7 +2074,7 @@ export async function processExtractionRun(
         context_snapshot_hash: input.contextSnapshotHash,
         stage: "inventory",
         prompt: inventoryContract.promptVersion,
-        schema: INVENTORY_SCHEMA_VERSION,
+        schema: inventoryContract.schemaVersion,
       }));
       const inventoryContext: ContextPack = {
         ...input.contextPack,
@@ -2081,7 +2087,7 @@ export async function processExtractionRun(
         model: modelName,
         reasoningEffort: inventoryEffort,
         promptVersion: `${inventoryContract.promptVersion}:inventory`,
-        schemaVersion: INVENTORY_SCHEMA_VERSION,
+        schemaVersion: inventoryContract.schemaVersion,
         inputHash: inventoryInputHash,
         validate: (value) => validateInventoryOutput(value).output,
         invoke: (stageOptions) => inventoryProvider.inventoryClaims(
@@ -2184,7 +2190,7 @@ export async function processExtractionRun(
             ),
           });
         } catch (error) {
-          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error instanceof ModelOutputBudgetExhaustedError || !(error instanceof ModelOutputInvalidError)) throw error;
           verificationFailure = error;
         }
       }
@@ -2274,7 +2280,7 @@ export async function processExtractionRun(
             );
           }
         } catch (error) {
-          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error instanceof ModelOutputBudgetExhaustedError || !(error instanceof ModelOutputInvalidError)) throw error;
           if (error.usage) usages.push(error.usage);
           completedUsage = aggregateUsage(usages);
           if (!acceptedVerification) throw error;
@@ -2363,7 +2369,7 @@ export async function processExtractionRun(
             );
           }
         } catch (error) {
-          if (!(error instanceof ModelOutputInvalidError)) throw error;
+          if (error instanceof ModelOutputBudgetExhaustedError || !(error instanceof ModelOutputInvalidError)) throw error;
           if (error.usage) usages.push(error.usage);
           completedUsage = aggregateUsage(usages);
           if (!acceptedVerification) throw error;
@@ -2398,6 +2404,7 @@ export async function processExtractionRun(
           low_confidence_relation_claim_keys: assessment.lowConfidenceRelationClaimKeys,
         });
       }
+      pipelineWarnings.push(...verificationCoverageWarnings(inventoryStage.output, acceptedVerification));
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
       acceptedDraftLinks = acceptedVerification.draft_link_candidates;
       acceptedSameIntentGroups = acceptedVerification.same_intent_groups ?? [];
@@ -2420,7 +2427,10 @@ export async function processExtractionRun(
     // Keep strict structural validation at the processor boundary. Context-sensitive target
     // drift is handled deterministically by prepareCandidates so one bad proposed relation
     // becomes a warning instead of destroying every otherwise valid Claim in the Run.
-    const validated = validateExtractClaimsOutput(finalOutput, input.contextPack);
+    if (!pipelineEnabled && extractionClaimLimit(leased.prompt_version) === 64 && finalOutput.claims.length >= 64) {
+      pipelineWarnings.push({code: "MODEL_FINAL_CLAIM_LIMIT_REACHED", limit: 64, observed: finalOutput.claims.length});
+    }
+    const validated = validateExtractClaimsOutput(finalOutput, input.contextPack, {maxClaims: pipelineEnabled ? verificationContract.claimLimit : extractionClaimLimit(leased.prompt_version)});
     if (!validated.valid || !validated.output) {
       throw new ModelOutputInvalidError(validated.issues, finalUsage);
     }
