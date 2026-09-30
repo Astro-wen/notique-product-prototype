@@ -46,4 +46,6 @@ next-env.d.ts
 /pages-dist/
 /.wrangler/
 /outputs/
+/.codex-agent-architecture-preview.png
+/.codex-agent-architecture-raw.json
 /work/
