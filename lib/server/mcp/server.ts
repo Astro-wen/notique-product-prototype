@@ -14,7 +14,7 @@ const definitions=[
  {name:'get_evidence',description:'读取一条有效出处及最多6,000字符上下文，来源失效时正文为空。',schema:z.object({evidence_id:id}).strict()},
 ] as const;
 const MAX_REQUEST_BYTES=16384;
-const discoveryMethods=new Set(['initialize','notifications/initialized','ping','tools/list']);
+const discoveryMethods=new Set(['server/discover','initialize','notifications/initialized','ping','tools/list']);
 /** Discovery returns fixed tool schemas. Every data-bearing call still needs consent. */
 async function readMcpBody(request:Request,signal:AbortSignal):Promise<unknown> {
  if(Number(request.headers.get('content-length'))>MAX_REQUEST_BYTES)throw new McpLimitFault(413,'INPUT_LIMIT','连接请求过大，请减少参数后重试。');

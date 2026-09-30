@@ -120,3 +120,19 @@ test('legacy discovery works before consent and method headers or batched messag
  assert.equal((await handleMcpRequest(new Request('http://localhost/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(listing)}),db,ENV)).status,401);
  assert.deepEqual(unchanged(sqlite),before);
 });
+
+test('pinned modern protocol discovers server capabilities and tool schemas before consent',async t=>{
+ const f=await workflowDatabase({through:25});t.after(f.close);seed(f.sqlite);
+ const before=unchanged(f.sqlite);
+ const client=new Client({name:'modern-before-consent',version:'1.0'},{versionNegotiation:{mode:{pin:'2026-07-28'}}});
+ const transport=new StreamableHTTPClientTransport(new URL('http://localhost/mcp'),{fetch:clientFetch(f.db)});
+ t.after(()=>client.close());await client.connect(transport);
+ const capabilities=await client.discover();assert.ok(capabilities.capabilities.tools);
+ assert.equal((await client.listTools()).tools.length,6);
+ await assert.rejects(client.callTool({name:'list_projects',arguments:{}}),/FORBIDDEN/);
+ f.sqlite.prepare("UPDATE workspace_members SET actor_id='owner@example.com'").run();
+ const identity={...IDENTITY,actorId:'owner@example.com'};await setMcpConnection(f.db,identity,ENV,true);
+ const record=await client.callTool({name:'get_record_views',arguments:{record_id:'e'}});assert.ok(record.structuredContent);assert.equal(record.isError,undefined);
+ await setMcpConnection(f.db,identity,ENV,false);await assert.rejects(client.callTool({name:'get_record_views',arguments:{record_id:'e'}}),/FORBIDDEN/);
+ assert.deepEqual(unchanged(f.sqlite),before);
+});
