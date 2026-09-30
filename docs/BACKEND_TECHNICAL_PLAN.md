@@ -449,7 +449,7 @@ Worker 的 scheduled 入口消费该队列，保存接口通过短时唤醒加�
 
 独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，队列租约继续防止重复执行。调用成功且有待续状态或本轮任务活动时，间隔12秒继续推进，每次执行最多6分钟。连续两次无本轮活动标为idle，到达时限标为pending，终态错误标为failed。一项任务失败时，继续推进其他可处理任务，结束后保留失败状态。临时失败按30秒提示最多连续重试3次。idle仅描述当前两次扫描，持久队列中的未来任务和已有租约另行观察。原生Worker定时入口与后备身份均采用commission:false消费已授权任务。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 
-独立 Cloudflare 恢复 Worker 使用同一维护入口，每分钟触发一次，每次保持连接最多14分钟，容纳当前最长10分钟的转写请求。重叠调用由现有任务租约和持有者检查隔离。WORKFLOW_SCHEDULER_TOKEN 与 GitHub 的 WORKFLOW_RECOVERY_TOKEN 分开配置，两者均只授权恢复既有任务。Worker 固定目标地址，日志记录队列状态和计数。30分钟离页观察确认停滞后启用定时器，启用后另做自然触发和长音频验收。扫描成功、任务完成、实际转写质量分别记录。14分钟预算依据 [Cloudflare 运行时限制](https://developers.cloudflare.com/workers/platform/limits/)。
+独立 Cloudflare 恢复 Worker 使用同一维护入口，每分钟触发一次，每次保持连接最多14分钟，容纳当前最长10分钟的转写请求。重叠调用由现有任务租约和持有者检查隔离。WORKFLOW_SCHEDULER_TOKEN 与 GitHub 的 WORKFLOW_RECOVERY_TOKEN 分开配置，两者均只授权恢复既有任务。Worker 固定目标地址，通过 global_fetch_strictly_public 按公网入口访问 Sites Worker，日志记录队列状态、计数及固定错误分类。30分钟离页观察确认停滞后启用定时器，启用后另做自然触发和长音频验收。扫描成功、任务完成、实际转写质量分别记录。14分钟预算依据 [Cloudflare 运行时限制](https://developers.cloudflare.com/workers/platform/limits/)，请求路由依据 [Cloudflare fetch 说明](https://developers.cloudflare.com/workers/runtime-apis/fetch/)。
 
 转写结果使用 R2 条件写入创建一次。旧租约的晚返回与当前执行器发生竞争时，已有正文保持原值，当前执行器读取实际对象，重新校验格式并计算正文 hash，再用当前租约写入 D1。对象保存后 D1 临时失败，下一次恢复直接读取该结果，复用已有模型产出。条件写入参考 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#conditional-operations)。
 

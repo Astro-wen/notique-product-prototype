@@ -42,6 +42,7 @@ export async function recover(env, {send = (url, init) => globalThis.fetch(url, 
   // Keep the Site request connected while its synchronous audio provider runs.
   // Cron permits 15 minutes; leave a minute for response handling and shutdown.
   const signal = timeout(840000);
+  let phase = 'request';
   try {
     const response = await send(ENDPOINT, {
       method: 'POST', redirect: 'error', signal,
@@ -49,6 +50,7 @@ export async function recover(env, {send = (url, init) => globalThis.fetch(url, 
       body: '{}',
     });
     if (!response.ok) {log('notique_recovery', {state: 'http_failed', status: response.status}); return;}
+    phase = 'response';
     const body = await readResponse(response);
     const queues = body?.data?.queues;
     if (!queues || QUEUES.some(name => !['succeeded', 'failed'].includes(queues[name]?.state))) {
@@ -60,8 +62,13 @@ export async function recover(env, {send = (url, init) => globalThis.fetch(url, 
     const kind = error instanceof SyntaxError ? 'invalid_json'
       : error instanceof Error && /illegal invocation|incorrect.*this/i.test(error.message) ? 'binding'
       : error instanceof Error && error.message === 'response_limit' ? 'response_limit'
+      : error instanceof Error && /signal|abort/i.test(error.message) ? 'signal'
+      : error instanceof Error && /redirect/i.test(error.message) ? 'redirect'
+      : error instanceof Error && /header|user.agent/i.test(error.message) ? 'headers'
+      : error instanceof Error && /1042|worker.*fetch|strictly.public|internal.*host/i.test(error.message) ? 'worker_route'
+      : error instanceof Error && /url/i.test(error.message) ? 'url'
       : error instanceof TypeError ? 'network_or_runtime' : 'other';
-    log('notique_recovery', {state: signal.aborted ? 'pending' : 'request_failed', kind});
+    log('notique_recovery', {state: signal.aborted ? 'pending' : 'request_failed', phase, kind});
   }
 }
 
