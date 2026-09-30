@@ -147,3 +147,28 @@ test('protocol rejection diagnostics contain fixed metadata without identity or 
  assert.deepEqual(logs,[['mcp_protocol_rejected',{method:'initialize',protocolHeader:'2026-07-28',initializeVersion:'2025-11-25',hasRequestMeta:false,errorCode:-32020}]]);
  assert.doesNotMatch(JSON.stringify(logs),/SYNTHETIC_PRIVATE_MCP_VALUE|owner@example.com|sites-user/);
 });
+
+test('a real modern client works through gateway-stripped routing headers while consent and mismatches remain enforced',async t=>{
+ const f=await workflowDatabase({through:25});t.after(f.close);seed(f.sqlite);
+ const before=unchanged(f.sqlite), captured=[];
+ const transport=new StreamableHTTPClientTransport(new URL('http://localhost/mcp'),{fetch:async(input,init)=>{
+  const req=new Request(input,init);req.headers.set('oai-authenticated-user-email','owner@example.com');req.headers.set('oai-authenticated-user-id','sites-user');
+  req.headers.delete('mcp-method');req.headers.delete('mcp-name');captured.push(await req.clone().json());return handleMcpRequest(req,f.db,ENV);
+ }});
+ const client=new Client({name:'sites-gateway-client',version:'1.0'},{versionNegotiation:{mode:{pin:'2026-07-28'}}});t.after(()=>client.close());
+ await client.connect(transport);assert.ok((await client.discover()).capabilities.tools);assert.equal((await client.listTools()).tools.length,6);
+ await assert.rejects(client.callTool({name:'list_projects',arguments:{}}),/FORBIDDEN/);
+ f.sqlite.prepare("UPDATE workspace_members SET actor_id='owner@example.com'").run();const identity={...IDENTITY,actorId:'owner@example.com'};await setMcpConnection(f.db,identity,ENV,true);
+ for(const [name,args] of [['list_projects',{}],['list_records',{project_id:'p'}],['get_project_brief',{project_id:'p'}],['get_record_views',{record_id:'e'}],['get_record_excerpt',{record_id:'e'}],['get_evidence',{evidence_id:'budget_ev'}]]){
+  const result=await client.callTool({name,arguments:args});assert.ok(result.structuredContent);assert.equal(result.isError,undefined);
+ }
+ const modernCall=captured.findLast(x=>x.method==='tools/call'), discovery=captured.find(x=>x.method==='server/discover');
+ const raw=(body,extra={})=>handleMcpRequest(new Request('http://localhost/mcp',{method:'POST',headers:{...headers,'Content-Type':'application/json',Accept:'application/json, text/event-stream','MCP-Protocol-Version':'2026-07-28',...extra},body:JSON.stringify(body)}),f.db,ENV);
+ assert.equal((await raw(discovery,{'Mcp-Method':'tools/list'})).status,400);
+ assert.equal((await raw(modernCall,{'Mcp-Name':'list_projects'})).status,400);
+ assert.equal((await raw(discovery,{'MCP-Protocol-Version':'2025-11-25'})).status,400);
+ const invalid=structuredClone(discovery);delete invalid.params._meta;
+ assert.equal((await raw(invalid)).status,400);
+ await setMcpConnection(f.db,identity,ENV,false);await assert.rejects(client.callTool({name:'get_record_views',arguments:{record_id:'e'}}),/FORBIDDEN/);
+ assert.deepEqual(unchanged(f.sqlite),before);
+});

@@ -17,6 +17,24 @@ const MAX_REQUEST_BYTES=16384;
 const discoveryMethods=new Set(['server/discover','initialize','notifications/initialized','ping','tools/list']);
 const loggedMethods=new Set([...discoveryMethods,'tools/call']);
 const loggedVersions=new Set(['2025-03-26','2025-06-18','2025-11-25','2026-07-28']);
+/** Sites forwards the modern body envelope but currently strips routing headers.
+ * Restore only missing duplicates from known methods. The SDK still validates
+ * the envelope and rejects any supplied header/body mismatch. */
+function gatewayRequest(request:Request,body:unknown,signal:AbortSignal):Request {
+ if(!body || typeof body!=='object' || Array.isArray(body))return request;
+ const message=body as Record<string,unknown>;
+ const params=message.params && typeof message.params==='object'?message.params as Record<string,unknown>:{};
+ const meta=params._meta && typeof params._meta==='object'?params._meta as Record<string,unknown>:{};
+ if(message.jsonrpc!=='2.0' || !Object.hasOwn(message,'id') || typeof message.method!=='string' || !loggedMethods.has(message.method) || meta['io.modelcontextprotocol/protocolVersion']!=='2026-07-28')return request;
+ const headers=new Headers(request.headers);let changed=false;
+ if(!headers.has('mcp-method')){headers.set('mcp-method',message.method);changed=true;}
+ if(message.method==='tools/call' && !headers.has('mcp-name') && definitions.some(d=>d.name===params.name)){
+  headers.set('mcp-name',params.name as string);changed=true;
+ }
+ if(!changed)return request;
+ headers.delete('content-length');
+ return new Request(request.url,{method:'POST',headers,body:JSON.stringify(body),signal});
+}
 /** Diagnose protocol rejection without recording identity, tool arguments or material. */
 function logProtocolRejection(request:Request,body:unknown,responseBody:ArrayBuffer):void {
  const message=body && typeof body==='object' && !Array.isArray(body)?body as Record<string,unknown>:{};
@@ -93,7 +111,7 @@ export async function handleMcpRequest(request:Request,db:D1Database,env:McpRunt
    });
    return server;
   },{legacy:'stateless',responseMode:'auto',maxRequestBodySize:MAX_REQUEST_BYTES});
-  const response=await handler.fetch(request,{parsedBody});const body=await response.arrayBuffer();
+  const response=await handler.fetch(gatewayRequest(request,parsedBody,controller.signal),{parsedBody});const body=await response.arrayBuffer();
   if(!discovery)await assertMcpRead(db,identity);
   if(body.byteLength>250000)return Response.json({error:{code:'OUTPUT_LIMIT',message:'请减少每页数量并继续分页读取。'}},{status:413,headers});
   if(response.status===400)logProtocolRejection(request,parsedBody,body);
