@@ -101,6 +101,45 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
         narratives:local.prepare("SELECT id,state,payload_json FROM workflow_outbox WHERE project_id=? AND kind='narrative' ORDER BY created_at,id").all(projectId),
       };
     },
+    seedPublishedActionChoice(){
+      const projectId=ids.get('p'),eventId=ids.get('e'),actionId=ids.get('action');
+      const action=local.prepare('SELECT current_version_id,statement FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.id=? AND c.project_id=? AND c.event_id=? AND c.workspace_id=?').get(actionId,projectId,eventId,workspaceId);
+      if(!action) throw new Error('The isolated fixture action was not found');
+      const cardId=`wfc_${actionId}`;
+      local.exec('BEGIN');
+      try {
+        // Match an AI-published singleton card rather than the legacy fallback.
+        local.prepare("UPDATE claim_versions SET workflow_origin='ai_suggestion' WHERE id=? AND claim_id=?").run(action.current_version_id,actionId);
+        insert(local,'workflow_cards',{id:cardId,workspace_id:workspaceId,project_id:projectId,event_id:eventId,group_key:actionId,revision:1,kind:'action',title:action.statement,needs_decision:0,reason_code:null,reason:'',disposition:'active',created_at:T,updated_at:T});
+        insert(local,'card_members',{id:`${prefix}_published_action_member`,workspace_id:workspaceId,card_id:cardId,claim_id:actionId,claim_version_id:action.current_version_id,role:'primary',created_at:T});
+        local.prepare('DELETE FROM workflow_snapshots WHERE project_id=?').run(projectId);
+        local.exec('COMMIT');
+      } catch(error) {local.exec('ROLLBACK');throw error;}
+      return local.prepare('SELECT wc.id AS card_id,wc.kind,wc.needs_decision,wc.reason_code,wc.reason,wc.disposition,cm.claim_id,cm.claim_version_id,c.review_status,v.workflow_origin FROM workflow_cards wc JOIN card_members cm ON cm.card_id=wc.id AND cm.workspace_id=wc.workspace_id JOIN claims c ON c.id=cm.claim_id AND c.workspace_id=wc.workspace_id JOIN claim_versions v ON v.id=cm.claim_version_id AND v.claim_id=c.id WHERE wc.id=? AND wc.project_id=? AND wc.event_id=? AND wc.workspace_id=?').get(cardId,projectId,eventId,workspaceId);
+    },
+    setUnreviewedFactEvidence({includeCandidate=false}={}){
+      const projectId=ids.get('p'),eventId=ids.get('e');
+      const claimIds=[ids.get('budget'),...(includeCandidate?[ids.get('new-budget')]:[])];
+      const versions=claimIds.map(claimId=>local.prepare('SELECT c.id AS claim_id,c.current_version_id AS claim_version_id,v.statement FROM claims c JOIN claim_versions v ON v.id=c.current_version_id AND v.claim_id=c.id WHERE c.id=? AND c.project_id=? AND c.event_id=? AND c.workspace_id=?').get(claimId,projectId,eventId,workspaceId));
+      if(versions.some(version=>!version)) throw new Error('The isolated fixture fact was not found');
+      local.exec('BEGIN');
+      try {
+        for(const version of versions) local.prepare("UPDATE evidence_refs SET semantic_support_verdict='unreviewed' WHERE claim_version_id=? AND project_id=? AND event_id=? AND workspace_id=?").run(version.claim_version_id,projectId,eventId,workspaceId);
+        local.prepare('DELETE FROM workflow_snapshots WHERE project_id=?').run(projectId);
+        local.exec('COMMIT');
+      } catch(error) {local.exec('ROLLBACK');throw error;}
+      return versions;
+    },
+    factReviewEvidence(){
+      const projectId=ids.get('p');
+      return {
+        claims:local.prepare('SELECT c.id,c.current_version_id,c.review_status,c.lifecycle_status,v.statement FROM claims c JOIN claim_versions v ON v.id=c.current_version_id AND v.claim_id=c.id WHERE c.project_id=? AND c.workspace_id=? ORDER BY c.id').all(projectId,workspaceId),
+        versions:local.prepare('SELECT v.id,v.claim_id,v.statement,v.source FROM claim_versions v JOIN claims c ON c.id=v.claim_id WHERE c.project_id=? AND c.workspace_id=? ORDER BY v.id').all(projectId,workspaceId),
+        evidence:local.prepare('SELECT id,claim_version_id,semantic_support_verdict FROM evidence_refs WHERE project_id=? AND workspace_id=? ORDER BY id').all(projectId,workspaceId),
+        verdicts:local.prepare('SELECT id,claim_id,action,base_version_id,user_id,workflow_decision_id,workflow_member_id FROM verdicts WHERE project_id=? AND workspace_id=? ORDER BY id').all(projectId,workspaceId),
+        members:local.prepare('SELECT dm.id,dm.decision_id,dm.claim_id,dm.before_version_id,dm.after_version_id,dm.verdict_id FROM decision_members dm JOIN workflow_decisions d ON d.id=dm.decision_id AND d.workspace_id=dm.workspace_id WHERE d.project_id=? AND d.workspace_id=? ORDER BY dm.id').all(projectId,workspaceId),
+      };
+    },
     failAnalysis(){
       const runId=ids.get('run');
       local.prepare("UPDATE extraction_runs SET status='failed',error_code='MODEL_PROVIDER_REQUEST_FAILED',updated_at=? WHERE id=?").run(new Date().toISOString(),runId);

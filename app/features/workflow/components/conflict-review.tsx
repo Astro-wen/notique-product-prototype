@@ -4,6 +4,7 @@ import {Modal} from '@/app/components/modal';
 import {NqButton} from '@/app/components/notique-ui';
 import {ApiClientError} from '@/app/api-client';
 import type {ConflictChoice,DecisionRequest,ReviewMember,WorkspaceSnapshot} from '@/lib/shared/workflow-v2';
+import {userMayAcceptSupport} from '@/lib/domain/review-support';
 import {useMemoryDrafts,useDraftCheckpoint} from './memory-drafts';
 import styles from './record-workspace.module.css';
 
@@ -21,7 +22,7 @@ export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClos
  const card=base.reviewCards.find(c=>c.id===cardId),conflict=card?.conflicts?.[index];
  const candidate=card?.members.find(m=>m.claimId===conflict?.candidateRef.claimId);
  const actionConflict=conflict?.existingActionState!==undefined;
- const canAdopt=candidate?.supportStatus==='fully_supports' && card?.sourceStatus==='ready';
+ const canAdopt=Boolean(candidate && userMayAcceptSupport(candidate.supportStatus) && card?.sourceStatus==='ready');
  useDraftCheckpoint(mode && conflict?{kind:'conflict',targetId:cardId,existingRef:{claimId:conflict.existing.claimId,claimVersionId:conflict.existing.claimVersionId},candidateRef:conflict.candidateRef,mode,applicability}:null);
  const finish=()=>{memory?.clear('conflict');onClose();};
  const close=()=>{if(mode || applicability.trim())setClosing(true);else finish();};

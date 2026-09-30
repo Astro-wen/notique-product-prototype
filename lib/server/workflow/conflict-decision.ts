@@ -5,6 +5,7 @@ import { decisionState } from './decision-state.ts';
 import { claimGuard, evidenceGuards, statement, type WriteContext } from './ledger-write.ts';
 import { WorkflowFault } from './snapshot-store.ts';
 import { mutationId, type MutationPlan } from './transaction.ts';
+import { userMayAcceptSupport, USER_ACCEPTABLE_SUPPORT_STATUSES } from '../../domain/review-support.ts';
 
 export function conflictDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,card:ReviewCard,request:DecisionRequest,key:string):MutationPlan {
   if(request.members.length!==1) throw new WorkflowFault(422,'dependency_conflict','请逐项选择新旧信息的适用方式');
@@ -18,7 +19,7 @@ export function conflictDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,ca
   if(choice.mode!=='keep_existing' && (candidate.type==='next_action' || existing.type==='next_action') && !actionConflict) throw new WorkflowFault(422,'dependency_conflict','行动需要与行动比较，请重新核对这条建议');
   if(choice.mode!=='keep_existing' && (candidate.type==='open_question' || existing.type==='open_question')) throw new WorkflowFault(422,'dependency_conflict','问题变化请通过调整问题核对现有答案');
   const candidateMember=card.members.find(m=>m.claimId===candidate.id)!;
-  if(choice.mode!=='keep_existing' && (claimSourceStatus(candidate,ledger.evidence)!=='ready' || candidateMember.supportStatus!=='fully_supports')) throw new WorkflowFault(422,'dependency_conflict','新信息需要有效出处与内容支持，再决定采用或并存');
+  if(choice.mode!=='keep_existing' && (claimSourceStatus(candidate,ledger.evidence)!=='ready' || !userMayAcceptSupport(candidateMember.supportStatus))) throw new WorkflowFault(422,'dependency_conflict','新信息需要有效出处与内容支持，再决定采用或并存');
   const original=ledger.relations.find(r=>r.id===conflict.relationId)!;
   const basisPlan=actionConflict && choice.mode!=='keep_existing'?acceptActionBasis(ctx,ledger,candidate):null;
   if(basisPlan?.basis.some(b=>b.claimId===existing.id)) throw new WorkflowFault(409,'dependency_conflict','新行动以原行动为依据，请先核对独立的执行依据');
@@ -64,7 +65,7 @@ export function conflictDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,ca
     const priorMeta=ledger.actions.find(a=>a.claim_id===claim.id) ?? null;
     const preExistingRelations=ledger.relations.filter(r=>['active','proposed'].includes(r.status) && (r.source_claim_version_id===claim.current_version_id || r.target_claim_version_id===claim.current_version_id));
     const before={...decisionState(claim),preExistingRelations,...(actionConflict?{actionMetadata:priorMeta}:{}),...(claim.id===candidate.id?{cardState:card,relationStates:beforeRelations}:{})};
-    const afterState={...after,preExistingRelations,...(actionConflict?{actionMetadata:claim.id===candidate.id && basisPlan?{...priorMeta,claim_id:claim.id,basis_version_refs_json:JSON.stringify(basisPlan.basis),basis_state:'current'}:priorMeta}:{}),...(claim.id===candidate.id?{relationStates:afterRelations}:{})};
+    const afterState={...after,preExistingRelations,...(actionConflict?{actionMetadata:claim.id===candidate.id && basisPlan?basisPlan.actionMetadata:priorMeta}:{}),...(claim.id===candidate.id?{relationStates:afterRelations}:{})};
     const verdict=after.reviewStatus==='rejected'?'reject':after.lifecycleStatus==='superseded'?'withdraw':'confirm';
     statements.push(statement(ctx,'INSERT INTO verdicts (id,workspace_id,project_id,claim_id,action,base_version_id,user_id,workflow_decision_id,workflow_member_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',verdictId,ctx.scope.workspaceId,ctx.projectId,claim.id,verdict,claim.current_version_id,ctx.scope.actorId,ctx.decisionId,memberId,ctx.timestamp));
     statements.push(statement(ctx,`UPDATE claims SET review_status=?,lifecycle_status=?,workflow_revision=?,updated_at=? WHERE id=? AND workspace_id=?`,after.reviewStatus,after.lifecycleStatus,after.workflowRevision,ctx.timestamp,claim.id,ctx.scope.workspaceId));
@@ -89,7 +90,7 @@ export function conflictDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,ca
   guards.push({sql:'NOT EXISTS (SELECT 1 FROM workflow_cards WHERE id=? AND (workspace_id<>? OR event_id<>? OR revision<>?))',values:[card.id,ctx.scope.workspaceId,ctx.eventId,card.revision]});
   if(choice.mode!=='keep_existing') {
     guards.push(...evidenceGuards(ledger,candidateMember.evidenceRefIds,ctx));
-    for(const id of candidateMember.evidenceRefIds) guards.push({sql:"EXISTS (SELECT 1 FROM evidence_refs WHERE id=? AND (evidence_role='contextual' OR semantic_support_verdict='fully_supports'))",values:[id]});
+    for(const id of candidateMember.evidenceRefIds) guards.push({sql:`EXISTS (SELECT 1 FROM evidence_refs WHERE id=? AND workspace_id=? AND project_id=? AND claim_version_id=? AND evidence_role=? AND (evidence_role='contextual' OR semantic_support_verdict IN (${USER_ACCEPTABLE_SUPPORT_STATUSES.map(()=>'?').join(',')})))`,values:[id,ctx.scope.workspaceId,ctx.projectId,candidate.current_version_id,ledger.evidence.find(e=>e.id===id)!.evidence_role,...USER_ACCEPTABLE_SUPPORT_STATUSES]});
   }
   return {statements,guards,changedRefs:[...[...changes.values()].map(({claim,after})=>({entityType:'claim' as const,id:claim.id,revision:after.workflowRevision})),{entityType:'card',id:card.id,revision:card.revision+1},{entityType:'decision',id:ctx.decisionId,revision:1}],invalidatedVersionIds:[candidate.current_version_id,existing.current_version_id],basisInvalidatedVersionIds:choice.mode==='use_candidate'?[existing.current_version_id]:[],kind:'resolve_conflict'};
 }

@@ -2,7 +2,7 @@ import { projectWorkspace, type ProjectionLedger } from '../../domain/workflow-p
 import { parseWorkflowRequest, type WorkspaceQuery, type WorkspaceSnapshot } from '../../shared/workflow-v2.ts';
 
 export type WorkflowScope = { workspaceId: string; actorId: string; access: 'members' | 'demo' };
-export const WORKFLOW_SNAPSHOT_PROJECTION_VERSION = 'workflow-v2-projection.v2';
+export const WORKFLOW_SNAPSHOT_PROJECTION_VERSION = 'workflow-v2-projection.v3';
 export class WorkflowFault extends Error {
   status: number;
   code: 'not_found' | 'forbidden' | 'version_conflict' | 'cursor_expired' | 'snapshot_busy' | 'dependency_conflict' | 'idempotency_conflict' | 'run_limit';

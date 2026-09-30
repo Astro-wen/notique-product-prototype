@@ -9,6 +9,7 @@ import { claimSourceStatus, projectWorkspace, actionBasisRefs, resolveActionBasi
 import { parseWorkflowRequest, type DecisionMember, type DecisionRequest, type MutationReceipt, type ReviewCard, type WorkspaceSnapshot } from '../../shared/workflow-v2.ts';
 import { loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { commitWorkflowMutation, mutationId, type MutationPlan } from './transaction.ts';
+import { userMayAcceptSupport, USER_ACCEPTABLE_SUPPORT_STATUSES } from '../../domain/review-support.ts';
 
 /** Record decisions share the immutable V1 ledger. Conflict and action commands
  * are dispatched by their own services, with their additional relation rules. */
@@ -83,7 +84,7 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
     if ((operation==='accept_action') !== (current.type==='next_action') && operation!=='reject' && !editingAction) throw new WorkflowFault(422,'dependency_conflict','行动建议需要通过加入跟进采纳');
     if(operation==='accept_action' && (claimSourceStatus(current,ledger.evidence)!=='ready' || targetMember.supportStatus==='does_not_support')) throw new WorkflowFault(422,'dependency_conflict','请先核对这条行动的依据');
     if (operation !== 'edit' && !reviewingBasis && current.review_status !== 'pending') throw new WorkflowFault(409,'version_conflict','这条记录已经处理');
-    if (operation === 'confirm' && (targetMember.supportStatus !== 'fully_supports' || claimSourceStatus(current,ledger.evidence) !== 'ready')) throw new WorkflowFault(422,'dependency_conflict','请先核对依据，或按你的新信息修改这条记录');
+    if (operation === 'confirm' && (!userMayAcceptSupport(targetMember.supportStatus) || claimSourceStatus(current,ledger.evidence) !== 'ready')) throw new WorkflowFault(422,'dependency_conflict','请先核对依据，或按你的新信息修改这条记录');
     const related = ledger.relations.filter(r=>['active','proposed'].includes(r.status) && (r.source_claim_version_id===current.current_version_id || r.target_claim_version_id===current.current_version_id));
     const unsupportedRelations=related.filter(r=>r.type!=='informed_by' && !(editingQuestion && r.type==='resolves' && r.target_claim_version_id===current.current_version_id) && !(editingAction && r.type==='resolves' && r.target_claim_version_id===current.current_version_id));
     if (unsupportedRelations.length && operation === 'edit' && !editingFact) throw new WorkflowFault(409,'dependency_conflict','这次修改会影响关联信息，需要一并核对',{relationIds:unsupportedRelations.map(r=>r.id)});
@@ -130,9 +131,10 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
     }
     const guards: MutationPlan['guards'] = [{sql:`EXISTS (SELECT 1 FROM claims WHERE id=? AND workspace_id=? AND project_id=? AND event_id=? AND current_version_id=? AND workflow_revision=? AND review_status=? AND lifecycle_status=?)`,values:[current.id,scope.workspaceId,projectId,eventId,current.current_version_id,current.workflow_revision,current.review_status,current.lifecycle_status]},
       {sql:'NOT EXISTS (SELECT 1 FROM workflow_cards WHERE id=? AND (workspace_id<>? OR event_id<>? OR revision<>?))',values:[card.id,scope.workspaceId,eventId,card.revision]}];
-    for (const evidenceId of selected) guards.push({sql:`EXISTS (SELECT 1 FROM evidence_refs er LEFT JOIN asset_versions av ON av.id=er.asset_version_id LEFT JOIN assets a ON a.id=av.asset_id WHERE er.id=? AND er.workspace_id=? AND er.claim_version_id=? AND er.structural_validation_status='valid'
+    for (const evidenceId of selected) guards.push({sql:`EXISTS (SELECT 1 FROM evidence_refs er LEFT JOIN asset_versions av ON av.id=er.asset_version_id LEFT JOIN assets a ON a.id=av.asset_id WHERE er.id=? AND er.workspace_id=? AND er.claim_version_id=? AND er.evidence_role=? AND er.structural_validation_status='valid'
       AND (er.kind='user_note' AND EXISTS (SELECT 1 FROM user_notes n WHERE n.id=er.user_note_id AND n.workspace_id=er.workspace_id AND n.project_id=er.project_id AND n.claim_id=?) OR a.workspace_id=er.workspace_id AND a.project_id=er.project_id AND a.event_id=er.event_id AND a.current_version_id=er.asset_version_id AND a.processing_status='ready')
-      AND (?<>'confirm' OR er.evidence_role='contextual' OR er.semantic_support_verdict='fully_supports'))`,values:[evidenceId,scope.workspaceId,current.current_version_id,current.id,operation]});
+      AND (?<>'confirm' OR er.evidence_role='contextual' OR er.semantic_support_verdict IN (${USER_ACCEPTABLE_SUPPORT_STATUSES.map(()=>'?').join(',')}))
+      AND (?<>'accept_action' OR er.evidence_role='contextual' OR er.semantic_support_verdict<>'does_not_support'))`,values:[evidenceId,scope.workspaceId,current.current_version_id,ledger.evidence.find(e=>e.id===evidenceId)!.evidence_role,current.id,operation,...USER_ACCEPTABLE_SUPPORT_STATUSES,operation]});
     if (operation==='edit') guards.push(relationGuard(ledger,current,ctx));
     if(editingAction)guards.push(actionMetadataGuard(current.id,before.actionMetadata,ctx));
     if(basisPlan) guards.push(...basisPlan.guards);

@@ -318,7 +318,7 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
   scheduled(_controller: unknown, _env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(Promise.all([sweepAndDispatch(), sweepAndDispatchEventAiArtifacts(), dispatchWorkflowOutbox()]));
+    ctx.waitUntil(Promise.all([sweepAndDispatch({ commission: false }), sweepAndDispatchEventAiArtifacts(), dispatchWorkflowOutbox()]));
   },
 };
 

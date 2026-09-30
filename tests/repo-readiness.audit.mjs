@@ -820,7 +820,7 @@ test("Event material readiness is recomputed from live user sources", async () =
   }
 });
 
-test("the durable repair creates extraction for every uncovered current source manifest", async () => {
+test("authorized repair can cover current source manifests while scheduled recovery consumes submitted work", async () => {
   const [automatic, outbox, worker] = await Promise.all([
     read("lib/server/jobs/automatic-extraction.ts"),
     read("lib/server/jobs/outbox.ts"),
@@ -855,9 +855,9 @@ test("the durable repair creates extraction for every uncovered current source m
   assert.ok(
     outbox.indexOf("await ensureAutomaticExtractionRuns()") <
       outbox.indexOf("dispatchDueTranscriptionOutbox()"),
-    "the durable ensure must run before the Cron dispatch pass",
+    "the explicitly commissioned durable ensure runs before its dispatch pass",
   );
-  assert.match(worker, /sweepAndDispatch\(\)/);
+  assert.match(worker, /scheduled[\s\S]{0,300}sweepAndDispatch\(\{ commission: false \}\)/);
 
   const database = new DatabaseSync(":memory:");
   try {
@@ -1864,8 +1864,8 @@ test("long-running dispatch checkpoints OpenAI work and preserves durable recove
   );
   assert.match(
     worker,
-    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/,
-    "the scheduled recovery path must continue sweeping stale leases",
+    /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\{ commission: false \}\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/,
+    "scheduled recovery must sweep stale leases and authorized queues without commissioning unrelated material",
   );
 });
 
@@ -2134,7 +2134,7 @@ test("production scheduling is non-empty and missing APP_ENV fails closed", asyn
   assert.match(worker, /url\.pathname === ["']\/api\/v1\/jobs\/dispatch["']/);
   assert.match(worker, /oai-authenticated-user-id/);
   assert.match(worker, /sec-fetch-site["']\) === ["']same-origin["']/);
-  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
+  assert.match(worker, /scheduled[\s\S]{0,300}ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\{ commission: false \}\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
   assert.match(
     worker,
     /if\s*\(env\.APP_ENV\s*!==\s*["']local["']\)[\s\S]{0,900}sameOrigin[\s\S]{0,500}authenticated/,

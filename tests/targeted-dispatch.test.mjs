@@ -30,7 +30,7 @@ test("production audio keeps the HTTP request open instead of losing the queued 
   assert.match(worker, /return streamTranscriptionDispatch\(workspaceId, input\.runId, requestId, run\.status\)/);
   assert.doesNotMatch(worker, /await dispatchTranscriptionRun\(workspaceId, input\.runId\)/);
   assert.doesNotMatch(worker, /await wakeTranscriptionRun\(workspaceId, input\.runId\)/);
-  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
+  assert.match(worker, /scheduled[\s\S]*ctx\.waitUntil\(Promise\.all\(\[sweepAndDispatch\(\{ commission: false \}\),\s*sweepAndDispatchEventAiArtifacts\(\),\s*dispatchWorkflowOutbox\(\)\]\)\)/);
   assert.match(transcription, /export async function wakeTranscriptionRun/);
   assert.match(transcription, /return prepareTargetedTranscriptionOutbox/);
 });
@@ -322,7 +322,7 @@ test("an open workspace runs the recovery the Cron trigger does not", async () =
   assert.match(recover, /commission\s*\?[\s\S]{0,400}:\s*EMPTY_AUTOMATIC/,
     "recovery commissions nothing unless asked");
   assert.match(outbox, /recoverAndDispatch\(\{ commission: "workspace"(?:, onStageFailure: [^}]+)? \}\)/,
-    "only the Cron path scans the whole workspace");
+    "a separately authorized internal maintenance path may scan the whole workspace");
   const worker2 = await readFile(path.join(root, "worker/index.ts"), "utf8");
   assert.match(worker2, /commission: \{ eventId: input\.heartbeatEventId \}/);
   assert.match(worker2, /: undefined\),/);

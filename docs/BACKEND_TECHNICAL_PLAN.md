@@ -181,7 +181,7 @@ HTTP 与 MCP 经过身份和资源权限进入服务层。业务事务写入账�
 
 同一原文约定可以保留 decision 与 next_action 两个语义对象，以 informed_by 关联，但展示为一张卡。主动作加入跟进只采纳 next_action，相关记录保留原状态。用户明确只想记下时选择确认记录。同一意图处理后从优先队列移除，其余独立问题按自身条件保留。拆分或合并候选时沿用稳定行动 ID，重复入口共用同一份采纳状态。
 
-确认记录表示用户采纳该表述。材料中大约一万元被确认后仍带大约。AI 直接确认要求引用结构有效且语义检查支持该版本，含糊事实可作为保留限定的记录或未决问题。缺少支持时用户选择补充依据，或明确以自己的新信息保存为 user_input，展示作者和时间。
+确认记录表示用户采纳该表述。材料中大约一万元被确认后仍带大约。用户核对就绪原话后，可确认结构有效且支持状态为fully_supports或unreviewed的草稿，原AI支持状态与人工判断分别保存。含糊事实继续保留限定或作为未决问题。部分支持和不支持通过修改补齐，用户自己的新信息保存为user_input，展示作者和时间。
 
 不采纳的同源候选使用源修订与语义归并结果抑制重复。发现新的相关证据时生成变更候选并关联旧决定。跨材料语义相似由模型提出关系，最终去重或替代依据明确的 ID 和用户决定，避免字符串相同就误合并。
 
@@ -362,7 +362,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 |
 | Bullet | id、text、claimRefs、reviewState、origin、sourceStatus、applicability?、conflictWith? | reviewState=draft/accepted，origin=source_statement/ai_suggestion/user_input/user_selection。用户选录保留原话，缺失或过期出处显式展示 并存答案的适用情况随要点展示与导出。conflictWith 保存仍待选择的旧信息精确版本，复制时标明新旧信息待选择。 |
 | Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空 |
-| DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null |
+| DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null。用户核对就绪原话后，可确认或采用支持度为fully_supports或unreviewed的草稿。AI支持状态与人工采纳分别保留。部分支持和不支持通过修改补齐 |
 | DecisionMember | claimId、claimVersionId、operation、newText?、origin?、evidenceRefIds?、conflictChoice?、questionChange?、factChange? | questionChange 仅用于问题 edit。answerChoices 携带全部现有有效答案的 VersionRef 和 mode=keep/reopen，最多100条。keep 关联到新版问题，reopen 解除当前问题关联，共享答案保留其他问题用途。整次决定和撤销恢复原子处理。结果修正与撤回沿 reason.questionEdit.predecessorRelationId 关系链处理，同一答案、同一问题之外的独立关联保留。 factChange 仅用于普通信息 edit，questionChoices 携带当前回答的全部问题 VersionRef 和 mode=keep/reopen，最多100条。keep 使用新信息版本回答原问题，reopen 解除该条支持并按其他答案重算。已确认的替代与并存关系追加新版本关系并保留原决定及适用情况。原行动依据保持冻结，用户另行核对。结果撤回沿同一答案、同一问题的 questionEdit 与 factEdit 关系链处理。 |
 | MutationReceipt | mutationId、contextVersion、changedRefs、affectedViews、refreshState | 原子提交后的回执。changedRefs 含 entityType、id、revision。refreshState=current/updating，前端按目标版本读取快照 |
 | Action | id、claimRef、revision、executionState、questionRefs、basisState、basisDetails、latestOutcome、ownerHint?、dueAt? | id 等于 next_action 的 claimId，revision 映射 claims.workflowRevision。executionState=open/completed/cancelled，basisState=current/needs_review。basisDetails 包含 acceptedRef、acceptedText、currentRef、currentText、sourceStatus。不可访问来源正文为 null。依据变化以 accepted_change 计入待拍板，已采纳行动显示核对依据入口。accept_action 可显式核对已采纳行动的新依据，保留执行状态。edit 修正已采纳行动文字，完成记录按稳定行动 ID 保留。已确认的 use_candidate 替代可跨信息 ID 解析 currentRef，冻结依据在用户再次核对后更新。替代路径歧义或失效时保留 needs_review latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 questionRefs 按稳定问题 ID 读取当前版本，冻结依据在用户核对后更新。 首次采纳从精确版本的normalized_value继承owner与合法完整日期due_at。已有metadata连空值一起保持权威。修改行动文字清空负责人和日期提示，撤销完整恢复。 |
@@ -439,11 +439,13 @@ narrative-jobs.ts 消费 workflow_outbox，同一沟通合并待执行修改，�
 
 概要提示词v2区分平台批阅状态与原话语气。draft表示尚未批阅，ai_suggestion表示平台候选行动，原文的明确责任、承诺、建议和条件按text保留。旧任务按冻结v1提示词续取已有响应，已发布概要通过精确inputHash关联原任务提示词版本。旧版概要标为stale并保持可读，显式更新复用analysis retry接口，从当前重点创建新的v2概要任务。GET继续只读，提取结果和旧审计保留。
 
+需要拍板从当前未采纳AI行动与来源状态派生，历史持久卡的初始标记与虚拟卡使用同一规则。人工confirm、use_candidate和coexist在来源就绪、结构有效、精确版本匹配时接受fully_supports或unreviewed。原始AI支持状态保持，人工采纳写入review_status与verdict。预检与事务证据guard使用相同支持度集合，支持状态或来源在提交前变化时整次回滚。部分支持和不支持通过修改补齐。
+
 源账本由单次查询冻结，发布事务再次核对原始账本、上下文、源修订和租约。旧任务保留用量审计并投递当前输入。相同创建请求沿用供应商幂等键，后台轮询读取已有响应，租约丢失后的迟到用量写入独立审计数组。概要与精确版本依赖在同一事务发布。
 
 Worker 的 scheduled 入口消费该队列，保存接口通过短时唤醒加快首次处理。Cloudflare 的调度机制参考 [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)。现有 Sites 生产版本的服务端调度需在部署后关闭全部页面实测。
 
-独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，发生临时失败时按30秒提示有限重试，队列租约继续防止重复执行。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，队列租约继续防止重复执行。调用成功且有待续状态或本轮任务活动时，间隔12秒继续推进，每次执行最多6分钟。连续两次无本轮活动标为idle，到达时限标为pending，终态错误标为failed。临时失败按30秒提示最多连续重试3次。idle仅描述当前两次扫描，持久队列中的未来任务和已有租约另行观察。原生Worker定时入口与后备身份均采用commission:false消费已授权任务。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 
 ## 八、核心服务设计
 

@@ -76,6 +76,10 @@ export function claimSourceStatus(c: LedgerClaim, evidence: readonly LedgerEvide
   if (refs.some(e => e.availability === 'missing' || e.structural_validation_status !== 'valid')) return 'missing';
   return refs.some(e => e.availability === 'stale') ? 'stale' : 'ready';
 }
+function pendingActionChoice(c: LedgerClaim, evidence: readonly LedgerEvidence[]): boolean {
+  return c.type === 'next_action' && current(c) && !accepted(c) && c.version_source !== 'human'
+    && ['ai_suggestion', 'source_statement'].includes(claimOrigin(c)) && claimSourceStatus(c,evidence) === 'ready';
+}
 export function factAnswerTargets(ledger:ProjectionLedger,c:LedgerClaim):NonNullable<ReviewMember['answerTargets']> {
   if(!accepted(c) || !current(c) || ['open_question','next_action'].includes(c.type))return [];
   return [...new Map(ledger.relations.filter(r=>r.type==='resolves' && r.status==='active' && r.source_claim_version_id===c.current_version_id).flatMap(r=>{
@@ -297,7 +301,7 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
   }
   for (const c of selected.filter(c => !covered.has(c.id) && !(c.event_id!==eventId && originalGroupMembers.has(c.id)))) {
     const conflicts = relations.filter(r => ['contradicts','supersedes'].includes(r.type) && ['proposed','active'].includes(r.status) && r.contradiction_status !== 'resolved' && r.source_claim_version_id === c.current_version_id && accepted(byVersion.get(r.target_claim_version_id)!) && current(byVersion.get(r.target_claim_version_id)!));
-    const actionable = c.type === 'next_action' && (claimOrigin(c) === 'source_statement' || relations.some(r => r.type === 'informed_by' && r.source_claim_version_id === c.current_version_id && ['proposed','active'].includes(r.status) && byVersion.get(r.target_claim_version_id)?.type === 'open_question'));
+    const actionable = pendingActionChoice(c,ledger.evidence);
     const needsDecision = !accepted(c) && (conflicts.length > 0 || actionable);
     const reasonCode = needsDecision ? conflicts.length ? 'accepted_change' : 'action_choice' : null;
     // An invalidated overlap leaves its original card row for decision audit.
@@ -311,6 +315,20 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
     for(const m of card.members) {
       const targets=factAnswerTargets(ledger,byVersion.get(m.claimVersionId)!);
       if(targets.length)m.answerTargets=targets;
+    }
+    // Stored cards can predate priority rules or carry the database's zero
+    // default. Derive action choice from current members for both stored and
+    // virtual cards. A shared agreement is handled once; independent actions
+    // in other groups keep their choice until each is handled.
+    const intentHandled=Boolean(card.sameIntent) && card.members.some(m=>m.reviewState!=='draft');
+    const pendingChoice=card.sourceStatus==='ready' && !intentHandled && card.members.some(m=>{
+      const c=byVersion.get(m.claimVersionId)!;
+      return pendingActionChoice(c,ledger.evidence) || Boolean(card.actionOverlap) && c.type==='next_action' && current(c) && !accepted(c);
+    });
+    const actionChoice=card.disposition==='active' && pendingChoice;
+    if(card.reasonCode==='action_choice' || !card.needsDecision && actionChoice) {
+      card.needsDecision=actionChoice;card.reasonCode=actionChoice?'action_choice':null;
+      card.reason=actionChoice?'决定是否加入跟进':'';
     }
     const conflicts=relations.filter(r=>['contradicts','supersedes'].includes(r.type) && ['active','proposed'].includes(r.status) && r.contradiction_status!=='resolved'
       && card.memberRefs.some(m=>m.claimVersionId===r.source_claim_version_id) && accepted(byVersion.get(r.target_claim_version_id)!) && current(byVersion.get(r.target_claim_version_id)!));

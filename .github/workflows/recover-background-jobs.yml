@@ -34,6 +34,9 @@ jobs:
           COUNTS = ('claimed', 'sent', 'deferred', 'recovered', 'succeeded', 'pending', 'failed', 'obsolete', 'lostLease')
           MAX_ATTEMPTS = 3
           MAX_BODY_BYTES = 262144
+          MAX_RECOVERY_SECONDS = 360
+          POLL_SECONDS = 12
+          MAX_HTTP_SECONDS = 120
 
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -50,34 +53,60 @@ jobs:
               details = error.get('details', {}) if isinstance(error, dict) else {}
               return details.get('queues', {}) if isinstance(details, dict) else {}
 
+          def safe_count(value):
+              return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9007199254740991 else 0
+
+          def queue_counts(item):
+              result = item.get('result', {}) if isinstance(item, dict) else {}
+              result = result if isinstance(result, dict) else {}
+              counts = {key: safe_count(result.get(key)) for key in COUNTS}
+              for group in ('dispatch', 'transcription_dispatch'):
+                  nested = result.get(group, {})
+                  if isinstance(nested, dict):
+                      for key in COUNTS:
+                          counts[key] += safe_count(nested.get(key))
+              for group in ('sweep', 'transcription_sweep'):
+                  nested = result.get(group, {})
+                  if isinstance(nested, dict):
+                      for key in ('recoveredOutbox', 'requeuedExpiredRuns', 'requeuedLongRunningMessages'):
+                          counts['recovered'] += safe_count(nested.get(key))
+                      for key in ('deadLetteredOutbox', 'failedExpiredRuns', 'failedUndeliverableRuns', 'deadLetteredExhaustedPending', 'failedChunkedParents'):
+                          counts['failed'] += safe_count(nested.get(key))
+              return counts
+
           def report(queues):
+              summaries = []
               for name in QUEUES:
                   item = queues.get(name, {})
-                  if not isinstance(item, dict):
-                      item = {}
+                  item = item if isinstance(item, dict) else {}
                   state = item.get('state')
                   state = state if state in ('succeeded', 'failed') else 'unknown'
-                  result = item.get('result', {})
-                  result = result if isinstance(result, dict) else {}
-                  counts = []
-                  for key in COUNTS:
-                      value = result.get(key)
-                      if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9007199254740991:
-                          counts.append(f'{key}={value}')
-                  print(f'recovery_queue={name} state={state}' + (' ' + ' '.join(counts) if counts else ''))
+                  counts = queue_counts(item)
+                  summaries.append(counts)
+                  values = [f'{key}={counts[key]}' for key in COUNTS if counts[key]]
+                  print(f'recovery_queue={name} state={state}' + (' ' + ' '.join(values) if values else ''))
+              return summaries
 
           def retry_delay(header, attempt):
               if header and len(header) <= 5 and header.isdigit():
                   return min(60, max(1, int(header)))
               return min(30, attempt * 10)
 
-          def main(opener=None, sleeper=time.sleep, token=None):
+          def main(opener=None, sleeper=time.sleep, token=None, clock=time.monotonic):
               token = (os.environ.get('NOTIQUE_RECOVERY_TOKEN', '') if token is None else token).strip()
               if not token:
                   print('recovery_state=failed configured=0')
                   return 1
               opener = opener if opener is not None else urllib.request.build_opener(NoRedirect())
-              for attempt in range(1, MAX_ATTEMPTS + 1):
+              deadline = clock() + MAX_RECOVERY_SECONDS
+              failures = 0
+              quiet = 0
+              while True:
+                  remaining = deadline - clock()
+                  if remaining <= 0:
+                      print('recovery_state=pending reason=deadline')
+                      return 2
+                  attempt = failures + 1
                   status = 0
                   raw = b''
                   retry_after = None
@@ -88,7 +117,7 @@ jobs:
                           'Accept': 'application/json',
                           'Content-Type': 'application/json',
                       })
-                      with opener.open(request, timeout=120) as response:
+                      with opener.open(request, timeout=min(MAX_HTTP_SECONDS, remaining)) as response:
                           status = response.status
                           retry_after = response.headers.get('Retry-After')
                           raw = response.read(MAX_BODY_BYTES + 1)
@@ -110,16 +139,34 @@ jobs:
                           pass
                   if not isinstance(queues, dict):
                       queues = {}
-                  report(queues)
-                  succeeded = status == 200 and all(isinstance(queues.get(name), dict) and queues[name].get('state') == 'succeeded' for name in QUEUES)
-                  print(f'recovery_state={"succeeded" if succeeded else "failed"} http_status={status} attempt={attempt}')
-                  if succeeded:
-                      return 0
-                  retryable = status == 0 or status in (429, 500, 502, 503, 504)
-                  if not retryable or attempt == MAX_ATTEMPTS:
-                      return 1
-                  sleeper(retry_delay(retry_after, attempt))
-              return 1
+                  summaries = report(queues)
+                  accepted = status == 200 and all(isinstance(queues.get(name), dict) and queues[name].get('state') == 'succeeded' for name in QUEUES)
+                  if accepted:
+                      failures = 0
+                      if any(counts['failed'] for counts in summaries):
+                          print(f'recovery_state=failed http_status={status} attempt={attempt}')
+                          return 1
+                      # Counts describe this sweep, rather than a durable backlog.
+                      # A second quiet sweep catches downstream work queued by
+                      # an upstream stage after the concurrent workflow scan.
+                      active = any(value for counts in summaries for value in counts.values())
+                      quiet = 0 if active else quiet + 1
+                      if quiet >= 2:
+                          print(f'recovery_state=idle http_status={status} attempt={attempt}')
+                          return 0
+                      print(f'recovery_state=pending http_status={status} attempt={attempt}')
+                      delay = POLL_SECONDS
+                  else:
+                      quiet = 0
+                      failures += 1
+                      print(f'recovery_state=failed http_status={status} attempt={attempt}')
+                      retryable = status == 0 or status in (429, 500, 502, 503, 504)
+                      if not retryable or failures >= MAX_ATTEMPTS:
+                          return 1
+                      delay = retry_delay(retry_after, failures)
+                  remaining = deadline - clock()
+                  if remaining > 0:
+                      sleeper(min(delay, remaining))
 
           if __name__ == '__main__':
               raise SystemExit(main())

@@ -5,6 +5,7 @@ import { Modal } from '@/app/components/modal';
 import { NqButton, NqStatus } from '@/app/components/notique-ui';
 import { ApiClientError } from '@/app/api-client';
 import type { DecisionMember, DecisionRequest, ReviewMember, WorkspaceSnapshot } from '@/lib/shared/workflow-v2';
+import {userMayAcceptSupport} from '@/lib/domain/review-support';
 import {useMemoryDrafts,useDraftCheckpoint} from './memory-drafts';
 import {FactAnswerReview,factChangeFor,factChoicesFor,type FactChoices} from './fact-answer-review';
 import styles from './record-workspace.module.css';
@@ -74,13 +75,14 @@ export function MemberReview({cardId,initialEditClaimId,snapshot,canEdit,onDecid
         const c=choices[m.claimId],latest=current?.members.find(n=>n.claimId===m.claimId);
         const changed=conflict && (!latest || latest.claimVersionId!==m.claimVersionId || latest.reviewState!==m.reviewState);
         const accepted=m.reviewState==='accepted',rejected=m.reviewState==='rejected';
+        const sourceReady=base.bullets.some(b=>b.sourceStatus==='ready' && b.claimRefs.some(r=>r.claimId===m.claimId && r.claimVersionId===m.claimVersionId));
         return <section key={m.claimId} className={styles.memberRow} data-testid={`member-${m.claimId}`}>
           <div className={styles.bulletMeta}><span>{overlap?(m.claimId===overlap.manualRef.claimId?'我的行动':'AI 建议'):`第${index+1}条`}</span><NqStatus tone={accepted?'success':rejected?'pending':'info'}>{accepted?'已采纳':rejected?'已移出记录':m.origin==='user_input'||m.origin==='user_selection'?'用户补充':'AI 草稿'}</NqStatus><NqButton variant="quiet" onClick={()=>onSource(m)}>原话</NqButton></div>
           <p className={styles.statement}>{m.statement}</p>
           {changed && <p className={styles.notice}>当前内容：{latest?.statement ?? '已移出这组'}</p>}
           <label className={styles.memberChoice}>第{index+1}条处理方式<select aria-label={`第${index+1}条处理方式`} value={c.operation} disabled={busy||!canEdit} onChange={e=>update(m.claimId,{operation:e.target.value as Choice['operation']})}>
             <option value="keep">保持原样</option>
-            {!accepted && !rejected && m.kind==='record' && <option value="confirm" disabled={m.supportStatus!=='fully_supports' || !m.evidenceRefIds.length}>确认</option>}
+            {!accepted && !rejected && m.kind==='record' && <option value="confirm" disabled={!userMayAcceptSupport(m.supportStatus) || !sourceReady || !m.evidenceRefIds.length}>确认</option>}
             {!accepted && !rejected && m.kind==='action' && <option value="accept_action" disabled={m.supportStatus==='does_not_support' || !m.evidenceRefIds.length}>加入跟进</option>}
             {!rejected && m.kind==='record' && <option value="edit">修改后采纳</option>}
             {!accepted && !rejected && <option value="reject">不采纳</option>}
