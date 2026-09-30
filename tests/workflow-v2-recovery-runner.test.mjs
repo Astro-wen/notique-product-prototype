@@ -75,6 +75,7 @@ def run(results, token=private):
         assert request.get_method() == 'POST'
         assert request.data == b'{}'
         assert request.get_header('Authorization') == 'Bearer ' + token
+        assert request.get_header('User-agent') == 'Notique-Recovery/1.0'
         assert timeout == 120
     return result, opener, delays, output.getvalue()
 

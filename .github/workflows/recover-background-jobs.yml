@@ -84,6 +84,7 @@ jobs:
                   try:
                       request = urllib.request.Request(ENDPOINT, data=b'{}', method='POST', headers={
                           'Authorization': 'Bearer ' + token,
+                          'User-Agent': 'Notique-Recovery/1.0',
                           'Accept': 'application/json',
                           'Content-Type': 'application/json',
                       })
