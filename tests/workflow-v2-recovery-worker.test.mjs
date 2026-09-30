@@ -33,3 +33,15 @@ test('the worker has no public maintenance endpoint and scheduled work is retain
   assert.equal(worker.fetch().status, 404);
   let pending;worker.scheduled({}, {}, {waitUntil: promise => {pending = promise;}});assert.ok(pending instanceof Promise);await pending;
 });
+
+test('the default network call retains the Workers global receiver', async () => {
+  const original = globalThis.fetch; const logs = [];
+  try {
+    globalThis.fetch = async function () {
+      assert.equal(this, globalThis);
+      return Response.json(payload());
+    };
+    await recover(env, {log: (...args) => logs.push(args)});
+    assert.equal(logs[0][1].state, 'succeeded');
+  } finally {globalThis.fetch = original;}
+});

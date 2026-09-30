@@ -36,7 +36,7 @@ async function readResponse(response) {
 }
 
 /** A minute tick resumes durable submitted work. It never starts a new model run. */
-export async function recover(env, {send = fetch, log = console.log, timeout = AbortSignal.timeout} = {}) {
+export async function recover(env, {send = (url, init) => globalThis.fetch(url, init), log = console.log, timeout = ms => AbortSignal.timeout(ms)} = {}) {
   const token = env.WORKFLOW_RECOVERY_TOKEN?.trim();
   if (!token) {log('notique_recovery', {state: 'unconfigured'}); return;}
   // Keep the Site request connected while its synchronous audio provider runs.
@@ -56,8 +56,12 @@ export async function recover(env, {send = fetch, log = console.log, timeout = A
     }
     const summary = Object.fromEntries(QUEUES.map(name => [name, {state: queues[name].state, ...counts(queues[name].result)}]));
     log('notique_recovery', {state: QUEUES.every(name => queues[name].state === 'succeeded') ? 'succeeded' : 'queue_failed', queues: summary});
-  } catch {
-    log('notique_recovery', {state: signal.aborted ? 'pending' : 'request_failed'});
+  } catch (error) {
+    const kind = error instanceof SyntaxError ? 'invalid_json'
+      : error instanceof Error && /illegal invocation|incorrect.*this/i.test(error.message) ? 'binding'
+      : error instanceof Error && error.message === 'response_limit' ? 'response_limit'
+      : error instanceof TypeError ? 'network_or_runtime' : 'other';
+    log('notique_recovery', {state: signal.aborted ? 'pending' : 'request_failed', kind});
   }
 }
 
