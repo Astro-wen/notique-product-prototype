@@ -523,6 +523,7 @@ export function parseWorkflowRequest<K extends keyof WorkflowRequestMap>(name: K
 }
 
 
+/** Consent controls record reads. Fixed tool discovery is available to verified assistants. */
 export type McpConnectionStatus = {
   authenticated: boolean;
   enabled: boolean;

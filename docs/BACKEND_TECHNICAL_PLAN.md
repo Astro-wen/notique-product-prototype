@@ -285,7 +285,7 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 
 现有 Worker 暴露 POST /mcp，使用官方 @modelcontextprotocol/server 2.2.0 与 zod 4.6.5。每次请求创建独立服务，复用领域投影与资料查询。官方客户端2.2.0验证工具发现及调用，兼容2025-11-25初始化。六个工具读取已有结果，授权和限流计数属于接入数据，业务账本与模型任务保持读取语义。
 
-Sites 负责 OAuth 和已验证身份头。应用同时核实网关主体与邮箱，通过 workspace_members 和 access_grants 检查当前绑定工作空间的成员及 mcp:read 授权。工作空间由服务器确定，工具参数使用资源 ID。明确公开的演示空间在用户开启授权时建立 viewer 成员，私有空间使用已有成员。授权期30天，读取前后重新检查，断开或成员撤销后拒绝新的调用。
+Sites 负责 OAuth 和已验证身份头。应用同时核实网关主体与邮箱，通过 workspace_members 和 access_grants 检查当前绑定工作空间的成员及 mcp:read 授权。工作空间由服务器确定，工具参数使用资源 ID。明确公开的演示空间在用户开启授权时建立 viewer 成员，私有空间使用已有成员。授权期30天。已验证的AI助手可以先发现固定工具定义，发现阶段保持资料为空。读取调用在请求入口、资料查询前后检查有效授权，断开或成员撤销后拒绝读取。请求正文按16 KiB限制读取，批量消息和方法头不能替代正文中的调用权限检查。
 
 每账号每空间每分钟60次请求，D1原子计数使多个 Worker 共用限额，旧桶随新请求清理。输入上限16 KiB，读取时限15秒，响应上限250,000字节。429附 Retry-After，超时返回504。校验请求 Host 和浏览器 Origin，生产主机使用当前站点及管理员配置的主机列表。
 
@@ -384,7 +384,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | AnalysisRun | id、revision、state、stages、coverage、inputRevision、retryable | state=queued/running/partial/succeeded/failed/cancelled。coverage为成功片段数、总片段数及未完成范围。revision为当前运行、阶段及材料状态的52位整数比较标识，只做相等校验。GET只读取进度。旧版概要阶段保持succeeded，retryable=true并标记NARRATIVE_PROMPT_OUTDATED，用户可更新全文概要。新运行发布前保留上一份成功记录，覆盖仍按本次输入计算 |
 | WorkspaceQuery / OverviewQuery | cursor?、snapshotId?、limit?、minContextVersion? | limit 默认20、最大50。翻页沿用 snapshotId，失效返回409。提交后读取携带 minContextVersion=回执版本 |
 | McpConnectionRequest | enabled | enabled 为 boolean。开启与断开仅改变当前已验证账号的 mcp:read 授权，参数只含 enabled。浏览器提交使用同源 POST。 |
-| McpConnectionStatus | authenticated、enabled、scope、endpoint、expiresAt、accountEmail | scope=mcp:read，endpoint=/mcp。authenticated=false 时 enabled=false，accountEmail=null。开启需同时核实网关主体与邮箱、工作空间成员及独立只读授权。expiresAt 为 ISO 时间或 null，授权期30天。已授权表示读取授权，以调用方插件页确认安装状态。 |
+| McpConnectionStatus | authenticated、enabled、scope、endpoint、expiresAt、accountEmail | scope=mcp:read，endpoint=/mcp。authenticated=false 时 enabled=false，accountEmail=null。开启需同时核实网关主体与邮箱、工作空间成员及独立只读授权。expiresAt 为 ISO 时间或 null，授权期30天。已授权表示读取授权，以调用方插件页确认安装状态。连接时的工具发现只返回固定名称与参数，读取记录需有有效授权。 |
 | ReaffirmedMention | id、claimRef、currentRef、targetEventId、kind、statement、targetText、currentText、associationState、targetState、sourceStatus、sources | claimRef 为复述引用的冻结版本，currentRef 为当前原事项或null。kind=record/question/action。associationState=proposed/confirmed，confirmed 需匹配occurrence_verdicts与claim_occurrences。targetState=current/changed/retired/unavailable，版本或类型变化分别保留原内容与当前内容。statement、targetText、currentText 在相应出处不可读取时为null。sources 含assetVersionId、quote、sourceStatus，按本次空间、项目、沟通、材料版本及段落逐项核对，未知引用为null。待核对关联可阅读和混合复制，当前已确认的复述沿用原行动及答案，项目待办按稳定ID计数。 |
 | MentionDecisionRequest | expectedContextVersion、targetRef、operation | 可选复述关联选择。targetRef 为冻结原版本，operation=confirm/reject/convert。confirm 沿用原事项的稳定ID及完成和答案状态。convert 从本次出处形成一条独立草稿，随后沿普通记录入口采纳或修正。reject 忽略此次关联。原版本或出处变化时整次回滚。 |
 
@@ -445,7 +445,7 @@ narrative-jobs.ts 消费 workflow_outbox，同一沟通合并待执行修改，�
 
 Worker 的 scheduled 入口消费该队列，保存接口通过短时唤醒加快首次处理。Cloudflare 的调度机制参考 [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)。现有 Sites 生产版本的服务端调度需在部署后关闭全部页面实测。
 
-独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，队列租约继续防止重复执行。调用成功且有待续状态或本轮任务活动时，间隔12秒继续推进，每次执行最多6分钟。连续两次无本轮活动标为idle，到达时限标为pending，终态错误标为failed。临时失败按30秒提示最多连续重试3次。idle仅描述当前两次扫描，持久队列中的未来任务和已有租约另行观察。原生Worker定时入口与后备身份均采用commission:false消费已授权任务。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，队列租约继续防止重复执行。调用成功且有待续状态或本轮任务活动时，间隔12秒继续推进，每次执行最多6分钟。连续两次无本轮活动标为idle，到达时限标为pending，终态错误标为failed。一项任务失败时，继续推进其他可处理任务，结束后保留失败状态。临时失败按30秒提示最多连续重试3次。idle仅描述当前两次扫描，持久队列中的未来任务和已有租约另行观察。原生Worker定时入口与后备身份均采用commission:false消费已授权任务。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 
 ## 八、核心服务设计
 

@@ -101,6 +101,7 @@ jobs:
               deadline = clock() + MAX_RECOVERY_SECONDS
               failures = 0
               quiet = 0
+              task_failures = False
               while True:
                   remaining = deadline - clock()
                   if remaining <= 0:
@@ -143,15 +144,20 @@ jobs:
                   accepted = status == 200 and all(isinstance(queues.get(name), dict) and queues[name].get('state') == 'succeeded' for name in QUEUES)
                   if accepted:
                       failures = 0
-                      if any(counts['failed'] for counts in summaries):
+                      failed_now = any(counts['failed'] for counts in summaries)
+                      task_failures = task_failures or failed_now
+                      active = any(value for counts in summaries for key, value in counts.items() if key != 'failed')
+                      if failed_now and not active:
                           print(f'recovery_state=failed http_status={status} attempt={attempt}')
                           return 1
                       # Counts describe this sweep, rather than a durable backlog.
                       # A second quiet sweep catches downstream work queued by
                       # an upstream stage after the concurrent workflow scan.
-                      active = any(value for counts in summaries for value in counts.values())
                       quiet = 0 if active else quiet + 1
                       if quiet >= 2:
+                          if task_failures:
+                              print(f'recovery_state=failed http_status={status} attempt={attempt}')
+                              return 1
                           print(f'recovery_state=idle http_status={status} attempt={attempt}')
                           return 0
                       print(f'recovery_state=pending http_status={status} attempt={attempt}')

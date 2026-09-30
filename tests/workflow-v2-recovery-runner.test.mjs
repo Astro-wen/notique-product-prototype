@@ -215,6 +215,17 @@ class ClientTests(unittest.TestCase):
                 self.assertIn('recovery_state=failed http_status=200', output)
                 self.assertNotIn('recovery_state=idle', output)
 
+    def test_one_failed_task_does_not_abandon_another_pending_task(self):
+        first = Response(200, body({'extraction': {'dispatch': {'claimed': 1, 'deferred': 1}, 'sweep': {'failedExpiredRuns': 1}}}))
+        completed = Response(200, body({'extraction': {'dispatch': {'claimed': 1, 'sent': 1}}}))
+        result, opener, clock, output = run([first, pending(), completed, quiet(), quiet()])
+        self.assertEqual(result, 1)
+        self.assertEqual(len(opener.requests), 5)
+        self.assertEqual(clock.delays, [12] * 4)
+        self.assertIn('recovery_queue=extraction state=succeeded claimed=1 sent=1', output)
+        self.assertTrue(output.endswith('recovery_state=failed http_status=200 attempt=1\n'))
+        self.assertNotIn('recovery_state=idle', output)
+
     def test_auth_failure_is_not_retried(self):
         for status in (401, 403):
             error = urllib.error.HTTPError(endpoint, status, private, {}, io.BytesIO(private.encode()))
@@ -283,5 +294,5 @@ unittest.main(argv=['recovery-test'], verbosity=1)
 `;
   const result = spawnSync('python3', ['-c', harness], { input: python, encoding: 'utf8', timeout: 15000 });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stderr, /Ran 19 tests/);
+  assert.match(result.stderr, /Ran 20 tests/);
 });

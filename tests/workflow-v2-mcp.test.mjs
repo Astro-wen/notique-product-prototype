@@ -82,3 +82,41 @@ test('framework requests without a disconnect signal still return bounded author
  assert.deepEqual(parseWorkflowRequest('McpConnectionRequest',{enabled:true}),{enabled:true});
  assert.throws(()=>parseWorkflowRequest('McpConnectionRequest',{enabled:true,workspaceId:'other'}));
 });
+
+
+test('an authenticated assistant can discover tools before consent, while record reads require an active grant',async t=>{
+ const f=await workflowDatabase({through:25});t.after(f.close);seed(f.sqlite);
+ const {db,sqlite}=f,before=unchanged(sqlite);
+ const accessBefore=Object.fromEntries(['workspace_members','access_grants'].map(table=>[table,sqlite.prepare(`SELECT count(*) n FROM ${table}`).get().n]));
+ const client=await protocolClient(t,db);
+ const list=await client.listTools();assert.equal(list.tools.length,6);
+ assert.ok(list.tools.every(tool=>tool.annotations.readOnlyHint));
+ for(const name of ['list_projects','get_record_views'])await assert.rejects(client.callTool({name,arguments:name==='list_projects'?{}:{record_id:'e'}}),/FORBIDDEN/);
+ assert.deepEqual(unchanged(sqlite),before);
+ assert.deepEqual(Object.fromEntries(['workspace_members','access_grants'].map(table=>[table,sqlite.prepare(`SELECT count(*) n FROM ${table}`).get().n])),accessBefore);
+ sqlite.prepare("UPDATE workspace_members SET actor_id='owner@example.com'").run();
+ const identity={...IDENTITY,actorId:'owner@example.com'};
+ await setMcpConnection(db,identity,ENV,true);
+ const reply=await client.callTool({name:'get_record_views',arguments:{record_id:'e'}});assert.ok(reply.structuredContent);assert.equal(reply.isError,undefined);
+ await setMcpConnection(db,identity,ENV,false);
+ assert.equal((await client.listTools()).tools.length,6);
+ await assert.rejects(client.callTool({name:'get_record_views',arguments:{record_id:'e'}}),/FORBIDDEN/);
+ assert.deepEqual(unchanged(sqlite),before);
+});
+test('legacy discovery works before consent and method headers or batched messages cannot grant data access',async t=>{
+ const f=await workflowDatabase({through:25});t.after(f.close);seed(f.sqlite);
+ const {db,sqlite}=f,before=unchanged(sqlite);
+ const request=(body,extra={})=>new Request('http://localhost/mcp',{method:'POST',headers:{...headers,'Content-Type':'application/json',Accept:'application/json, text/event-stream','MCP-Protocol-Version':'2025-11-25',...extra},body:JSON.stringify(body)});
+ const initialize={jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'legacy-before-consent',version:'1.0'}}};
+ assert.equal((await handleMcpRequest(request(initialize),db,ENV)).status,200);
+ const listing={jsonrpc:'2.0',id:2,method:'tools/list'};
+ assert.equal((await handleMcpRequest(request(listing),db,ENV)).status,200);
+ const call={jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'list_projects',arguments:{}}};
+ assert.equal((await handleMcpRequest(request(call,{'Mcp-Method':'tools/list'}),db,ENV)).status,403);
+ assert.equal((await handleMcpRequest(request([listing,call]),db,ENV)).status,403);
+ const stream=new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('x'.repeat(16000)));controller.enqueue(new TextEncoder().encode('x'.repeat(1000)));controller.close();}});
+ const oversized=new Request('http://localhost/mcp',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:stream,duplex:'half'});
+ assert.equal((await handleMcpRequest(oversized,db,ENV)).status,413);
+ assert.equal((await handleMcpRequest(new Request('http://localhost/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(listing)}),db,ENV)).status,401);
+ assert.deepEqual(unchanged(sqlite),before);
+});
