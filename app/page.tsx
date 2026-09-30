@@ -5127,7 +5127,6 @@ export default function Home() {
                 <ul>
                   {items.map((item) => {
                     const name = item.name.replace(/^\[SYNTHETIC\]\s*/, "");
-                    const pending = item.pendingCount ?? 0;
                     return (
                       // 垃圾桶是独立按钮，不能塞进项目按钮里（按钮不能嵌套），
                       // 所以这一行是两个并排的按钮，整行共用 hover 高亮。
@@ -5140,7 +5139,6 @@ export default function Home() {
                           onClick={() => { setSimpleFlow(true); void loadSimpleProject(item.id); }}
                         >
                           <span className="sidebar-project-name">{name}</span>
-                          {pending > 0 && <span className="sidebar-project-badge" aria-label={`${pending} 条待确认`}>{pending}</span>}
                         </button>
                         <button
                           type="button"

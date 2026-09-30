@@ -26,8 +26,10 @@
 .filters { display: flex; gap: 4px; flex-wrap: wrap; }
 .filters button { border: 0; border-radius: 6px; background: transparent; color: #59657b; font-size: 13px; padding: 7px 10px; cursor: pointer; }
 .filters button[aria-pressed="true"] { color: var(--record-blue); background: #edf2ff; }
+.recordTools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.recordNavigation { position: sticky; top: 0; z-index: 10; background: #fff; padding: 12px 0; }
 .bullets { display: grid; gap: 12px; }
-.bullet { padding: 18px 20px; border: 1px solid #e6e6e8; border-radius: 8px; scroll-margin: 24px; }
+.bullet { padding: 18px 20px; border: 1px solid #e6e6e8; border-radius: 8px; scroll-margin: 100px; }
 .needsDecision { border-left: 3px solid #4b75f2; }
 .bulletMeta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .bulletMeta :global(.nq-status) { padding: 2px 6px; font-size: 12px; border-radius: 4px; }
@@ -50,6 +52,10 @@
 .origin select { border: 1px solid #e6e6e8; border-radius: 6px; padding: 6px; font: inherit; background: white; color: #0d0d0d; }
 .followups { border-top: 1px solid #e6e6e8; margin-top: 28px; padding-top: 24px; }
 .action { display: flex; align-items: flex-start; gap: 12px; padding: 16px 0; border-bottom: 1px solid #f0f0f2; }
+.action, .followups h2 { scroll-margin: 100px; }
+.action:focus { outline: 2px solid #4b75f2; outline-offset: 4px; }
+.actionBody .actionMeta { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: #59657b; font-size: 12px; }
+.editor .addNote { justify-self: start; }
 .check { width: 23px; height: 23px; flex: 0 0 23px; display: grid; place-items: center; border: 1px solid #b6bdc9; background: white; border-radius: 5px; cursor: pointer; margin-top: 3px; }
 .check[aria-pressed="true"] { background: #0d0d0d; color: white; border-color: #0d0d0d; }
 .actionBody { flex: 1; min-width: 0; }

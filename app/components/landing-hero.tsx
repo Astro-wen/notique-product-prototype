@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
+import { useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
 import { ArrowRight, FileText, Images, Mic, Upload } from "lucide-react";
 import { NqActionCard } from "./notique-ui";
 import { greetingFor } from "@/lib/domain/greeting";
@@ -21,34 +21,12 @@ export type LandingHeroProps = {
   children?: ReactNode;
 };
 
-/**
- * 标题两半各自轮播，且错开换词。
- *
- * 两边同时换会读成一一对应（图片就得到客户档案、音频就得到可信记忆），而实际
- * 上任何一种材料都通向这三样，没有这种映射。所以用半拍的间隔交替换：每个词
- * 各停 ROTATE_MS，但两边永远不在同一刻动。
- */
-const UPLOADS = ["音频", "文件", "图片"];
-const BUILDS = ["可信记忆", "会前简报", "客户档案"];
-const ROTATE_MS = 2600;
-const HEADLINE = `上传${UPLOADS.join("、")}，建立专属${BUILDS.join("、")}`;
-
 /** 本机时钟没有「订阅」这回事，退订也就什么都不做。 */
 const subscribeToNothing = () => () => {};
 const clientGreeting = () => greetingFor(new Date().getHours());
 const serverGreeting = () => "";
 const clientReady = () => true;
 const serverReady = () => false;
-
-function Rotator({ words, current }: { words: string[]; current: number }) {
-  return (
-    <span className="landing-rotator">
-      {words.map((word, index) => (
-        <span key={word} className={index === current ? "is-current" : ""}>{word}</span>
-      ))}
-    </span>
-  );
-}
 
 export function LandingHero({
   busy,
@@ -65,24 +43,11 @@ export function LandingHero({
 }: LandingHeroProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragDepth, setDragDepth] = useState(0);
-  // 半拍计数：偶数拍换下半句，奇数拍换上半句。
-  const [halfStep, setHalfStep] = useState(0);
-  const uploadIndex = Math.floor((halfStep + 1) / 2) % UPLOADS.length;
-  const buildIndex = Math.floor(halfStep / 2) % BUILDS.length;
   // 问候语要读本机时钟，服务端没有这个东西，所以服务端渲染成空、客户端渲染成
   // 问候语。useSyncExternalStore 的第三个参数就是为这种两边不同准备的：它让
   // React 知道这处不一致是故意的，不会当成 hydration 错误。
   const hello = useSyncExternalStore(subscribeToNothing, clientGreeting, serverGreeting);
   const ready = useSyncExternalStore(subscribeToNothing, clientReady, serverReady);
-
-  useEffect(() => {
-    const cycle = 2 * UPLOADS.length * BUILDS.length;
-    const timer = window.setInterval(
-      () => setHalfStep((step) => (step + 1) % cycle),
-      ROTATE_MS / 2,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
 
   function takeFiles(files: FileList | null) {
     const list = Array.from(files ?? []);
@@ -123,25 +88,17 @@ export function LandingHero({
             这东西怎么工作<ArrowRight size={14} aria-hidden="true" />
           </button>
         </div>
-        {/* 看到的是轮播中的一帧，读屏听到的是完整那一句。标题自己带 aria-label，
-            所以它的可访问名字是固定的，不随轮播到哪个词而变。 */}
-        <h1 aria-label={HEADLINE}>
-          <span className="landing-build" aria-hidden="true">
-            上传
-            <Rotator words={UPLOADS} current={uploadIndex} />
-          </span>
-          <span className="landing-build" aria-hidden="true">
-            建立专属
-            <Rotator words={BUILDS} current={buildIndex} />
-          </span>
+        <h1>
+          <span className="landing-build">上传录音或笔记</span>
+          <span className="landing-build">整理成<span className="landing-accent">重点和下一步</span></span>
         </h1>
         <p className="landing-sub">先读完整记录，按需确认重点，再跟进和补结果</p>
       </header>
 
       <div className="landing-actions">
         <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"} active={recorderOpen} disabled={!ready || busy} onClick={onRecord} />
-        <NqActionCard icon={Upload} kind="audio" title="上传音频" description="分出说话人和时间点" disabled={!ready || busy} onClick={onPickAudio} />
-        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿直接进来，跳过转写" disabled={!ready || busy} onClick={onPickTranscript} />
+        <NqActionCard icon={Upload} kind="audio" title="上传音频" description="会议录音、语音备忘录" disabled={!ready || busy} onClick={onPickAudio} />
+        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿，直接整理重点" disabled={!ready || busy} onClick={onPickTranscript} />
         <NqActionCard icon={Images} kind="photo" title="上传图片" description="手写笔记、白板、纸质材料" disabled={!ready || busy} onClick={onPickPhoto} />
       </div>
 

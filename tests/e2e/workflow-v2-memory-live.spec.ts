@@ -84,6 +84,7 @@ test('permission recovery preserves action answers, a personal note, and the ind
     await open(page,fixture);await page.getByRole('button',{name:'加入跟进',exact:true}).click();
     await page.getByRole('button',{name:'补结果',exact:true}).click();
     await page.getByLabel('补充答案',{exact:true}).fill('我问到的价格：十二万元。');
+    await page.getByRole('button',{name:'添加补充说明',exact:true}).click();
     await page.getByLabel('补充说明，可留空',{exact:true}).fill('我已收到书面报价。');
     await page.getByLabel('同时标记行动完成',{exact:true}).check();
     const route='**/api/v2/actions/*/outcomes';await page.route(route,r=>r.fulfill(accessFailure()));

@@ -1,0 +1,86 @@
+{
+  "baselineSourceSha": "045cc66171d326bf278614a8bbf289af266a9481",
+  "method": "Actual Playwright browser clicks using isolated synthetic fixtures. Full reports remain private because the application sidebar contains existing project names.",
+  "metrics": {
+    "baseline": [
+      {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "states": [
+          "home",
+          "explanation",
+          "record",
+          "edit",
+          "follow-up",
+          "outcome",
+          "overview"
+        ],
+        "javascriptErrors": [],
+        "horizontalOverflow": false,
+        "helpCharacters": 1657,
+        "resultTextareas": 2
+      },
+      {
+        "viewport": {
+          "width": 1366,
+          "height": 768
+        },
+        "states": [
+          "home",
+          "explanation",
+          "record",
+          "edit",
+          "follow-up",
+          "outcome",
+          "overview"
+        ],
+        "javascriptErrors": [],
+        "horizontalOverflow": false,
+        "helpCharacters": 1657,
+        "resultTextareas": 2
+      }
+    ],
+    "after": [
+      {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "states": [
+          "home",
+          "explanation",
+          "record",
+          "edit",
+          "follow-up",
+          "outcome",
+          "overview"
+        ],
+        "javascriptErrors": [],
+        "horizontalOverflow": false,
+        "helpCharacters": 412,
+        "resultTextareas": 1
+      },
+      {
+        "viewport": {
+          "width": 1366,
+          "height": 768
+        },
+        "states": [
+          "home",
+          "explanation",
+          "record",
+          "edit",
+          "follow-up",
+          "outcome",
+          "overview"
+        ],
+        "javascriptErrors": [],
+        "horizontalOverflow": false,
+        "helpCharacters": 412,
+        "resultTextareas": 1
+      }
+    ]
+  }
+}

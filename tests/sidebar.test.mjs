@@ -29,7 +29,7 @@ test("the sidebar lists projects grouped by folder and opens the workspace on cl
   const list = aside.slice(aside.indexOf('className="sidebar-projects"'));
   assert.match(list, /setSimpleFlow\(true\); void loadSimpleProject\(item\.id\)/);
   assert.match(list, /replace\(\/\^\\\[SYNTHETIC\\\]\\s\*\/, ""\)/);
-  assert.match(list, /pending > 0 && <span className="sidebar-project-badge"/);
+  assert.doesNotMatch(list, /sidebar-project-badge|条待确认/);
   assert.match(list, /projectsState === "loading"[^\n]*正在读取…/);
 
   // 收起时列表整个不渲染，只剩图标导航。

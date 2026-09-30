@@ -7,7 +7,7 @@ import {WORKFLOW_NARRATIVE_PROMPT_VERSION,WORKFLOW_NARRATIVE_SCHEMA_VERSION} fro
 
 /** Local integration tests add their own named project to the development DB.
  * Existing projects are never rewritten. Call cleanup for exactly this ID. */
-export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=false,withConflict=false,withComposite=false,withActionConflict=false,withActionOverlap=false,withFactAnswer=false,withSameIntent=false,withReaffirmed=/** @type {false|'pending'|'confirmed'} */ (false),withIntentConflict=/** @type {false|'record'|'action'} */ (false),priorityCount=0}={}) {
+export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=false,withConflict=false,withComposite=false,withActionConflict=false,withActionOverlap=false,withFactAnswer=false,withSameIntent=false,withReaffirmed=/** @type {false|'pending'|'confirmed'} */ (false),withIntentConflict=/** @type {false|'record'|'action'} */ (false),priorityCount=0,actionAttributes=/** @type {{owner:string;due_at:string}|undefined} */(undefined)}={}) {
   const root=join(process.cwd(),'.wrangler/state/v3/d1/miniflare-D1DatabaseObject');
   let local;
   for(const filename of readdirSync(root).filter(name=>name.endsWith('.sqlite'))) {
@@ -18,6 +18,7 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
   }
   if(!local) throw new Error('Migrated local workspace database was not found');
   const fixture=await workflowDatabase();seed(fixture.sqlite);
+  if(actionAttributes) fixture.sqlite.prepare("UPDATE claim_versions SET normalized_value_json=? WHERE id='action_v1'").run(JSON.stringify(actionAttributes));
   if(withReaffirmed) {fixture.sqlite.prepare("UPDATE claims SET review_status='verified'").run();seedReaffirmedRecord(fixture.sqlite,{targets:withReaffirmed==='confirmed'?['budget','action','question']:['budget'],confirmed:withReaffirmed==='confirmed'});}
   if(withBudgetBasis) relation(fixture.sqlite,'budget-basis','action','budget','informed_by','proposed');
   if(withFactAnswer) {fixture.sqlite.prepare("UPDATE claims SET review_status='verified' WHERE id='budget'").run();relation(fixture.sqlite,'fact-answer','budget','question','resolves','active');}

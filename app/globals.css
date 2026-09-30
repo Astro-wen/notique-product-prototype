@@ -356,10 +356,7 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .landing-explain { flex: none; display: inline-flex; align-items: center; gap: 5px; }
 .landing-hero h1 { margin: 0; display: grid; gap: 2px; font-size: clamp(26px, 3.4vw, 40px); font-weight: 800; line-height: 1.18; letter-spacing: -0.04em; }
 .landing-build { display: inline-flex; align-items: baseline; gap: .12em; flex-wrap: wrap; }
-/* 三个词叠在同一个格子里，所以行宽不随词变化，标题不会左右抽动。 */
-.landing-rotator { display: inline-grid; color: var(--brand-green); }
-.landing-rotator > span { grid-area: 1 / 1; opacity: 0; transform: translateY(.3em); transition: opacity 340ms ease, transform 340ms ease; white-space: nowrap; }
-.landing-rotator > span.is-current { opacity: 1; transform: none; }
+.landing-accent { color: var(--brand-green); }
 .landing-sub { margin: 6px 0 0; max-width: 42em; color: var(--muted); font-size: var(--text-md); line-height: 1.65; }
 
 .landing-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
@@ -386,53 +383,24 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 
 
 
-/* 「这东西怎么工作」：一张按真实实现画的流程图，加上每一步在做什么。 */
-.hiw { display: grid; gap: var(--space-5); padding-top: 12px; }
+/* 使用说明沿用户的三个步骤展开。 */
+.hiw { display: grid; gap: 20px; padding-top: 12px; }
 .hiw-back { justify-self: start; display: inline-flex; align-items: center; gap: 5px; }
-.hiw-head { display: grid; gap: var(--space-3); max-width: 46em; }
-.hiw-head h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); font-weight: 800; letter-spacing: -0.035em; }
+.hiw-head { display: grid; gap: 8px; }
+.hiw-head h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.035em; }
 .hiw-head p { margin: 0; color: var(--muted); font-size: var(--text-md); line-height: 1.7; }
-
-.hiw-figure { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; padding: var(--space-4); box-shadow: 0 7px 25px rgba(29, 42, 37, .045); }
-.hiw-figure svg { width: 100%; height: auto; display: block; }
-.hiw-band rect { fill: var(--surface-muted); stroke: none; }
-.hiw-band text { fill: var(--subtle); font-size: 12px; font-weight: 750; letter-spacing: .04em; }
-.hiw-edges { color: var(--line-strong); }
-.hiw-edges path { fill: none; stroke: currentColor; stroke-width: 1.5; }
-.hiw-box rect { fill: #fff; stroke: var(--line-strong); stroke-width: 1; }
-.hiw-box text { text-anchor: middle; }
-.hiw-box-label { fill: var(--ink); font-size: 14px; font-weight: 800; }
-.hiw-box-sub { fill: var(--muted); font-size: 11px; }
-.hiw-box.tone-input rect { fill: var(--surface-inset); }
-.hiw-box.tone-read rect { stroke: var(--blue); }
-.hiw-box.tone-read .hiw-box-label { fill: var(--blue-dark); }
-.hiw-box.tone-fact rect { stroke: var(--amber); }
-.hiw-box.tone-fact .hiw-box-label { fill: var(--amber); }
-.hiw-box.tone-human rect { fill: var(--brand-green); stroke: var(--brand-green); }
-.hiw-box.tone-human .hiw-box-label { fill: #fff; }
-.hiw-box.tone-human .hiw-box-sub { fill: rgba(255, 255, 255, .82); }
-/* 做好了但没接进任务的节点：虚线框、字变淡，和在跑的节点一眼能分开。 */
-.hiw-box-pending rect { stroke-dasharray: 5 4; fill: #fff; }
-.hiw-box-pending .hiw-box-label { fill: var(--muted); }
-.hiw-box-pending .hiw-box-sub { fill: var(--subtle); }
-
-.hiw-steps { margin: 0; padding: 0; list-style: none; counter-reset: hiw; display: grid; gap: var(--space-5); }
-/* 序号用绝对定位，不占网格的列。此前它靠 grid-row: 1 / span 9 拉出一条竖列，
-   多出来的空行会在条目之间塞进七八道行间距。 */
-.hiw-steps > li { counter-increment: hiw; position: relative; padding-left: 46px; display: grid; gap: var(--space-3); }
-.hiw-steps > li::before { content: counter(hiw); position: absolute; left: 0; top: 1px; width: 30px; height: 30px; border-radius: 50%; background: var(--brand-green-soft); color: var(--brand-green); display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 850; }
-.hiw-steps h2 { margin: 3px 0 0; font-size: var(--text-lg); font-weight: 800; letter-spacing: -0.02em; }
-.hiw-steps p { margin: 0; max-width: 44em; color: var(--muted); font-size: var(--text-md); line-height: 1.75; }
-.hiw-aside { border-left: 2px solid var(--line-strong); padding-left: var(--space-3); color: var(--subtle) !important; font-size: var(--text-sm) !important; }
-
-.hiw-limits { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-muted); padding: var(--space-4) var(--space-5); display: grid; gap: var(--space-3); }
-.hiw-limits h2 { margin: 0; font-size: var(--text-md); font-weight: 800; }
-.hiw-limits ul { margin: 0; padding-left: 1.1em; display: grid; gap: var(--space-2); }
-.hiw-limits li { max-width: 46em; color: var(--muted); font-size: var(--text-sm); line-height: 1.7; }
-
-@media (max-width: 560px) {
-  .hiw-steps > li { padding-left: 0; padding-top: 38px; }
-}
+.hiw-steps { margin: 0; padding: 0; list-style: none; counter-reset: hiw; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.hiw-steps > li { counter-increment: hiw; position: relative; padding: 60px 20px 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; display: flex; flex-direction: column; gap: 12px; }
+.hiw-steps > li::before { content: counter(hiw); position: absolute; left: 20px; top: 18px; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-green-soft); color: var(--brand-green); display: grid; place-items: center; font-size: var(--text-sm); font-weight: 800; }
+.hiw-steps h2 { margin: 0; font-size: 16px; font-weight: 700; }
+.hiw-steps p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
+.hiw-steps .hiw-example { margin-top: auto; padding-top: 8px; color: var(--subtle); font-size: 12px; }
+.hiw-limits { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted); padding: 16px 20px; display: grid; gap: 10px; }
+.hiw-limits h2 { margin: 0; font-size: var(--text-md); font-weight: 700; }
+.hiw-limits ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; }
+.hiw-limits li, .hiw-limits p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.hiw-start { justify-self: start; display: inline-flex; align-items: center; gap: 8px; }
+@media (max-width: 800px) { .hiw-steps { grid-template-columns: minmax(0, 1fr); } }
 
 @media (max-width: 800px) {
   .landing { margin-top: 18px; gap: var(--space-4); }
@@ -443,9 +411,6 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 }
 @media (max-width: 560px) {
   .landing-sub { font-size: var(--text-sm); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .landing-rotator > span { transition: none; }
 }
 
 .simple-workspace { margin-top: 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); align-items: start; }

@@ -28,6 +28,7 @@ export function OutcomeEditor({readOnly=false,target,snapshot,onSaveOutcome,onAn
   const [choices,setChoices]=useState<Record<string,Choice>>(restored?.choices ?? {});
   const [touched,setTouched]=useState<Record<string,boolean>>(()=>Object.fromEntries(Object.keys(restored?.answers ?? {}).map(id=>[id,true])));
   const [noteTouched,setNoteTouched]=useState(restored?.note!==undefined);
+  const [noteOpen,setNoteOpen]=useState(Boolean(restored?.note || note));
   const [complete,setComplete]=useState(restored?.complete ?? false);
   const [pending,setPending]=useState(false);
   const [error,setError]=useState('');
@@ -79,7 +80,9 @@ export function OutcomeEditor({readOnly=false,target,snapshot,onSaveOutcome,onAn
         {choices[q.id]?.mode==='coexist' && <input aria-label="适用情况" placeholder="例如：十二万是标准方案，十五万是加急方案" value={choices[q.id].applicability} onChange={e=>updateChoice(q.id,{applicability:e.target.value})} maxLength={4000}/>}
       </fieldset>}
     </div>)}
-    {target.kind==='action' && <><label htmlFor={`${prefix}-note`}>{questions.length?'补充说明，可留空':'跟进结果'}</label><textarea readOnly={readOnly} id={`${prefix}-note`} autoFocus={!questions.length} value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={2} maxLength={10000}/>
+    {target.kind==='action' && <>
+      {questions.length>0 && !noteOpen && <NqButton className={styles.addNote} variant="quiet" onClick={()=>setNoteOpen(true)}>添加补充说明</NqButton>}
+      {(!questions.length || noteOpen) && <><label htmlFor={`${prefix}-note`}>{questions.length?'补充说明，可留空':'跟进结果'}</label><textarea readOnly={readOnly} id={`${prefix}-note`} autoFocus={!questions.length} value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={2} maxLength={10000}/></>}
       {!correction && action?.executionState==='open' && <label className={styles.origin}><input type="checkbox" disabled={readOnly || pending} checked={complete} onChange={e=>setComplete(e.target.checked)}/> 同时标记行动完成</label>}
     </>}
     {error && <p role="alert" className={styles.error}>{error}</p>}

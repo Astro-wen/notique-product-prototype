@@ -16,6 +16,7 @@ export function AnalysisProgress({run,hasRecord,busy,error,canEdit,onStart,onRet
       {canEdit && run?.retryable && <NqButton variant="secondary" loading={busy} disabled={pending||busy} onClick={onRetry}>{summaryRefreshOnly?'更新全文概要':'重试失败部分'}</NqButton>}
       {canEdit && <NqButton variant="quiet" loading={busy} disabled={pending||busy} onClick={onStart}>{run?'重新整理':'整理记录'}</NqButton>}
     </div></div>
+    {pending && <p>可以先查看原文，稍后回到本次重点查看结果。</p>}
     {error && <p role="alert">{error}<NqButton variant="quiet" onClick={onReload}>读取最新进度</NqButton></p>}
     {run && <details><summary>查看整理进度</summary><ul>{run.stages.map(stage=><li key={stage.id}><span>{stage.name}</span><NqStatus tone={stage.state==='failed'?'pending':stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'info':stage.state==='succeeded'?'success':'info'}>{stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'可更新':statusLabel[stage.state]}</NqStatus></li>)}</ul>
       <p>{run.coverage.totalSegments>0?<>原文已处理 {run.coverage.completedSegments} / {run.coverage.totalSegments} 段{run.coverage.complete?'':'，其余范围仍需整理'}。</>:run.coverage.complete?'材料已处理完成。':'材料仍需整理。'}</p>

@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 test("read and copy without a single review decision", async ({ page, context }, info) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.getByRole("button", { name: "复制记录", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("记录已准备好");
+  await expect(page.getByRole("status")).toContainText("已复制记录");
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain("预算大约三十万元");
   expect(copied).toContain("希望年底前搬入");
@@ -63,7 +63,7 @@ test("accept once, complete without answering, then add a real answer", async ({
   const order = await page.locator('[data-testid^="bullet-"]').evaluateAll(items => items.map(item => item.getAttribute("data-testid")));
   expect(order).toEqual(["bullet-budget", "bullet-timing", "bullet-answer-fee", "bullet-quote"]);
   await page.getByRole("button", { name: "复制记录", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("记录已准备好");
+  await expect(page.getByRole("status")).toContainText("已复制记录");
   expect(await page.evaluate(() => navigator.clipboard.readText())).not.toContain("安装费用还没有确定");
   await page.screenshot({ path: info.outputPath("record-result.png"), fullPage: true });
 });

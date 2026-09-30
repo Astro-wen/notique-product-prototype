@@ -1,49 +1,52 @@
-# Notique: From conversations to reliable project memory
+# Notique 产品概览
 
-## Project introduction
+更新：2026-09-29。产品面向 PC，当前实现与限制见 [产品易用性复核](PRODUCT_USABILITY_REVIEW_2026-09-29.md)。
 
-Notique is an AI application prototype that turns ongoing client conversations into reviewable project memory. Users import transcripts, recordings, and photos; inspect an AI draft against its original evidence; and confirm the information that should carry forward. Confirmed records power decisions, preferences, change timelines, and meeting briefs. The project combines a product workflow with server APIs, persistent storage, background model execution, and an offline evaluation framework.
+## 产品要解决的事
 
-## User problem and scope
+重要沟通常常留下很多文字，却难以说明现在决定了什么、还有什么没有答案、下一步由谁做。下一次沟通又会修改上一份记录里的信息。
 
-For people managing ongoing client work, the difficult part of note-taking is often reconciling one conversation with the next. Preferences evolve, decisions get replaced, and an unresolved question can quietly disappear inside a new summary.
+Notique 把录音、逐字稿和笔记照片整理成可读、可复制的重点。用户按需核对重要内容，选择需要继续的事，再把执行结果带回同一份记录。项目回顾连接多次沟通的当前状态与最近变化。
 
-The prototype focuses on that continuity problem. Contractor, real-estate, and insurance scenarios provide development fixtures for exploring it. Those fixtures are synthetic; they are not evidence of validated demand in all three markets.
+适用情境包括持续客户沟通、工作项目和个人重要事务。行业示例用于开发和验证，市场需求仍通过实际用户使用评估。
 
-The core product question is: **Can AI reduce the effort of maintaining useful project memory while keeping each retained fact inspectable and under the user's control?**
+## 三条自然路径
 
-## The core experience
+1. 只读记录：添加材料，读重点或复制后离开。
+2. 处理重要信息：查看原话，确认或改正相关几条，保存后离开。
+3. 继续推进：加入跟进，补结果或直接补答案，从整个项目继续下一次沟通。
 
-1. Add material to a project conversation.
-2. Read the AI draft, with source references attached to its key points.
-3. Inspect the original quote, context, speaker, and audio timestamp where available.
-4. Confirm, edit, reject, or add information, and resolve proposed changes between records.
-5. Read a project brief or change timeline before the next conversation.
+完整初稿从零次确认起即可取用，带有草稿标识。已采纳内容由用户确认或修改。普通草稿、需要拍板与待跟进分别有各自的含义。
 
-Subsequent analysis uses previously confirmed memory. Unreviewed AI proposals do not silently become project facts.
+## 默认循环
 
-## Decisions and trade-offs
+材料 → 完整重点 → 按需决定 → 跟进 → 结果回流 → 项目当前状态 → 下一次沟通。
 
-| Decision | Benefit | Trade-off |
-| --- | --- | --- |
-| Human confirmation before lasting memory | Users control what becomes a formal record | Review effort becomes a key usability constraint |
-| Original evidence beside each proposal | Users can inspect the basis of a conclusion | Exact quotations alone do not prove semantic support |
-| Two-stage extraction and verification | Separates initial coverage from checking omissions and changes | Adds latency, cost, and orchestration complexity |
-| Deterministic reports from confirmed records | Prevents new unsupported assertions during reporting | Less flexible than unconstrained prose generation |
-| Persisted jobs and model response IDs | Refreshes and retries can resume existing work | Requires explicit states, recovery paths, and timing visibility |
+- 原话、上下文与音频按需查看，重点可以就地修改。
+- 同一行动重复采纳仍对应同一条跟进，负责人和完整日期有依据时展示。
+- 普通单目标结果只有一个主要输入框，补充说明按需展开。
+- 完成行动与回答问题分别记录，知道答案时可以直接回答。
+- 新答案更新重点、问题与项目回顾，相关派生概要按精确版本更新。
+- 记录页和项目回顾都能直接定位对应的跟进。
 
-## What the implementation demonstrates
+## 实现方式
 
-- A complete workflow from material import through review to reusable project views.
-- API and data design connecting conversations, source assets, model runs, proposed facts, evidence, and review decisions.
-- Background execution with persisted provider response IDs and retry-safe operations.
-- Product iteration around evidence readability, predictable navigation, refresh recovery, sequential review, and visible waiting time.
-- Evaluation that distinguishes raw AI output from the final result after human correction.
+前后端共用已编译的工作流类型和运行时校验。服务端复用信息、版本、支持判断和关系账本，保存用户决定、行动状态及结果。派生输出引用精确版本，各写入口使相关输出失效并重新更新。
 
-## Evidence and next iteration
+确认、决定和行动完成的同步请求复用已存结果。原文读取、标签切换和导航复用已有数据。概要生成及新材料处理使用持久化后台任务。
 
-The repository records a deployed prototype and desktop read-only validation of the Sites v17 release. It also records a public-meeting evaluation that exposed missed facts and weak semantic support in some citations. Those findings are useful development evidence, but formal concept validation remains incomplete.
+MCP 提供经授权的连接入口和只读工具。本站能力与第三方服务接入分开计量，个人授权及真实助手调用仍需验收。当前连接方案没有采用 Plaud 服务。
 
-The next priorities are to validate the new background pipeline with a fresh deployed run, improve fact coverage and citation support, measure review effort on complete user journeys, and complete mobile browser validation. Synthetic fixtures support regression checks; broader quality claims require independently reviewed data and repeated runs.
+## 当前证据
 
-See the [progress report](ERIC_MVP_PROGRESS.md), [evaluation guide](../eval/README.md), and [acceptance checklist](../tests/ACCEPTANCE_CHECKLIST.md) for the underlying evidence.
+工作流主路径具有工程与 PC 浏览器回归。2026-09-29 的易用性改进覆盖入口说明、跟进定位、结果填写、复制失败和连续写入。
+
+已有隔离线上合成样例的完整整理约需 7 分钟。自然定时恢复、真实首次使用者任务完成率、三十份授权素材的重复盲测尚需验收。独立标注的精度与召回、模型耗时、浏览器操作和用户理解分别记录。
+
+## 实现与验证文档
+
+- [前端实施规范](FRONTEND_TECHNICAL_PLAN.md)
+- [后端实施规范](BACKEND_TECHNICAL_PLAN.md)
+- [产品易用性复核](PRODUCT_USABILITY_REVIEW_2026-09-29.md)
+- [模型评估](../eval/README.md)
+- [验收清单](../tests/ACCEPTANCE_CHECKLIST.md)
