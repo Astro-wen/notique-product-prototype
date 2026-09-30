@@ -10,7 +10,7 @@ test('one cron tick makes one fixed, bounded request and logs only queue counts'
   const body = payload();body.data.queues.extraction.result = {sent: 1, dispatch: {sent: 2}, sweep: {requeuedExpiredRuns: 1}, text: privateText};
   await recover(env, {send: async (...args) => {calls.push(args); return Response.json(body);}, log: (...args) => logs.push(args), timeout: ms => {deadlines.push(ms); return new AbortController().signal;}});
   assert.equal(calls.length, 1);assert.equal(calls[0][0], 'https://notique-evidence-workspace.uclae2e12.chatgpt.site/api/internal/jobs/sweep');
-  assert.equal(calls[0][1].headers.Authorization, 'Bearer ' + privateText);assert.equal(calls[0][1].redirect, 'error');assert.equal(calls[0][1].method, 'POST');assert.equal(calls[0][1].body, '{}');assert.deepEqual(deadlines, [840000]);
+  assert.equal(calls[0][1].headers.Authorization, 'Bearer ' + privateText);assert.equal(calls[0][1].redirect, 'manual');assert.equal(calls[0][1].method, 'POST');assert.equal(calls[0][1].body, '{}');assert.deepEqual(deadlines, [840000]);
   assert.equal(logs[0][1].queues.extraction.sent, 3);assert.equal(logs[0][1].queues.extraction.recovered, 1);assert.equal(logs[0][1].state, 'succeeded');assert.ok(!JSON.stringify(logs).includes(privateText));
 });
 
@@ -44,4 +44,14 @@ test('the default network call retains the Workers global receiver', async () =>
     await recover(env, {log: (...args) => logs.push(args)});
     assert.equal(logs[0][1].state, 'succeeded');
   } finally {globalThis.fetch = original;}
+});
+
+test('redirect responses stop after the fixed request without forwarding credentials', async () => {
+  let calls = 0; const logs = [];
+  await recover(env, {send: async (_url, init) => {
+    calls++; assert.equal(init.redirect, 'manual');
+    return new Response(null, {status: 307, headers: {Location: 'https://example.com/'}});
+  }, log: (...args) => logs.push(args)});
+  assert.equal(calls, 1);
+  assert.deepEqual(logs, [['notique_recovery', {state: 'http_failed', status: 307}]]);
 });

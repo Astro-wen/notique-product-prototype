@@ -45,7 +45,7 @@ export async function recover(env, {send = (url, init) => globalThis.fetch(url, 
   let phase = 'request';
   try {
     const response = await send(ENDPOINT, {
-      method: 'POST', redirect: 'error', signal,
+      method: 'POST', redirect: 'manual', signal,
       headers: {'Authorization': 'Bearer ' + token, 'User-Agent': 'Notique-Recovery/1.0', 'Content-Type': 'application/json', 'Accept': 'application/json'},
       body: '{}',
     });
