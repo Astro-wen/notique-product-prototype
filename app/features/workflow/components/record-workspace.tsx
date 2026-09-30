@@ -50,7 +50,7 @@ export type RecordWorkspaceProps = {
   onDecide: (cardId: string, request: DecisionRequest) => Promise<void>;
   onTransition: (actionId: string, request: ActionTransitionRequest) => Promise<void>;
   onAnswer: (questionId: string, request: QuestionAnswerRequest) => Promise<void>;
-  onReport: (request: ReportRequest) => Promise<string>;
+  onReport: (request: ReportRequest, signal?:AbortSignal) => Promise<string>;
   onContinue?: () => void;
 };
 const subscribeReady = () => () => {};
@@ -111,6 +111,8 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const [sourceState, setSourceState] = useState<"idle" | "loading" | "error">("idle");
   const [sourceTrigger, setSourceTrigger] = useState<string>();
   const [copyFallback, setCopyFallback] = useState<string | null>(null);
+  const copyController=useRef<AbortController|null>(null);
+  useEffect(()=>()=>{copyController.current?.abort(new DOMException('已切换记录','AbortError'));},[]);
   const [filter, setFilter] = useState<"all" | "decisions" | "accepted">("all");
   const inputId = useId();
   const lastDecision=snapshot.recentDecisions?.[0];
@@ -119,7 +121,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   useDraftCheckpoint(editor && inlineClaim && (editor.touched || editor.origin!==editor.initialOrigin)?{kind:'inline',targetId:editor.id,mode:editor.kind,claimId:inlineClaim,...(editor.touched?{value:editor.value}:{}),origin:editor.origin,...(editor.questionChoices?{questionChoices:editor.questionChoices}:{})}:null);
   const unrestored=Boolean(recoveries.inline&&!editor || recoveries.outcome&&!outcomeEditor || recoveries.members&&!memberTarget || recoveries.conflict&&!conflictTarget || recoveries.question&&!questionTarget);
   const dirty = (editor !== null && (editor.touched || editor.value !== editor.initial || editor.origin!==editor.initialOrigin)) || outcomeEditor !== null || conflictTarget !== null || highlightOpen || memberTarget!==null || questionTarget!==null || unrestored && retainedDrafts.length>0;
-  const decisionLocked = writing || dirty;
+  const decisionLocked = writing || dirty || pending.has('report');
   function changeFilter(next: typeof filter) {
     if (dirty && next !== filter) { setError("请先保存或取消当前输入，再切换重点范围。"); return; }
     if (next === "decisions") setPriorityLimit(5);
@@ -149,6 +151,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     finally { setPending(ids => { const next = new Set(ids); next.delete(id); return next; }); }
   }
   function openEditor(next: Editor) {
+    if(copyController.current){setError('正在同步记录，复制完成后再修改。');return;}
     if (dirty && editor?.id !== next.id) { setError("当前还有未保存的输入，请先保存或取消。"); return; }
     if(outcomeEditor) {setError("请先保存或取消当前结果。");return;}
     if ([...pending].some((id) => id !== 'report' && id !== 'progress')) {
@@ -213,12 +216,21 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     }, current.kind === "edit" ? "修改已保存，记录已更新。" : "答案已保存，已更新重点。");
   }
   async function copy(scope: ReportRequest["scope"]) {
+    if(copyController.current)return;
+    if(dirty && !writing){setError('请先保存或取消当前输入，再复制记录。');return;}
+    const controller=new AbortController();
+    copyController.current=controller;
+    const timeout=window.setTimeout(()=>controller.abort(new Error('同步超过15秒，请核对保存结果后重新复制。你的输入仍然保留。')),15_000);
+    setCopyFallback(null);setFeedback('正在同步记录…');
     let copied = false;
-    await run("report", async () => {
-      const content = await onReport({ expectedContextVersion: snapshot.contextVersion, scope, eventIds: eventId ? [eventId] : [], format: "plain_text" });
-      try { await navigator.clipboard.writeText(content); copied = true; }
-      catch { setCopyFallback(content); }
-    }, () => copied ? scope === "mixed" ? "已复制记录，草稿与已采纳内容均带标识。" : "已复制已采纳内容。" : "记录已准备好，请在窗口中复制。");
+    try {
+      await run("report", async () => {
+        const content = await onReport({ expectedContextVersion: snapshot.contextVersion, scope, eventIds: eventId ? [eventId] : [], format: "plain_text" },controller.signal);
+        controller.signal.throwIfAborted();window.clearTimeout(timeout);
+        try { await navigator.clipboard.writeText(content); copied = true; }
+        catch { controller.signal.throwIfAborted();setCopyFallback(content); }
+      }, () => copied ? scope === "mixed" ? "已复制记录，草稿与已采纳内容均带标识。" : "已复制已采纳内容。" : "记录已准备好，请在窗口中复制。");
+    } finally {window.clearTimeout(timeout);if(copyController.current===controller)copyController.current=null;}
   }
   async function openSources(card: ReviewCard, trigger: string) {
     const epoch=++sourceEpoch.current;
@@ -310,7 +322,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const titleFor = (claimId: string) => snapshot.bullets.find((b) => b.claimRefs.some((r) => r.claimId === claimId))?.text ?? "跟进事项";
   const renderEditor = (id: string) => queuedEditor?.id === id ? <p className={styles.notice} role="status">正在更新记录，完成后会打开修改。</p> : editor?.id === id && <form id={`workflow-editor-${id}`} className={styles.editor} onSubmit={(event) => { event.preventDefault(); void saveEditor(); }}>
     <label htmlFor={inputId}>{editor.kind === "edit" ? "修改重点" : "补充答案"}</label>
-    <textarea id={inputId} readOnly={!canEdit} autoFocus value={editor.value} onChange={(event) => {setError("");setEditor({ ...editor, value: event.target.value,touched:true });}} maxLength={4000} rows={3} placeholder={editor.kind === "answer" ? "例如：供应商报价十二万元，包含安装。" : undefined} />
+    <textarea id={inputId} readOnly={!canEdit || pending.has(id)} autoFocus value={editor.value} onChange={(event) => {setError("");setEditor({ ...editor, value: event.target.value,touched:true });}} maxLength={4000} rows={3} placeholder={editor.kind === "answer" ? "例如：供应商报价十二万元，包含安装。" : undefined} />
     {editor.kind === "edit" && <label className={styles.origin}>修改依据<select aria-label="修改依据" disabled={!canEdit} value={editor.origin} onChange={(event) => setEditor({ ...editor, origin: event.target.value as Editor["origin"] })}><option value="source_statement">按原话修正</option><option value="user_input">我补充的信息</option></select></label>}
     {editor.kind === "edit" && editor.base?.reviewCards.find(c=>c.id===editor.id)?.members[0]?.answerTargets?.length && <FactAnswerReview member={editor.base.reviewCards.find(c=>c.id===editor.id)!.members[0]} choices={editor.questionChoices} disabled={!canEdit || pending.has(id)} onChange={questionChoices=>{setError("");setEditor({...editor,questionChoices,touched:true});}}/>}
     {editor.conflict && <div className={styles.notice}><p>{recoveries.inline?"已恢复读取，请核对当前内容后保存。你的输入仍然保留。":"内容已有变化，你的输入仍然保留。"}</p><p>当前内容：{snapshot.reviewCards.find(c=>c.id===editor.id)?.title ?? snapshot.bullets.find(b=>b.claimRefs.some(r=>r.claimId===editor.id))?.text ?? "这条内容已移出当前记录"}</p><NqButton variant="secondary" onClick={()=>setEditor({...editor,base:snapshot,conflict:false,origin:snapshot.reviewCards.find(c=>c.id===editor.id)?.members[0]?.origin === "user_input" ? "user_input" : editor.origin,questionChoices:snapshot.reviewCards.find(c=>c.id===editor.id)?.members[0]?factChoicesFor(snapshot.reviewCards.find(c=>c.id===editor.id)!.members[0],editor.questionChoices):{}})}>核对后采用当前版本</NqButton></div>}
@@ -391,7 +403,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     {!embedded && <div className={styles.topbar}><Link href="/?view=simple"><ArrowLeft size={15} /> 工作空间</Link><span>Notique AI</span></div>}
     <header className={styles.header}>
       <div>{!embedded && <><p className={styles.eyebrow}>沟通记录</p><h1>{title}</h1><p className={styles.subtitle}>{subtitle}</p></>}{embedded && <p className={styles.subtitle}>读完即可带走，需要修改的内容就在这里处理。</p>}</div>
-      <div className={styles.headerActions}>{onHighlight && onHighlightSources && canEdit && <NqButton id="add-source-highlight" variant="quiet" onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setHighlightOpen(true);}}>从原文补充</NqButton>}{onOpenTranscript && <NqButton variant="quiet" onClick={onOpenTranscript}>查看原文</NqButton>}<NqButton onClick={() => void copy("mixed")} loading={pending.has("report")}><Copy size={15} />复制记录</NqButton><details className={styles.menu}><summary aria-label="记录的更多操作"><ChevronDown size={16} /></summary><div><button onClick={() => void copy("accepted")}>仅导出已采纳内容</button></div></details></div>
+      <div className={styles.headerActions}>{onHighlight && onHighlightSources && canEdit && <NqButton id="add-source-highlight" variant="quiet" disabled={pending.has('report')} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setHighlightOpen(true);}}>从原文补充</NqButton>}{onOpenTranscript && <NqButton variant="quiet" onClick={onOpenTranscript}>查看原文</NqButton>}<NqButton onClick={() => void copy("mixed")} loading={pending.has("report")}><Copy size={15} />{pending.has('report')?'正在同步记录':'复制记录'}</NqButton><details className={styles.menu}><summary aria-label="记录的更多操作"><ChevronDown size={16} /></summary><div><button disabled={pending.has('report')} onClick={() => void copy("accepted")}>仅导出已采纳内容</button></div></details></div>
     </header>
     {analysisPanel}
     {(feedback || canEdit && onRevert && lastDecision && !lastDecision.reverted) && <div className={styles.feedback} aria-live="polite" role="status">{feedback}{canEdit && onRevert && lastDecision && !lastDecision.reverted && <NqButton variant="quiet" loading={pending.has(lastDecision.id)} disabled={decisionLocked} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}void run(lastDecision.id,()=>onRevert(lastDecision.id,{expectedContextVersion:snapshot.contextVersion,expectedDecisionRevision:lastDecision.revision}),"已撤销这次处理，记录已恢复。");}}>撤销上次处理</NqButton>}</div>}

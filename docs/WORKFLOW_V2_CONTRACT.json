@@ -268,7 +268,7 @@
     {
       "name": "ReportRequest",
       "fields": "expectedContextVersion、scope、eventIds、format",
-      "rules": "scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本"
+      "rules": "scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本。前端等待已提交保存及显示同步后再确定 expectedContextVersion，15秒超时或切换记录结束等待，外部版本冲突后读取最新内容并提示重新复制"
     },
     {
       "name": "ReportSnapshot",

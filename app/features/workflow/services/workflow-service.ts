@@ -5,8 +5,8 @@ import type { MentionDecisionRequest, AnalysisRun, StartAnalysisRequest, RetryAn
 import type { RecordSource } from '../components/record-workspace';
 
 const id = encodeURIComponent;
-async function post<T>(path: string, body: unknown, key: string): Promise<T> {
-  return (await request<ApiSuccess<T>>(`/api/v2/${path}`, {method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify(body)})).data;
+async function post<T>(path: string, body: unknown, key: string, signal?:AbortSignal): Promise<T> {
+  return (await request<ApiSuccess<T>>(`/api/v2/${path}`, {method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify(body),signal})).data;
 }
 export const workflowService = {
   startAnalysis:(eventId:string,body:StartAnalysisRequest,key:string)=>post<AnalysisRun>(`events/${id(eventId)}/analysis`,body,key),
@@ -47,7 +47,7 @@ export const workflowService = {
   answer: (questionId:string, body:QuestionAnswerRequest, key:string)=>post<MutationReceipt>(`questions/${id(questionId)}/answers`,body,key),
   outcome: (actionId:string, body:OutcomeRequest, key:string)=>post<MutationReceipt>(`actions/${id(actionId)}/outcomes`,body,key),
   correction: (outcomeId:string, body:OutcomeCorrectionRequest, key:string)=>post<MutationReceipt>(`outcomes/${id(outcomeId)}/corrections`,body,key),
-  report: (projectId:string, body:ReportRequest, key:string)=>post<ReportSnapshot>(`projects/${id(projectId)}/reports`,body,key),
+  report: (projectId:string, body:ReportRequest, key:string, signal?:AbortSignal)=>post<ReportSnapshot>(`projects/${id(projectId)}/reports`,body,key,signal),
   async sources(ids:string[]):Promise<RecordSource[]> {
     return Promise.all(ids.map(async evidenceRefId=>{
       const ref = await api.getEvidence(evidenceRefId);

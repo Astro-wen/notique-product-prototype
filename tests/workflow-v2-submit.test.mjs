@@ -27,6 +27,45 @@ test('serial writes never overlap and the queue continues after rejection',async
   release();await Promise.all([rejected,second]);assert.deepEqual(order,['first','second']);
 });
 
+test('copy prepares its version after the save and its display refresh',async()=>{
+  const session=new SubmitSession(),sent=[];
+  let release,version=1;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const save=session.run('save',{expectedContextVersion:1},async()=>{await gate;version=2;});
+  const report=session.runLatest('report',()=>({expectedContextVersion:version}),async(key,payload)=>{sent.push(payload);return 'new record';});
+  await Promise.resolve();assert.equal(sent.length,0);
+  release();await save;assert.equal(await report,'new record');
+  assert.deepEqual(sent,[{expectedContextVersion:2}]);
+});
+
+test('a failed pending save stops copying while the writer remains usable',async()=>{
+  const session=new SubmitSession();let release,sent=false;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const save=session.run('save',{},async()=>{await gate;throw Error('save failed');});
+  const report=session.runLatest('report',()=>({}),async()=>{sent=true;});
+  const failedSave=assert.rejects(save,/save failed/),failedCopy=assert.rejects(report,/save failed/);
+  release();await Promise.all([failedSave,failedCopy]);assert.equal(sent,false);
+  assert.equal(await session.run('retry',{},async()=>true),true);
+});
+
+test('aborting a queued copy does not cancel saving or later submit a report',async()=>{
+  const session=new SubmitSession(),controller=new AbortController();let release,saved=false,sent=false;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const save=session.run('save',{},async()=>{await gate;saved=true;});
+  const report=session.runLatest('report',()=>({}),async()=>{sent=true;},controller.signal);
+  const cancelled=assert.rejects(report,/changed record/);
+  controller.abort(Error('changed record'));await cancelled;
+  assert.equal(saved,false);release();await save;
+  await session.run('next',{},async()=>true);assert.equal(saved,true);assert.equal(sent,false);
+});
+
+test('copy retries a lost report with the same key and the refreshed payload',async()=>{
+  const session=new SubmitSession(),seen=[];
+  await assert.rejects(session.runLatest('report',()=>({version:2}),async(key,payload)=>{seen.push({key,payload});throw Error('lost');}));
+  await session.runLatest('report',()=>({version:2}),async(key,payload)=>{seen.push({key,payload});});
+  assert.deepEqual(seen[0],seen[1]);
+});
+
 test('defer and restore preserve acceptance, are personal, and do not generate new narratives',async t=>{
   const f=await workflowDatabase();t.after(f.close);seed(f.sqlite);
   insert(f.sqlite,'workspace_members',{id:'other-member',workspace_id:'ws',actor_id:'other',role:'editor'});

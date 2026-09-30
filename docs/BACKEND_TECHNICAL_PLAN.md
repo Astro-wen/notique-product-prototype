@@ -108,7 +108,7 @@ HTTP 与 MCP 经过身份和资源权限进入服务层。业务事务写入账�
 
 **写入的数据：**新版本、verdict、延期状态、依赖失效、outbox、幂等回执。组合操作要么全部成功，要么返回成员冲突。
 
-**排队、空值、失败和权限表现：**批阅保存是同步事务，概要生成是可重试后台任务。零采纳仍返回完整可读草稿，混合报告保留逐项标识。仅已确认导出为空时明确范围，主复制入口仍可用。
+**排队、空值、失败和权限表现：**批阅保存是同步事务，概要生成是可重试后台任务。复制在前端串行提交队列中等待已提交保存及快照同步完成，再使用回执对应的最新 contextVersion 请求报告。服务端沿用版本校验和报告幂等回执，版本冲突时返回409供前端刷新。零采纳仍返回完整可读草稿，混合报告保留逐项标识。仅已确认导出为空时明确范围，主复制入口仍可用。
 
 **模块验收点：**来源相同但语义不同的两项可独立判断，更正一项只影响真实依赖，重复提交和过期提交均有确定结果。
 
@@ -379,7 +379,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | SourceHighlightRequest | expectedContextVersion、assetVersionId、ranges | ranges 为 segmentId、startOffset、endOffset 的数组，引用已有原文片段。服务端重建原话，保存已采纳的用户选录，重复选录返回既有结果。范围使用 UTF-16 半开区间，最多20段与4000代码单元，精确范围保存于版本 source_selection。原文就绪后即可选录，重复选录沿用既有信息且不重复投递概要任务 |
 | ReviewProgressRequest | snapshotId、lastCardId、mode | mode=bookmark/finish_session。当前主体可以用阅读权限保存个人位置，校验快照、卡片归属与权限。结束本次允许存在待办，后续 bookmark 恢复阅读。保存位置保持采纳状态、业务版本和任务队列原值。 |
 | ReviewProgress | lastCardId、finishedAt、remainingCount | remainingCount 为当前需要拍板的数量，允许大于零，普通草稿另行计数 |
-| ReportRequest | expectedContextVersion、scope、eventIds、format | scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本 |
+| ReportRequest | expectedContextVersion、scope、eventIds、format | scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本。前端等待已提交保存及显示同步后再确定 expectedContextVersion，15秒超时或切换记录结束等待，外部版本冲突后读取最新内容并提示重新复制 |
 | ReportSnapshot | id、contextVersion、scope、content、createdAt | 确定性文本或 Markdown 成稿，引用、覆盖范围和未决问题随结果保存 |
 | StartAnalysisRequest | sourceRevision、mode | mode=initial/reorganize。原始材料确认保存时在同一事务递增sourceRevision并保存初始分析意图，initial复用同一输入，reorganize为显式操作。派生转写与内部音频分块沿用原始提交 |
 | RetryAnalysisRequest | expectedRunRevision、stageIds | 限当前运行中允许重试的失败阶段，或已成功但提示词过期的概要阶段。事务核对权限、材料、当前运行与阶段修订。过期概要从现有重点重建，保留提取阶段及旧任务审计。旧请求回执只存运行ID |

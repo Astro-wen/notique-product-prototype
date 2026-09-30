@@ -462,3 +462,14 @@ Sites版本83于2026-09-30 00:03:34 UTC部署成功，源提交5d099da28cadc7235
 飞书规范最终前端revision91、后端revision83，规则表、普通确认和后备续接段落与本地逐字一致，原章节、画板、链接、区块ID和未改样式保持。证据为/private/tmp/notique-feishu-human-review-sync/verification.json与/private/tmp/notique-feishu-bounded-recovery-sync/verification.json。工程日志/private/tmp/notique-v2-final-acceptance-engineering.log，完整页面产物/private/tmp/notique-v2-human-review-all-pc。
 
 最终提交、Sites保存版本、部署终态与上线后隔离QA回执保存在outputs/workflow-v2/final-release-verification.json。自然定时触发、个人MCP授权、30份真实材料盲测和五位独立使用者仍分别待验收。首次模型分析的高延迟作为已测问题保留。
+
+
+## 保存后复制收尾验收 2026-09-29
+
+复制请求现在等待同一记录已提交的保存及快照同步，再确定报告版本。点击一次后自动复制最新记录。等待超过15秒或保存失败时保留输入并提示重试，切换记录后结束旧请求。外部版本冲突时先刷新内容，再提示重新复制。剪贴板受限时提供可选择的全文。
+
+SubmitSession 新增 runLatest，沿用原提交队列与幂等键。报告接口继续使用 expectedContextVersion，状态与 API 字段保持现有契约。前后端规范和契约中的报告规则已同步。
+
+8项提交队列专项检查通过。完整1208项工程检查、类型、lint、生产构建及包内秘密审计通过。桌面1440×900和笔记本1366×768共38条实际浏览器路径通过，其中12条验证保存与复制、超时、失败、外部更新和连续修改，26条验证权限恢复、输入保留、账号变化、剪贴板和跟进结果。
+
+GitHub 后台恢复首次自然运行36673335316已成功，实际计数为空且最终为idle。该结果证明定时触发和鉴权。任务自然完成继续使用单独合成记录观察。

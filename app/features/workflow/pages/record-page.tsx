@@ -177,7 +177,21 @@ function LoadedRecordPage({focusClaimId,projectId,eventId,title,subtitle,onConti
       onAnswer={(id,body)=>mutate(`answer/${id}`,body,(key,request)=>workflowService.answer(id,request,key))}
       onOutcome={(id,body)=>mutate(`outcome/${id}`,body,(key,request)=>workflowService.outcome(id,request,key))}
       onCorrection={(id,body)=>mutate(`correction/${id}`,body,(key,request)=>workflowService.correction(id,request,key))}
-      onReport={body=>submissions.run(`report/${projectId}`,body,async(key,frozen)=>{assertActive();try{const report=await workflowService.report(projectId,frozen as typeof body,key);assertActive();return report.content;}catch(e){if(accessError(e))onDenied(e,epoch);throw e;}})}
+      onReport={(body,signal)=>submissions.runLatest(`report/${projectId}`,()=>{
+        assertActive();
+        const latest=client.getQueryData<WorkspaceSnapshot>(queryKey);
+        if(!latest || latest.contextVersion<(minimum.current??0))throw new Error('记录还在同步，请稍后重新复制。');
+        verifyIdentity(latest);
+        return {...body,expectedContextVersion:latest.contextVersion};
+      },async(key,frozen)=>{
+        assertActive();
+        try {const report=await workflowService.report(projectId,frozen as typeof body,key,signal);assertActive();return report.content;}
+        catch(e){
+          if(accessError(e))onDenied(e,epoch);
+          if(e instanceof ApiClientError && e.status===409){await refresh().catch(()=>undefined);throw new Error('记录已有更新，请核对最新内容后重新复制。');}
+          throw e;
+        }
+      },signal)}
       onContinue={onContinue}/>
   </MemoryDraftContext.Provider>;
 }

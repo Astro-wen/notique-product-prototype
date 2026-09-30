@@ -111,7 +111,7 @@ M1 产生可读内容，M2 形成已采纳重点与行动，M3 将新答案带�
 - 每张卡只有一个明确主动作，例如确认金额、采用新预算或加入跟进，旁边写明更新去向。改一下就地编辑，不采纳、稍后和历史放在更多菜单。
 - 点击出处跳到原话或音频。发现遗漏可选中原话并补进重点，保存为用户选录原文。处理任意数量后都可直接离开，结束本次为可选操作。
 - 从原文补充入口打开 PC 选录窗口。左侧拖选原文或用键盘选录整段，右侧预览保存内容。保存失败保留选择，遇到版本变化后重新核对原文，再保存。关闭未保存选择时可继续或放弃。原文读取复用材料与逐字稿接口，按当前源版本筛选。
-- 主入口复制记录带走当前完整内容，草稿逐项带标识。仅已确认作为次级导出选项，用户从零次批阅开始就能得到有用结果。剪贴板成功写入后显示已复制，浏览器限制复制时展开可选择的正文。导航中的项目名称负责定位，需要拍板与待跟进数量显示在对应内容区域。
+- 主入口复制记录带走当前完整内容，草稿逐项带标识。点击后显示正在同步记录，等待本页已提交的保存及显示同步完成，再按最新回执版本自动复制。保存失败或等待超过15秒时提示重试，输入继续保留。切换记录或账号后结束本次复制。外部更新造成版本冲突时读取最新记录，用户核对后重新复制。仅已确认作为次级导出选项，用户从零次批阅开始就能得到有用结果。剪贴板成功写入后显示已复制，浏览器限制复制时展开可选择的正文。导航中的项目名称负责定位，需要拍板与待跟进数量显示在对应内容区域。
 
 一项具体任务连同原文明确的负责人和任务期限形成一个行动入口，独立预算、审批条件、全局期限和另一项任务各自保留。负责人和日期作为该任务的属性展示，来源未知的字段留空。原文已指派的责任按原句呈现，原文确实提出建议时保留建议语气。草稿标签表示平台尚未批阅，AI来源表示提取或生成途径。
 
@@ -387,7 +387,7 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 | SourceHighlightRequest | expectedContextVersion、assetVersionId、ranges | ranges 为 segmentId、startOffset、endOffset 的数组，引用已有原文片段。服务端重建原话，保存已采纳的用户选录，重复选录返回既有结果。范围使用 UTF-16 半开区间，最多20段与4000代码单元，精确范围保存于版本 source_selection。原文就绪后即可选录，重复选录沿用既有信息且不重复投递概要任务 |
 | ReviewProgressRequest | snapshotId、lastCardId、mode | mode=bookmark/finish_session。当前主体可以用阅读权限保存个人位置，校验快照、卡片归属与权限。结束本次允许存在待办，后续 bookmark 恢复阅读。保存位置保持采纳状态、业务版本和任务队列原值。 |
 | ReviewProgress | lastCardId、finishedAt、remainingCount | remainingCount 为当前需要拍板的数量，允许大于零，普通草稿另行计数 |
-| ReportRequest | expectedContextVersion、scope、eventIds、format | scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本 |
+| ReportRequest | expectedContextVersion、scope、eventIds、format | scope=accepted/mixed，format=markdown/plain_text。复制记录显式传 mixed，已确认导出传 accepted，混合内容逐项标明草稿并保存版本。前端等待已提交保存及显示同步后再确定 expectedContextVersion，15秒超时或切换记录结束等待，外部版本冲突后读取最新内容并提示重新复制 |
 | ReportSnapshot | id、contextVersion、scope、content、createdAt | 确定性文本或 Markdown 成稿，引用、覆盖范围和未决问题随结果保存 |
 | StartAnalysisRequest | sourceRevision、mode | mode=initial/reorganize。原始材料确认保存时在同一事务递增sourceRevision并保存初始分析意图，initial复用同一输入，reorganize为显式操作。派生转写与内部音频分块沿用原始提交 |
 | RetryAnalysisRequest | expectedRunRevision、stageIds | 限当前运行中允许重试的失败阶段，或已成功但提示词过期的概要阶段。事务核对权限、材料、当前运行与阶段修订。过期概要从现有重点重建，保留提取阶段及旧任务审计。旧请求回执只存运行ID |
