@@ -1,6 +1,6 @@
 {
   "docUrl": "https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf",
-  "revision": 51,
+  "revision": 170,
   "templateUrl": "https://mcnl4dcjt5d8.feishu.cn/wiki/X6RhwmB4qivYfHkg5sdc9qnlnIh",
   "templateRevision": 52,
   "headingsVerified": true,
@@ -17,11 +17,15 @@
   "nativeImageAssetReadVerified": true,
   "nativeFlowExportsVerified": true,
   "coreTextReadbackVerified": true,
-  "stateNote": "主题归并与独立行动结果回流已完成本地 PC 实现和操作验证，线上验收随后更新。个人 MCP 与用户及模型质量验收分别记录。",
+  "stateNote": "线上合成案例已走通记录采纳、行动完成、独立补结果、原话、复制、修正、撤回、直接补答案、项目回顾和重开。全文概要仍在生成。首次复制刷新重试后通过，偶发原因继续排查，版本校验修正正在回归与发布。 个人 MCP 与用户及模型质量验收分别记录。",
   "repoFiles": [
     "docs/NOTIQUE_PRD_V15.md",
     "docs/assets/prd-v15/"
   ],
   "gitCommitPerformed": false,
-  "independentResultScreenshotReadbackVerified": true
+  "independentResultScreenshotReadbackVerified": true,
+  "cloudImageInstancesAtReadback": 21,
+  "otherEditorContentPreserved": true,
+  "latestVerificationScope": "仅精确更新当前验证状态和独立结果图片，读回 20 行交互表、20 张表内截图和 3 张原生流程图。云文档其他编辑新增章节与顶层图片保留，本地只同步本次状态。原始标题与图样核验为此前记录。",
+  "nativeImageBytesMatchSource": true
 }

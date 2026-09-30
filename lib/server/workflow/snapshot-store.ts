@@ -15,7 +15,9 @@ export class WorkflowFault extends Error {
 /** Columns are static application identifiers. Values always use bound parameters. */
 function collection(table: string, columns: string[], predicate: string, joins = ''): string {
   const entries=columns.flatMap(column=>{const alias=column.match(/ AS ([a-zA-Z_][a-zA-Z_0-9]*)$/);return [`'${alias?.[1] ?? column.split('.').at(-1)}'`,alias?column.slice(0,-alias[0].length):column];});
-  return `(SELECT COALESCE(json_group_array(json_object(${entries.join(',')})), '[]') FROM ${table} ${joins} WHERE ${predicate})`;
+  // Snapshot fences compare serialized collections. SQL scan order is not
+  // business state; sort before aggregation so identical data has one encoding.
+  return `(SELECT COALESCE(json_group_array(json(entry)), '[]') FROM (SELECT json_object(${entries.join(',')}) AS entry FROM ${table} ${joins} WHERE ${predicate} ORDER BY entry))`;
 }
 const owned = 'x.workspace_id = p.workspace_id AND x.project_id = p.id';
 const liveEvent = `EXISTS (SELECT 1 FROM events alive WHERE alive.id = x.event_id AND alive.workspace_id = p.workspace_id AND alive.project_id = p.id AND alive.material_status <> 'archived')`;
@@ -32,19 +34,21 @@ const mentionPayload = "CASE WHEN json_valid(x.evidence_ref_json) THEN x.evidenc
 const mentionItem = "CASE WHEN item.type='object' THEN item.value ELSE '{}' END";
 const mentionVersion = `json_extract(${mentionItem},'$.assetVersionId')`;
 const mentionSegmentIds = `CASE WHEN json_valid(json_extract(${mentionItem},'$.segmentIdsJson')) THEN json_extract(${mentionItem},'$.segmentIdsJson') ELSE '[]' END`;
-const mentionSources = `(SELECT COALESCE(json_group_array(json_object('ordinal',CAST(item.key AS INTEGER),'asset_version_id',av.id,
+const mentionSources = `(SELECT COALESCE(json_group_array(json(source_entry)), '[]') FROM (SELECT json_object('ordinal',CAST(item.key AS INTEGER),'asset_version_id',av.id,
   'availability',CASE WHEN a.id IS NULL OR item.type<>'object' THEN 'missing'
     WHEN a.current_version_id IS NULL OR a.current_version_id<>av.id OR a.processing_status<>'ready'
       OR COALESCE(a.failure_code,'') IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED')
       OR (json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NOT NULL AND NOT EXISTS
         (SELECT 1 FROM assets audio WHERE audio.workspace_id=p.workspace_id AND audio.project_id=p.id AND audio.event_id=x.event_id AND audio.kind='audio' AND audio.current_version_id=json_extract(a.metadata_json,'$.source_audio_asset_version_id'))) THEN 'stale' ELSE 'ready' END,
-  'segments_json',(SELECT COALESCE(json_group_array(json_object('id',ts.id,'text',ts.text_raw)), '[]')
+  'segments_json',(SELECT COALESCE(json_group_array(json(segment_entry)), '[]') FROM (SELECT json_object('id',ts.id,'text',ts.text_raw) AS segment_entry
     FROM json_each(${mentionSegmentIds}) picked
     JOIN text_segments ts ON ts.id=picked.value AND ts.asset_version_id=av.id AND ts.asset_id=a.id
-      AND ts.workspace_id=p.workspace_id AND ts.project_id=p.id AND ts.event_id=x.event_id)
-  )), '[]') FROM json_each(${mentionPayload},'$.evidence') item
+      AND ts.workspace_id=p.workspace_id AND ts.project_id=p.id AND ts.event_id=x.event_id
+    ORDER BY CAST(picked.key AS INTEGER),ts.id))
+  ) AS source_entry FROM json_each(${mentionPayload},'$.evidence') item
   LEFT JOIN asset_versions av ON av.id=${mentionVersion}
-  LEFT JOIN assets a ON a.id=av.asset_id AND a.workspace_id=p.workspace_id AND a.project_id=p.id AND a.event_id=x.event_id)`;
+  LEFT JOIN assets a ON a.id=av.asset_id AND a.workspace_id=p.workspace_id AND a.project_id=p.id AND a.event_id=x.event_id
+  ORDER BY CAST(item.key AS INTEGER)))`;
 const fields = {
   mentions: collection('claim_occurrence_candidates x', ['x.id','x.event_id','x.extraction_run_id','x.target_claim_id','x.target_claim_version_id','x.base_version_id','x.status','x.evidence_ref_json','x.created_at','target_version.statement AS target_statement',`${mentionSources} AS evidence_sources_json`,
     `EXISTS (SELECT 1 FROM occurrence_verdicts verdict JOIN claim_occurrences occurrence ON occurrence.occurrence_verdict_id=verdict.id JOIN evidence_refs er ON er.id=occurrence.evidence_ref_id
@@ -60,7 +64,7 @@ const fields = {
   evidence: collection('evidence_refs x', ['x.id','x.claim_version_id','x.kind','x.evidence_role','x.structural_validation_status','x.semantic_support_verdict', `CASE WHEN x.kind = 'user_note' THEN CASE WHEN EXISTS (SELECT 1 FROM user_notes n WHERE n.id = x.user_note_id AND n.workspace_id = p.workspace_id AND n.project_id = p.id AND n.claim_id = cv.claim_id AND length(n.author_id) > 0) THEN 'ready' ELSE 'missing' END WHEN a.id IS NULL THEN 'missing' WHEN json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM assets audio WHERE audio.workspace_id=a.workspace_id AND audio.event_id=a.event_id AND audio.kind='audio' AND audio.current_version_id=json_extract(a.metadata_json,'$.source_audio_asset_version_id')) THEN 'stale' WHEN a.current_version_id IS NULL OR a.current_version_id <> x.asset_version_id OR a.processing_status <> 'ready' THEN 'stale' ELSE 'ready' END AS availability`], ownedEvent,
     `JOIN claim_versions cv ON cv.id = x.claim_version_id JOIN claims c ON c.id = cv.claim_id AND c.workspace_id = p.workspace_id AND c.project_id = p.id AND (x.event_id=c.event_id OR x.evidence_role='contextual') LEFT JOIN asset_versions av ON av.id = x.asset_version_id LEFT JOIN assets a ON a.id = av.asset_id AND a.workspace_id = p.workspace_id AND a.project_id = p.id AND a.event_id = x.event_id`),
   relations: collection('claim_relations x', ['x.id','x.source_claim_version_id','x.target_claim_version_id','x.type','x.status','x.contradiction_status','x.reason','x.resolved_at','x.resolved_by_verdict_id','x.resolved_by_relation_id','sv.claim_id AS source_claim_id','tv.claim_id AS target_claim_id'], owned, 'JOIN claim_versions sv ON sv.id=x.source_claim_version_id JOIN claim_versions tv ON tv.id=x.target_claim_version_id'),
-  decisions: collection('workflow_decisions x', ['x.id','x.event_id','x.revision','x.operation',"CASE WHEN x.operation='confirm_mention' THEN '再次提及已沿用原事项' WHEN x.operation='reject_mention' THEN '已忽略此次关联' WHEN x.operation='convert_mention' THEN '再次提及已作为独立草稿' WHEN x.operation='review_members' THEN (SELECT group_concat(v.statement,' / ') FROM decision_members dm JOIN claim_versions v ON v.id=dm.after_version_id WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id) ELSE COALESCE((SELECT cv.statement FROM decision_members dm JOIN claim_versions cv ON cv.id=dm.after_version_id WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id AND json_extract(dm.before_state_json,'$.cardState') IS NOT NULL ORDER BY dm.id LIMIT 1),wc.title,'批阅记录') END AS summary",'x.created_at','x.reverted_by',"(SELECT CASE WHEN json_valid(json_extract(dm.after_state_json,'$.relationStates[0].reason')) THEN json_extract(json_extract(dm.after_state_json,'$.relationStates[0].reason'),'$.mode') ELSE NULL END FROM decision_members dm WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id AND json_extract(dm.before_state_json,'$.cardState') IS NOT NULL ORDER BY dm.id LIMIT 1) AS choice_mode"], ownedEvent, 'LEFT JOIN workflow_cards wc ON wc.id=x.card_id AND wc.workspace_id=p.workspace_id'),
+  decisions: collection('workflow_decisions x', ['x.id','x.event_id','x.revision','x.operation',"CASE WHEN x.operation='confirm_mention' THEN '再次提及已沿用原事项' WHEN x.operation='reject_mention' THEN '已忽略此次关联' WHEN x.operation='convert_mention' THEN '再次提及已作为独立草稿' WHEN x.operation='review_members' THEN (SELECT group_concat(statement,' / ') FROM (SELECT v.statement AS statement FROM decision_members dm JOIN claim_versions v ON v.id=dm.after_version_id WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id ORDER BY dm.id)) ELSE COALESCE((SELECT cv.statement FROM decision_members dm JOIN claim_versions cv ON cv.id=dm.after_version_id WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id AND json_extract(dm.before_state_json,'$.cardState') IS NOT NULL ORDER BY dm.id LIMIT 1),wc.title,'批阅记录') END AS summary",'x.created_at','x.reverted_by',"(SELECT CASE WHEN json_valid(json_extract(dm.after_state_json,'$.relationStates[0].reason')) THEN json_extract(json_extract(dm.after_state_json,'$.relationStates[0].reason'),'$.mode') ELSE NULL END FROM decision_members dm WHERE dm.decision_id=x.id AND dm.workspace_id=p.workspace_id AND json_extract(dm.before_state_json,'$.cardState') IS NOT NULL ORDER BY dm.id LIMIT 1) AS choice_mode"], ownedEvent, 'LEFT JOIN workflow_cards wc ON wc.id=x.card_id AND wc.workspace_id=p.workspace_id'),
   cards: collection('workflow_cards x', ['x.id','x.event_id','x.group_key','x.created_at','x.revision','x.kind','x.title','x.needs_decision','x.reason_code','x.reason','x.disposition','x.latest_decision_id','x.decision_revision'], ownedEvent),
   members: collection('card_members x', ['x.card_id','x.claim_id','x.claim_version_id','x.role'], 'x.workspace_id = p.workspace_id AND wc.project_id = p.id AND wc.workspace_id = p.workspace_id', 'JOIN workflow_cards wc ON wc.id = x.card_id'),
   changes: collection('workflow_changes x', ['x.id','x.event_id','x.kind','x.changed_refs_json','x.created_at'], ownedEvent),

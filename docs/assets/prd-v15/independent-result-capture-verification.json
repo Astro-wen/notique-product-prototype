@@ -1,13 +1,34 @@
 {
-  "method": "actual_isolated_local_browser",
-  "source": "/private/tmp/notique-results-source-recheck/results/workflow-v2-action-results-2b71a-h-correction-and-withdrawal-desktop-chromium/independent-result-topic.png",
+  "method": "actual_owned_synthetic_production_browser",
+  "source": "/private/tmp/notique-topics-production-ui/result.png",
   "file": "independent-result-topic.png",
-  "sha256": "30ecf543fa75593f682b09810d8360b6c40b101825eb86bd5a33a4357b5460b0",
-  "visualCheck": "已收到报价单的结果成为原主题的用户补充，行动仍待跟进。",
-  "reportedAcceptance": "桌面与笔记本实际操作通过，支持原入口修正和撤回，复制和项目回顾均可读取。",
-  "productionAcceptance": "随后更新",
+  "sha256": "98ff5ae3182d2478b58de8bc13b94532733c0ae565e3531de13da9e2413797c8",
+  "visualCheck": "用户补充显示两家供应商报价已收到，保留修正结果与原话入口。截图对应本次线上合成案例的独立结果。",
+  "productionVersion": 89,
+  "productionChecks": [
+    "owned_synthetic_case_verified",
+    "fact_accepted",
+    "completion_keeps_question_open",
+    "independent_result_source_and_copy",
+    "correction_replaces_current_result",
+    "project_and_reload_keep_result",
+    "withdraw_preserves_completion",
+    "direct_answer_returns_to_record",
+    "current_copy_after_correction_withdraw_and_answer",
+    "wide_PC_no_overflow_or_JS_error"
+  ],
+  "browserErrors": [],
+  "narrativeFreshnessAtVerification": "updating",
+  "acceptanceScope": "当前有效结果、修正、撤回、直接答案、来源、复制、项目回顾与重开在自有合成案例中通过。全文概要生成、自然后台调度、真实用户 MCP 连接及模型质量仍待验收。",
+  "copyRetryNote": "首次复制出现 409，刷新重试后通过，本次偶发原因尚未确定。另行复现的版本校验修正正在回归与发布。",
+  "previousLocalCapture": {
+    "method": "actual_isolated_local_browser",
+    "source": "/private/tmp/notique-results-source-recheck/results/workflow-v2-action-results-2b71a-h-correction-and-withdrawal-desktop-chromium/independent-result-topic.png",
+    "sha256": "30ecf543fa75593f682b09810d8360b6c40b101825eb86bd5a33a4357b5460b0",
+    "reportedAcceptance": "桌面与笔记本实际操作通过，支持原入口修正和撤回，复制和项目回顾均可读取。"
+  },
   "docUrl": "https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf",
-  "revision": 51,
+  "revision": 170,
   "nativeImageReadVerified": true,
   "nativeImageBytesMatchSource": true
 }

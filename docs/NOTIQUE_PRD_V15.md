@@ -121,7 +121,7 @@
 </ol>
 <p><img src="assets/prd-v15/action-completed.png" alt="图1 行动已完成，问题仍可补答案，本地实现"></p><p>图1 行动已完成，问题仍可补答案，本地实现</p>
 <p><img src="assets/prd-v15/one-field-result.png" alt="图2 普通结果的一个主要输入框，隔离合成案例"></p><p>图2 普通结果的一个主要输入框，隔离合成案例</p>
-<p><img src="assets/prd-v15/independent-result-topic.png" alt="图3 独立行动的结果回到原主题，本地实现"></p><p>图3 独立行动的结果回到原主题，本地实现</p>
+<p><img src="assets/prd-v15/independent-result-topic.png" alt="图3 独立行动结果成为用户补充，线上合成案例"></p><p>图3 独立行动结果成为用户补充，线上合成案例</p>
 </td></tr>
 <tr>
 <td valign="top">直接回答问题</td><td valign="top"><ol>
@@ -213,7 +213,7 @@
 <tr>
 <td valign="top">当前验证进度</td><td valign="top"><ol>
 <li>本文是产品实现与验收规范。功能截图取自实际 PC 浏览器，截图使用隔离合成材料，图注明确对应状态。</li>
-<li>记录阅读、复制、改错、原话、行动与答案的工程路径已有回归。主题归并已有本地 PC 实操，当前等待完整发布检查。独立行动结果进入原主题、复制记录与概要的路径已完成本地实现，桌面和笔记本实际操作已通过，线上验收随后更新。</li>
+<li>线上合成案例已走通记录采纳、行动完成、独立补结果、原话、复制、修正、撤回、直接补答案、项目回顾和重开。全文概要仍在生成。首次复制刷新重试后通过，偶发原因继续排查，版本校验修正正在回归与发布。</li>
 <li>线上合成材料已经完成完整整理，人工恢复可以续跑同一任务。关闭页面后的自然后台调度，继续以实际自然完成的结果验收。</li>
 <li>MCP 工具发现、授权前后读取和撤销后的读取已有客户端测试。用户本人授权后的真实助手调用继续验收。</li>
 <li>当前尚没有可安排的五位试用用户与三十份授权材料。首次用户完成率和整体模型准确性在取得这些结果后记录。</li>
@@ -222,4 +222,4 @@
 </tbody></table>
 
 格式参照：[Notique 1.5 PRD](https://mcnl4dcjt5d8.feishu.cn/wiki/X6RhwmB4qivYfHkg5sdc9qnlnIh)，原文修订 52。
-飞书版本：[Notique 工作流 V2 PRD](https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf)，修订 51。
+飞书版本：[Notique 工作流 V2 PRD](https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf)，修订 170。

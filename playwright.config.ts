@@ -19,7 +19,9 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Live fixtures share one local SQLite store and discover it through project lists.
+  // Setup or cleanup in another file must not invalidate that discovery.
+  workers: 1,
   timeout: 30_000,
   expect: { timeout: 8_000 },
   outputDir: join(artifactRoot, "results"),

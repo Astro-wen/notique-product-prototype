@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {workflowDatabase,seed,insert,SCOPE,T} from './helpers/workflow-database.mjs';
+import {workflowDatabase,seed,claim,insert,SCOPE,T} from './helpers/workflow-database.mjs';
 import {createReport} from '../lib/server/workflow/report-service.ts';
+import {decideRecord} from '../lib/server/workflow/record-decision.ts';
 const code=c=>e=>e.code===c;
 const request={expectedContextVersion:0,scope:'mixed',eventIds:['e'],format:'plain_text'};
 const report=(db,options={},scope=SCOPE)=>createReport(db,scope,{projectId:'p',key:'copy',request,...options});
@@ -61,6 +62,33 @@ test('source changes between projection and saving cannot publish stale export t
   await assert.rejects(report(wrapped),code('version_conflict'));
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_reports').get().n,0);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM mutation_replays').get().n,0);
+});
+
+test('unchanged data can be copied when SQLite chooses a different unordered scan between read and commit',async t=>{
+  const {db,sqlite}=await setup(t);
+  const wrapped={...db,batch:async statements=>{
+    sqlite.exec('PRAGMA reverse_unordered_selects = ON');
+    return db.batch(statements);
+  }};
+  const result=await report(wrapped);
+  assert.match(result.content,/预算大约三十万/);
+  assert.match(result.content,/费用是多少/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_reports').get().n,1);
+});
+
+test('a grouped decision keeps its history encoding when query scan order changes during copy',async t=>{
+  const {db,sqlite}=await setup(t);
+  claim(sqlite,'time','time','周末确认时间');
+  insert(sqlite,'workflow_cards',{id:'group',workspace_id:'ws',project_id:'p',event_id:'e',group_key:'group',revision:1,kind:'record',title:'装修安排',needs_decision:0,reason:'',disposition:'active',created_at:T,updated_at:T});
+  for(const id of ['budget','time']) insert(sqlite,'card_members',{id:`member_${id}`,workspace_id:'ws',card_id:'group',claim_id:id,claim_version_id:`${id}_v1`,role:'primary',created_at:T});
+  await decideRecord(db,SCOPE,{projectId:'p',eventId:'e',cardId:'group',key:'group-review',request:{operation:'review_members',expectedContextVersion:0,expectedCardRevision:1,members:['budget','time'].map(id=>({claimId:id,claimVersionId:`${id}_v1`,operation:'confirm'}))}});
+  const wrapped={...db,batch:async statements=>{
+    sqlite.exec('PRAGMA reverse_unordered_selects = ON');
+    return db.batch(statements);
+  }};
+  const result=await report(wrapped,{request:{...request,expectedContextVersion:1}});
+  assert.match(result.content,/预算大约三十万/);
+  assert.match(result.content,/周末确认时间/);
 });
 
 test('export idempotency distinguishes a changed scope and permits exact concurrent retries',async t=>{
