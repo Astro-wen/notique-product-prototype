@@ -24,13 +24,11 @@ function sidebarProject(page: Page, name: string) {
   return page.locator("button.sidebar-project").filter({ hasText: name });
 }
 
-// 47f849a 之后进入操作栏的是逐字稿里那一段本身，见 summary-first-workflow.spec.ts。
-async function selectSourceTurn(page: Page, text: string): Promise<void> {
-  await page.getByTestId("transcript-turn-body").filter({ hasText: text }).first().click();
-}
-
-async function expandSummaryIfCollapsed(page: Page): Promise<void> {
-  await page.locator(".tingwu-overview-copy p", { hasText: "A 摘要背景 1" }).waitFor({ state: "visible" });
+async function openSource(page: Page, claimId: string) {
+  await page.getByTestId(`bullet-${claimId}`).getByRole("button", { name: "原话", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "原话与出处" });
+  await expect(dialog).toBeVisible();
+  return dialog;
 }
 
 test("a delayed Project A snapshot and Claims response cannot overwrite Project B", async ({ page, apiFixture }) => {
@@ -51,8 +49,9 @@ test("a delayed Project A snapshot and Claims response cannot overwrite Project 
   apiFixture.releaseProjectAClaims();
   apiFixture.releaseProjectASnapshot();
 
+  await page.locator(".meeting-tabs").getByRole("button", { name: "原文", exact: true }).click();
   await expect(page.locator(".current-event-status:visible")).toHaveText("已完成");
-  await page.getByRole("button", { name: /^本次重点/ }).click();
+  await page.locator(".reader-extra-views > summary").click();
   await page.getByRole("button", { name: "章节速览", exact: true }).click();
   await expect(page.locator(".tingwu-overview-copy p")).toContainText("B 摘要背景 1");
   await page.getByRole("button", { name: "要点回顾" }).click();
@@ -101,88 +100,74 @@ test("Run completion commits Project, Event, and terminal Run only after stagger
 
   apiFixture.releaseProjectACompletionEventRefresh();
   await expect(page.getByRole("combobox", { name: "选择记录" }).locator("option:checked")).toHaveText("A 完成刷新后的沟通");
+  await page.locator(".meeting-tabs").getByRole("button", { name: "原文", exact: true }).click();
   await expect(page.locator(".current-event-status:visible")).toHaveText("有内容待确认");
 });
 
-test("a Summary point opens source, verification, and action controls in the same workspace", async ({ page }) => {
+test("a record point exposes its source and decision beside the same record", async ({ page, apiFixture }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-a");
-  await page.getByRole("button", { name: /^本次重点/ }).click();
-  await page.getByRole("button", { name: "章节速览", exact: true }).click();
-  await expandSummaryIfCollapsed(page);
-  await selectSourceTurn(page, "预算上限是 120 万美元");
-
-  const rail = page.locator(".reader-action-rail");
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  const bullet = page.getByTestId("bullet-claim-summary-pending");
+  await expect(bullet).toContainText("AI 草稿");
+  await expect(bullet.getByRole("button", { name: "确认这条", exact: true })).toBeVisible();
+  const source = await openSource(page, "claim-summary-pending");
+  await expect(source).toContainText("预算上限是 120 万美元。");
+  await expect(source.getByRole("button", { name: /确认/ })).toHaveCount(0);
+  await source.getByRole("button", { name: "返回记录", exact: true }).click();
+  await expect(bullet).toBeVisible();
+  await expect(page.getByRole("button", { name: "完成：经纪人周五前发送三套房源" })).toBeVisible();
+  await expect(page).toHaveURL(/view=simple$/);
   await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
-  await expect(rail).toBeVisible();
-  await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
-  await expect(rail).toContainText("录音与原话");
-  await expect(rail.locator(".reader-action-tabs").getByRole("button", { name: "核对详情", exact: true })).toHaveAttribute("aria-pressed", "true");
-  // 核对详情只看原话，判断到待确认里做。
-  await expect(rail.getByRole("button", { name: /这句里有 1 条待确认，去处理/ })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(apiFixture.writes.filter(w => !["/api/v1/jobs/dispatch", "/api/v1/projects/project-a/opened"].includes(w.path))).toEqual([]);
 });
 
-test("a reviewed Summary item exposes its source in place while pending work remains in the rail", async ({ page }) => {
-  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
-  await expect(page.locator(".tingwu-overview-copy p")).toContainText("A 摘要背景 1");
-  await expandSummaryIfCollapsed(page);
-  await selectSourceTurn(page, "周五前发送三套房源");
-
-  const rail = page.locator(".reader-action-rail");
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+test("an accepted item exposes its own source while a draft remains editable", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  const accepted = page.getByTestId("bullet-claim-timeline-verified");
+  await expect(accepted).toContainText("已采纳");
+  await expect(accepted.getByRole("button", { name: "确认这条", exact: true })).toHaveCount(0);
+  const source = await openSource(page, "claim-timeline-verified");
+  await expect(source).toContainText("周五前发送三套房源。");
+  await expect(source).not.toContainText("预算上限是 120 万美元。");
+  await source.getByRole("button", { name: "返回记录", exact: true }).click();
+  const pending = page.getByTestId("bullet-claim-summary-pending");
+  await expect(pending).toContainText("AI 草稿");
+  await expect(pending.getByRole("button", { name: "确认这条", exact: true })).toBeVisible();
+  await expect(pending.getByRole("button", { name: "改一下", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/view=simple$/);
   await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
-  await expect(rail.getByRole("heading", { name: /周五前发送三套房源/ })).toBeVisible();
-  await expect(rail.locator(".point-trust-state.verified")).toHaveText("已确认");
-  await expect(rail).toContainText("录音与原话");
-  await expect(rail.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
-
-  await rail.locator(".reader-action-tabs").getByRole("button", { name: /^待确认/ }).click();
-  await expect(rail).toContainText("对照原话检查金额、日期和负责人");
-  await rail.locator(".rail-pending-list").getByText("预算上限是 120 万美元", { exact: true }).click();
-  await expect(rail.locator(".inline-review-view")).toContainText("原始证据");
-  await expect(rail.locator(".inline-review-view").getByRole("button", { name: "确认并加入正式结果" })).toBeVisible();
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
 });
 
-test("the Summary reading route survives reload and its source reopens in the same rail", async ({ page }) => {
+test("the Summary deep link survives reload and returns to the inline source workflow", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
+  await page.locator(".reader-extra-views > summary").click();
   await expect(page.locator(".tingwu-overview-copy p")).toContainText("A 摘要背景 1");
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
   await page.reload();
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await page.locator(".reader-extra-views > summary").click();
   await expect(page.locator(".tingwu-overview-copy p")).toContainText("A 摘要背景 1");
-  await expect(page.getByRole("button", { name: "章节速览", exact: true })).toHaveClass(/active/);
-  await expandSummaryIfCollapsed(page);
-  await selectSourceTurn(page, "预算上限是 120 万美元");
-  const rail = page.locator(".reader-action-rail");
-  await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
-  await expect(rail).toContainText("录音与原话");
+  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+  await expect(page.locator(".raw-artifact")).toBeVisible();
+  await page.getByRole("button", { name: "本次重点", exact: true }).click();
+  const source = await openSource(page, "claim-summary-pending");
+  await expect(source).toContainText("预算上限是 120 万美元。");
   await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
 });
 
-test("source, pending, and action views remain one continuous Summary workflow", async ({ page }) => {
-  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
-  await expect(page.locator(".tingwu-overview-copy p")).toContainText("A 摘要背景 1");
-  await expandSummaryIfCollapsed(page);
-  await selectSourceTurn(page, "预算上限是 120 万美元");
-
-  const rail = page.locator(".reader-action-rail");
-  const actionTabs = rail.locator(".reader-action-tabs");
-  await expect(actionTabs.getByRole("button", { name: "核对详情", exact: true })).toHaveAttribute("aria-pressed", "true");
-
-  await actionTabs.getByRole("button", { name: /^待确认/ }).click();
-  await expect(actionTabs.getByRole("button", { name: /^待确认/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(rail.getByRole("button", { name: "从第一条开始确认" })).toBeVisible();
-
-  await actionTabs.getByRole("button", { name: /^行动/ }).click();
-  await expect(actionTabs.getByRole("button", { name: /^行动/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(rail.getByRole("region", { name: "我的清单" })).toBeVisible();
-
-  await actionTabs.getByRole("button", { name: "核对详情", exact: true }).click();
-  await expect(rail.getByRole("heading", { name: /预算上限是 120 万美元/ })).toBeVisible();
-  await expect(page).toHaveURL(/view=simple.*readingTab=summary/);
+test("sources, draft decisions, and follow-up remain in one record", async ({ page }) => {
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  const source = await openSource(page, "claim-summary-pending");
+  await source.getByRole("button", { name: "返回记录", exact: true }).click();
+  await expect(page.getByTestId("bullet-claim-summary-pending").getByRole("button", { name: "确认这条", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "完成：经纪人周五前发送三套房源" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "补结果", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "已采纳", exact: true }).click();
+  await expect(page.getByTestId("bullet-claim-summary-pending")).toHaveCount(0);
+  await expect(page.getByTestId("bullet-claim-timeline-verified")).toBeVisible();
+  await page.getByRole("button", { name: "全部", exact: true }).click();
+  await expect(page.getByTestId("bullet-claim-summary-pending")).toBeVisible();
+  await expect(page).toHaveURL(/view=simple$/);
   await expect(page).not.toHaveURL(/(?:[?&]view=claim|[?&]claim=)/);
 });
 
@@ -263,38 +248,38 @@ test("local-only allowlist covers Action completion and trash restore without to
   }
 });
 
-test("the review queue can be worked from the keyboard", async ({ page, apiFixture }) => {
-  apiFixture.allowMutation("POST", "/api/v1/projects/project-a/review-sessions");
-  apiFixture.allowMutation("POST", "/api/v1/claims/claim-summary-pending/verdicts");
-
-  await page.goto("/?project=project-a&event=event-a&view=review&origin=simple");
-  await page.getByRole("button", { name: /预算上限是 120 万美元/ }).first().click();
-  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
-
-  // The hints are shown rather than hidden, so the shortcuts are discoverable.
-  await expect(page.locator(".review-shortcut-hints")).toBeVisible();
-  await expect(page.locator(".review-shortcut-hints kbd").first()).toHaveText("Enter");
-
-  // E opens the edit form without deciding anything.
-  await page.locator("body").press("e");
-  const statement = page.locator(".edit-form textarea").first();
+test("record review can be worked from the keyboard without deciding typed text", async ({ page, apiFixture }) => {
+  const decisionPath = "/api/v2/review-cards/card-claim-summary-pending/decisions";
+  apiFixture.allowMutation("POST", decisionPath);
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  const bullet = page.getByTestId("bullet-claim-summary-pending");
+  const modify = bullet.getByRole("button", { name: "改一下", exact: true });
+  await modify.focus();
+  await page.keyboard.press("Enter");
+  const statement = bullet.getByRole("textbox", { name: "修改重点", exact: true });
   await expect(statement).toBeVisible();
-  expect(apiFixture.writes.filter(({ path }) => path.includes("verdicts"))).toEqual([]);
-
-  // A decision key typed into a field is text, never a verdict.
-  await statement.click();
-  await statement.press("x");
-  await statement.press("Enter");
+  await expect(statement).toBeFocused();
+  await page.keyboard.type("x");
+  await page.keyboard.press("Enter");
   await expect(statement).toBeVisible();
-  expect(apiFixture.writes.filter(({ path }) => path.includes("verdicts"))).toEqual([]);
-
+  await expect(statement).toHaveValue(/x\n/);
+  expect(apiFixture.writes.filter(({ path }) => path === decisionPath)).toEqual([]);
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("combobox", { name: "修改依据", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("button", { name: "保存修改", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(statement).toHaveCount(0);
+  const confirm = bullet.getByRole("button", { name: "确认这条", exact: true });
+  await confirm.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => apiFixture.writes.filter(({ path }) => path === decisionPath).length).toBe(1);
+  const decision = apiFixture.writes.find(({ path }) => path === decisionPath);
+  expect(decision?.body).toMatchObject({ operation: "confirm", members: [{ claimId: "claim-summary-pending", claimVersionId: "claim-summary-pending-version-1", operation: "confirm" }] });
+  await expect(bullet).toContainText("已采纳");
   await page.reload();
-  await expect(page.getByRole("heading", { name: "预算上限是 120 万美元", exact: true })).toBeVisible();
-  await expect(page.locator(".review-shortcut-hints")).toBeVisible();
-  await page.locator("body").press("Enter");
-  await expect
-    .poll(() => apiFixture.writes.filter(({ path }) => path.includes("verdicts")).length)
-    .toBe(1);
-  const verdict = apiFixture.writes.find(({ path }) => path.includes("verdicts"));
-  expect(verdict?.body).toMatchObject({ action: "confirm" });
+  await expect(bullet).toContainText("已采纳");
+  expect(apiFixture.writes.filter(({ path }) => path === decisionPath)).toHaveLength(1);
 });

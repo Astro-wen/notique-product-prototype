@@ -77,8 +77,9 @@ test("a delayed Project A Query cannot replace Project B after a rapid switch", 
 
   await expect(sidebarProject(page, "Buyer B")).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("combobox", { name: "选择记录" })).toHaveValue("event-b");
+  await page.locator(".meeting-tabs").getByRole("button", { name: "原文", exact: true }).click();
   await expect(page.locator(".current-event-status:visible")).toHaveText("已完成");
-  await page.getByRole("button", { name: /^本次重点/ }).click();
+  await page.locator(".reader-extra-views > summary").click();
   await page.getByRole("button", { name: "章节速览", exact: true }).click();
   await expect(page.locator(".tingwu-overview-copy p")).toContainText("B 摘要背景 1");
   await expect(page.getByText("预算上限是 120 万美元", { exact: true })).toHaveCount(0);

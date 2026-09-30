@@ -9,10 +9,13 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request): Promise<Response> {
   const id = requestId(request);
   try {
-    await requireInternalJobAuthorization(request);
+    const authorization = await requireInternalJobAuthorization(request, { allowWorkflowRecoveryToken: true });
     const extractionFailures: RecoveryStageFailure[] = [];
     const [extraction, artifacts, workflow] = await Promise.allSettled([
-      Promise.resolve().then(() => sweepAndDispatch({ onStageFailure: failure => extractionFailures.push(failure) })),
+      Promise.resolve().then(() => sweepAndDispatch({
+        ...(authorization === 'workflow_recovery' ? { commission: false as const } : {}),
+        onStageFailure: failure => extractionFailures.push(failure),
+      })),
       Promise.resolve().then(() => sweepAndDispatchEventAiArtifacts()),
       Promise.resolve().then(() => dispatchWorkflowOutbox()),
     ]);

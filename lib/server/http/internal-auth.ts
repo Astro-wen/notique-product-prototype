@@ -17,14 +17,28 @@ async function constantTimeEqual(left: string, right: string): Promise<boolean> 
   return mismatch === 0;
 }
 
-export async function requireInternalJobAuthorization(request: Request): Promise<void> {
-  const configured = getBindings().INTERNAL_JOB_TOKEN?.trim();
-  if (!configured) {
+export type InternalJobAuthorization = 'internal' | 'workflow_recovery';
+
+export async function requireInternalJobAuthorization(
+  request: Request,
+  options: { allowWorkflowRecoveryToken?: boolean } = {},
+): Promise<InternalJobAuthorization> {
+  const bindings = getBindings();
+  const configured = bindings.INTERNAL_JOB_TOKEN?.trim();
+  const recovery = options.allowWorkflowRecoveryToken ? bindings.WORKFLOW_RECOVERY_TOKEN?.trim() : undefined;
+  if (!configured && !recovery) {
     throw new ApiFault(503, "QUEUE_NOT_CONFIGURED", "Internal job authorization is not configured.");
   }
   const authorization = request.headers.get("authorization")?.trim() ?? "";
   const supplied = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-  if (!supplied || !(await constantTimeEqual(supplied, configured))) {
+  if (!supplied) {
     throw new ApiFault(401, "UNAUTHORIZED", "Internal job authorization failed.");
   }
+  const [internalMatch, recoveryMatch] = await Promise.all([
+    configured ? constantTimeEqual(supplied, configured) : false,
+    recovery ? constantTimeEqual(supplied, recovery) : false,
+  ]);
+  if (internalMatch) return 'internal';
+  if (recoveryMatch) return 'workflow_recovery';
+  throw new ApiFault(401, "UNAUTHORIZED", "Internal job authorization failed.");
 }

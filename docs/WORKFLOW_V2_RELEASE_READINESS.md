@@ -2,7 +2,7 @@
 
 检查日期：2026-09-29，America/Los_Angeles。
 
-当前结论：0023–0026 已通过模拟旧数据的增量升级演练。本地源码可以继续完成发布准备。线上备份的可恢复性、无人值守调度、平台 MCP 登录和真实助手调用需要取得各自的实际结果，分别记录。
+当前结论：工作流V2已发布至Sites版本82，源提交217c23d5c9dd758c603f5ccb005ae28aa78c1f19与GitHub main一致，旧资料及新增接口读取通过。以下第1节保留版本81的发布前基线。独立后台恢复补丁已通过1094项完整工程测试，最终部署和实际恢复继续记录于WORKFLOW_V2_IMPLEMENTATION_STATUS.md。线上备份可恢复性、个人MCP登录和真实助手调用采用独立验收。
 
 ## 1. 已核实的线上基线
 
@@ -176,4 +176,12 @@ Worker Cron 使用 `scheduled` handler 配合实际注册的 Cron Trigger。[Clo
 | 受保护维护入口 | 三路调用、内部失败上报和重试提示已实现，18 项专用测试及 14 项回归通过 | 连接实际持久调度器并验证真实 lease 恢复 |
 | 真实模型质量、成本和独立使用者 | 独立验收 | 按模型评估及用户试用报告处理 |
 
-本轮完成只读生产检查、隔离合成数据演练和本地维护端点补全。生产资料、环境值、数据库结构和部署保持本次检查基线。
+本报告的发布前检查完成只读生产检查、隔离合成数据演练和维护端点补全。该次检查保持版本81基线。后续版本82已应用增量结构并上线，个人MCP授权和真实模型质量继续独立验收。
+
+## 8. 独立恢复后备入口
+
+新增.github/workflows/recover-background-jobs.yml，每5分钟错峰运行，支持workflow_dispatch，串行并发。Python标准库向固定Site的维护入口发送请求，禁止重定向，最多3次重试，遵守30秒重试提示。日志仅输出固定队列状态和白名单计数。
+
+独立WORKFLOW_RECOVERY_TOKEN只授权sweep入口，GitHub使用NOTIQUE_RECOVERY_TOKEN。配置采用新增秘密值，原INTERNAL_JOB_TOKEN和全部现有环境值保留。该身份调用commission:false，消费已提交任务及持久化材料意图，旧内部身份维持原扫描权限。实际outbox用例验证恢复身份不会调用旧材料自动扫描，其他内部dispatch入口拒绝该恢复身份。
+
+83项专项检查通过，runner的9个离线Python案例覆盖重定向、401、503、网络重试、超限响应和安全日志。完整1094项工程检查、类型、lint、构建及包内秘密审计通过。最终云端调用、实际任务恢复和新版source SHA另行记录。GitHub定时任务可能延迟，公开仓库60天无活动会停用调度，该机制当前用于后备恢复。[GitHub定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)

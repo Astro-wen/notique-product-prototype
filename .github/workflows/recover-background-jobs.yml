@@ -1,0 +1,125 @@
+name: Recover background jobs
+
+on:
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notique-background-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Recover existing authorized jobs
+        env:
+          NOTIQUE_RECOVERY_TOKEN: ${{ secrets.NOTIQUE_RECOVERY_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          ENDPOINT = 'https://notique-evidence-workspace.uclae2e12.chatgpt.site/api/internal/jobs/sweep'
+          QUEUES = ('extraction', 'event_ai_artifacts', 'workflow')
+          COUNTS = ('claimed', 'sent', 'deferred', 'recovered', 'succeeded', 'pending', 'failed', 'obsolete', 'lostLease')
+          MAX_ATTEMPTS = 3
+          MAX_BODY_BYTES = 262144
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def queue_statuses(raw):
+              payload = json.loads(raw)
+              if not isinstance(payload, dict):
+                  return {}
+              data = payload.get('data', {})
+              if isinstance(data, dict) and isinstance(data.get('queues'), dict):
+                  return data['queues']
+              error = payload.get('error', {})
+              details = error.get('details', {}) if isinstance(error, dict) else {}
+              return details.get('queues', {}) if isinstance(details, dict) else {}
+
+          def report(queues):
+              for name in QUEUES:
+                  item = queues.get(name, {})
+                  if not isinstance(item, dict):
+                      item = {}
+                  state = item.get('state')
+                  state = state if state in ('succeeded', 'failed') else 'unknown'
+                  result = item.get('result', {})
+                  result = result if isinstance(result, dict) else {}
+                  counts = []
+                  for key in COUNTS:
+                      value = result.get(key)
+                      if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9007199254740991:
+                          counts.append(f'{key}={value}')
+                  print(f'recovery_queue={name} state={state}' + (' ' + ' '.join(counts) if counts else ''))
+
+          def retry_delay(header, attempt):
+              if header and len(header) <= 5 and header.isdigit():
+                  return min(60, max(1, int(header)))
+              return min(30, attempt * 10)
+
+          def main(opener=None, sleeper=time.sleep, token=None):
+              token = (os.environ.get('NOTIQUE_RECOVERY_TOKEN', '') if token is None else token).strip()
+              if not token:
+                  print('recovery_state=failed configured=0')
+                  return 1
+              opener = opener if opener is not None else urllib.request.build_opener(NoRedirect())
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  status = 0
+                  raw = b''
+                  retry_after = None
+                  try:
+                      request = urllib.request.Request(ENDPOINT, data=b'{}', method='POST', headers={
+                          'Authorization': 'Bearer ' + token,
+                          'Accept': 'application/json',
+                          'Content-Type': 'application/json',
+                      })
+                      with opener.open(request, timeout=120) as response:
+                          status = response.status
+                          retry_after = response.headers.get('Retry-After')
+                          raw = response.read(MAX_BODY_BYTES + 1)
+                  except urllib.error.HTTPError as error:
+                      status = error.code
+                      retry_after = error.headers.get('Retry-After') if error.headers else None
+                      try:
+                          raw = error.read(MAX_BODY_BYTES + 1)
+                      except (TimeoutError, OSError):
+                          raw = b''
+                      error.close()
+                  except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+                      status = 0
+                  queues = {}
+                  if len(raw) <= MAX_BODY_BYTES:
+                      try:
+                          queues = queue_statuses(raw)
+                      except (ValueError, TypeError, RecursionError):
+                          pass
+                  if not isinstance(queues, dict):
+                      queues = {}
+                  report(queues)
+                  succeeded = status == 200 and all(isinstance(queues.get(name), dict) and queues[name].get('state') == 'succeeded' for name in QUEUES)
+                  print(f'recovery_state={"succeeded" if succeeded else "failed"} http_status={status} attempt={attempt}')
+                  if succeeded:
+                      return 0
+                  retryable = status == 0 or status in (429, 500, 502, 503, 504)
+                  if not retryable or attempt == MAX_ATTEMPTS:
+                      return 1
+                  sleeper(retry_delay(retry_after, attempt))
+              return 1
+
+          if __name__ == '__main__':
+              raise SystemExit(main())
+          PY

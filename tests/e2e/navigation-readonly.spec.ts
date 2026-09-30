@@ -27,10 +27,8 @@ const test = base.extend<Fixtures>({
       const url = new URL(request.url());
 
       if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
-        // Waking the dispatcher is the workspace recovery heartbeat, not
-        // navigation: production has no working Cron trigger, so an open
-        // workspace is what recovers stalled work. It carries no body here and
-        // creates nothing; every other mutation is still forbidden.
+        // The shared recovery heartbeat is independent of navigation.
+        // This empty-project fixture never starts a material or model task.
         if (!(method === "POST" && url.pathname === "/api/v1/jobs/dispatch")) {
           blockedWrites.push(`${method} ${url.pathname}`);
         }
@@ -57,7 +55,8 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
-  await expect(page.getByRole("heading", { name: /建立专属/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^上传音频、文件、图片/ })).toBeVisible();
+  await expect(page.getByText("先读完整记录，按需确认重点，再跟进和补结果", { exact: true })).toBeVisible();
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);
@@ -75,10 +74,10 @@ test("refresh preserves a directly opened route", async ({ page }) => {
 });
 
 test("desktop sidebar collapses, restores, and keeps navigation accessible", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop-chromium", "desktop sidebar assertion");
+  test.skip(testInfo.project.name === "mobile-chromium", "desktop sidebar assertion");
 
   await page.goto("/?view=simple");
-  await expect(page.getByRole("heading", { name: /建立专属/ })).toBeVisible();
+  await expect(page.getByText("先读完整记录，按需确认重点，再跟进和补结果", { exact: true })).toBeVisible();
   await page.waitForTimeout(300);
   const shell = page.locator(".app-shell");
   const sidebar = page.getByLabel("应用侧栏");

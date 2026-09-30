@@ -437,6 +437,8 @@ narrative-jobs.ts 消费 workflow_outbox，同一沟通合并待执行修改，�
 
 Worker 的 scheduled 入口消费该队列，保存接口通过短时唤醒加快首次处理。Cloudflare 的调度机制参考 [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)。现有 Sites 生产版本的服务端调度需在部署后关闭全部页面实测。
 
+独立恢复由现有 GitHub Actions 每5分钟调用受保护的维护入口，并提供手动触发。WORKFLOW_RECOVERY_TOKEN 仅授权该入口，续跑已经提交的任务及材料提交时保存的分析意图。原 INTERNAL_JOB_TOKEN 继续沿用原权限。恢复调用分别消费分析、阅读产物和概要队列，发生临时失败时按30秒提示有限重试，队列租约继续防止重复执行。调度器使用固定地址、单次并发和最小仓库读取权限，运行日志记录队列状态与计数。GitHub 定时触发可能排队，公开仓库60天无活动会停用调度，该机制是当前部署的恢复后备入口。正式运行检查调度状态与任务积压，浏览器关闭后的实际完成另行记录。[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+
 ## 八、核心服务设计
 
 ### 8.1 跨模块服务

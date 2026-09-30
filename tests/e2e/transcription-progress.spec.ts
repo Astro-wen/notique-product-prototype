@@ -28,7 +28,7 @@ test("chunked transcription shows one calm progress bar and keeps numbered speak
   await expect(journey.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
   await expect(page.getByRole("button", { name: "整理全部记录", exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: /^本次重点/ }).click();
+  await page.getByRole("button", { name: "查看原文", exact: true }).click();
   const transcriptMeta = page.getByTestId("transcript-turn-meta");
   await expect(transcriptMeta.getByText("Speaker 1", { exact: true })).toBeVisible();
   await expect(transcriptMeta.getByText("Speaker 2", { exact: true })).toBeVisible();
@@ -44,8 +44,8 @@ test("Raw readiness never overrides an explicit return to sources", async ({ pag
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await expect(page.getByTestId("transcription-journey")).toBeVisible();
 
-  await page.getByRole("button", { name: /^本次重点/ }).click();
-  await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/);
+  await page.getByRole("button", { name: "查看原文", exact: true }).click();
+  await expect(page.getByRole("button", { name: "原文", exact: true })).toHaveClass(/active/);
   const sourcesTab = page.locator(".meeting-tabs").getByRole("button", { name: /^材料/ });
   await sourcesTab.click();
   await expect(sourcesTab).toHaveClass(/active/);
@@ -65,7 +65,8 @@ test("terminal Run segments stay readable when both follow-up reading requests f
   apiFixture.completeTranscriptionProgress({ failReadingRequests: true });
   await page.goto("/?project=project-a&event=event-a&view=simple");
 
-  await expect(page.getByRole("button", { name: /^本次重点/ })).toHaveClass(/active/, { timeout: 12_000 });
+  await page.getByRole("button", { name: "查看原文", exact: true }).click();
+  await expect(page.getByRole("button", { name: "原文", exact: true })).toHaveClass(/active/, { timeout: 12_000 });
   await expect(page.getByTestId("transcript-turn")).toHaveCount(3);
   await expect(page.getByTestId("transcript-turn").filter({ hasText: "Opening." }).first()).toBeVisible();
   await expect(page.locator(".reader-partial-error")).toContainText("有一部分没加载出来");

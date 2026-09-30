@@ -55,6 +55,16 @@ test('ordinary heartbeat still returns fallback statistics and runs later stages
   assert.ok(!f.state.calls.includes('transcription_dispatch'));
 });
 
+test('recovery-only maintenance consumes saved material intents without scanning unrelated legacy sources', async t => {
+  const f = await fixture(t);
+  const result = await sweepAndDispatch({ commission: false });
+  assert.ok(f.state.calls.includes('material_analysis'));
+  assert.ok(f.state.calls.includes('transcription_dispatch'));
+  assert.ok(!f.state.calls.includes('automatic_extraction'));
+  assert.equal(result.automatic_extraction.created, 0);
+  assert.equal(result.dispatch.claimed, 0);
+});
+
 for (const failing of ['asset_upload_sweep', 'transcription_sweep', 'material_analysis', 'automatic_extraction', 'transcription_dispatch']) {
   test(`maintenance observes ${failing} failure while preserving the other recovery stages`, async t => {
     const f = await fixture(t, [failing]);

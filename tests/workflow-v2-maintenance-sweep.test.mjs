@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const stub = source => 'data:text/javascript,' + encodeURIComponent(source);
 const stubs = new Map([
   ['@/db', stub('export const getBindings=()=>globalThis.maintenanceFixture.bindings;')],
-  ['@/lib/server/jobs/outbox', stub('export const sweepAndDispatch=options=>globalThis.maintenanceFixture.dispatch.extraction(options);')],
+  ['@/lib/server/jobs/outbox', stub('export const sweepAndDispatch=options=>globalThis.maintenanceFixture.dispatch.extraction(options);export const dispatchAllDueOutbox=()=>{globalThis.maintenanceFixture.nativeDispatches++;return {dispatched:true};};')],
   ['@/lib/server/jobs/event-ai-artifacts', stub('export const sweepAndDispatchEventAiArtifacts=()=>globalThis.maintenanceFixture.dispatch.event_ai_artifacts();')],
   ['@/lib/server/jobs/workflow-outbox', stub('export const dispatchWorkflowOutbox=()=>globalThis.maintenanceFixture.dispatch.workflow();')],
 ]);
@@ -34,15 +34,17 @@ registerHooks({
   },
 });
 const { POST } = await import('../app/api/internal/jobs/sweep/route.ts');
+const { POST: dispatchPost } = await import('../app/api/internal/jobs/dispatch/route.ts');
 const names = ['extraction', 'event_ai_artifacts', 'workflow'];
 const SECRET = 'synthetic-maintenance-token';
+const RECOVERY_SECRET = 'synthetic-recovery-token';
 function fixture(t) {
   const calls = Object.fromEntries(names.map(name => [name, 0]));
   const results = { extraction: { sweep: { recovered: 1 }, dispatch: { sent: 1 }, transcription_sweep: { recovered: 1 }, transcription_dispatch: { sent: 1 }, automatic_extraction: { created: 0 } }, event_ai_artifacts: { recovered: 1, dispatch: { sent: 1 } }, workflow: { claimed: 1, succeeded: 1, pending: 0, failed: 0, obsolete: 0, lostLease: 0 } };
   const dispatch = Object.fromEntries(names.map(name => [name, () => { calls[name]++; return results[name]; }]));
-  globalThis.maintenanceFixture = { bindings: { APP_ENV: 'production', INTERNAL_JOB_TOKEN: SECRET }, dispatch };
+  globalThis.maintenanceFixture = { bindings: { APP_ENV: 'production', INTERNAL_JOB_TOKEN: SECRET }, dispatch, nativeDispatches: 0 };
   t.after(() => { delete globalThis.maintenanceFixture; });
-  return { calls, results, dispatch, bindings: globalThis.maintenanceFixture.bindings };
+  return { calls, results, dispatch, bindings: globalThis.maintenanceFixture.bindings, state: globalThis.maintenanceFixture };
 }
 function request(token = SECRET, extra = {}) {
   return new Request('https://synthetic.example/api/internal/jobs/sweep', { method: 'POST', headers: { ...(token === null ? {} : { authorization: `Bearer ${token}` }), 'x-request-id': 'sweep-test', ...extra } });
@@ -61,6 +63,40 @@ test('maintenance sweep preserves native recovery fields and consumes all three 
   assert.deepEqual(body.data.workflow, f.results.workflow);
   assert.deepEqual(f.calls, { extraction: 1, event_ai_artifacts: 1, workflow: 1 });
   for (const name of names) assert.equal(body.data.queues[name].state, 'succeeded');
+});
+
+test('recovery token is scoped to sweep and suppresses commissioning across the workspace', async t => {
+  const f = fixture(t);
+  f.bindings.WORKFLOW_RECOVERY_TOKEN = RECOVERY_SECRET;
+  let options;
+  f.dispatch.extraction = input => { f.calls.extraction++; options = input; return f.results.extraction; };
+  const response = await POST(request(RECOVERY_SECRET));
+  assert.equal(response.status, 200);
+  assert.equal(options.commission, false);
+  assert.deepEqual(f.calls, { extraction: 1, event_ai_artifacts: 1, workflow: 1 });
+  assert.ok(!JSON.stringify(await response.json()).includes(RECOVERY_SECRET));
+  const denied = await dispatchPost(request(RECOVERY_SECRET));
+  assert.equal(denied.status, 401);
+  assert.deepEqual(f.calls, { extraction: 1, event_ai_artifacts: 1, workflow: 1 });
+});
+
+test('original internal token keeps its workspace maintenance authority', async t => {
+  const f = fixture(t);
+  f.bindings.WORKFLOW_RECOVERY_TOKEN = RECOVERY_SECRET;
+  let options;
+  f.dispatch.extraction = input => { f.calls.extraction++; options = input; return f.results.extraction; };
+  assert.equal((await POST(request())).status, 200);
+  assert.equal(options.commission, undefined);
+  assert.equal((await dispatchPost(request())).status, 200);
+  assert.equal(f.state.nativeDispatches, 1);
+});
+
+test('sweep recovery remains available with only its independent secret configured', async t => {
+  const f = fixture(t);
+  delete f.bindings.INTERNAL_JOB_TOKEN;
+  f.bindings.WORKFLOW_RECOVERY_TOKEN = RECOVERY_SECRET;
+  assert.equal((await POST(request(RECOVERY_SECRET))).status, 200);
+  assert.equal((await dispatchPost(request(RECOVERY_SECRET))).status, 503);
 });
 
 for (const [label, token] of [['missing', null], ['invalid', 'wrong']]) {

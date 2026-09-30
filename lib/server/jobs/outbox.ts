@@ -759,7 +759,7 @@ export async function recoverAndDispatch(input?: {
   return { sweep, dispatch, transcription_sweep, automatic_extraction };
 }
 
-export async function sweepAndDispatch(options: { onStageFailure?: RecoveryStageObserver } = {}): Promise<{
+export async function sweepAndDispatch(options: { commission?: false; onStageFailure?: RecoveryStageObserver } = {}): Promise<{
   sweep: SweepResult;
   dispatch: DispatchResult;
   transcription_sweep: TranscriptionSweepResult;
@@ -767,7 +767,9 @@ export async function sweepAndDispatch(options: { onStageFailure?: RecoveryStage
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
   await stage('asset_upload_sweep',sweepStaleAssetUploadsForWorkspaces,0,options.onStageFailure);
-  const recovered = await recoverAndDispatch({ commission: "workspace", onStageFailure: options.onStageFailure });
+  const recovered = options.commission === false
+    ? await recoverAndDispatch({ onStageFailure: options.onStageFailure })
+    : await recoverAndDispatch({ commission: "workspace", onStageFailure: options.onStageFailure });
   const transcription_dispatch = await stage(
     "transcription_dispatch",
     () => dispatchDueTranscriptionOutbox(),

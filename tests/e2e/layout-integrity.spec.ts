@@ -8,6 +8,7 @@ const test = base.extend<Fixtures>({
   apiFixture: [async ({ page }, provide) => {
     const fixture = new NotiqueApiFixture();
     fixture.enableSummaryFirstFlow();
+    fixture.allowMutation("POST", "/api/v1/projects/project-a/opened");
     await fixture.install(page);
     await provide(fixture);
   }, { auto: true }],
@@ -37,11 +38,10 @@ for (const route of routes) {
   });
 }
 
-test("no control is smaller than a readable, tappable target", async ({ page }) => {
+test("workspace controls keep readable text for mouse and keyboard use", async ({ page }) => {
   await page.goto("/?project=project-a&event=event-a&view=simple");
   await page.waitForLoadState("networkidle");
 
-  // Type that small is unreadable, and a control that short cannot be tapped.
   const offenders = await page.evaluate(() => {
     const bad: string[] = [];
     for (const node of Array.from(document.querySelectorAll("button, a[href], summary"))) {
@@ -55,43 +55,45 @@ test("no control is smaller than a readable, tappable target", async ({ page }) 
   expect(offenders, "controls below 11px are not readable").toEqual([]);
 });
 
-test("the desktop workspace preserves a wide reader and a bounded operation rail", async ({ page, apiFixture }, testInfo) => {
+test("the desktop record uses one wide column and follows the user's sidebar preference", async ({ page, apiFixture }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-chromium", "desktop workspace assertion");
 
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
   await page.goto("/?project=project-a&event=event-a&view=simple");
-  await expect(page.locator(".reader-reading-pane")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^本次重点/ })).toBeVisible();
+  await expect(page.getByTestId("bullet-claim-summary-pending")).toBeVisible();
+  await expect(page.locator(".reader-action-rail")).toHaveCount(0);
+  await expect(page.locator(".reader-reading-pane")).toHaveCount(0);
 
-  // 侧栏宽窄跟着用户自己的偏好走，工作区不再替用户收起。默认展开，
-  // 标签可见；阅读区和操作栏在展开的侧栏旁边也要放得下。
   const measure = () => page.evaluate(() => {
     const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect();
-    const reader = document.querySelector(".reader-reading-pane")?.getBoundingClientRect();
-    const rail = document.querySelector(".reader-action-rail")?.getBoundingClientRect();
+    const record = document.querySelector('[data-testid="bullet-claim-summary-pending"]')?.closest("section")?.getBoundingClientRect();
+    const bullets = Array.from(document.querySelectorAll('[data-testid^="bullet-"]')).map(node => node.getBoundingClientRect());
     const visibleSidebarLabels = Array.from(document.querySelectorAll(".sidebar .sidebar-label"))
       .filter((node) => getComputedStyle(node).display !== "none")
       .map((node) => node.textContent?.trim());
     return {
       sidebarWidth: sidebar?.width ?? 0,
-      readerWidth: reader?.width ?? 0,
-      readerLeft: reader?.left ?? 0,
-      readerRight: reader?.right ?? 0,
-      railWidth: rail?.width ?? 0,
-      railLeft: rail?.left ?? 0,
-      railRight: rail?.right ?? 0,
+      recordWidth: record?.width ?? 0,
+      recordLeft: record?.left ?? 0,
+      recordRight: record?.right ?? 0,
+      bulletWidths: bullets.map(bullet => bullet.width),
+      bulletLefts: bullets.map(bullet => bullet.left),
+      viewportWidth: innerWidth,
+      overflow: document.documentElement.scrollWidth - innerWidth,
       visibleSidebarLabels,
     };
   });
   const assertWorkspace = (layout: Awaited<ReturnType<typeof measure>>) => {
-    expect(layout.readerWidth).toBeGreaterThanOrEqual(560);
-    expect(layout.railWidth).toBeGreaterThanOrEqual(340);
-    expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeGreaterThanOrEqual(0.34);
-    expect(layout.railWidth / (layout.readerWidth + layout.railWidth)).toBeLessThanOrEqual(0.41);
-    expect(layout.readerLeft).toBeLessThan(layout.readerRight);
-    expect(layout.railLeft).toBeLessThan(layout.railRight);
-    expect(layout.readerRight, "the transcript canvas must end before the operation rail begins").toBeLessThanOrEqual(layout.railLeft + 1);
+    expect(layout.recordWidth).toBeGreaterThanOrEqual(800);
+    expect(layout.recordLeft).toBeGreaterThanOrEqual(layout.sidebarWidth);
+    expect(layout.recordRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+    expect(layout.bulletWidths.length).toBeGreaterThan(0);
+    for (const width of layout.bulletWidths) expect(width).toBeGreaterThanOrEqual(layout.recordWidth - 70);
+    for (const left of layout.bulletLefts) expect(Math.abs(left - layout.bulletLefts[0])).toBeLessThanOrEqual(1);
+    expect(layout.overflow).toBeLessThanOrEqual(1);
   };
 
   const expanded = await measure();
@@ -99,32 +101,38 @@ test("the desktop workspace preserves a wide reader and a bounded operation rail
   expect(expanded.visibleSidebarLabels.length).toBeGreaterThan(0);
   assertWorkspace(expanded);
 
-  // 用户自己收起后，工作区也照着收起，并且这个选择进入工作区不会被改回去。
   await page.getByRole("button", { name: "收起侧栏" }).click();
   await expect.poll(() => page.locator(".sidebar").evaluate((node) => node.getBoundingClientRect().width)).toBeLessThanOrEqual(72);
   const collapsed = await measure();
   expect(collapsed.visibleSidebarLabels).toEqual([]);
   assertWorkspace(collapsed);
-  expect(collapsed.readerWidth).toBeGreaterThan(expanded.readerWidth);
+  expect(collapsed.recordWidth).toBeGreaterThan(expanded.recordWidth);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: /^本次重点/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  await expect.poll(async () => (await measure()).sidebarWidth).toBeLessThanOrEqual(72);
+  assertWorkspace(await measure());
+  await page.screenshot({ path: testInfo.outputPath("record-column-collapsed.png") });
 });
 
-test("the compact operation bar stays aligned with the reader and leaves the transcript toolbar usable", async ({ page, apiFixture }, testInfo) => {
+test("the PC source reader fills one column and keeps its toolbar reachable", async ({ page, apiFixture }, testInfo) => {
   test.skip(testInfo.project.name === "mobile-chromium", "intermediate desktop breakpoint assertion");
 
-  await page.setViewportSize({ width: 806, height: 734 });
   apiFixture.completeSummary();
   apiFixture.completeReadableTranscript();
   apiFixture.completeFacts();
-  await page.goto("/?project=project-a&event=event-a&view=simple&readingTab=summary");
-  await expect(page.locator(".reader-action-rail")).toHaveAttribute("data-sheet", "peek");
-  // 47f849a 之后概要区更高，734px 高的窗口里工具栏未必在首屏。这条要保证
-  // 的是"滚到工具栏时它不被底部操作条盖住"，所以先把它滚到视口中间再量。
-  await page.locator(".transcript-document-toolbar").evaluate((node) => node.scrollIntoView({ block: "center" }));
-  await page.waitForTimeout(150);
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  await page.getByRole("button", { name: "查看原文", exact: true }).click();
+  await expect(page.locator(".reader-workspace-layout.is-source-only")).toBeVisible();
+  await expect(page.locator(".reader-action-rail")).toHaveCount(0);
+  await expect(page.locator(".reader-extra-views")).not.toHaveAttribute("open");
+  await expect(page.getByTestId("transcript-turn").first()).toBeVisible();
+  await page.locator(".transcript-document-toolbar").scrollIntoViewIfNeeded();
 
   const geometry = await page.evaluate(() => {
     const reader = document.querySelector(".reader-reading-pane")?.getBoundingClientRect();
-    const rail = document.querySelector(".reader-action-rail")?.getBoundingClientRect();
+    const canvas = document.querySelector(".reader-workspace-layout")?.getBoundingClientRect();
     const toolbar = document.querySelector(".transcript-document-toolbar")?.getBoundingClientRect();
     const controlsUsable = Array.from(document.querySelectorAll<HTMLElement>(".transcript-document-toolbar button, .transcript-document-toolbar summary"))
       .filter((control) => control.getBoundingClientRect().width > 0)
@@ -135,21 +143,71 @@ test("the compact operation bar stays aligned with the reader and leaves the tra
       });
     return {
       reader: reader ? { left: reader.left, right: reader.right, width: reader.width } : null,
-      rail: rail ? { left: rail.left, right: rail.right, top: rail.top, width: rail.width } : null,
-      toolbar: toolbar ? { bottom: toolbar.bottom } : null,
+      canvas: canvas ? { left: canvas.left, right: canvas.right, width: canvas.width, bottom: canvas.bottom } : null,
+      toolbar: toolbar ? { top: toolbar.top, bottom: toolbar.bottom } : null,
+      viewportHeight: innerHeight,
       controlsUsable,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     };
   });
 
   expect(geometry.reader).not.toBeNull();
-  expect(geometry.rail).not.toBeNull();
-  expect(Math.abs((geometry.rail?.left ?? 0) - (geometry.reader?.left ?? 0))).toBeLessThanOrEqual(1);
-  expect(Math.abs((geometry.rail?.right ?? 0) - (geometry.reader?.right ?? 0))).toBeLessThanOrEqual(1);
-  expect(geometry.rail?.width ?? 0).toBeGreaterThanOrEqual((geometry.reader?.width ?? 0) - 2);
-  expect(geometry.toolbar?.bottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual((geometry.rail?.top ?? 0) + 1);
+  expect(geometry.canvas).not.toBeNull();
+  expect(Math.abs((geometry.canvas?.left ?? 0) - (geometry.reader?.left ?? 0))).toBeLessThanOrEqual(1);
+  expect(Math.abs((geometry.canvas?.right ?? 0) - (geometry.reader?.right ?? 0))).toBeLessThanOrEqual(1);
+  expect(geometry.reader?.width ?? 0).toBeGreaterThanOrEqual(900);
+  expect(geometry.canvas?.bottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(geometry.viewportHeight);
+  expect(geometry.toolbar?.top ?? -1).toBeGreaterThanOrEqual(0);
+  expect(geometry.toolbar?.bottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(geometry.viewportHeight);
   expect(geometry.controlsUsable).toBe(true);
   expect(geometry.overflow).toBeLessThanOrEqual(1);
+
+  const tools = page.getByRole("button", { name: "搜索和筛选逐字稿", exact: true });
+  await tools.focus();
+  await page.keyboard.press("Enter");
+  const search = page.getByRole("textbox", { name: "搜索逐字稿", exact: true });
+  await expect(search).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(search).toBeFocused();
+  await search.fill("预算上限");
+  await expect(page.getByTestId("transcript-turn-body")).toHaveCount(1);
+  await expect(page.getByTestId("transcript-turn-body")).toContainText("预算上限是 120 万美元");
+  expect(await page.getByTestId("transcript-turn-body").locator("span").evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(14);
+  await search.clear();
+  await tools.click();
+  await page.getByRole("button", { name: "导出逐字稿", exact: true }).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "导出逐字稿", exact: true })).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath("source-column-toolbar.png") });
+});
+
+test("same-page edit has readable targets and works with the keyboard", async ({ page, apiFixture }) => {
+  apiFixture.completeSummary();
+  apiFixture.completeFacts();
+  await page.goto("/?project=project-a&event=event-a&view=simple");
+  const bullet = page.getByTestId("bullet-claim-summary-pending");
+  const edit = bullet.getByRole("button", { name: "改一下", exact: true });
+  await expect(edit).toBeVisible();
+  const target = await edit.boundingBox();
+  expect(target?.height ?? 0).toBeGreaterThanOrEqual(32);
+  expect(target?.width ?? 0).toBeGreaterThanOrEqual(44);
+  await edit.focus();
+  await page.keyboard.press("Enter");
+  const input = bullet.getByRole("textbox", { name: "修改重点", exact: true });
+  await expect(input).toBeFocused();
+  expect(await input.evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(16);
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("combobox", { name: "修改依据" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("button", { name: "保存修改", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(bullet.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(input).toHaveCount(0);
+  await expect(bullet).toContainText("预算上限是 120 万美元");
+  expect(apiFixture.writes.filter(write => !["/api/v1/jobs/dispatch", "/api/v1/projects/project-a/opened", "/api/v2/events/event-a/review-progress"].includes(write.path))).toEqual([]);
 });
 
 test("the mobile first viewport keeps transcript controls and body visible above the operation sheet", async ({ page, apiFixture }, testInfo) => {
