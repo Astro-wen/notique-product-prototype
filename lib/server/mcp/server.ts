@@ -8,10 +8,10 @@ const id=z.string().min(1).max(256),cursor=z.string().max(2000).optional(),limit
 const definitions=[
  {name:'list_projects',description:'列出已授权事项。已有数据，只读。',schema:z.object({limit,cursor}).strict()},
  {name:'list_records',description:'列出某事项的沟通记录和处理状态。',schema:z.object({project_id:id,limit,cursor}).strict()},
- {name:'get_project_brief',description:'读取已采纳重点、行动与问题。reviewState表示采纳；已采纳行动executionState含open/completed/cancelled；问题resolutionState含open/resolved。含精确版本、依据、答案/结果引用和latestOutcome新鲜度；action_history标明已替换行动。按nextCursor继续读取。长条目format=json_fragment、fragmentOf=entry时，按partIndex合并content还原整条JSON。',schema:z.object({project_id:id,limit,cursor}).strict()},
- {name:'get_record_views',description:'读取现有记录或显式指定的已生成视图。record保留草稿/采纳、行动执行、问题回答、精确关联及latestOutcome，已回答问题仍返回；草稿行动无executionState。未生成视图返回not_generated。长内容按JSON片段返回，按partIndex合并content；fragmentOf=entry表示还原整条记录条目，否则还原视图内容。按nextCursor继续读取。',schema:z.object({record_id:id,views:z.array(z.enum(MCP_VIEWS)).min(1).max(8).refine(v=>new Set(v).size===v.length).optional(),limit,cursor}).strict()},
+ {name:'get_project_brief',description:'读取已采纳重点、行动与问题。reviewState表示采纳；已采纳行动executionState含open/completed/cancelled；问题resolutionState含open/resolved。含精确版本、依据、答案/结果引用和latestOutcome新鲜度；action_history标明已替换行动。条目evidenceRefIds可作为get_evidence的evidence_id核对当前原始出处，无可用原始出处为[]。按nextCursor继续读取。长条目format=json_fragment、fragmentOf=entry时，按partIndex合并content还原整条JSON。',schema:z.object({project_id:id,limit,cursor}).strict()},
+ {name:'get_record_views',description:'读取现有记录或显式指定的已生成视图。record保留草稿/采纳、行动执行、问题回答、精确关联及latestOutcome，已回答问题仍返回；草稿行动无executionState。条目evidenceRefIds可作为get_evidence的evidence_id核对当前原始出处，无可用原始出处为[]。未生成视图返回not_generated。长内容按JSON片段返回，按partIndex合并content；fragmentOf=entry表示还原整条记录条目，否则还原视图内容。按nextCursor继续读取。',schema:z.object({record_id:id,views:z.array(z.enum(MCP_VIEWS)).min(1).max(8).refine(v=>new Set(v).size===v.length).optional(),limit,cursor}).strict()},
  {name:'get_record_excerpt',description:'分页读取原始材料，含说话人、时间和原文偏移。每次最多100段及20,000字符，片段可能分多页。',schema:z.object({record_id:id,limit:z.number().int().min(1).max(100).optional(),cursor}).strict()},
- {name:'get_evidence',description:'读取一条有效出处及最多6,000字符上下文，来源失效时正文为空。',schema:z.object({evidence_id:id}).strict()},
+ {name:'get_evidence',description:'使用项目/记录条目的evidenceRefIds中一个ID作为evidence_id，读取对应精确版本出处及最多6,000字符上下文，来源失效时正文为空。',schema:z.object({evidence_id:id}).strict()},
 ] as const;
 const MAX_REQUEST_BYTES=16384;
 const discoveryMethods=new Set(['server/discover','initialize','notifications/initialized','ping','tools/list']);

@@ -6,12 +6,13 @@ export const WORKFLOW_NARRATIVE_SCHEMA_VERSION = 'workflow-narrative.v1';
 export const WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION = 'workflow-narrative-prompt.v1';
 export const WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION = 'workflow-narrative-prompt.v2';
 export const WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION = 'workflow-narrative-prompt.v3';
-export const WORKFLOW_NARRATIVE_PROMPT_VERSION = 'workflow-narrative-prompt.v4';
-export type WorkflowNarrativePromptVersion = typeof WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_PROMPT_VERSION;
+export const WORKFLOW_NARRATIVE_MATTER_LAYOUT_PROMPT_VERSION = 'workflow-narrative-prompt.v4';
+export const WORKFLOW_NARRATIVE_PROMPT_VERSION = 'workflow-narrative-prompt.v5';
+export type WorkflowNarrativePromptVersion = typeof WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_MATTER_LAYOUT_PROMPT_VERSION | typeof WORKFLOW_NARRATIVE_PROMPT_VERSION;
 export function isWorkflowNarrativePromptVersion(value: string): value is WorkflowNarrativePromptVersion {
-  return value === WORKFLOW_NARRATIVE_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION;
+  return value === WORKFLOW_NARRATIVE_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_MATTER_LAYOUT_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION || value === WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION;
 }
-const hasTopicLayout = (version: string) => version === WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION || version === WORKFLOW_NARRATIVE_PROMPT_VERSION;
+const hasTopicLayout = (version: string) => version === WORKFLOW_NARRATIVE_TOPIC_LAYOUT_PROMPT_VERSION || version === WORKFLOW_NARRATIVE_MATTER_LAYOUT_PROMPT_VERSION || version === WORKFLOW_NARRATIVE_PROMPT_VERSION;
 export type WorkflowNarrativeInput = {
   eventId: string;
   contextVersion: number;
@@ -122,12 +123,17 @@ export function workflowNarrativePrompt(input: WorkflowNarrativeInput, feedback:
       'Organize the record by concrete subject, not by item type. Place facts, unanswered questions, proposed actions and results about the same specific matter under one topic. Use short plain-language topic titles in the record language, such as 供应商报价 or 学区选择, never generic labels such as Facts, Questions, Actions or AI drafts.',
       'Every sentence has topic={key,title}. Use the same stable ASCII key and exact title for the same subject, at most 40 topics. Every exact claim version belongs to one topic. Topic grouping is presentation only: related items remain independent, and grouping never implies that a question is answered, a task is accepted or completed, or one item proves another. Separate unrelated properties, people, suppliers and tasks even when they share a broad category. Keep differing values and unresolved choices together only when they concern the same specific matter.',
     ] : []),
-    ...(promptVersion===WORKFLOW_NARRATIVE_PROMPT_VERSION ? [
+    ...(promptVersion===WORKFLOW_NARRATIVE_MATTER_LAYOUT_PROMPT_VERSION || promptVersion===WORKFLOW_NARRATIVE_PROMPT_VERSION ? [
       'Organize the record by concrete subject, not by item type. A topic is one matter the user can advance toward a decision or outcome. Identify the independent matters first, then place their facts, unanswered questions, actions and results together. Use short plain-language titles naming those matters, such as 设备采购 or 行政培训.',
       'Keep the details and steps of the same matter in its topic. For one equipment purchase, its suppliers, competing quotes, installation costs, budget, approval, contract, owners and deadlines all belong to 设备采购. A different supplier, amount, owner or processing step does not by itself create another topic. Preserve each differing value, condition, unresolved choice and exact version within that matter.',
       'Separate matters when the supplied content supports independent decisions or outcomes. Two purchases for different sites with separate approvals and delivery plans remain separate even if both involve the same supplier or the word 采购. A separate training plan remains separate from the equipment purchase that it discusses. Prefer the supported work items over either a broad catch-all category or a group for every detail.',
       'A recap or next meeting that checks progress on existing matters belongs with those matters, rather than a generic 下次会议 or 跟进 topic. Keep a follow-up spanning several matters as one action in the most directly supported existing topic, retaining every named matter in its text. An independently planned meeting with its own unresolved logistics can be its own matter. Keep supplied exact references and relationships; grouping adds no new ledger relationship.',
       'Every sentence has topic={key,title}. Use one stable ASCII key and exact title for the same matter, at most 40 topics. Every exact claim version belongs to one topic. Grouping changes presentation only. Related items retain their independent review, question and execution states. A shared topic does not answer a question, adopt or complete an action, or make one item evidence for another.',
+    ] : []),
+    ...(promptVersion===WORKFLOW_NARRATIVE_PROMPT_VERSION ? [
+      'Plan the smallest set of independent user outcomes before writing. Treat the phases, supporting work and descriptive content of one outcome as its details. For one employee training program, provider fees, reserve approval, lesson content, exercises, attendance, dates, booking and exercise preparation all stay in the employee training topic. Different deadlines and owners within that program do not create separate topics.',
+      'Distinguish what the meeting is actually organizing from what it describes as a lesson, example or requirement. When a training exercise teaches summary review, source checking or action tracking, those descriptions remain training content. They do not establish a separate summary-review or software-development project. Only a separately supported real work item with its own outcome creates another topic.',
+      'Before returning the sentences, review all topic titles together. Merge titles that name a step, phase, document, scheduling detail or example of the same matter into that matter. Keep genuinely independent purchases or programs separate, preserve every exact reference and qualifier, and keep the original conditions and states. Return the existing sentence schema only.',
     ] : []),
     `Return schema_version=${WORKFLOW_NARRATIVE_SCHEMA_VERSION}, event_id=${input.eventId}, and sentences.`,
     ...(feedback.length ? ['Fix only these validation issues: ' + JSON.stringify(feedback)] : []),

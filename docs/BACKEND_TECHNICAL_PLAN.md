@@ -238,7 +238,7 @@ material-analysis.ts 合并同一沟通连续提交的材料，等待全部当�
 
 租约过期通过 fencingToken 重新领取。并发配额与材料处理中保持等待，临时交接故障最多3次尝试。上传接口短时唤醒，恢复入口和 Worker scheduled 消费持久化任务。原始材料触发一次提交，音频分块、派生转写及阅读版本沿用这次提交。sourceRevision 为0的历史沟通继续由旧扫描入口补齐。
 
-概要生成同时返回每句的主题 key 与短标题。主题按精确 VersionRef 校验，标题一致，同一版本归属一个主题。主题字段与逐句引用一起保存在 sentence_refs_json，已有表结构继续复用。新概要任务使用v4提示词按可独立推进的事项归组，回顾沿用既有主题。v1、v2与v3的在途付费请求继续按原提示词、schema和供应商请求ID恢复。旧概要经显式更新后生成主题目录，材料提取继续复用。
+概要生成同时返回每句的主题 key 与短标题。主题按精确 VersionRef 校验，标题一致，同一版本归属一个主题。主题字段与逐句引用一起保存在 sentence_refs_json，已有表结构继续复用。新概要任务使用v5提示词按可独立推进的事项归组。同一培训的费用、课程、练习与排期归于员工培训。回顾沿用既有主题。v1至v4的在途付费请求继续按原提示词、schema和供应商请求ID恢复。旧概要经显式更新后生成主题目录，材料提取继续复用。
 
 初始分析和重新整理共享提取阶段，全文概要根据提取后的精确版本生成。章节、发言总结与原文要点由用户选择后各自投递，已保存阅读产物继续可读。
 
@@ -365,7 +365,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 |
 | ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 |
 | Bullet | id、text、claimRefs、reviewState、origin、sourceStatus、applicability?、conflictWith? | reviewState=draft/accepted，origin=source_statement/ai_suggestion/user_input/user_selection。用户选录保留原话，缺失或过期出处显式展示 并存答案的适用情况随要点展示与导出。conflictWith 保存仍待选择的旧信息精确版本，复制时标明新旧信息待选择。 |
-| Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 |
+| Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 同一培训计划的费用、审批、课程内容、练习、人数与排期归于员工培训。课程介绍和练习中的流程描述作为培训内容保留。 |
 | DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null。用户核对就绪原话后，可确认或采用支持度为fully_supports或unreviewed的草稿。AI支持状态与人工采纳分别保留。部分支持和不支持通过修改补齐 |
 | DecisionMember | claimId、claimVersionId、operation、newText?、origin?、evidenceRefIds?、conflictChoice?、questionChange?、factChange? | questionChange 仅用于问题 edit。answerChoices 携带全部现有有效答案的 VersionRef 和 mode=keep/reopen，最多100条。keep 关联到新版问题，reopen 解除当前问题关联，共享答案保留其他问题用途。整次决定和撤销恢复原子处理。结果修正与撤回沿 reason.questionEdit.predecessorRelationId 关系链处理，同一答案、同一问题之外的独立关联保留。 factChange 仅用于普通信息 edit，questionChoices 携带当前回答的全部问题 VersionRef 和 mode=keep/reopen，最多100条。keep 使用新信息版本回答原问题，reopen 解除该条支持并按其他答案重算。已确认的替代与并存关系追加新版本关系并保留原决定及适用情况。原行动依据保持冻结，用户另行核对。结果撤回沿同一答案、同一问题的 questionEdit 与 factEdit 关系链处理。 |
 | MutationReceipt | mutationId、contextVersion、changedRefs、affectedViews、refreshState | 原子提交后的回执。changedRefs 含 entityType、id、revision。refreshState=current/updating，前端按目标版本读取快照 |
@@ -489,10 +489,12 @@ MCP 用于让用户自己的 AI 助手读取 Notique 中已有材料和结果。
 | --- | --- | --- |
 | list_projects | limit默认20，最大50，cursor | 有权限的事项与更新时间 |
 | list_records | project_id、limit≤50、cursor | 沟通列表与状态 |
-| get_project_brief | project_id、limit≤50、cursor | 已采纳事实、草稿或采纳的行动与问题、执行和答案状态、已有结果与精确关联 |
-| get_record_views | record_id、views、limit≤50、cursor | 当前条目及独立状态和精确关联，其他视图返回已有版本、新鲜度与覆盖范围 |
+| get_project_brief | project_id、limit≤50、cursor | 已采纳事实、草稿或采纳的行动与问题、执行和答案状态、已有结果、精确关联及 evidenceRefIds |
+| get_record_views | record_id、views、limit≤50、cursor | 当前条目及独立状态、精确关联与 evidenceRefIds，其他视图返回已有版本、新鲜度与覆盖范围 |
 | get_record_excerpt | record_id、cursor | 每次最多100段、20,000字符，含下一页与来源 ID |
 | get_evidence | evidence_id | 单条证据与最多6,000字符上下文 |
+
+助手先读取项目或记录，使用条目的 evidenceRefIds 调用 get_evidence 查看原话。编号来自条目所引用的当前精确版本，并经过成员权限、材料版本和出处有效性检查。用户直接补充的答案保留用户补充标识，没有原始材料出处时返回空数组。概要继续展示自己的 freshness，出处可读与概要是否最新分别判断。
 
 沿用 docs/MCP_STRATEGY.md 的只读阶段。部署在现有 Sites 时使用其当前受支持的协议入口和身份网关，正式平台独立部署时选择官方 SDK 与已验证客户端兼容版本。两种部署共用领域查询层。只读工具缺少视图时返回未生成，付费生成使用网页的显式操作。
 

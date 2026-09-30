@@ -2,6 +2,17 @@
   "specVersion": 2,
   "status": "implementation_specification",
   "apiPrefix": "/api/v2",
+  "mcpReadContract": {
+    "entryTools": [
+      "get_project_brief",
+      "get_record_views"
+    ],
+    "evidenceField": "evidenceRefIds",
+    "evidenceTool": "get_evidence",
+    "evidenceArgument": "evidence_id",
+    "evidenceRules": "引用条目所使用的当前精确 claimVersion，经过成员权限、材料版本、结构有效性与 ready 检查。没有原始出处的用户补充返回空数组。",
+    "freshnessRules": "概要 freshness 与原始出处可用性独立。概要因上下文变化而 stale 时，仍为当前版本的有效出处可读，旧版本出处不作为当前编号返回。"
+  },
   "codeBaseline": "c86be0108c32a1ec8e846df65e2a2933e39c2420",
   "note": "API 与字段说明清单。第二轮产品修订采用同页记录、就地拍板和单目标答案回流。实现阶段在 lib/shared/workflow-v2.ts 定义可编译类型与运行时校验。",
   "endpoints": [
@@ -188,7 +199,7 @@
     {
       "name": "Narrative",
       "fields": "text、sentenceRefs、basedOnContextVersion、freshness、scope",
-      "rules": "freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。"
+      "rules": "freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 同一培训计划的费用、审批、课程内容、练习、人数与排期归于员工培训。课程介绍和练习中的流程描述作为培训内容保留。"
     },
     {
       "name": "DecisionRequest",
@@ -340,5 +351,16 @@
       "inventory_prompt_version",
       "verification_prompt_version"
     ]
+  },
+  "workflowNarrative": {
+    "schemaVersion": "workflow-narrative.v1",
+    "promptVersion": "workflow-narrative-prompt.v5",
+    "frozenPromptVersions": [
+      "workflow-narrative-prompt.v1",
+      "workflow-narrative-prompt.v2",
+      "workflow-narrative-prompt.v3",
+      "workflow-narrative-prompt.v4"
+    ],
+    "grouping": "以用户可独立推进的事项组织同一次概要，保留精确引用与各项状态。"
   }
 }

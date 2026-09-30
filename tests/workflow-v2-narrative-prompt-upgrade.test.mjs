@@ -50,7 +50,7 @@ test('v2 separates platform review metadata from source modality while the exact
     { text: '建议小陈整理报价，如果预算允许再采购', claimRefs: [{ claimId: 'proposal', claimVersionId: 'proposal_v1' }], origin: 'ai_suggestion', reviewState: 'accepted' },
   ] };
   assert.equal(SCHEMA, 'workflow-narrative.v1');
-  assert.equal(CURRENT, 'workflow-narrative-prompt.v4');
+  assert.equal(CURRENT, 'workflow-narrative-prompt.v5');
   const before = structuredClone(input);
   const prompt = workflowNarrativePrompt(input);
   assert.match(prompt, /ai_suggestion means an AI-extracted candidate action/);
@@ -130,7 +130,29 @@ test('a paid v3 response resumes its original topic prompt and request after v4 
   assert.deepEqual(new Set(snapshot.narrative.sentenceRefs.flatMap(s=>s.claimRefs.map(r=>r.claimVersionId))),new Set(saved.checkpoint.input.bullets.flatMap(b=>b.claimRefs.map(r=>r.claimVersionId))));
 });
 
-test('a stored paid v3 output publishes unchanged and reading it creates no v4 job', async t => {
+test('a paid v4 response resumes its exact matter prompt after v5 changes training grouping', async t => {
+  const f=await setup(t);await oldCheckpoint(f);
+  const saved=payload(f.sqlite);saved.checkpoint.promptVersion='workflow-narrative-prompt.v4';
+  saved.checkpoint.inputHash=await digestValue({input:saved.checkpoint.input,config,schemaVersion:SCHEMA,promptVersion:saved.checkpoint.promptVersion});
+  f.sqlite.prepare('UPDATE workflow_outbox SET payload_json=? WHERE id=?').run(JSON.stringify(saved),'legacy');
+  let calls=0;
+  const result=await run(f.db,{async summarizeWorkflow(input,options){
+    calls++;assert.equal(options.workflowNarrativePromptVersion,'workflow-narrative-prompt.v4');
+    assert.equal(options.resumeProviderResponseId,'resp_legacy');
+    assert.equal(options.idempotencyKey,`notique:legacy:${saved.checkpoint.inputHash}:0`);
+    assert.doesNotMatch(workflowNarrativePrompt(input,[],options.workflowNarrativePromptVersion),/For one employee training program/);
+    return {output:{...output(input),sentences:input.bullets.map(b=>({text:b.text,claim_refs:b.claimRefs,topic:{key:'existing',title:'原有事项'}}))},usage};
+  }});
+  assert.equal(result.succeeded,1);assert.equal(calls,1);
+  assert.equal(payload(f.sqlite).checkpoint.promptVersion,saved.checkpoint.promptVersion);
+  assert.equal(payload(f.sqlite).checkpoint.inputHash,saved.checkpoint.inputHash);
+  assert.equal(payload(f.sqlite).auditUsage[0].providerRequestId,'resp_legacy_paid');
+  const before=f.sqlite.prepare('SELECT count(*) n FROM workflow_outbox').get().n;
+  assert.equal((await readWorkspace(f.db,SCOPE,'e',{},plus(9500))).narrative.freshness,'stale');
+  assert.equal(f.sqlite.prepare('SELECT count(*) n FROM workflow_outbox').get().n,before);
+});
+
+test('a stored paid v3 output publishes unchanged and reading it creates no current job', async t => {
   const f=await setup(t);await oldCheckpoint(f,{savedOutput:true});
   const saved=payload(f.sqlite);saved.checkpoint.promptVersion=TOPIC_LAYOUT;
   saved.checkpoint.inputHash=await digestValue({input:saved.checkpoint.input,config,schemaVersion:SCHEMA,promptVersion:TOPIC_LAYOUT});

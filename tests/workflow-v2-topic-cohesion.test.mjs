@@ -12,12 +12,13 @@ const sentence=(id,topic)=>({text:id,claimRefs:[ref(id)],reviewState:'draft',top
 const action=(id,questionRefs=[],basisDetails=[])=>({id,claimRef:ref(id),revision:1,executionState:'open',questionRefs:questionRefs.map(r=>({...r,revision:1})),basisState:'current',basisDetails,latestOutcome:null});
 const question=id=>({id,claimRef:ref(id),revision:1,resolutionState:'open',answerRefs:[],latestOutcome:null});
 
-test('frozen v1-v3 request prompts and JSON schemas retain their exact pre-upgrade bytes',()=>{
+test('frozen v1-v4 request prompts and JSON schemas retain their exact pre-upgrade bytes',()=>{
   const input={eventId:'frozen',contextVersion:0,sourceRevision:0,coverage:{complete:true,totalSegments:1,completedSegments:1,unprocessedRanges:[]},bullets:[{text:'采购报价待确认',claimRefs:[ref('quote')],origin:'source_statement',reviewState:'draft'}]};
   const frozen=[
     ['workflow-narrative-prompt.v1','635d113ae66704e88e00cd362ab113d5af44dbf47df5422f17f84b0941f25209','db9827ca270380b7aa0a62fe84a5210738b532cba5c483b8f20690f2cb762bfe'],
     ['workflow-narrative-prompt.v2','1555c268cbe7609605efc771b491339a01885c4512abb353976dfea7c2875dee','db9827ca270380b7aa0a62fe84a5210738b532cba5c483b8f20690f2cb762bfe'],
     ['workflow-narrative-prompt.v3','1f291c1a454da0a95c81b5701e53a4904eac786b2604d21016f51171255a460a','3c33297654a72a6c1709e6173262f652a299838c16d9bd0963f810ceadef6e08'],
+    ['workflow-narrative-prompt.v4','d5f922425d2557b21d9ba190868f696471150babfac0c7014fc6a1c8ca68608d','3c33297654a72a6c1709e6173262f652a299838c16d9bd0963f810ceadef6e08'],
   ];
   const sha=value=>createHash('sha256').update(value).digest('hex');
   for(const [version,promptHash,schemaHash] of frozen){
@@ -25,6 +26,7 @@ test('frozen v1-v3 request prompts and JSON schemas retain their exact pre-upgra
     assert.equal(sha(JSON.stringify(workflowNarrativeSchema(version))),schemaHash,version);
   }
   assert.deepEqual(workflowNarrativeSchema('workflow-narrative-prompt.v4'),workflowNarrativeSchema('workflow-narrative-prompt.v3'));
+  assert.deepEqual(workflowNarrativeSchema(),workflowNarrativeSchema('workflow-narrative-prompt.v4'));
 });
 
 test('one supported purchase contains its supplier, costs, approval, question, action and result without losing exact versions or state',()=>{

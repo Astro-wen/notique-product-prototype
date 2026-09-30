@@ -12,6 +12,7 @@ import type {
 import { CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
+import type { WorkflowNarrativePromptVersion } from "./workflow-narrative.ts";
 
 export const LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION = LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION;
 export const TWO_STAGE_EXTRACTION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
@@ -141,7 +142,7 @@ export interface TwoStageModelProvider extends ModelProvider {
 
 export type ModelStageRequestOptions = {
   extractionPromptVersion?: ExtractionStagePromptVersion;
-  workflowNarrativePromptVersion?: 'workflow-narrative-prompt.v1' | 'workflow-narrative-prompt.v2' | 'workflow-narrative-prompt.v3' | 'workflow-narrative-prompt.v4';
+  workflowNarrativePromptVersion?: WorkflowNarrativePromptVersion;
   verificationSchemaVersion?: VerificationSchemaVersion;
   signal?: AbortSignal;
   idempotencyKey?: string;

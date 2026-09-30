@@ -1,6 +1,6 @@
 # Notique MCP 接入与降本方案
 
-状态：2026-09-30，六个只读工具和 /connections 授权页已发布，安装后的实际助手工具列表已发现六工具。本次行动、问题及结果状态补全仍须随同一 main 源码发布；工程回归与真实个人账号验收分开记录。个人账号尚待确认并授权，个人资料读取、撤销后的实际拒绝和零新增模型任务尚未判为通过。具体接口以两份工作流 V2 技术方案和共享契约为准。
+状态：2026-09-30，六个只读工具和 /connections 授权页已发布，安装后的实际助手工具列表已发现六工具。行动、问题及结果状态补全已随生产版本发布；本次 evidenceRefIds 链路修复等待同源发布，工程回归与真实个人账号验收分开记录。个人账号尚待确认并授权，个人资料读取、撤销后的实际拒绝和零新增模型任务尚未判为通过。具体接口以两份工作流 V2 技术方案和共享契约为准。
 
 ## 推荐决策
 
@@ -47,12 +47,15 @@ MCP 是上下文和工具交换协议，不提供免费模型。给同一串模�
 | `executionState` | 已采纳行动的 `open`、`completed`、`cancelled`；执行完成不等于问题已回答。 |
 | `resolutionState` | 问题的 `open` 或 `resolved`；直接回答无需先创建或完成行动。问题也保留自身 `reviewState`。 |
 | `claimRef` / `claimRefs`、`revision` | 条目精确版本与当前工作流修订。依据的 `acceptedRef` 和 `currentRef` 分别保留，`basisState` 单独标明需复核。 |
+| `evidenceRefIds` | 项目/记录条目当前精确 claim/version 对应、权限内、结构有效且 ready 的原始出处 ID，可直接作为 `get_evidence` 的 `evidence_id`。失效来源或只有 user_note 的用户补充返回空数组，不伪造原文出处，也不混入旧版本证据。 |
 | `questionRefs` / `answerRefs` | 行动关联的问题及问题当前有效答案的精确版本；多问题结果按各问题的 `answerRefs` 区分。 |
 | `answerToQuestionRefs` / `resultForActionRefs` | 答案或结果条目的反向精确关联。项目去重仍保留跨记录的全部关联，`eventId` 指向条目原属记录。 |
 | `latestOutcome` | 已保存最近结果的 ID、修订、文字、更新时间、答案/结果引用及 `freshness`。`stale` 表示旧结果，不能当作当前答案；未保存结果为 null。 |
 | `kind: action_history` | `lifecycleState: superseded` 的已替换行动，保留执行状态、原版本、替代版本和已有结果，不能作为当前待跟进事项。 |
 
 来源失效时收起相应正文，保留状态和版本标识；最近结果沿用工作区的来源检查与新鲜度判断，不从文字或条目缺席推断状态。读取只做授权范围内的查询和纯投影，不写入工作区快照、行动、答案或任何模型任务。每次调用仍在读取前后校验授权、到期、撤销及成员权限。
+
+`summary.freshness` 与原始出处是否可读是两项判断：概要因上下文变化而 stale，但句子仍引用当前精确版本、出处仍 ready 时，`evidenceRefIds` 可以有值；句子引用旧版本时保留原有历史正文及 stale 标记，当前出处 ID 返回空数组，不能把新版本证据挂到旧句子。多个引用只汇总其中符合当前版本及可用性规则的原始出处，不表示整句已由用户确认。各次读取在本次授权账本上预建版本与出处索引，无新增查询或跨请求缓存。
 
 每页条目正文预算24,000字符。超长状态/关联条目以 `format: json_fragment`、`fragmentOf: entry`、`partIndex`、`partCount` 返回，合并同一条目的 `content` 后解析为完整 JSON；其他已生成阅读视图的 JSON 分片合并后得到视图内容。使用 `nextCursor` 继续读取，不能把单个分片当作完整结果。
 
