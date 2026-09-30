@@ -60,7 +60,7 @@ test('actual record: copy, correct, reload, follow up, answer, correct result an
     await page.getByRole('button',{name:'保存修正',exact:true}).click();
     await expect(page.getByText('报价十三万元，包含安装和运输。',{exact:true}).first()).toBeVisible();
     await expect(page.getByText('报价十二万元，包含安装。',{exact:true})).toHaveCount(0);
-    const actionTitle=await page.getByRole('region',{name:/跟进事项/}).getByText('向供应商询价',{exact:true}).boundingBox();
+    const actionTitle=await page.getByTestId(`action-${fixture.actionId}`).getByText('向供应商询价',{exact:true}).boundingBox();
     expect(actionTitle!.width).toBeGreaterThan(180);
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.screenshot({path:info.outputPath('record-result.png'),fullPage:true});
@@ -427,7 +427,7 @@ test('replacing an answer keeps the completed action result clearly historical a
   await page.getByRole('button',{name:'补结果',exact:true}).click();await page.getByLabel('补充答案',{exact:true}).fill('报价十二万元。');await page.getByRole('button',{name:'保存结果',exact:true}).click();await expect(page.getByRole('form',{name:'补充结果',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:/^完成：/}).click();await expect(page.getByRole('button',{name:/^重开：/})).toBeVisible();
   await page.getByRole('button',{name:'更新答案',exact:true}).click();await page.getByLabel('补充答案',{exact:true}).fill('报价十三万元。');await page.getByLabel('用新答案替代',{exact:true}).check();await page.getByRole('button',{name:'保存答案',exact:true}).click();await expect(page.getByRole('form',{name:'补充结果',exact:true})).toHaveCount(0);
-  const followup=page.getByRole('region',{name:/跟进事项/});const history=followup.locator('details').filter({has:page.getByText('上次结果 · 相关答案已变化',{exact:true})});
+  const followup=page.getByTestId(`action-${fixture.actionId}`);const history=followup.locator('details').filter({has:page.getByText('上次结果 · 相关答案已变化',{exact:true})});
   await expect(history.locator('summary')).toBeVisible();await expect(history.getByText('报价十二万元。',{exact:true})).toBeHidden();await history.locator('summary').click();await expect(history).toContainText('报价十二万元。');
   await page.getByRole('button',{name:'复制记录',exact:true}).click();await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toContain('报价十三万元。');expect(await page.evaluate(()=>navigator.clipboard.readText())).not.toContain('报价十二万元。');
   await page.reload();await expect(page.getByRole('button',{name:/^重开：/})).toBeVisible();await expect(history.locator('summary')).toBeVisible();await expect(history.getByText('报价十二万元。',{exact:true})).toBeHidden();

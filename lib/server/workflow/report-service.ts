@@ -60,7 +60,7 @@ export async function createReport(
   if (request.eventIds.some(id => !ledger.events.some(event => event.id === id))) throw new WorkflowFault(404,'not_found','所选记录不存在或已移出当前事项');
   const events = ledger.events.filter(event => !requested.size || requested.has(event.id)).sort((a,b) => a.occurred_at.localeCompare(b.occurred_at) || a.id.localeCompare(b.id));
   const versions = events.map(event => ({event, snapshot:projectWorkspace(ledger,event.id,timestamp,'')}));
-  const content = versions.map(({event,snapshot}) => buildRecordText({title:event.title,bullets:snapshot.bullets,questions:snapshot.questions,coverage:snapshot.coverage,reaffirmedMentions:snapshot.reaffirmedMentions,scope:request.scope,format:request.format})).join('\n\n') || '当前事项还没有沟通记录。';
+  const content = versions.map(({event,snapshot}) => buildRecordText({title:event.title,bullets:snapshot.bullets,questions:snapshot.questions,actions:snapshot.actions,coverage:snapshot.coverage,reaffirmedMentions:snapshot.reaffirmedMentions,scope:request.scope,format:request.format})).join('\n\n') || '当前事项还没有沟通记录。';
   const report: ReportSnapshot = {id:mutationId('report'),contextVersion:ledger.contextVersion,scope:request.scope,content,createdAt:timestamp};
   const mentionVersions=(snapshot:ReturnType<typeof projectWorkspace>)=>request.scope==='mixed'?(snapshot.reaffirmedMentions ?? []).filter(m=>m.sourceStatus==='ready' && m.targetText!==null).map(m=>m.claimRef.claimVersionId):[];
   const includedVersions = [...new Set(versions.flatMap(({snapshot}) => [...snapshot.bullets.filter(b=>request.scope==='mixed'||b.reviewState==='accepted').flatMap(b=>b.claimRefs.map(r=>r.claimVersionId)),...mentionVersions(snapshot)]))];

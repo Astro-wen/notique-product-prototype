@@ -1,0 +1,22 @@
+{
+  "method": "actual_isolated_local_browser",
+  "source_directory": "/private/tmp/notique-topics-recheck/results/workflow-v2-topics-live-on-e7b9c-nd-returned-answer-together-desktop-chromium",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1366,
+      "height": 768
+    },
+    {
+      "width": 1920,
+      "height": 1080
+    }
+  ],
+  "source_agent": "/root",
+  "javascriptErrors": 0,
+  "horizontalOverflow": false,
+  "note": "本地实现，发布前截图。"
+}

@@ -198,3 +198,15 @@
 .questionContent > * { flex-shrink: 0; }
 .questionContent .memberList { flex: none; overflow: visible; padding-right: 0; }
 .questionContent > p { margin: 0; }
+
+.topics { display: grid; gap: 28px; }
+.topic { scroll-margin: 110px; min-width: 0; border: 1px solid #e6e6e8; border-radius: 8px; padding: 18px 20px; }
+.topicHeader { border-bottom: 1px solid #e6e6e8; padding-bottom: 12px; margin-bottom: 4px; }
+.topicHeader h3 { margin: 0; font-size: 17px; font-weight: 650; line-height: 1.6; overflow-wrap: anywhere; }
+.topicFollowups { border-top: 1px solid #e6e6e8; margin-top: 10px; padding-top: 14px; }
+.topicFollowups h4 { margin: 0; color: #59657b; font-size: 13px; font-weight: 500; }
+.embedded .topic .bullet { padding-left: 0; padding-right: 0; }
+.embedded .topic .needsDecision { padding-left: 14px; }
+.topic .bullet { border: 0; border-bottom: 1px solid #e6e6e8; border-radius: 0; }
+.topic .bullet:last-child { border-bottom: 0; }
+.topic .action:last-child { border-bottom: 0; }

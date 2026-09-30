@@ -54,7 +54,7 @@ export type ReviewCard = {
 };
 export type Narrative = {
   text: string;
-  sentenceRefs: Array<{ text: string; claimRefs: VersionRef[]; reviewState: ReviewState }>;
+  sentenceRefs: Array<{ text: string; claimRefs: VersionRef[]; reviewState: ReviewState; topic?: { key: string; title: string } }>;
   basedOnContextVersion: number;
   freshness: "current" | "stale" | "updating" | "failed";
   scope: "accepted" | "draft" | "mixed";
@@ -65,6 +65,7 @@ export type LatestOutcome = {
   revision: number;
   text: string;
   answerRefs: VersionRef[];
+  resultRefs?: VersionRef[];
   updatedAt: string;
 };
 export type ActionBasis = {

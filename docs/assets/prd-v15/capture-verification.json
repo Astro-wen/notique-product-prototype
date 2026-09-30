@@ -1,0 +1,45 @@
+{
+  "startedAt": "2026-09-30T02:55:54.560Z",
+  "base": "https://notique-evidence-workspace.uclae2e12.chatgpt.site",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "method": "actual_read_only_browser",
+  "screens": [
+    {
+      "name": "home",
+      "caption": "图1 首页添加材料入口",
+      "url": "https://notique-evidence-workspace.uclae2e12.chatgpt.site/?view=simple",
+      "capturedAt": "2026-09-30T02:55:56.987Z"
+    },
+    {
+      "name": "three-steps",
+      "caption": "图2 使用说明的三个步骤",
+      "url": "https://notique-evidence-workspace.uclae2e12.chatgpt.site/?view=how-it-works",
+      "capturedAt": "2026-09-30T02:55:57.147Z"
+    },
+    {
+      "name": "mcp-connection",
+      "caption": "图3 MCP 连接页，未登录状态",
+      "url": "https://notique-evidence-workspace.uclae2e12.chatgpt.site/connections",
+      "capturedAt": "2026-09-30T02:55:57.620Z"
+    },
+    {
+      "name": "source-evidence",
+      "caption": "图5 原话与出处",
+      "url": "https://notique-evidence-workspace.uclae2e12.chatgpt.site/?project=prj_bc4c5c85ecae4436bbb4df73b445ac9c&event=evt_9c2b3429351d479d9e79fff49082536d&view=simple",
+      "capturedAt": "2026-09-30T02:55:58.971Z"
+    },
+    {
+      "name": "project-overview",
+      "caption": "图6 合成项目的当前回顾",
+      "url": "https://notique-evidence-workspace.uclae2e12.chatgpt.site/?project=prj_bc4c5c85ecae4436bbb4df73b445ac9c&event=evt_9c2b3429351d479d9e79fff49082536d&view=simple&workspaceTab=overview",
+      "capturedAt": "2026-09-30T02:55:59.432Z"
+    }
+  ],
+  "blockedWrites": 3,
+  "errors": [],
+  "completedAt": "2026-09-30T02:55:59.432Z",
+  "note": "仅保留写入 PRD 的截图。主题归并前的参照图已经移除。"
+}

@@ -979,7 +979,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     const result = await this.requestStructuredOutput(
       { new_event: { event_id: input.eventId, transcript_segments: [], readable_transcript_segments: [], photos: [], documents: [] } },
       workflowNarrativePrompt(input, options?.qualityFeedback, options?.workflowNarrativePromptVersion),
-      'workflow_narrative', workflowNarrativeSchema(), options,
+      'workflow_narrative', workflowNarrativeSchema(options?.workflowNarrativePromptVersion), options,
     );
     try { return { output: validateWorkflowNarrative(result.value, input), usage: result.usage }; }
     catch (error) {

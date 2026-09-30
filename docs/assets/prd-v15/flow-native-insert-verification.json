@@ -1,0 +1,71 @@
+{
+  "docUrl": "https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf",
+  "renderStatus": "native image export verified",
+  "figures": [
+    {
+      "file": "flow-overview.svg",
+      "nativePreview": "flow-overview-native-preview.png",
+      "nodeCount": 66,
+      "textCount": 25,
+      "imageDimensions": [
+        2560,
+        2560
+      ],
+      "insertion": "native SVG whiteboard inside corresponding table cell",
+      "renderCheck": "text and connectors complete, no clipping or visual overlap",
+      "warnings": [],
+      "connectorCount": 17,
+      "geometryCheck": {
+        "errors": 0,
+        "warnings": 0,
+        "textOverflow": 0,
+        "nodeOverlap": 0,
+        "textOcclusion": 0
+      }
+    },
+    {
+      "file": "flow-topic.svg",
+      "nativePreview": "flow-topic-native-preview.png",
+      "nodeCount": 60,
+      "textCount": 25,
+      "imageDimensions": [
+        2560,
+        2560
+      ],
+      "insertion": "native SVG whiteboard inside corresponding table cell",
+      "renderCheck": "text and connectors complete, no clipping or visual overlap",
+      "warnings": [],
+      "connectorCount": 15,
+      "geometryCheck": {
+        "errors": 0,
+        "warnings": 0,
+        "textOverflow": 0,
+        "nodeOverlap": 0,
+        "textOcclusion": 0
+      }
+    },
+    {
+      "file": "flow-mcp.svg",
+      "nativePreview": "flow-mcp-native-preview.png",
+      "nodeCount": 42,
+      "textCount": 19,
+      "imageDimensions": [
+        2560,
+        2560
+      ],
+      "insertion": "native SVG whiteboard inside corresponding table cell",
+      "renderCheck": "text and connectors complete, no clipping or visual overlap",
+      "warnings": [],
+      "connectorCount": 7,
+      "geometryCheck": {
+        "errors": 0,
+        "warnings": 0,
+        "textOverflow": 0,
+        "nodeOverlap": 0,
+        "textOcclusion": 0
+      }
+    }
+  ],
+  "documentRevisionAtInsertion": 36,
+  "verifiedDocumentRevision": 43
+}

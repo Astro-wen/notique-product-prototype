@@ -50,7 +50,7 @@ test('follow-up stays reachable from a long record and a project, with one answe
     await expect(followup.getByRole('button',{name:'补结果',exact:true})).toBeInViewport();
     await followup.screenshot({path:info.outputPath('project-returns-to-followup.png')});
     await page.getByRole('button',{name:'查看跟进事项',exact:true}).click();
-    await expect(page.getByRole('heading',{name:/跟进事项/})).toBeFocused();
+    await expect(followup).toBeFocused();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
     expect(f.analysisEvidence().runs).toEqual(before.runs);
     expect(f.analysisEvidence().modelStages).toBe(before.modelStages);
@@ -83,7 +83,7 @@ test('filtering cannot hide unsaved input and an optional personal note reappear
     expect(saved.actions[0].latestOutcome.text).toBe('已收到书面报价。');
     expect(saved.questions[0].resolutionState).toBe('resolved');
     await followup.getByText('结果操作',{exact:true}).click();
-    await page.getByRole('button',{name:'修正结果',exact:true}).click();
+    await followup.getByRole('button',{name:'修正结果',exact:true}).click();
     await expect(page.getByLabel('补充说明，可留空',{exact:true})).toHaveValue('已收到书面报价。');
     await page.getByRole('form',{name:'修正结果',exact:true}).screenshot({path:info.outputPath('optional-note-preserved.png')});
     await page.getByRole('button',{name:'取消',exact:true}).click();

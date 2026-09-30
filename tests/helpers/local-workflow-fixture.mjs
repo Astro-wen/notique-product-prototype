@@ -7,7 +7,7 @@ import {WORKFLOW_NARRATIVE_PROMPT_VERSION,WORKFLOW_NARRATIVE_SCHEMA_VERSION} fro
 
 /** Local integration tests add their own named project to the development DB.
  * Existing projects are never rewritten. Call cleanup for exactly this ID. */
-export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=false,withConflict=false,withComposite=false,withActionConflict=false,withActionOverlap=false,withFactAnswer=false,withSameIntent=false,withReaffirmed=/** @type {false|'pending'|'confirmed'} */ (false),withIntentConflict=/** @type {false|'record'|'action'} */ (false),priorityCount=0,actionAttributes=/** @type {{owner:string;due_at:string}|undefined} */(undefined)}={}) {
+export async function createLocalWorkflowFixture(workspaceId,{withIndependentAction=false,withBudgetBasis=false,withConflict=false,withComposite=false,withActionConflict=false,withActionOverlap=false,withFactAnswer=false,withSameIntent=false,withReaffirmed=/** @type {false|'pending'|'confirmed'} */ (false),withIntentConflict=/** @type {false|'record'|'action'} */ (false),priorityCount=0,actionAttributes=/** @type {{owner:string;due_at:string}|undefined} */(undefined)}={}) {
   const root=join(process.cwd(),'.wrangler/state/v3/d1/miniflare-D1DatabaseObject');
   let local;
   for(const filename of readdirSync(root).filter(name=>name.endsWith('.sqlite'))) {
@@ -18,6 +18,7 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
   }
   if(!local) throw new Error('Migrated local workspace database was not found');
   const fixture=await workflowDatabase();seed(fixture.sqlite);
+  if(withIndependentAction)fixture.sqlite.prepare("DELETE FROM claim_relations WHERE id='basis'").run();
   if(actionAttributes) fixture.sqlite.prepare("UPDATE claim_versions SET normalized_value_json=? WHERE id='action_v1'").run(JSON.stringify(actionAttributes));
   if(withReaffirmed) {fixture.sqlite.prepare("UPDATE claims SET review_status='verified'").run();seedReaffirmedRecord(fixture.sqlite,{targets:withReaffirmed==='confirmed'?['budget','action','question']:['budget'],confirmed:withReaffirmed==='confirmed'});}
   if(withBudgetBasis) relation(fixture.sqlite,'budget-basis','action','budget','informed_by','proposed');
@@ -158,12 +159,12 @@ export async function createLocalWorkflowFixture(workspaceId,{withBudgetBasis=fa
     finishReplacement(runId){
       local.prepare("UPDATE extraction_runs SET status='cancelled',updated_at=? WHERE id=? AND project_id=?").run(new Date().toISOString(),runId,ids.get('p'));
     },
-    /** @param {{promptVersion?:string}} [options] */
-    seedNarrative({promptVersion=WORKFLOW_NARRATIVE_PROMPT_VERSION}={}){
+    /** @param {{promptVersion?:string,topics?:Record<string,{key:string,title:string}>}} [options] */
+    seedNarrative({promptVersion=WORKFLOW_NARRATIVE_PROMPT_VERSION,topics={}}={}){
       const projectId=ids.get('p'),eventId=ids.get('e');
       const context=local.prepare('SELECT context_version FROM projects WHERE id=?').get(projectId).context_version;
       const claims=local.prepare("SELECT c.id,c.current_version_id,c.review_status,v.statement FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.project_id=? AND c.review_status<>'rejected' AND c.lifecycle_status NOT IN ('withdrawn','superseded') ORDER BY c.id").all(projectId);
-      const sentences=claims.map(c=>({text:c.statement,claimRefs:[{claimId:c.id,claimVersionId:c.current_version_id}],reviewState:c.review_status==='verified'?'accepted':'draft'}));
+      const sentences=claims.map(c=>({text:c.statement,claimRefs:[{claimId:c.id,claimVersionId:c.current_version_id}],reviewState:c.review_status==='verified'?'accepted':'draft',...(topics[c.id]?{topic:topics[c.id]}:{})}));
       const inputHash=`synthetic-ui-output:${prefix}:${context}:${promptVersion}`;
       local.prepare("INSERT INTO workflow_narratives (id,workspace_id,project_id,event_id,scope_key,scope_kind,based_on_context_version,text,sentence_refs_json,freshness,input_hash) VALUES (?,?,?,?,?,'mixed',?,?,?,'current',?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,sentence_refs_json=excluded.sentence_refs_json,input_hash=excluded.input_hash")
         .run(`${prefix}_narrative_${context}`,workspaceId,projectId,eventId,eventId,context,sentences.map(s=>s.text).join(' '),JSON.stringify(sentences),inputHash);

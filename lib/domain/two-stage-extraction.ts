@@ -141,7 +141,7 @@ export interface TwoStageModelProvider extends ModelProvider {
 
 export type ModelStageRequestOptions = {
   extractionPromptVersion?: ExtractionStagePromptVersion;
-  workflowNarrativePromptVersion?: 'workflow-narrative-prompt.v1' | 'workflow-narrative-prompt.v2';
+  workflowNarrativePromptVersion?: 'workflow-narrative-prompt.v1' | 'workflow-narrative-prompt.v2' | 'workflow-narrative-prompt.v3';
   verificationSchemaVersion?: VerificationSchemaVersion;
   signal?: AbortSignal;
   idempotencyKey?: string;

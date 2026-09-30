@@ -188,7 +188,7 @@
     {
       "name": "Narrative",
       "fields": "text、sentenceRefs、basedOnContextVersion、freshness、scope",
-      "rules": "freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空"
+      "rules": "freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。"
     },
     {
       "name": "DecisionRequest",
@@ -217,8 +217,8 @@
     },
     {
       "name": "LatestOutcome",
-      "fields": "id、revision、text、answerRefs、updatedAt、freshness?",
-      "rules": "freshness=current/stale。text 保留结果当时的文字，answerRefs 仅含当前有效答案。相关答案变化后收起为上次结果，当前答案继续在重点中显示。原答案来源失效时正文为空。"
+      "fields": "id、revision、text、answerRefs、resultRefs?、updatedAt、freshness?",
+      "rules": "freshness=current/stale。text 保留结果当时的文字，answerRefs 仅含当前有效答案。相关答案变化后收起为上次结果，当前答案继续在重点中显示。原答案来源失效时正文为空。 resultRefs 仅含独立行动结果的当前精确版本，与 answerRefs 分开。结果作为用户补充进入原主题、复制和概要，修正或撤回沿原结果入口处理。与逐项答案相同的说明复用答案，独立说明不会把问题改为已回答。结果或答案失效后该结果收起为历史，当前输出使用有效信息。"
     },
     {
       "name": "Question",

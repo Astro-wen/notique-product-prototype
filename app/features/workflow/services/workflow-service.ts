@@ -51,9 +51,9 @@ export const workflowService = {
   async sources(ids:string[]):Promise<RecordSource[]> {
     return Promise.all(ids.map(async evidenceRefId=>{
       const ref = await api.getEvidence(evidenceRefId);
-      const seconds = typeof ref.timestampStart==='number'?Math.floor(ref.timestampStart/1000):null;
+      const seconds = typeof ref.timestampStart==='number'?Math.floor(ref.timestampStart):null;
       return {evidenceRefId,quote:ref.quote ?? ref.caption ?? '',speaker:ref.speaker ?? ref.filename ?? '原始材料',timestamp:seconds===null?'':`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`,
-        ...(ref.audioUrl?{audioUrl:ref.audioUrl,audioStartSeconds:seconds ?? 0}:{}),...(ref.viewUrl?{viewUrl:ref.viewUrl}:{})};
+        ...(ref.audioUrl?{audioUrl:ref.audioUrl,audioStartSeconds:typeof ref.timestampStart==='number'?ref.timestampStart:0}:{}),...(ref.viewUrl?{viewUrl:ref.viewUrl}:{})};
     }));
   },
 };

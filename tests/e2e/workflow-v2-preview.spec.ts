@@ -48,7 +48,7 @@ test("source, inline edit, failed save, retry and partial acceptance keep one co
 test("accept once, complete without answering, then add a real answer", async ({ page, context }, info) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.getByRole("button", { name: "加入跟进", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /跟进事项/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /跟进与结果/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "加入跟进", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: /^完成：/ }).click();
   await expect(page.getByTestId("bullet-fee")).toContainText("安装费用还没有确定");
@@ -72,7 +72,7 @@ test("questions can be answered directly and read-only access removes mutation c
   await page.getByRole("button", { name: "补答案", exact: true }).click();
   await page.getByLabel("补充答案").fill("已收到邮件，安装报价为十二万元。");
   await page.getByRole("button", { name: "保存答案" }).click();
-  await expect(page.getByRole("heading", { name: /跟进事项/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /跟进与结果/ })).toHaveCount(0);
   await expect(page.getByTestId("bullet-answer-fee")).toBeVisible();
   await page.getByLabel("只读模式").check();
   await expect(page.getByRole("button", { name: "改一下", exact: true })).toHaveCount(0);

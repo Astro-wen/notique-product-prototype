@@ -5,7 +5,7 @@ import { consumeNarrativeJobs } from '../lib/server/workflow/narrative-jobs.ts';
 import { readAnalysisRun, retryAnalysis } from '../lib/server/workflow/analysis-service.ts';
 import { digestValue, loadWorkflowLedger, readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 import { projectWorkspace } from '../lib/domain/workflow-projection.ts';
-import { WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION as LEGACY, WORKFLOW_NARRATIVE_PROMPT_VERSION as CURRENT, WORKFLOW_NARRATIVE_SCHEMA_VERSION as SCHEMA, workflowNarrativePrompt, workflowNarrativeSentences, validateWorkflowNarrative } from '../lib/domain/workflow-narrative.ts';
+import { WORKFLOW_NARRATIVE_LEGACY_PROMPT_VERSION as LEGACY, WORKFLOW_NARRATIVE_PREVIOUS_PROMPT_VERSION as PREVIOUS, WORKFLOW_NARRATIVE_PROMPT_VERSION as CURRENT, WORKFLOW_NARRATIVE_SCHEMA_VERSION as SCHEMA, workflowNarrativePrompt, workflowNarrativeSentences, validateWorkflowNarrative } from '../lib/domain/workflow-narrative.ts';
 
 // Providers below are synthetic. These tests prove prompt selection, exact
 // references and paid-checkpoint recovery, not a real model's writing quality.
@@ -50,7 +50,7 @@ test('v2 separates platform review metadata from source modality while the exact
     { text: '建议小陈整理报价，如果预算允许再采购', claimRefs: [{ claimId: 'proposal', claimVersionId: 'proposal_v1' }], origin: 'ai_suggestion', reviewState: 'accepted' },
   ] };
   assert.equal(SCHEMA, 'workflow-narrative.v1');
-  assert.equal(CURRENT, 'workflow-narrative-prompt.v2');
+  assert.equal(CURRENT, 'workflow-narrative-prompt.v3');
   const before = structuredClone(input);
   const prompt = workflowNarrativePrompt(input);
   assert.match(prompt, /ai_suggestion means an AI-extracted candidate action/);
@@ -88,6 +88,23 @@ test('already-paid v1 response resumes the same frozen request and publishes as 
   assert.equal(snapshot.narrative.freshness, 'stale');
   assert.match(snapshot.narrative.text, /小林负责在10月10日前提交草图/);
   assert.equal(snapshot.narrative.sentenceRefs.find(s => s.claimRefs[0].claimId === 'action').reviewState, 'draft');
+});
+
+test('a paid v2 response keeps its frozen prompt and request when v3 adds topic layout', async t => {
+  const f=await setup(t);await oldCheckpoint(f);
+  const saved=payload(f.sqlite);saved.checkpoint.promptVersion=PREVIOUS;
+  saved.checkpoint.inputHash=await digestValue({input:saved.checkpoint.input,config,schemaVersion:SCHEMA,promptVersion:PREVIOUS});
+  f.sqlite.prepare('UPDATE workflow_outbox SET payload_json=? WHERE id=?').run(JSON.stringify(saved),'legacy');
+  let calls=0;
+  const result=await run(f.db,{async summarizeWorkflow(input,options){
+    calls++;assert.equal(options.workflowNarrativePromptVersion,PREVIOUS);assert.equal(options.resumeProviderResponseId,'resp_legacy');
+    assert.equal(options.idempotencyKey,`notique:legacy:${saved.checkpoint.inputHash}:0`);
+    assert.doesNotMatch(workflowNarrativePrompt(input,[],PREVIOUS),/Every sentence has topic/);
+    return {output:output(input),usage};
+  }});
+  assert.equal(result.succeeded,1);assert.equal(calls,1);
+  assert.equal(payload(f.sqlite).checkpoint.promptVersion,PREVIOUS);
+  assert.equal((await readWorkspace(f.db,SCOPE,'e',{},plus(9500))).narrative.freshness,'stale');
 });
 
 test('a stored valid v1 output publishes without making another paid provider call', async t => {

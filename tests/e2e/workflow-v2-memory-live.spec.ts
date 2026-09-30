@@ -48,7 +48,7 @@ test('permission recovery preserves an inline input, removes hidden source, and 
     await expect(page.getByLabel('修改重点',{exact:true})).toHaveCount(0);
     await expect(page.getByTestId(`bullet-${fixture.budgetId}`)).toContainText('我补充的预算：三十六万元。');
     await page.screenshot({path:info.outputPath('access-current-review.png'),fullPage:true});
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('permission recovery retains separate composite choices and only the changed member text',async({page,request},info)=>{
@@ -75,7 +75,7 @@ test('permission recovery retains separate composite choices and only the change
     await dialog.getByRole('button',{name:'保存本次选择',exact:true}).click();
     await expect(dialog).toHaveCount(0);await expect(page.getByTestId(`bullet-${fixture.placeId}`)).toHaveCount(0);
     await expect(page.getByTestId(`bullet-${fixture.remainingId}`)).toContainText('AI 草稿');
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('permission recovery preserves action answers, a personal note, and the independent completion choice',async({page,request},info)=>{
@@ -101,7 +101,7 @@ test('permission recovery preserves action answers, a personal note, and the ind
     await expect(page.getByRole('button',{name:/^重开：/})).toBeVisible();
     await expect(page.getByTestId(`bullet-${fixture.questionId}`)).toHaveCount(0);
     await page.screenshot({path:info.outputPath('access-outcome-saved.png'),fullPage:true});
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('permission recovery restores conflict applicability and source ranges after authorized rereading',async({page,request},info)=>{
@@ -129,7 +129,7 @@ test('permission recovery restores conflict applicability and source ranges afte
     await page.getByRole('button',{name:'重新核对原文',exact:true}).click();await page.getByRole('button',{name:'补进重点',exact:true}).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByText('用户选录',{exact:true})).toBeVisible();
     await page.screenshot({path:info.outputPath('access-source-restored.png'),fullPage:true});
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('access loss on background read keeps a direct answer, supports read only, and rechecks restored edit permission',async({page,request},info)=>{
@@ -141,18 +141,19 @@ test('access loss on background read keeps a direct answer, supports read only, 
     await expect(page.getByRole('link',{name:'重新登录',exact:true})).toHaveAttribute('target','_blank');
     await expect(page.getByLabel('保留的问题答案1')).toHaveValue('我确认标准方案十二万元。');
     await page.unroute(route);
-    await page.route(route,async r=>{const response=await r.fetch();const body=await response.json();body.data.access.canEdit=false;await r.fulfill({response,json:body});});
+    const readonlyBody=await (await request.get(`/api/v2/events/${fixture.eventId}/workspace`)).json();readonlyBody.data.access.canEdit=false;
+    await page.route(route,r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify(readonlyBody)}));
     await page.getByRole('button',{name:'恢复读取',exact:true}).click();
     await expect(page.getByLabel('补充答案',{exact:true})).toHaveValue('我确认标准方案十二万元。');
     await expect(page.getByLabel('补充答案',{exact:true})).toHaveAttribute('readonly','');
     await expect(page.getByRole('button',{name:'保存答案',exact:true})).toBeDisabled();
-    await page.unroute(route);await page.getByRole('button',{name:'重新检查权限',exact:true}).click();
+    await page.unrouteAll({behavior:'wait'});await page.getByRole('button',{name:'重新检查权限',exact:true}).click();
     await expect(page.getByLabel('补充答案',{exact:true})).not.toHaveAttribute('readonly','');
     await page.getByRole('button',{name:'核对后采用当前版本',exact:true}).click();await page.getByRole('button',{name:'保存答案',exact:true}).click();
     await expect(page.getByLabel('补充答案',{exact:true})).toHaveCount(0);await expect(page.getByTestId(`bullet-${fixture.questionId}`)).toHaveCount(0);
     await expect(page.getByRole('button',{name:/^完成：/})).toHaveCount(0);
     await page.screenshot({path:info.outputPath('access-answer-restored.png'),fullPage:true});
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('an account change removes prior own input and forces a fresh identity read',async({page,request})=>{
@@ -161,12 +162,13 @@ test('an account change removes prior own input and forces a fresh identity read
     await open(page,fixture);await page.getByTestId(`bullet-${fixture.budgetId}`).getByRole('button',{name:'改一下',exact:true}).click();
     await page.getByLabel('修改重点',{exact:true}).fill('上一账号的私人修改。');
     const route=`**/api/v2/events/${fixture.eventId}/workspace*`;
-    await page.route(route,async r=>{const response=await r.fetch();const body=await response.json();body.data.access.actorId='qa-other-actor';await r.fulfill({response,json:body});});
+    const changedActor=await (await request.get(`/api/v2/events/${fixture.eventId}/workspace`)).json();changedActor.data.access.actorId='qa-other-actor';
+    await page.route(route,r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify(changedActor)}));
     await focusRead(page);await expect(page.getByText('账号已变化，请重新读取。',{exact:true})).toBeVisible();
     await expect(page.getByRole('region',{name:'保留的输入'})).toHaveCount(0);await expect(page.getByLabel('修改重点',{exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'恢复读取',exact:true}).click();await expect(page.getByTestId(`bullet-${fixture.budgetId}`)).toContainText('预算大约三十万');
     await expect(page.getByLabel('修改重点',{exact:true})).toHaveCount(0);expect(await page.locator('body').textContent()).not.toContain('上一账号的私人修改。');
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('a removed edit target retains copyable input until an explicit discard',async({page,request})=>{
@@ -183,7 +185,7 @@ test('a removed edit target retains copyable input until an explicit discard',as
     await page.getByRole('button',{name:'放弃保留的输入',exact:true}).click();await page.getByRole('button',{name:'继续保留',exact:true}).click();await expect(page.getByLabel('保留的修改重点1')).toBeVisible();
     await page.getByRole('button',{name:'放弃保留的输入',exact:true}).click();await page.getByRole('button',{name:'确认放弃',exact:true}).click();await expect(page.getByRole('region',{name:'保留的输入'})).toHaveCount(0);
     await page.getByRole('button',{name:'从原文补充',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('a late saved receipt cannot clear input restored in a newer access session',async({page,request})=>{
@@ -202,7 +204,7 @@ test('a late saved receipt cannot clear input restored in a newer access session
     await expect(page.getByLabel('修改重点',{exact:true})).toHaveValue('我已写好的三十五万预算。');await expect(page.getByRole('button',{name:'保存修改',exact:true})).toBeDisabled();
     await page.getByRole('button',{name:'核对后采用当前版本',exact:true}).click();await page.getByRole('button',{name:'取消',exact:true}).click();
     await expect(page.getByLabel('修改重点',{exact:true})).toHaveCount(0);await expect(page.getByTestId(`bullet-${fixture.budgetId}`)).toContainText('我已写好的三十五万预算。');
-  } finally {release();await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {release();await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });
 
 test('access loss without a draft blocks old source and material tabs until a verified recovery',async({page,request})=>{
@@ -217,5 +219,5 @@ test('access loss without a draft blocks old source and material tabs until a ve
     }
     await page.unroute(route);await page.getByRole('button',{name:'恢复读取',exact:true}).click();await expect(page.getByRole('button',{name:'复制记录',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'查看原文',exact:true}).click();await expect(page.getByText('预算大约三十万。费用待定。请询价。',{exact:true}).first()).toBeVisible();
-  } finally {await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
+  } finally {await page.unrouteAll({behavior:'wait'}).catch(()=>undefined);await page.close({runBeforeUnload:false}).catch(()=>undefined);fixture.cleanup();}
 });

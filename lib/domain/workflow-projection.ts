@@ -220,7 +220,6 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
   const liveRelations = relations.filter(r => r.status === 'active' && current(byVersion.get(r.source_claim_version_id)!) && accepted(byVersion.get(r.source_claim_version_id)!) && current(byVersion.get(r.target_claim_version_id)!));
   const reaffirmedMentions=projectReaffirmedMentions(ledger,eventId,readableRuns.get(eventId) ?? null);
   const repeatedVersions=new Set(reaffirmedMentions.filter(m=>m.associationState==='confirmed' && m.targetState==='current' && m.sourceStatus==='ready' && m.targetText!==null).map(m=>m.claimRef.claimVersionId));
-  const selected = visible.filter(c => (c.event_id === eventId || repeatedVersions.has(c.current_version_id)) && current(c) && !isCompletionRecord(c)).sort((a,b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   const latestOutcome = (claimId: string, answers: VersionRef[] = []): LatestOutcome | null => {
     const versions = new Set(answers.map(r=>r.claimVersionId));
     const o = ledger.outcomes.filter(o => ((o.subject_claim_id === claimId && ledger.claims.find(c=>c.id===claimId)?.type!=='open_question') || (readJson<string[]>(o.answer_claim_version_ids_json,[]).some(id=>versions.has(id)) || ledger.relations.some(r=>outcomeRelationIds(ledger,readJson<string[]>(o.relation_ids_json,[])).includes(r.id) && r.status==='active' && versions.has(r.source_claim_version_id)))) && !o.withdrawn_at).sort((a,b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id))[0];
@@ -231,9 +230,24 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
       const resolves=liveRelations.some(r=>r.type==='resolves' && r.source_claim_version_id===v && byVersion.get(r.target_claim_version_id)?.type==='open_question');
       return c && current(c) && accepted(c) && resolves && claimSourceStatus(c,ledger.evidence)==='ready' ? [ref(c)] : [];
     });
-    const accessible=originalVersions.every(v=>{const refs=ledger.evidence.filter(e=>e.claim_version_id===v && e.evidence_role!=='contextual');return refs.length>0 && refs.every(e=>e.availability==='ready' && e.structural_validation_status==='valid');});
-    return { id: o.id, revision: o.revision, text: accessible?o.text:'', answerRefs, updatedAt: o.updated_at, freshness:originalVersions.length===answerRefs.length?'current':'stale' };
+    const roots=new Set(readJson<string[]>(o.relation_ids_json,[]));
+    const resultVersions=ledger.relations.filter(r=>roots.has(r.id) && r.type==='informed_by' && readJson<{workflowOutcomeResult?:boolean}>(r.reason,{}).workflowOutcomeResult===true).map(r=>r.source_claim_version_id);
+    const resultRefs=resultVersions.flatMap(v=>{
+      const c=byVersion.get(v);
+      return c && current(c) && accepted(c) && claimSourceStatus(c,ledger.evidence)==='ready' && liveRelations.some(r=>roots.has(r.id) && r.source_claim_version_id===v)?[ref(c)]:[];
+    });
+    const accessible=[...originalVersions,...resultVersions].every(v=>{const refs=ledger.evidence.filter(e=>e.claim_version_id===v && e.evidence_role!=='contextual');return refs.length>0 && refs.every(e=>e.availability==='ready' && e.structural_validation_status==='valid');});
+    return { id: o.id, revision: o.revision, text: accessible?o.text:'', answerRefs, ...(resultVersions.length?{resultRefs}:{}), updatedAt: o.updated_at, freshness:originalVersions.length===answerRefs.length && resultVersions.length===resultRefs.length?'current':'stale' };
   };
+  const selected = visible.filter(c => {
+    if(!(c.event_id===eventId || repeatedVersions.has(c.current_version_id)) || !current(c) || isCompletionRecord(c))return false;
+    if(readJson<{workflow_kind?:string}>(c.normalized_value_json,{}).workflow_kind!=='result')return true;
+    return ledger.outcomes.some(o=>{
+      const subject=visible.find(a=>a.id===o.subject_claim_id && a.type==='next_action' && current(a));
+      const result=subject?latestOutcome(subject.id):null;
+      return result?.freshness==='current' && result.resultRefs?.some(r=>r.claimVersionId===c.current_version_id);
+    });
+  }).sort((a,b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   const questions: Question[] = selected.filter(c => c.type === 'open_question').map(c => {
     const answers = liveRelations.filter(r => r.type === 'resolves' && r.target_claim_version_id === c.current_version_id)
       .map(r => byVersion.get(r.source_claim_version_id)!).filter(a => a.type !== 'next_action' && a.type !== 'open_question' && claimSourceStatus(a, ledger.evidence) === 'ready');

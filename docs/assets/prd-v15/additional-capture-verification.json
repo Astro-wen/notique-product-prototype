@@ -1,0 +1,35 @@
+{
+  "method": "actual_read_only_browser",
+  "base": "https://notique-evidence-workspace.uclae2e12.chatgpt.site",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "screens": [
+    {
+      "name": "record-summary",
+      "sha256": "b589643e036bceaeb278cdc85ae53dee011eadbe00c35ca0a5387d5e37d58b0d",
+      "source_script": "/private/tmp/notique-prd-v15-more-screens.mjs",
+      "state": "actual_saved_synthetic_record_read_only"
+    },
+    {
+      "name": "confirm-record",
+      "sha256": "6558d59b2bebede550a34f58bb32294f56b25ec26b2dbcca07686926fe94c4de",
+      "source_script": "/private/tmp/notique-prd-v15-more-screens.mjs",
+      "state": "actual_saved_synthetic_record_read_only"
+    },
+    {
+      "name": "edit-record",
+      "sha256": "78e895ce5e78a7a6e5bac03c9a7df85710b2bfa7829b7c844eb797a742e17b8d",
+      "source_script": "/private/tmp/notique-prd-v15-more-screens.mjs",
+      "state": "actual_saved_synthetic_record_read_only"
+    },
+    {
+      "name": "adopt-action",
+      "sha256": "79bffd9ac943f7bfe991a993d160e3fb68929e5ddf455c2deda32705cf4b1fa6",
+      "source_script": "/private/tmp/notique-prd-v15-more-screens.mjs",
+      "state": "actual_saved_synthetic_record_read_only"
+    }
+  ],
+  "note": "整理进度截图的dialog定位未通过，该截图未写入PRD。问题补答案截图由后续真实本地主题走查替换，来源另记。"
+}

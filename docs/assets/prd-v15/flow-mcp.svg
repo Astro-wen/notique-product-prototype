@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" role="img" aria-labelledby="title description">
+<title id="title">MCP 使用与授权</title>
+<desc id="description">用户登录 Notique 连接页，为当前工作空间开启30天mcp:read只读授权。在 ChatGPT 或 Codex 连接已有私有 Notique 插件，助手查询已有项目、记录、概要与出处。工具发现只返回固定名称和参数。撤销或到期后停止读取，推理沿用所选AI服务的计费。</desc>
+<rect x="0" y="0" width="1200" height="860" fill="#FFFFFF"/>
+<text x="35" y="43" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="25" font-weight="600" text-anchor="start">通过 MCP，让自己的 AI 助手读取 Notique</text>
+<text x="35" y="75" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">使用已有结果作为上下文，网页中的采纳、跟进与回答继续写回 Notique</text>
+<rect x="390" y="115" width="425" height="90" rx="4" fill="#FFFFFF" stroke="#2F54EB" stroke-width="1.4"/>
+<text x="602.5" y="152.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">打开 Notique 连接页</text>
+<text x="602.5" y="181.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">使用 ChatGPT / Sites 登录</text>
+<polyline points="602,205 602,244" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="602,244 597,235 607,235" fill="#9AA0A6"/>
+<rect x="390" y="244" width="425" height="103" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="602.5" y="288.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">为当前工作空间开启只读授权</text>
+<text x="602.5" y="317.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">mcp:read · 30 天</text>
+<polyline points="602,347 602,390" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="602,390 597,381 607,381" fill="#9AA0A6"/>
+<rect x="390" y="390" width="425" height="105" rx="4" fill="#FFFFFF" stroke="#2F54EB" stroke-width="1.4"/>
+<text x="602.5" y="435.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">在 ChatGPT 或 Codex 中</text>
+<text x="602.5" y="464.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">选择已有的私有 Notique 插件</text>
+<polyline points="602,495 602,542" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="602,542 597,533 607,533" fill="#9AA0A6"/>
+<rect x="390" y="542" width="425" height="100" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="602.5" y="584.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">向 AI 助手提问</text>
+<text x="602.5" y="613.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">查询项目、记录、概要与出处</text>
+<polyline points="602,642 602,688" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="602,688 597,679 607,679" fill="#9AA0A6"/>
+<rect x="390" y="688" width="425" height="100" rx="4" fill="#F5F6F7" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="602.5" y="730.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">助手结合已有结果回答</text>
+<text x="602.5" y="759.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">推理沿用所选 AI 服务的计费</text>
+<rect x="25" y="542" width="295" height="100" rx="4" fill="#F5F6F7" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="172.5" y="584.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="middle">Notique 已有材料与结果</text>
+<text x="172.5" y="613.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="middle">读取复用现有结果</text>
+<polyline points="320,592 390,592" fill="none" stroke="#2F54EB" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="390,592 381,587 381,597" fill="#2F54EB"/>
+<polyline points="815,295 885,295" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="885,295 876,290 876,300" fill="#9AA0A6"/>
+<rect x="885" y="244" width="295" height="103" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="1032.5" y="288.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">授权撤销或到期</text>
+<text x="1032.5" y="317.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">停止读取记录</text>
+<polyline points="815,442 865,442" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="865,442 856,437 856,447" fill="#9AA0A6"/>
+<rect x="865" y="390" width="315" height="105" rx="4" fill="#F5F6F7" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="1022.5" y="435.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="middle">连接发现</text>
+<text x="1022.5" y="464.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="19" font-weight="400" text-anchor="middle">仅返回固定工具名称与参数</text>
+<text x="34" y="829" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">只读结果按当前授权范围提供，尚未生成的内容在网页中按需生成。</text>
+</svg>

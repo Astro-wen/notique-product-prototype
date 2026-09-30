@@ -3084,12 +3084,16 @@ export async function getClaimHistory(scope: RequestScope, claimId: string) {
 export async function getEvidenceRef(scope: RequestScope, evidenceRefId: string) {
   const row = await first(
     `SELECT er.*, a.id AS asset_id, a.filename, av.mime_type, av.r2_original_key,
-            source_a.id AS audio_asset_id, source_a.filename AS audio_filename
+            source_a.id AS audio_asset_id, source_a.filename AS audio_filename,
+            n.body AS user_note_body
        FROM evidence_refs er
        LEFT JOIN asset_versions av ON av.id = er.asset_version_id
        LEFT JOIN assets a ON a.id = av.asset_id
        LEFT JOIN asset_versions source_av ON source_av.id = av.derived_from_asset_version_id
        LEFT JOIN assets source_a ON source_a.id = source_av.asset_id AND source_a.kind = 'audio'
+       LEFT JOIN claim_versions cv ON cv.id = er.claim_version_id
+       LEFT JOIN user_notes n ON n.id = er.user_note_id AND n.workspace_id = er.workspace_id
+            AND n.project_id = er.project_id AND n.claim_id = cv.claim_id AND length(n.author_id) > 0
       WHERE er.id = ? AND er.workspace_id = ?`,
     [evidenceRefId, scope.workspaceId],
   );
@@ -3098,6 +3102,8 @@ export async function getEvidenceRef(scope: RequestScope, evidenceRefId: string)
   }
   return {
     ...row,
+    quote_raw: row.kind === 'user_note' ? row.user_note_body ?? null : row.quote_raw,
+    ...(row.kind === 'user_note' ? { speaker: '用户补充' } : {}),
     segment_ids: parseJson(String(row.segment_ids_json ?? "[]"), []),
     bbox: parseJson(String(row.bbox_json ?? "null"), null),
     asset_view_url: row.asset_version_id

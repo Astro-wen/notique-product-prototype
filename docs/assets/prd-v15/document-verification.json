@@ -1,0 +1,27 @@
+{
+  "docUrl": "https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf",
+  "revision": 51,
+  "templateUrl": "https://mcnl4dcjt5d8.feishu.cn/wiki/X6RhwmB4qivYfHkg5sdc9qnlnIh",
+  "templateRevision": 52,
+  "headingsVerified": true,
+  "tableColumnWidths": [
+    110,
+    170,
+    640
+  ],
+  "interactionRows": 20,
+  "screenshotInstances": 20,
+  "distinctScreenshotFiles": 15,
+  "nativeWhiteboards": 3,
+  "allWhiteboardsInsideExpectedDesign": true,
+  "nativeImageAssetReadVerified": true,
+  "nativeFlowExportsVerified": true,
+  "coreTextReadbackVerified": true,
+  "stateNote": "主题归并与独立行动结果回流已完成本地 PC 实现和操作验证，线上验收随后更新。个人 MCP 与用户及模型质量验收分别记录。",
+  "repoFiles": [
+    "docs/NOTIQUE_PRD_V15.md",
+    "docs/assets/prd-v15/"
+  ],
+  "gitCommitPerformed": false,
+  "independentResultScreenshotReadbackVerified": true
+}

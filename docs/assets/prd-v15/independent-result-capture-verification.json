@@ -1,0 +1,13 @@
+{
+  "method": "actual_isolated_local_browser",
+  "source": "/private/tmp/notique-results-source-recheck/results/workflow-v2-action-results-2b71a-h-correction-and-withdrawal-desktop-chromium/independent-result-topic.png",
+  "file": "independent-result-topic.png",
+  "sha256": "30ecf543fa75593f682b09810d8360b6c40b101825eb86bd5a33a4357b5460b0",
+  "visualCheck": "已收到报价单的结果成为原主题的用户补充，行动仍待跟进。",
+  "reportedAcceptance": "桌面与笔记本实际操作通过，支持原入口修正和撤回，复制和项目回顾均可读取。",
+  "productionAcceptance": "随后更新",
+  "docUrl": "https://mcnl4dcjt5d8.feishu.cn/docx/Fn9Bd9OULoYmnqxYumSciOeEnXf",
+  "revision": 51,
+  "nativeImageReadVerified": true,
+  "nativeImageBytesMatchSource": true
+}

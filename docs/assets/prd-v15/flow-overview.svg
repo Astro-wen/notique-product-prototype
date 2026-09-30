@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1070" viewBox="0 0 1240 1070" role="img" aria-labelledby="title description">
+<title id="title">用户主流程</title>
+<desc id="description">上传后先阅读概要和主题重点。用户可以直接阅读复制、部分确认，或继续跟进。行动完成与问题回答分别保存，采纳的信息回写到当前记录和项目回顾。</desc>
+<rect x="0" y="0" width="1240" height="1070" fill="#FFFFFF"/>
+<text x="35" y="43" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="25" font-weight="600" text-anchor="start">从一次沟通，到下一次跟进</text>
+<text x="35" y="75" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">先拿到有用的信息，再决定哪些内容需要确认和继续处理</text>
+<rect x="420" y="105" width="360" height="66" rx="4" fill="#FFFFFF" stroke="#2F54EB" stroke-width="1.4"/>
+<text x="600.0" y="145.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">上传录音、逐字稿或笔记</text>
+<polyline points="600,171 600,205" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="600,205 595,196 605,196" fill="#9AA0A6"/>
+<rect x="390" y="205" width="420" height="90" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="600.0" y="242.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">阅读全文概要与主题重点</text>
+<text x="600.0" y="271.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">需要核对时打开原话</text>
+<polyline points="165,330 1025,330" fill="none" stroke="#9AA0A6" stroke-width="1.6" stroke-linejoin="round"/>
+<polyline points="600,295 600,330" fill="none" stroke="#9AA0A6" stroke-width="1.6" stroke-linejoin="round"/>
+<polyline points="165,330 165,366" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="165,366 160,357 170,357" fill="#9AA0A6"/>
+<polyline points="565,330 565,366" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="565,366 560,357 570,357" fill="#9AA0A6"/>
+<polyline points="1025,330 1025,366" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="1025,366 1020,357 1030,357" fill="#9AA0A6"/>
+<rect x="40" y="366" width="250" height="90" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="165.0" y="403.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">直接阅读</text>
+<text x="165.0" y="432.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">复制当前内容</text>
+<rect x="410" y="366" width="310" height="90" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="565.0" y="403.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">按需确认或修改</text>
+<text x="565.0" y="432.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">其余内容保留草稿</text>
+<rect x="850" y="366" width="350" height="90" rx="4" fill="#FFFFFF" stroke="#2F54EB" stroke-width="1.4"/>
+<text x="1025.0" y="403.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">继续跟进或补答案</text>
+<text x="1025.0" y="432.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">按当前需要选择</text>
+<polyline points="165,456 165,510" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="165,510 160,501 170,501" fill="#9AA0A6"/>
+<rect x="40" y="510" width="250" height="76" rx="4" fill="#F5F6F7" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="165.0" y="540.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">阅读完成</text>
+<text x="165.0" y="569.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">随时回来继续</text>
+<polyline points="565,456 565,798" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="565,798 560,789 570,789" fill="#9AA0A6"/>
+<text x="582" y="607" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">采纳信息</text>
+<text x="582" y="632" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">更新概要</text>
+<polyline points="840,500 1100,500" fill="none" stroke="#9AA0A6" stroke-width="1.6" stroke-linejoin="round"/>
+<polyline points="1025,456 1025,500" fill="none" stroke="#9AA0A6" stroke-width="1.6" stroke-linejoin="round"/>
+<polyline points="840,500 840,545" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="840,545 835,536 845,536" fill="#9AA0A6"/>
+<polyline points="1100,500 1100,545" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="1100,545 1095,536 1105,536" fill="#9AA0A6"/>
+<rect x="725" y="545" width="230" height="98" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="840.0" y="586.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">加入行动跟进</text>
+<text x="840.0" y="615.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">记录执行状态</text>
+<rect x="990" y="545" width="210" height="98" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="1095.0" y="586.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">直接回答问题</text>
+<text x="1095.0" y="615.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">保存对应答案</text>
+<polyline points="840,643 840,685" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="840,685 835,676 845,676" fill="#9AA0A6"/>
+<rect x="705" y="685" width="270" height="98" rx="4" fill="#FFFFFF" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="840.0" y="726.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">按需补结果</text>
+<text x="840.0" y="755.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">可回答有关问题</text>
+<polyline points="1100,643 1100,828 1050,828" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="1050,828 1059,823 1059,833" fill="#9AA0A6"/>
+<polyline points="840,783 840,798" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="840,798 835,789 845,789" fill="#9AA0A6"/>
+<rect x="355" y="798" width="695" height="90" rx="4" fill="#F7F9FF" stroke="#2F54EB" stroke-width="1.4"/>
+<text x="702.5" y="835.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">已采纳信息与答案回写</text>
+<text x="702.5" y="864.5" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">当前记录与项目回顾</text>
+<polyline points="165,586 165,945 605,945" fill="none" stroke="#9AA0A6" stroke-width="1.6" stroke-linejoin="round"/>
+<polyline points="705,888 705,945" fill="none" stroke="#9AA0A6" stroke-width="1.8" stroke-linejoin="round"/>
+<polygon points="705,945 700,936 710,936" fill="#9AA0A6"/>
+<rect x="490" y="945" width="330" height="66" rx="4" fill="#F5F6F7" stroke="#9AA0A6" stroke-width="1.4"/>
+<text x="655.0" y="985.0" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="20" font-weight="400" text-anchor="middle">下次打开，接着当前进度</text>
+<text x="38" y="1046" font-family="Noto Sans SC, PingFang SC, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">行动完成更新执行状态，问题是否解决取决于保存的答案。</text>
+</svg>

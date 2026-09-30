@@ -5,7 +5,7 @@ import { decisionState } from './decision-state.ts';
 import { acceptActionBasis, actionMetadataGuard, relationGuard } from './action-basis.ts';
 import { claimGuard, type WriteContext } from './ledger-write.ts';
 import { reviewDeferralPlan } from './review-deferral.ts';
-import { claimSourceStatus, projectWorkspace, actionBasisRefs, resolveActionBasis, type ProjectionLedger } from '../../domain/workflow-projection.ts';
+import { claimSourceStatus, projectWorkspace, actionBasisRefs, resolveActionBasis, readJson, type ProjectionLedger } from '../../domain/workflow-projection.ts';
 import { parseWorkflowRequest, type DecisionMember, type DecisionRequest, type MutationReceipt, type ReviewCard, type WorkspaceSnapshot } from '../../shared/workflow-v2.ts';
 import { loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { commitWorkflowMutation, mutationId, type MutationPlan } from './transaction.ts';
@@ -73,6 +73,7 @@ function memberDecisionPlan(ctx:WriteContext,ledger:ProjectionLedger,workspace:W
     const current = ledger.claims.find(c=>c.id===member.claimId && c.event_id===eventId && c.current_version_id===member.claimVersionId);
     if (!current || !card.memberRefs.some(r=>r.claimId===current.id && r.claimVersionId===current.current_version_id)) throw new WorkflowFault(409,'version_conflict','内容已有新版本，请重新核对');
     if(current.review_status==='rejected' || ['withdrawn','superseded'].includes(current.lifecycle_status)) throw new WorkflowFault(409,'version_conflict','这条内容已经移出当前记录');
+    if(readJson<{workflow_kind?:string}>(current.normalized_value_json,{}).workflow_kind==='result')throw new WorkflowFault(422,'dependency_conflict','请通过修正结果或撤回这次结果更新');
     const targetMember=card.members.find(m=>m.claimId===current.id)!;
     if(member.questionChange && (current.type!=='open_question' || operation!=='edit')) throw new WorkflowFault(422,'dependency_conflict','答案适用选择需要对应问题修改');
     if(current.type==='open_question' && operation!=='edit') throw new WorkflowFault(422,'dependency_conflict','请通过补答案或调整问题处理');

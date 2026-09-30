@@ -2,6 +2,7 @@ import {
   parseWorkflowRequest,
   WorkflowValidationError,
   type Bullet,
+  type Action,
   type Coverage,
   type Question,
   type ReaffirmedMention,
@@ -72,6 +73,7 @@ export function buildRecordText(input: {
   title: string;
   bullets: readonly Bullet[];
   questions: readonly Question[];
+  actions?: readonly Action[];
   coverage: Coverage;
   reaffirmedMentions?: readonly ReaffirmedMention[];
   scope: ReportRequest["scope"];
@@ -90,7 +92,9 @@ export function buildRecordText(input: {
     }
     const label = bullet.reviewState === "draft" ? bullet.origin === "user_input" ? "用户补充 · 待确认" : bullet.origin === "user_selection" ? "用户选录 · 待确认" : "AI 草稿" : bullet.origin === "user_selection" ? "用户选录" : bullet.origin === "user_input" ? "用户补充" : "已采纳";
     const body = bullet.applicability ? `${bullet.text} · 适用情况：${bullet.applicability}` : bullet.text;
-    lines.push(`- ${literal(body)}${markdown ? "  " : " "}· ${label}${bullet.conflictWith?.length ? " · 新旧信息待选择" : ""}`);
+    const action=input.actions?.find(a=>bullet.claimRefs.some(r=>sameVersion(r,a.claimRef)));
+    const execution=action?` · ${action.executionState==='completed'?'已完成':action.executionState==='cancelled'?'已取消':'待跟进'}`:'';
+    lines.push(`- ${literal(body)}${markdown ? "  " : " "}· ${label}${execution}${bullet.conflictWith?.length ? " · 新旧信息待选择" : ""}`);
   }
   const mentions=input.scope==='mixed'?(input.reaffirmedMentions ?? []).filter(m=>m.associationState!=='confirmed' || m.targetState!=='current' || m.sourceStatus!=='ready' || m.targetText===null):[];
   for(const mention of mentions) {

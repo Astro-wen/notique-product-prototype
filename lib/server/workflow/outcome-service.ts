@@ -3,7 +3,7 @@ import { projectWorkspace, readJson, type LedgerClaim, type ProjectionLedger } f
 import { parseWorkflowRequest, type AnswerDecision, type OutcomeContent, type OutcomeRequest, type QuestionAnswerRequest, type OutcomeCorrectionRequest, type MutationReceipt, type VersionRef } from '../../shared/workflow-v2.ts';
 import { loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
 import { commitWorkflowMutation, mutationId, type MutationPlan } from './transaction.ts';
-import { claimGuard, decisionEnvelope, evidenceGuards, humanClaim, resolveRelation, statement, type WriteContext } from './ledger-write.ts';
+import { claimGuard, decisionEnvelope, evidenceGuards, humanClaim, outcomeResultRelation, resolveRelation, statement, type WriteContext } from './ledger-write.ts';
 import { actionTransitionPlan } from './action-service.ts';
 
 type Located = {projectId:string;eventId:string;key:string};
@@ -47,9 +47,12 @@ function questionRefresh(ctx:WriteContext,question:LedgerClaim):D1PreparedStatem
 function buildOutcome(ctx:WriteContext,ledger:ProjectionLedger,subject:LedgerClaim,subjectType:'action'|'question',content:OutcomeContent,old?:CurrentOutcome):MutationPlan {
   const plan:MutationPlan={statements:[],guards:[claimGuard(subject,ctx.scope),...evidenceGuards(ledger,content.evidenceRefs,ctx)],changedRefs:[],invalidatedVersionIds:[],kind:old?'replace_outcome':'save_outcome'};
   const oldRelationIds=outcomeRelationIds(ledger,readJson<string[]>(old?.relation_ids_json,[]));
-  const oldAnswerVersions=[...new Set([...readJson<string[]>(old?.answer_claim_version_ids_json,[]),...ledger.relations.filter(r=>oldRelationIds.includes(r.id)).map(r=>r.source_claim_version_id)])];
+  const resultRoots=new Set(ledger.outcomes.filter(o=>subjectType==='action' && o.subject_claim_id===subject.id).flatMap(o=>readJson<string[]>(o.relation_ids_json,[])));
+  const previousResultRelations=ledger.relations.filter(r=>resultRoots.has(r.id) && r.type==='informed_by' && r.status==='active' && readJson<{workflowOutcomeResult?:boolean}>(r.reason,{}).workflowOutcomeResult===true);
+  const oldAnswerVersions=[...new Set([...readJson<string[]>(old?.answer_claim_version_ids_json,[]),...ledger.relations.filter(r=>oldRelationIds.includes(r.id)).map(r=>r.source_claim_version_id),...previousResultRelations.map(r=>r.source_claim_version_id)])];
   const newAnswerVersions:string[]=[],newRelationIds:string[]=[],replacedVersions:string[]=[];
   const touched=new Map<string,LedgerClaim>();
+  plan.statements.push(...deactivateRelations(ctx,previousResultRelations.filter(r=>!oldRelationIds.includes(r.id)).map(r=>r.id)));
   if(old) {
     plan.statements.push(...deactivateRelations(ctx,oldRelationIds));
     for(const r of ledger.relations.filter(r=>oldRelationIds.includes(r.id))) {
@@ -60,6 +63,15 @@ function buildOutcome(ctx:WriteContext,ledger:ProjectionLedger,subject:LedgerCla
   const historicalCorrection=Boolean(old && subjectType==='action' && subject.type==='next_action' && subject.review_status==='verified' && subject.lifecycle_status==='superseded');
   const permitted=historicalCorrection?[...new Set(ledger.relations.filter(r=>oldRelationIds.includes(r.id)).flatMap(r=>{const q=ledger.claims.find(c=>c.type==='open_question' && (c.id===r.target_claim_id || c.current_version_id===r.target_claim_version_id));return q?[q.id]:[];}))]:subjectType==='action'?projectWorkspace(ledger,subject.event_id,ctx.timestamp,'').actions.find(a=>a.id===subject.id)?.questionRefs.map(r=>r.claimId):[subject.id];
   if(!permitted) throw new WorkflowFault(409,'dependency_conflict','请先将建议加入跟进');
+  // An execution note contributes current information independently of explicit
+  // question answers. The same text used as an answer is represented only once.
+  if(subjectType==='action' && content.text.trim() && !content.resolveQuestions.some(q=>q.answerText.trim()===content.text.trim())) {
+    const result=humanClaim(ctx,subject,content.text.trim(),'result',content.evidenceRefs);
+    const relation=outcomeResultRelation(ctx,result.versionId,subject.current_version_id);
+    plan.statements.push(...result.statements,...relation.statements);
+    newRelationIds.push(relation.id);
+    plan.changedRefs.push({entityType:'claim',id:result.claimId,revision:1});
+  }
   for(const target of content.resolveQuestions) {
     if(!permitted.includes(target.questionId)) throw new WorkflowFault(422,'dependency_conflict','答案需要对应这次跟进的问题',{questionId:target.questionId});
     const q=ledger.claims.find(c=>c.id===target.questionId && c.type==='open_question' && validClaim(c));

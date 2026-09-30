@@ -12,7 +12,7 @@ export function claimGuard(claim:LedgerClaim,scope:WorkflowScope):MutationPlan['
 export function decisionEnvelope(ctx:WriteContext, operation:string,key:string) {
   return statement(ctx,`INSERT INTO workflow_decisions (id,workspace_id,project_id,event_id,actor_id,operation,idempotency_key,context_version,created_at) VALUES (?,?,?,?,?,?,?,?,?)`,ctx.decisionId,ctx.scope.workspaceId,ctx.projectId,ctx.eventId,ctx.scope.actorId,operation,key,ctx.contextVersion,ctx.timestamp);
 }
-export function humanClaim(ctx:WriteContext,anchor:LedgerClaim,text:string,kind:'answer'|'completion',evidenceIds:string[]=[]) {
+export function humanClaim(ctx:WriteContext,anchor:LedgerClaim,text:string,kind:'answer'|'completion'|'result',evidenceIds:string[]=[]) {
   const claimId=mutationId('clm'),versionId=mutationId('cv'),verdictId=mutationId('vdt'),noteId=mutationId('unote'),memberId=mutationId('wdm');
   const normalized=kind==='completion'?{status:'completed',completed_action_claim_id:anchor.id,workflow_kind:kind}:{workflow_kind:kind};
   const type=kind==='completion'?'next_action':'other';
@@ -33,6 +33,13 @@ export function resolveRelation(ctx:WriteContext,sourceVersionId:string,targetVe
   const id=mutationId('rel');
   return {id,statements:[
     statement(ctx,`INSERT INTO claim_relations (id,workspace_id,project_id,type,source_claim_version_id,target_claim_version_id,context_version,status,reason,created_at) VALUES (?,?,?,'resolves',?,?,?,'active',?,?)`,id,ctx.scope.workspaceId,ctx.projectId,sourceVersionId,targetVersionId,ctx.contextVersion,reason,ctx.timestamp),
+    statement(ctx,`INSERT INTO relation_verdicts (id,relation_id,action,base_relation_status,user_id,created_at) VALUES (?,?,'confirm','proposed',?,?)`,mutationId('rvdt'),id,ctx.scope.actorId,ctx.timestamp),
+  ]};
+}
+export function outcomeResultRelation(ctx:WriteContext,sourceVersionId:string,targetVersionId:string) {
+  const id=mutationId('rel');
+  return {id,statements:[
+    statement(ctx,`INSERT INTO claim_relations (id,workspace_id,project_id,type,source_claim_version_id,target_claim_version_id,context_version,status,reason,created_at) VALUES (?,?,?,'informed_by',?,?,?,'active',?,?)`,id,ctx.scope.workspaceId,ctx.projectId,sourceVersionId,targetVersionId,ctx.contextVersion,JSON.stringify({workflowOutcomeResult:true}),ctx.timestamp),
     statement(ctx,`INSERT INTO relation_verdicts (id,relation_id,action,base_relation_status,user_id,created_at) VALUES (?,?,'confirm','proposed',?,?)`,mutationId('rvdt'),id,ctx.scope.actorId,ctx.timestamp),
   ]};
 }
