@@ -25,8 +25,10 @@ export async function requireInternalJobAuthorization(
 ): Promise<InternalJobAuthorization> {
   const bindings = getBindings();
   const configured = bindings.INTERNAL_JOB_TOKEN?.trim();
-  const recovery = options.allowWorkflowRecoveryToken ? bindings.WORKFLOW_RECOVERY_TOKEN?.trim() : undefined;
-  if (!configured && !recovery) {
+  const recovery = options.allowWorkflowRecoveryToken
+    ? [bindings.WORKFLOW_RECOVERY_TOKEN, bindings.WORKFLOW_SCHEDULER_TOKEN].map(value => value?.trim()).filter((value): value is string => Boolean(value))
+    : [];
+  if (!configured && !recovery.length) {
     throw new ApiFault(503, "QUEUE_NOT_CONFIGURED", "Internal job authorization is not configured.");
   }
   const authorization = request.headers.get("authorization")?.trim() ?? "";
@@ -36,7 +38,7 @@ export async function requireInternalJobAuthorization(
   }
   const [internalMatch, recoveryMatch] = await Promise.all([
     configured ? constantTimeEqual(supplied, configured) : false,
-    recovery ? constantTimeEqual(supplied, recovery) : false,
+    Promise.all(recovery.map(token => constantTimeEqual(supplied, token))).then(matches => matches.some(Boolean)),
   ]);
   if (internalMatch) return 'internal';
   if (recoveryMatch) return 'workflow_recovery';

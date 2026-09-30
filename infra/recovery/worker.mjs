@@ -39,7 +39,9 @@ async function readResponse(response) {
 export async function recover(env, {send = fetch, log = console.log, timeout = AbortSignal.timeout} = {}) {
   const token = env.WORKFLOW_RECOVERY_TOKEN?.trim();
   if (!token) {log('notique_recovery', {state: 'unconfigured'}); return;}
-  const signal = timeout(55000);
+  // Keep the Site request connected while its synchronous audio provider runs.
+  // Cron permits 15 minutes; leave a minute for response handling and shutdown.
+  const signal = timeout(840000);
   try {
     const response = await send(ENDPOINT, {
       method: 'POST', redirect: 'error', signal,

@@ -29,6 +29,7 @@ export type RuntimeBindings = {
   AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
   INTERNAL_JOB_TOKEN?: string;
   WORKFLOW_RECOVERY_TOKEN?: string;
+  WORKFLOW_SCHEDULER_TOKEN?: string;
   INTERNAL_WORKSPACE_ID?: string;
   INTERNAL_WORKSPACE_NAME?: string;
   MAX_RUN_INPUT_TOKENS?: string;

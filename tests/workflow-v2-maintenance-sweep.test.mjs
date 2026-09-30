@@ -91,6 +91,23 @@ test('original internal token keeps its workspace maintenance authority', async 
   assert.equal(f.state.nativeDispatches, 1);
 });
 
+test('an independent scheduler credential shares only recovery scope and preserves the GitHub credential', async t => {
+  const f = fixture(t), scheduler = 'synthetic-scheduler-token';
+  f.bindings.WORKFLOW_RECOVERY_TOKEN = RECOVERY_SECRET;
+  f.bindings.WORKFLOW_SCHEDULER_TOKEN = scheduler;
+  const options = [];
+  f.dispatch.extraction = input => {f.calls.extraction++; options.push(input); return f.results.extraction;};
+  for (const token of [RECOVERY_SECRET, scheduler]) {
+    assert.equal((await POST(request(token))).status, 200);
+    assert.equal((await dispatchPost(request(token))).status, 401);
+  }
+  assert.ok(options.every(option => option.commission === false));
+  assert.deepEqual(f.calls, {extraction: 2, event_ai_artifacts: 2, workflow: 2});
+  delete f.bindings.INTERNAL_JOB_TOKEN;delete f.bindings.WORKFLOW_RECOVERY_TOKEN;
+  assert.equal((await POST(request(scheduler))).status, 200);
+  assert.equal((await dispatchPost(request(scheduler))).status, 503);
+});
+
 test('sweep recovery remains available with only its independent secret configured', async t => {
   const f = fixture(t);
   delete f.bindings.INTERNAL_JOB_TOKEN;

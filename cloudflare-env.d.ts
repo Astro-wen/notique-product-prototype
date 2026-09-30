@@ -64,6 +64,15 @@ interface R2Bucket {
   put(
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
+    options: {
+      onlyIf: { etagDoesNotMatch: string };
+      httpMetadata?: R2HTTPMetadata;
+      customMetadata?: Record<string, string>;
+    },
+  ): Promise<R2Object | null>;
+  put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
     options?: {
       httpMetadata?: R2HTTPMetadata;
       customMetadata?: Record<string, string>;
@@ -104,6 +113,7 @@ declare namespace Cloudflare {
     AUTH_GATEWAY?: "chatgpt" | "cloudflare-access" | "public";
     INTERNAL_JOB_TOKEN?: string;
     WORKFLOW_RECOVERY_TOKEN?: string;
+    WORKFLOW_SCHEDULER_TOKEN?: string;
     INTERNAL_WORKSPACE_ID?: string;
     INTERNAL_WORKSPACE_NAME?: string;
     MAX_RUN_INPUT_TOKENS?: string;

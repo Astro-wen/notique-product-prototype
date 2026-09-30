@@ -277,16 +277,10 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
     throw persistenceRetry(error, "The staged transcription result could not be loaded.");
   }
 
-  let existingResult: {
-    transcript: ValidatedDiarizedTranscript;
-    resultKey: string;
-    resultSha: string;
-    providerRequestId: string | null;
-  } | null = null;
-  if (existing) {
+  const readStagedResult = async (object: R2ObjectBody) => {
     let content: string;
     try {
-      content = await existing.text();
+      content = await object.text();
     } catch (error) {
       throw persistenceRetry(error, "The staged transcription result could not be read.");
     }
@@ -306,9 +300,22 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
         "The staged transcription checksum does not match the Run record.",
       );
     }
+    return {
+      transcript,
+      resultKey,
+      resultSha,
+      providerRequestId: object.customMetadata?.provider_request_id || null,
+    };
+  };
+
+  let existingResult: Awaited<ReturnType<typeof readStagedResult>> | null = null;
+  if (existing) {
+    existingResult = await readStagedResult(existing);
+    const { resultSha } = existingResult;
     const providerRequestId = run.provider_request_id
       ? String(run.provider_request_id)
-      : existing.customMetadata?.provider_request_id || null;
+      : existingResult.providerRequestId;
+    existingResult.providerRequestId = providerRequestId;
     if (!run.staged_result_sha256) {
       try {
         const recovered = await getD1()
@@ -328,7 +335,6 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
         throw persistenceRetry(error, "The recovered staged transcription could not be recorded.");
       }
     }
-    existingResult = { transcript, resultKey, resultSha, providerRequestId };
   } else if (run.staged_result_sha256) {
     throw new TranscriptionFault(
       "AUDIO_TRANSCRIPTION_FAILED",
@@ -344,8 +350,13 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
       const content = diarizedTranscriptJson(called.transcript);
       const bytes = new TextEncoder().encode(content);
       const resultSha = await sha256Hex(bytes.buffer);
+      let staged = { ...called, resultKey, resultSha };
+      let created: R2Object | null;
       try {
-        await bucket.put(resultKey, bytes, {
+        // A late response from an expired lease must not overwrite a result
+        // already staged by another worker. SQL lease fencing happens below.
+        created = await bucket.put(resultKey, bytes, {
+          onlyIf: { etagDoesNotMatch: "*" },
           httpMetadata: { contentType: "application/json" },
           customMetadata: {
             sha256: resultSha,
@@ -359,6 +370,18 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
       } catch (error) {
         throw persistenceRetry(error, "The transcription result could not be staged.");
       }
+      if (!created) {
+        let stored: R2ObjectBody | null;
+        try {
+          stored = await bucket.get(resultKey);
+        } catch (error) {
+          throw persistenceRetry(error, "The staged transcription result could not be loaded.");
+        }
+        if (!stored) {
+          throw persistenceRetry(null, "The staged transcription result is missing after a conditional write.");
+        }
+        staged = await readStagedResult(stored);
+      }
       try {
         const updated = await getD1()
           .prepare(
@@ -368,8 +391,8 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
                 AND staged_result_r2_key = ? AND staged_result_sha256 IS NULL`,
           )
           .bind(
-            resultSha,
-            called.providerRequestId,
+            staged.resultSha,
+            staged.providerRequestId,
             now(),
             run.id,
             owner,
@@ -382,7 +405,7 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
       } catch (error) {
         throw persistenceRetry(error, "The transcription result could not be recorded.");
       }
-      return { ...called, resultKey, resultSha };
+      return staged;
     },
   });
 }
