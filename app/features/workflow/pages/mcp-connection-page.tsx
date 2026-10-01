@@ -7,6 +7,7 @@ import {NqButton, NqStatus, NqSurface} from '@/app/components/notique-ui';
 import {parseMcpConnectionStatus, type McpConnectionStatus} from '@/lib/shared/workflow-v2';
 import base from '../components/record-workspace.module.css';
 import styles from './mcp-connection.module.css';
+import {McpSetupGuide} from './mcp-setup-guide';
 
 class ConnectionSaveError extends Error {}
 
@@ -91,13 +92,14 @@ export function McpConnectionPage({loginHref, localPreview, returnHref}: {loginH
     </NqSurface>
     <NqSurface className={`${base.record} ${styles.connection}`} aria-label="AI助手连接方式">
       <h2>2. 在AI助手中安装Notique</h2>
-      <p>站点创建者可从AI助手的“Personal → Created by you”找到Notique。其他Beta用户需要可用的插件安装入口；开启本站授权本身不会安装插件。</p>
-      <p><a href="/guides/notique-setup.html">查看带截图的安装与发布教程 →</a></p>
+      <p>开启本站授权后，还需在AI助手中安装并启用Notique。公开安装入口准备好后会显示在这里。</p>
+      <p><a href="#setup-guide">查看本页图文教程 ↓</a></p>
       <p>完成连接后，可以试着问：</p>
       <blockquote>帮我看看最近的沟通记录，有哪些重点和需要跟进的事？</blockquote>
       <p className={styles.help}>这里显示的是Notique的读取授权。AI助手是否已安装连接，以它的插件页为准。AI助手的推理费用按其服务计费。</p>
       <details><summary>通过连接地址接入</summary><p className={styles.help}>这是服务地址，不是插件商店搜索词。手动连接还需要客户端可用的OAuth配置；只有地址不能保证其他账号接入。请先按教程确认安装入口。</p><output className={styles.endpoint}>{endpoint}</output><NqButton variant="secondary" disabled={!status?.enabled || saving || loading} onClick={() => void copyEndpoint()}><Copy size={14}/>复制连接地址</NqButton></details>
     </NqSurface>
     <p className={base.feedback} role="status" aria-live="polite">{feedback}</p>
+    <McpSetupGuide />
   </div>;
 }

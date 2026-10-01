@@ -18,3 +18,20 @@
 .page .authorization {margin-bottom: 20px;}
 .brand {display: inline-flex; align-items: center; gap: 8px;}
 .brand svg {color: #2d56cf; flex: none;}
+.guide {border-top: 1px solid #e6e6e8; margin-top: 32px; padding-top: 28px; scroll-margin-top: 24px;}
+.guideSteps {display: grid; gap: 20px; margin-top: 20px;}
+.guideSteps article {background: #fff; border: 1px solid #e6e6e8; border-radius: 12px; padding: 24px;}
+.guideSteps h3 {display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 17px; line-height: 1.5;}
+.guideSteps h3 > span {display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; background: #edf2ff; color: #2d56cf; font-size: 14px;}
+.guideSteps p {font-size: 16px;}
+.guideSteps details {margin: 16px 0;}
+.guideSteps summary {cursor: pointer; color: #2d56cf; font-size: 16px;}
+.guideSteps summary:focus-visible {outline: 2px solid #2d56cf; outline-offset: 3px;}
+.guideShot {position: relative; overflow: hidden; line-height: 0; border: 1px solid #e6e6e8; border-radius: 10px; margin: 20px 0 10px;}
+.guideShot img {display: block; width: 100%; height: auto;}
+.loginShot {max-width: 455px; margin-inline: auto;}
+.guideRing {position: absolute; border: 3px solid #ff4141; border-radius: 50%; pointer-events: none;}
+.guideSteps .guideCaption {color: #59657b; font-size: 14px;}
+.guideSteps .guidePending {background: #f3f6fd; border-left: 3px solid #6c87c8; border-radius: 4px; padding: 14px 16px;}
+.guideSteps blockquote {background: #f5f6f8; border-left: 3px solid #a7b9df; border-radius: 4px; margin: 12px 0; padding: 14px 18px; font-size: 16px; line-height: 1.8;}
+.guideFooter {display: flex; gap: 20px; flex-wrap: wrap; padding: 12px 0;}
