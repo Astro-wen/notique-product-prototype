@@ -32,14 +32,14 @@ registerHooks({
   load(url, context, next) {
     if (url.startsWith("file:") && url.endsWith(".ts") && fileURLToPath(url).startsWith(root) && !url.includes("/node_modules/")) {
       const filename = fileURLToPath(url);
-      const source = readFileSync(filename, "utf8") + (filename === processorPath ? "\nexport { loadOrCreateStagedResult };\n" : "");
+      const source = readFileSync(filename, "utf8") + (filename === processorPath ? "\nexport { loadOrCreateStagedResult, callProvider };\n" : "");
       return { format: "module", source: stripTypeScriptTypes(source, { mode: "transform" }), shortCircuit: true };
     }
     return next(url, context);
   },
 });
 
-const { loadOrCreateStagedResult } = await import("../lib/server/jobs/transcription-processor.ts");
+const { loadOrCreateStagedResult, SPEAKER_SEED_READY_SQL } = await import("../lib/server/jobs/transcription-processor.ts");
 const { sha256Hex, transcriptionStagingObjectKey } = await import("../lib/server/storage/keys.ts");
 const { diarizedTranscriptJson, validateDiarizedTranscriptOutput } = await import("../lib/domain/audio-transcription.ts");
 const resultKey = transcriptionStagingObjectKey({ workspaceId: "ws_test", projectId: "prj_test", eventId: "evt_test", runId: "tr_test" });
@@ -63,6 +63,8 @@ function fixture(t) {
       return {
         bind(...values) {
           return {
+            async first() { return sqlite.prepare(query).get(...values) ?? null; },
+            async all() { return { results: sqlite.prepare(query).all(...values) }; },
             async run() {
               if (state.failNextResultSql && /SET staged_result_sha256/.test(query)) {
                 state.failNextResultSql = false;
@@ -229,4 +231,59 @@ test("checkpoint recovery keeps SQL owner fencing when no checksum was recorded"
   assert.equal(f.row().lease_owner, "new");
   assert.equal(f.state.providerCalls, 0);
   assert.equal(f.state.putAttempts, 0);
+});
+
+
+test("later transcription requests share seed voice samples and keep their mapping with the staged result", async t => {
+  const f = fixture(t);
+  f.update("ALTER TABLE transcription_runs ADD COLUMN parent_run_id TEXT");
+  f.update("ALTER TABLE transcription_runs ADD COLUMN workspace_id TEXT");
+  f.update("ALTER TABLE transcription_runs ADD COLUMN chunk_index INTEGER");
+  f.update("ALTER TABLE transcription_runs ADD COLUMN audio_asset_version_id TEXT");
+  f.update("ALTER TABLE transcription_runs ADD COLUMN derived_transcript_asset_version_id TEXT");
+  f.update("CREATE TABLE asset_versions (id TEXT PRIMARY KEY, r2_original_key TEXT)");
+  f.update("CREATE TABLE text_segments (asset_version_id TEXT, workspace_id TEXT, ordinal INTEGER, speaker TEXT, start_ms INTEGER, end_ms INTEGER, text_raw TEXT)");
+  f.update("INSERT INTO asset_versions VALUES ('av_seed', 'audio/seed.wav')");
+  f.update("INSERT INTO transcription_runs (id,status,parent_run_id,workspace_id,chunk_index,audio_asset_version_id,derived_transcript_asset_version_id) VALUES ('seed','succeeded','parent','ws_test',0,'av_seed','av_seed_text')");
+  f.update("INSERT INTO text_segments VALUES ('av_seed_text','ws_test',0,'A',0,9000,'Agent explanation')");
+  f.update("INSERT INTO text_segments VALUES ('av_seed_text','ws_test',1,'B',10000,19000,'Buyer explanation')");
+  const pcm = Buffer.alloc(44 + 20 * 32000);
+  pcm.write('RIFF',0); pcm.writeUInt32LE(pcm.length-8,4); pcm.write('WAVEfmt ',8);pcm.writeUInt32LE(16,16);
+  pcm.writeUInt16LE(1,20);pcm.writeUInt16LE(1,22);pcm.writeUInt32LE(16000,24);pcm.writeUInt32LE(32000,28);pcm.writeUInt16LE(2,32);pcm.writeUInt16LE(16,34);pcm.write('data',36);pcm.writeUInt32LE(pcm.length-44,40);
+  const oldGet=globalThis.transcriptionStagingFixture.bucket.get;
+  globalThis.transcriptionStagingFixture.bucket.get=async key => key==='audio/seed.wav' ? {arrayBuffer:async()=>pcm.buffer.slice(pcm.byteOffset,pcm.byteOffset+pcm.byteLength)} : oldGet(key);
+  let calls=0;
+  globalThis.fetch=async (_url, options)=> {
+    calls++;
+    assert.deepEqual(options.body.getAll('known_speaker_names[]'),['nq_voice_1','nq_voice_2']);
+    assert.equal(options.body.getAll('known_speaker_references[]').length,2);
+    for(const url of options.body.getAll('known_speaker_references[]')) assert.match(url,/^data:audio\/wav;base64,/);
+    return new Response(JSON.stringify({duration:1,text:'Buyer question',segments:[{speaker:'nq_voice_2',start:0,end:1,text:'Buyer question'}]}),{headers:{'content-type':'application/json'}});
+  };
+  const run={...f.run(),parent_run_id:'parent',chunk_index:1};
+  const staged=await loadOrCreateStagedResult(run,'old');
+  assert.deepEqual(staged.knownSpeakers,{nq_voice_1:'Speaker 1',nq_voice_2:'Speaker 2'});
+  const replay=await loadOrCreateStagedResult({...run,...f.row()},'old');
+  assert.deepEqual(replay.knownSpeakers,staged.knownSpeakers);
+  assert.equal(calls,1);
+  assert.equal(replay.transcript.segments[0].speaker,'nq_voice_2');
+});
+
+test("seed gating waits without consuming an attempt, then releases parallel lanes for terminal seeds", async t => {
+  const f=fixture(t);
+  f.update('ALTER TABLE transcription_runs ADD COLUMN parent_run_id TEXT');
+  f.update('ALTER TABLE transcription_runs ADD COLUMN workspace_id TEXT');
+  f.update('ALTER TABLE transcription_runs ADD COLUMN chunk_index INTEGER');
+  f.update("INSERT INTO transcription_runs (id,status,parent_run_id,workspace_id,chunk_index) VALUES ('seed','queued','parent','ws_test',0)");
+  f.update("INSERT INTO transcription_runs (id,status,parent_run_id,workspace_id,chunk_index) VALUES ('later','queued','parent','ws_test',1)");
+  const eligible=()=>globalThis.transcriptionStagingFixture.db.prepare(`SELECT r.id FROM transcription_runs r WHERE ${SPEAKER_SEED_READY_SQL} ORDER BY r.id`).bind().all();
+  assert.equal((await eligible()).results.some(r=>r.id==='later'),false);
+  f.update("UPDATE transcription_runs SET status='processing' WHERE id='seed'");
+  assert.equal((await eligible()).results.some(r=>r.id==='later'),false);
+  for(const status of ['succeeded','failed','cancelled']) {
+    f.update("UPDATE transcription_runs SET status=? WHERE id='seed'",status);
+    assert.equal((await eligible()).results.some(r=>r.id==='later'),true);
+  }
+  f.update("UPDATE transcription_runs SET workspace_id='another' WHERE id='seed'");
+  assert.equal((await eligible()).results.some(r=>r.id==='later'),false);
 });

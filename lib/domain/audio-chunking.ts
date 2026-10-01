@@ -28,6 +28,7 @@ export type AudioChunkPlanItem = {
 
 export type ChunkTranscriptInput = AudioChunkPlanItem & {
   assetVersionId: string;
+  knownSpeakers?: Record<string, string>;
   transcript: ValidatedDiarizedTranscript;
 };
 
@@ -281,8 +282,6 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
 
   const merged: Array<DiarizedTranscriptSegment & { chunkIndex: number }> = [];
   let nextGlobalSpeaker = 1;
-  let previousChunkSpeakers: string[] = [];
-  const speakerHistory = new Map<string, { global: string; lastSeenChunk: number }>();
   for (const chunk of chunks) {
     const offsetSeconds = chunk.startMs / 1_000;
     const absoluteSegments = chunk.transcript.segments.map((source) => ({
@@ -300,8 +299,13 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
         speakerMap.set(localSpeaker, UNRESOLVED_SPEAKER_LABEL);
       }
     }
-    const usedGlobalSpeakers = new Set<string>();
-    let boundaryAnchorCount = 0;
+    // Only names actually sent with voice references have a global identity.
+    for (const [name, canonical] of Object.entries(chunk.knownSpeakers ?? {})) {
+      if (/^nq_voice_[1-4]$/.test(name) && canonical === `Speaker ${name.at(-1)}`) {
+        const key = normalizeLocalSpeakerKey(name);
+        if (localSpeakers.includes(key)) speakerMap.set(key, canonical);
+      }
+    }
     const previousChunk = chunk.index > 0 ? chunks[chunk.index - 1]! : null;
     const sharedStartSeconds = chunk.startMs / 1_000;
     const sharedEndSeconds = previousChunk ? previousChunk.endMs / 1_000 : sharedStartSeconds;
@@ -344,59 +348,24 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
       const voteStrength = (vote: typeof votes[number]) =>
         vote.total + Math.min(2, vote.count - 1) * 0.12 + vote.best * 0.2;
       for (const vote of votes) {
-        if (speakerMap.has(vote.local) || usedGlobalSpeakers.has(vote.global)) continue;
+        if (speakerMap.has(vote.local)) continue;
         const strength = voteStrength(vote);
         const localRival = votes.find((candidate) =>
           candidate.local === vote.local && candidate.global !== vote.global);
-        const globalRival = votes.find((candidate) =>
-          candidate.global === vote.global && candidate.local !== vote.local);
         if (
-          (localRival && strength - voteStrength(localRival) < 0.08)
-          || (globalRival && strength - voteStrength(globalRival) < 0.08)
+          localRival && strength - voteStrength(localRival) < 0.08
         ) continue;
         speakerMap.set(vote.local, vote.global);
-        usedGlobalSpeakers.add(vote.global);
-        boundaryAnchorCount += 1;
       }
 
-      // Provider labels are local to one chunk. Reuse a label only across the
-      // immediately adjacent boundary; an absent participant returning later
-      // cannot be identified safely without voice evidence.
-      for (const localSpeaker of localSpeakers) {
-        if (speakerMap.has(localSpeaker)) continue;
-        const historical = speakerHistory.get(localSpeaker);
-        if (
-          historical?.lastSeenChunk === chunk.index - 1
-          && !usedGlobalSpeakers.has(historical.global)
-        ) {
-          speakerMap.set(localSpeaker, historical.global);
-          usedGlobalSpeakers.add(historical.global);
-        }
-      }
-
-      // In the common stable-participant case, one or more strong anchors can
-      // determine the only remaining identity. Never use elimination without
-      // at least one real boundary anchor.
-      const unmappedLocal = localSpeakers.filter((speaker) => !speakerMap.has(speaker));
-      const unusedPrevious = previousChunkSpeakers.filter((speaker) => !usedGlobalSpeakers.has(speaker));
-      if (
-        boundaryAnchorCount > 0
-        && localSpeakers.length === previousChunkSpeakers.length
-        && unmappedLocal.length === 1
-        && unusedPrevious.length === 1
-      ) {
-        speakerMap.set(unmappedLocal[0]!, unusedPrevious[0]!);
-        usedGlobalSpeakers.add(unusedPrevious[0]!);
-      }
     }
 
-    // Never create more than four canonical identities. A previously seen
-    // local label that returns without a trustworthy adjacent-boundary match
-    // stays unresolved instead of impersonating an earlier participant.
+    // Anonymous A/B labels can rotate, split or recur in any chunk. Only the
+    // seed chunk creates canonical identities; later identities require a
+    // supplied voice reference or a matching utterance in the overlap.
     for (const localSpeaker of localSpeakers) {
       if (speakerMap.has(localSpeaker)) continue;
-      const trulyNewLocalLabel = !speakerHistory.has(localSpeaker);
-      if (trulyNewLocalLabel && nextGlobalSpeaker <= MAX_STABLE_SPEAKER_COUNT) {
+      if (chunk.index === 0 && nextGlobalSpeaker <= MAX_STABLE_SPEAKER_COUNT) {
         speakerMap.set(localSpeaker, `Speaker ${nextGlobalSpeaker}`);
         nextGlobalSpeaker += 1;
       } else {
@@ -408,17 +377,6 @@ export function mergeChunkTranscripts(chunksValue: ChunkTranscriptInput[]): Vali
       ...segment,
       speaker: speakerMap.get(segment.localSpeakerKey)!,
     }));
-    for (const [localSpeaker, globalSpeaker] of speakerMap) {
-      if (isStableSpeakerLabel(globalSpeaker)) {
-        speakerHistory.set(localSpeaker, { global: globalSpeaker, lastSeenChunk: chunk.index });
-      }
-    }
-    previousChunkSpeakers = [...new Set(
-      alignedSegments
-        .map((segment) => segment.speaker)
-        .filter(isStableSpeakerLabel),
-    )];
-
     const consumedPreviousSegments = new Set<number>();
     for (const segment of alignedSegments) {
       const normalizedSegment = {

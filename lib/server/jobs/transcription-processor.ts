@@ -14,7 +14,9 @@ import {
 } from "@/lib/domain/transcription-retry";
 import { normalizeTranscriptText } from "@/lib/domain/transcript";
 import { mergeChunkTranscripts } from "@/lib/domain/audio-chunking";
+import { prepareSpeakerReferences, speakerReferenceMap, SPEAKER_IDENTITY_VERSION } from "@/lib/domain/speaker-references";
 import { sha256Hex, transcriptionStagingObjectKey } from "@/lib/server/storage/keys";
+import { transcriptionReplacementStatements } from "./transcription-publication";
 
 type Row = Record<string, unknown>;
 
@@ -26,6 +28,13 @@ export type TranscriptionProcessResult = {
 };
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+// One seed request establishes voice references before the remaining lanes run.
+// A terminal failed seed releases the lanes so retry/failure recovery can finish.
+export const SPEAKER_SEED_READY_SQL = `(r.parent_run_id IS NULL OR r.chunk_index = 0 OR EXISTS (
+  SELECT 1 FROM transcription_runs seed WHERE seed.parent_run_id = r.parent_run_id
+    AND seed.workspace_id = r.workspace_id AND seed.chunk_index = 0
+    AND seed.status IN ('succeeded', 'failed', 'cancelled')
+))`;
 const MAX_PROVIDER_ERROR_CHARS = 500;
 const DEFAULT_TRANSCRIPTION_TIMEOUT_MS = 600_000;
 export const TRANSCRIPTION_RENEWABLE_LEASE_MS = 120_000;
@@ -154,6 +163,7 @@ async function acquireLease(runId: string, owner: string, timestamp: string): Pr
 async function callProvider(run: Row): Promise<{
   transcript: ValidatedDiarizedTranscript;
   providerRequestId: string | null;
+  knownSpeakers: Record<string, string>;
 }> {
   const bindings = getBindings();
   if (!bindings.AI_API_KEY || bindings.AI_PROVIDER !== "openai") {
@@ -180,6 +190,32 @@ async function callProvider(run: Row): Promise<{
   form.set("response_format", "diarized_json");
   form.set("chunking_strategy", "auto");
   form.set("stream", "true");
+  const knownSpeakers: Record<string, string> = {};
+  if (run.parent_run_id && Number(run.chunk_index) > 0) {
+    const seed = await first(
+      `SELECT r.*, av.r2_original_key FROM transcription_runs r
+         JOIN asset_versions av ON av.id = r.audio_asset_version_id
+        WHERE r.parent_run_id = ? AND r.workspace_id = ? AND r.chunk_index = 0`,
+      [run.parent_run_id, run.workspace_id],
+    );
+    if (seed?.status === "succeeded" && seed.derived_transcript_asset_version_id) {
+      const rows = (await getD1().prepare(
+        `SELECT speaker, start_ms, end_ms, text_raw FROM text_segments
+          WHERE asset_version_id = ? AND workspace_id = ? ORDER BY ordinal`,
+      ).bind(seed.derived_transcript_asset_version_id, run.workspace_id).all<Row>()).results ?? [];
+      const seedAudio = await getEvidenceBucket().get(String(seed.r2_original_key));
+      if (!seedAudio) throw persistenceRetry(new Error("Speaker reference audio is missing."), "Speaker reference audio is missing.");
+      const refs = prepareSpeakerReferences(await seedAudio.arrayBuffer(), rows.map(s => ({
+        speaker: String(s.speaker ?? "Speaker unknown"), text: String(s.text_raw),
+        startSeconds: Number(s.start_ms) / 1000, endSeconds: Number(s.end_ms) / 1000,
+      })));
+      for (const ref of refs) {
+        form.append("known_speaker_names[]", ref.name);
+        form.append("known_speaker_references[]", ref.dataUrl);
+        knownSpeakers[ref.name] = ref.canonicalSpeaker;
+      }
+    }
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), transcriptionTimeoutMs(run));
@@ -226,6 +262,7 @@ async function callProvider(run: Row): Promise<{
         response.headers.get("content-type"),
       ),
       providerRequestId,
+      knownSpeakers,
     };
   } catch (error) {
     throw new TranscriptionFault(
@@ -242,6 +279,7 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
   resultKey: string;
   resultSha: string;
   providerRequestId: string | null;
+  knownSpeakers: Record<string, string>;
 }> {
   const bucket = getEvidenceBucket();
   let resultKey = run.staged_result_r2_key ? String(run.staged_result_r2_key) : "";
@@ -305,6 +343,7 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
       resultKey,
       resultSha,
       providerRequestId: object.customMetadata?.provider_request_id || null,
+      knownSpeakers: speakerReferenceMap(object.customMetadata?.speaker_reference_map),
     };
   };
 
@@ -362,6 +401,7 @@ async function loadOrCreateStagedResult(run: Row, owner: string): Promise<{
             sha256: resultSha,
             schema: "diarized-transcript.v1",
             source_audio_asset_version_id: String(run.audio_asset_version_id),
+            speaker_reference_map: JSON.stringify(called.knownSpeakers),
             ...(called.providerRequestId
               ? { provider_request_id: called.providerRequestId }
               : {}),
@@ -443,6 +483,8 @@ async function persistTranscript(
     response_format: run.response_format,
     source_audio_asset_id: run.audio_asset_id,
     source_audio_asset_version_id: run.audio_asset_version_id,
+    speaker_identity_version: SPEAKER_IDENTITY_VERSION,
+    speaker_reference_map: staged.knownSpeakers,
     ...(String(run.orchestration_mode) === "chunk"
       ? {
           analysis_source: false,
@@ -465,6 +507,11 @@ async function persistTranscript(
             WHERE id = ? AND status = 'processing' AND lease_owner = ?
               AND staged_result_r2_key = ? AND staged_result_sha256 = ?
               AND derived_transcript_asset_id IS NULL
+              AND (orchestration_mode='chunk' OR EXISTS (
+                SELECT 1 FROM assets audio WHERE audio.id=transcription_runs.audio_asset_id
+                  AND audio.workspace_id=transcription_runs.workspace_id
+                  AND audio.current_version_id=transcription_runs.audio_asset_version_id
+                  AND json_extract(audio.metadata_json,'$.transcription_run_id')=transcription_runs.id))
          ) THEN 1 ELSE 0 END, ?`,
       )
       .bind(guardId, run.id, owner, staged.resultKey, staged.resultSha, timestamp),
@@ -586,6 +633,10 @@ async function persistTranscript(
         transcriptAssetId,
         transcriptVersionId,
       ),
+    ...(String(run.orchestration_mode) !== "chunk" ? transcriptionReplacementStatements(db, {
+      workspaceId: String(run.workspace_id), eventId: String(run.event_id),
+      audioVersionId: String(run.audio_asset_version_id), transcriptAssetId, timestamp,
+    }) : []),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return {
@@ -728,6 +779,10 @@ export async function processTranscriptionRun(
   if (TERMINAL.has(String(initial.status))) {
     return { runId, status: "already_terminal", segmentCount: Number(initial.segment_count ?? 0) };
   }
+  if (initial.parent_run_id && Number(initial.chunk_index) > 0) {
+    const ready = await first(`SELECT r.id FROM transcription_runs r WHERE r.id = ? AND ${SPEAKER_SEED_READY_SQL}`, [runId]);
+    if (!ready) return { runId, status: "lease_not_acquired", segmentCount: 0 };
+  }
   const owner = leaseOwner ?? `transcriber_${crypto.randomUUID()}`;
   const leased = await acquireLease(runId, owner, now());
   if (!leased) return { runId, status: "lease_not_acquired", segmentCount: 0 };
@@ -781,9 +836,10 @@ export async function finalizeChunkedTranscriptionParent(
   const children = (
     await getD1()
       .prepare(
-        `SELECT * FROM transcription_runs
-          WHERE parent_run_id = ? AND workspace_id = ?
-          ORDER BY chunk_index`,
+        `SELECT r.*, av.transform_json FROM transcription_runs r
+           LEFT JOIN asset_versions av ON av.id = r.derived_transcript_asset_version_id
+          WHERE r.parent_run_id = ? AND r.workspace_id = ?
+          ORDER BY r.chunk_index`,
       )
       .bind(parentRunId, parent.workspace_id)
       .all<Row>()
@@ -833,6 +889,7 @@ export async function finalizeChunkedTranscriptionParent(
       startMs: Number(child.chunk_start_ms),
       endMs: Number(child.chunk_end_ms),
       assetVersionId: String(child.audio_asset_version_id),
+      knownSpeakers: speakerReferenceMap(JSON.parse(String(child.transform_json ?? "{}"))?.speaker_reference_map),
       transcript: {
         durationSeconds: (Number(child.chunk_end_ms) - Number(child.chunk_start_ms)) / 1_000,
         text: segmentRows.map((segment) => String(segment.text_raw)).join(" "),
@@ -887,6 +944,7 @@ export async function finalizeChunkedTranscriptionParent(
     response_format: parent.response_format,
     source_audio_asset_id: parent.audio_asset_id,
     source_audio_asset_version_id: parent.audio_asset_version_id,
+    speaker_identity_version: SPEAKER_IDENTITY_VERSION,
   };
   const db = getD1();
   const guardId = id("guard");
@@ -899,6 +957,10 @@ export async function finalizeChunkedTranscriptionParent(
             AND derived_transcript_asset_id IS NULL AND chunk_count = ?
             AND (SELECT COUNT(*) FROM transcription_runs c
                   WHERE c.parent_run_id = transcription_runs.id AND c.status = 'succeeded') = ?
+            AND EXISTS (SELECT 1 FROM assets audio WHERE audio.id=transcription_runs.audio_asset_id
+              AND audio.workspace_id=transcription_runs.workspace_id
+              AND audio.current_version_id=transcription_runs.audio_asset_version_id
+              AND json_extract(audio.metadata_json,'$.transcription_run_id')=transcription_runs.id)
        ) THEN 1 ELSE 0 END, ?`,
     ).bind(guardId, parentRunId, children.length, children.length, timestamp),
     db.prepare(
@@ -1000,6 +1062,10 @@ export async function finalizeChunkedTranscriptionParent(
       parentRunId,
       transcriptAssetId,
     ),
+    ...transcriptionReplacementStatements(db, {
+      workspaceId: String(parent.workspace_id), eventId: String(parent.event_id),
+      audioVersionId: String(parent.audio_asset_version_id), transcriptAssetId, timestamp,
+    }),
     db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(guardId),
   ]);
   return "succeeded";

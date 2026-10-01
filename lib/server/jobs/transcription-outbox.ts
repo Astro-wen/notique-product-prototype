@@ -5,6 +5,7 @@ import {
   requeueExpiredTranscriptionRuns,
   TRANSCRIPTION_LEASE_HEARTBEAT_MS,
   transcriptionLeaseExpiresAt,
+  SPEAKER_SEED_READY_SQL,
   type TranscriptionProcessResult,
 } from "@/lib/server/jobs/transcription-processor";
 import {
@@ -461,6 +462,7 @@ export async function dispatchDueTranscriptionOutbox(
           WHERE o.status IN ('pending', 'failed') AND o.attempt < ?
             AND o.next_attempt_at <= ?
             AND r.status = 'queued'
+            AND ${SPEAKER_SEED_READY_SQL}
             ${targetClause}
           ORDER BY o.attempt, o.next_attempt_at, o.created_at
           LIMIT ?`,

@@ -7,6 +7,7 @@ import {
   stableTranscriptPreview,
 } from "@/lib/domain/audio-chunking";
 import { transcriptionRunRecord } from "@/lib/server/db/records";
+import { speakerReferenceMap } from "@/lib/domain/speaker-references";
 import { ApiFault } from "@/lib/server/http/api";
 import type { RequestScope } from "@/lib/server/http/context";
 import { sha256Hex } from "@/lib/server/storage/keys";
@@ -576,12 +577,10 @@ export async function getTranscriptionRun(
     const chunkRows = (
       await getD1()
         .prepare(
-          `SELECT id, chunk_index, chunk_start_ms, chunk_end_ms, status,
-                  attempt_no, error_code, audio_asset_version_id,
-                  derived_transcript_asset_version_id
-             FROM transcription_runs
-            WHERE parent_run_id = ? AND workspace_id = ?
-            ORDER BY chunk_index`,
+          `SELECT r.*, av.transform_json FROM transcription_runs r
+             LEFT JOIN asset_versions av ON av.id = r.derived_transcript_asset_version_id
+            WHERE r.parent_run_id = ? AND r.workspace_id = ?
+            ORDER BY r.chunk_index`,
         )
         .bind(result.id, scope.workspaceId)
         .all<Row>()
@@ -636,6 +635,7 @@ export async function getTranscriptionRun(
             startMs: Number(chunk.chunk_start_ms),
             endMs: Number(chunk.chunk_end_ms),
             assetVersionId: String(chunk.audio_asset_version_id),
+            knownSpeakers: speakerReferenceMap(JSON.parse(String(chunk.transform_json ?? "{}"))?.speaker_reference_map),
             transcript: {
               durationSeconds: (Number(chunk.chunk_end_ms) - Number(chunk.chunk_start_ms)) / 1_000,
               text: rows.map((segment) => String(segment.text_raw)).join(" "),

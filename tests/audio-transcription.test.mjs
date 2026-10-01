@@ -156,7 +156,7 @@ test("chunk transcripts merge onto the original timeline and remove only proven 
   assert.deepEqual(merged.segments.map((segment) => segment.speaker), [
     "Speaker 1",
     "Speaker 2",
-    "Speaker 1",
+    "Speaker unknown",
   ]);
 });
 
@@ -202,7 +202,7 @@ test("chunk speaker stitching never invents Speaker 5 through Speaker 13", async
   assert.equal(merged.segments.some((segment) => /Speaker (?:[5-9]|1[0-9])/.test(segment.speaker)), false);
 });
 
-test("silent chunk boundaries reuse the prior local speaker map instead of creating new identities", async () => {
+test("silent chunk boundaries leave anonymous labels unresolved instead of guessing identity", async () => {
   const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
   const chunks = Array.from({ length: 7 }, (_, index) => ({
     index,
@@ -222,6 +222,7 @@ test("silent chunk boundaries reuse the prior local speaker map instead of creat
   assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set([
     "Speaker 1",
     "Speaker 2",
+    "Speaker unknown",
   ]));
 });
 
@@ -254,7 +255,7 @@ test("a speaker returning without boundary evidence stays unresolved instead of 
   assert.equal(merged.segments.some((segment) => segment.speaker === "Speaker 4"), false);
 });
 
-test("normalized anonymous labels reuse one identity across silent boundaries", async () => {
+test("normalizing anonymous labels does not establish identity across silent boundaries", async () => {
   const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
   const merged = mergeChunkTranscripts([
     {
@@ -270,7 +271,7 @@ test("normalized anonymous labels reuse one identity across silent boundaries", 
       ] },
     },
   ]);
-  assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set(["Speaker 1"]));
+  assert.deepEqual(new Set(merged.segments.map((segment) => segment.speaker)), new Set(["Speaker 1", "Speaker unknown"]));
 });
 
 test("a split boundary sentence aligns rotated labels and deduplicates only the proven copy", async () => {
@@ -293,7 +294,7 @@ test("a split boundary sentence aligns rotated labels and deduplicates only the 
   ]);
   assert.equal(merged.segments.filter((segment) => segment.text.includes("three bedrooms")).length, 1);
   assert.equal(merged.segments.find((segment) => segment.text.startsWith("The client needs"))?.speaker, "Speaker 2");
-  assert.equal(merged.segments.find((segment) => segment.text.startsWith("I will send"))?.speaker, "Speaker 1");
+  assert.equal(merged.segments.find((segment) => segment.text.startsWith("I will send"))?.speaker, "Speaker unknown");
 });
 
 test("Chinese partial boundary text aligns without whitespace tokenization", async () => {
@@ -334,7 +335,7 @@ test("nearby generic acknowledgements do not establish identity or delete real t
   ]);
   const acknowledgements = merged.segments.filter((segment) => segment.text === "Okay");
   assert.equal(acknowledgements.length, 2);
-  assert.deepEqual(new Set(acknowledgements.map((segment) => segment.speaker)), new Set(["Speaker 1", "Speaker 2"]));
+  assert.deepEqual(new Set(acknowledgements.map((segment) => segment.speaker)), new Set(["Speaker 2", "Speaker unknown"]));
 });
 
 test("boundary dedup keeps conflicting amounts, dates, units, and negations", async () => {
@@ -1119,4 +1120,84 @@ test("the transcription processor consults the retry cap and a manual chunk retr
   assert.match(processor, /attempts_exhausted: true/);
   const repository = await readFile(path.join(root, "lib/server/db/transcription-repository.ts"), "utf8");
   assert.match(repository, /attempt_no = 0, queued_at = \?/);
+});
+
+test("voice references preserve identities through silent boundaries and anonymous label swaps", async () => {
+  const { mergeChunkTranscripts } = await loadTypeScriptModule("lib/domain/audio-chunking.ts");
+  const seed = { index: 0, startMs: 0, endMs: 180000, assetVersionId: "seed", transcript: { durationSeconds: 180, text: "seed", segments: [
+    { speaker: "A", text: "Agent explains the agreement.", startSeconds: 20, endSeconds: 25 },
+    { speaker: "B", text: "Buyer asks about the agreement.", startSeconds: 80, endSeconds: 85 },
+  ] } };
+  const later = { index: 1, startMs: 165000, endMs: 345000, assetVersionId: "later", knownSpeakers: { nq_voice_1: "Speaker 1", nq_voice_2: "Speaker 2" }, transcript: { durationSeconds: 180, text: "later", segments: [
+    { speaker: "nq_voice_2", text: "Do I need to sign if I find my own house?", startSeconds: 30, endSeconds: 35 },
+    { speaker: "nq_voice_1", text: "Yes, you still need representation.", startSeconds: 40, endSeconds: 45 },
+    { speaker: "A", text: "A newly ambiguous voice.", startSeconds: 50, endSeconds: 55 },
+  ] } };
+  const merged = mergeChunkTranscripts([seed, later]);
+  assert.deepEqual(merged.segments.map(s => s.speaker), ["Speaker 1", "Speaker 2", "Speaker 2", "Speaker 1", "Speaker unknown"]);
+  // Names without a persisted record that their audio references were sent are anonymous.
+  const untrusted = mergeChunkTranscripts([seed, { ...later, knownSpeakers: {} }]);
+  assert.equal(untrusted.segments.at(-3).speaker, "Speaker unknown");
+  assert.equal(merged.segments.at(-3).startSeconds, 195);
+});
+
+function referenceWav(seconds = 30) {
+  const sampleRate = 16000;
+  const wav = Buffer.alloc(44 + seconds * sampleRate * 2);
+  wav.write("RIFF", 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
+  for (let frame = 0; frame < seconds * sampleRate; frame++) wav.writeInt16LE((frame % 65535) - 32767, 44 + frame * 2);
+  return wav;
+}
+
+test("speaker references use clean 2–10 second PCM clips and retain the seed numbering", async () => {
+  const { prepareSpeakerReferences, speakerReferenceMap } = await loadTypeScriptModule("lib/domain/speaker-references.ts");
+  const wav = referenceWav();
+  const turns = [
+    { speaker: "Speaker unknown", text: "Noise", startSeconds: 0, endSeconds: 1 },
+    { speaker: "A", text: "A substantial agent turn", startSeconds: 2, endSeconds: 12 },
+    { speaker: "B", text: "A substantial buyer turn", startSeconds: 14, endSeconds: 24 },
+  ];
+  const refs = prepareSpeakerReferences(wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength), turns);
+  assert.deepEqual(refs.map(r => [r.name, r.canonicalSpeaker]), [["nq_voice_1", "Speaker 1"], ["nq_voice_2", "Speaker 2"]]);
+  for (const ref of refs) {
+    assert.ok(ref.endSeconds - ref.startSeconds >= 2 && ref.endSeconds - ref.startSeconds <= 10);
+    const clip = Buffer.from(ref.dataUrl.split(",")[1], "base64");
+    assert.equal(clip.readUInt32LE(40), clip.length - 44);
+    assert.equal(clip.readUInt32LE(24), 16000);
+    assert.deepEqual(clip.subarray(44), wav.subarray(44 + Math.round(ref.startSeconds * 32000), 44 + Math.round(ref.endSeconds * 32000)));
+  }
+  assert.deepEqual(speakerReferenceMap('{"nq_voice_1":"Speaker 1","A":"Speaker 1","nq_voice_2":"Speaker 1"}'), {nq_voice_1:"Speaker 1"});
+  const overlapped = [...turns, {speaker:"C",text:"interruption",startSeconds:2,endSeconds:12}];
+  assert.equal(prepareSpeakerReferences(wav.buffer, overlapped).some(r => r.name === "nq_voice_1"), false);
+  assert.deepEqual(prepareSpeakerReferences(new Uint8Array([1,2,3]).buffer, turns), []);
+  const short = turns.map(s => ({...s, endSeconds: s.startSeconds + 1}));
+  assert.deepEqual(prepareSpeakerReferences(wav.buffer, short), []);
+});
+
+test("replacement transcription retains historical evidence and commissions only the new canonical source", async () => {
+  const { workflowDatabase, insert, seed } = await import("./helpers/workflow-database.mjs");
+  const { transcriptionReplacementStatements } = await loadTypeScriptModule("lib/server/jobs/transcription-publication.ts");
+  const f = await workflowDatabase();
+  try {
+    seed(f.sqlite);
+    for(const [id,chunk,ws] of [['old',false,'ws'],['new',false,'ws'],['chunk',true,'ws']]) {
+      insert(f.sqlite,'assets',{id,workspace_id:ws,project_id:'p',event_id:'e',kind:'transcript',filename:id+'.json',current_version_id:id+'_av',processing_status:'ready',metadata_json:JSON.stringify({source_audio_asset_version_id:'audio_av',transcription_chunk:chunk,...(chunk?{analysis_source:false}:{})})});
+      insert(f.sqlite,'asset_versions',{id:id+'_av',asset_id:id,version_no:1,content_sha256:id,mime_type:'application/json',size_bytes:10,r2_original_key:id,finalized_at:'2026-10-01T22:00:00.000Z'});
+    }
+    const input={workspaceId:'ws',eventId:'e',audioVersionId:'audio_av',transcriptAssetId:'new',timestamp:'2026-10-01T23:00:00.000Z'};
+    await f.db.batch(transcriptionReplacementStatements(f.db,input));
+    assert.equal(f.sqlite.prepare("SELECT source_revision FROM events WHERE id='e'").get().source_revision,1);
+    const old=JSON.parse(f.sqlite.prepare("SELECT metadata_json FROM assets WHERE id='old'").get().metadata_json);
+    assert.equal(old.analysis_source,false);assert.equal(old.superseded_by_transcript_asset_id,'new');
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM asset_versions WHERE id='old_av'").get().n,1);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM evidence_refs").get().n,3);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM workflow_outbox WHERE kind='initial_analysis'").get().n,1);
+    await f.db.batch(transcriptionReplacementStatements(f.db,input));
+    assert.equal(f.sqlite.prepare("SELECT source_revision FROM events WHERE id='e'").get().source_revision,1);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM workflow_outbox WHERE kind='initial_analysis'").get().n,1);
+    assert.equal(JSON.parse(f.sqlite.prepare("SELECT metadata_json FROM assets WHERE id='new'").get().metadata_json).analysis_source,undefined);
+  } finally {f.close();}
 });
