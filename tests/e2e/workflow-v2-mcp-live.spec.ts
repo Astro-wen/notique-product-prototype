@@ -13,9 +13,9 @@ async function workspaceId(request:APIRequestContext){
 test('anonymous connection page explains login and does not claim an installed assistant',async({page},info)=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/connections');
-  await expect(page.getByRole('heading',{name:'让AI助手读懂你的记录'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'连接 Notique 到 AI 助手'})).toBeVisible();
   await expect(page.getByRole('button',{name:'登录后授权',exact:true})).toBeDisabled();
-  await expect(page.getByText('AI助手是否已安装连接，以它的插件页为准。',{exact:false})).toBeVisible();
+  await expect(page.getByText('连接是否启用请查看 AI 助手的插件页。',{exact:false})).toBeVisible();
   await page.screenshot({path:info.outputPath('mcp-anonymous.png'),fullPage:true});
   expect(errors).toEqual([]);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -72,7 +72,7 @@ test('connection settings respect unsaved input in the main workspace',async({pa
     expect(new URL(page.url()).pathname).toBe('/');
     await page.getByRole('button',{name:'取消',exact:true}).click();
     await page.getByRole('button',{name:'AI助手连接',exact:true}).click();
-    await expect(page.getByRole('heading',{name:'让AI助手读懂你的记录'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'连接 Notique 到 AI 助手'})).toBeVisible();
     await page.getByRole('link',{name:'返回工作区',exact:true}).click();
     await expect(page.getByTestId(`bullet-${f.budgetId}`)).toBeVisible();
     expect(new URL(page.url()).searchParams.get('event')).toBe(f.eventId);
