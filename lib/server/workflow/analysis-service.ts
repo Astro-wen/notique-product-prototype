@@ -64,7 +64,11 @@ export async function mapAnalysisRun(row:Row):Promise<AnalysisRun> {
  const extractionState=state(row.status);
  const stages:AnalysisRun['stages']=[];
  const names:Record<string,string>={inventory:'提取重点',verify:'核对出处',verify_escalated:'复核疑点'};
+ // A published escalation replaces the failed base verification. The paid
+ // attempt remains in diagnostics, rather than looking like unfinished work.
+ const recoveredVerification=published(row.status)&&model.some(s=>s.stage==='verify_escalated'&&s.status==='succeeded');
  for(const s of model) {
+  if(recoveredVerification&&s.stage==='verify'&&s.status==='failed')continue;
   const runningRetry=s.attempt>1 && ['queued','processing','running'].includes(s.status);
   stages.push({id:s.id,name:`${names[s.stage]??'分析材料'}${runningRetry?' · 自动重试':''}`,state:state(s.status),retryable:extractionRetry && s.status==='failed' && repairable(s.error_code),errorCode:s.error_code});
  }

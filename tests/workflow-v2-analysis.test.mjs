@@ -29,6 +29,20 @@ test('failed verification retries without erasing successful inventory or its pr
  const same=await retryAnalysis(db,SCOPE,'run',body,'retry',plus(2));assert.equal(same.id,after.id);assert.equal(sqlite.prepare('SELECT count(*) n FROM extraction_runs').get().n,1);
  await assert.rejects(retryAnalysis(db,SCOPE,'run',{...body,stageIds:['inventory']},'retry'),code('idempotency_conflict'));
 });
+test('published escalation replaces the failed base stage without erasing paid history',async t=>{
+ const {db,sqlite}=await setup(t);stage(sqlite,'inventory','inventory','succeeded');stage(sqlite,'verify','verify','failed');stage(sqlite,'escalated','verify_escalated','succeeded');
+ sqlite.prepare("UPDATE extraction_runs SET status='completed_with_warnings' WHERE id='run'").run();
+ const before=sqlite.prepare('SELECT total_changes() n').get().n,run=await readAnalysisRun(db,SCOPE,'run');
+ assert.equal(run.state,'succeeded');assert.equal(run.retryable,false);assert.equal(run.stages.some(s=>s.id==='verify'),false);assert.equal(run.stages.find(s=>s.id==='escalated').state,'succeeded');
+ assert.equal(sqlite.prepare("SELECT status FROM extraction_model_stages WHERE id='verify'").get().status,'failed');assert.equal(sqlite.prepare('SELECT total_changes() n').get().n,before);
+ artifact(sqlite,'summary');assert.equal((await readAnalysisRun(db,SCOPE,'run')).state,'partial');
+});
+test('unpublished or failed escalation keeps the verification failure visible',async t=>{
+ const {db,sqlite}=await setup(t);failedRun(sqlite);stage(sqlite,'verify','verify','failed');stage(sqlite,'escalated','verify_escalated','succeeded');
+ assert.ok((await readAnalysisRun(db,SCOPE,'run')).stages.some(s=>s.id==='verify'&&s.state==='failed'));
+ sqlite.prepare("UPDATE extraction_runs SET status='completed_with_warnings' WHERE id='run'").run();sqlite.prepare("UPDATE extraction_model_stages SET status='failed',validated_output_json=NULL WHERE id='escalated'").run();
+ assert.equal((await readAnalysisRun(db,SCOPE,'run')).state,'partial');assert.ok((await readAnalysisRun(db,SCOPE,'run')).stages.some(s=>s.id==='verify'&&s.state==='failed'));
+});
 test('an automatic retry is visible while keeping the paid history and latest stage identity',async t=>{
  const {db,sqlite}=await setup(t);
  sqlite.prepare("UPDATE extraction_runs SET status='processing' WHERE id='run'").run();
