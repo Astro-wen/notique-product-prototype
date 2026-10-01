@@ -24,13 +24,44 @@ export function McpSetupGuide() {
       </article>
       <article>
         <h3><span>2</span>在AI助手里连接Notique</h3>
-        <p>使用发布后的Notique安装入口，核对插件名称与读取权限，再完成连接。安装插件和开启本站授权是两个步骤。</p>
-        <p className={styles.guidePending}>公开安装入口正在准备。当前创建者的私人插件入口不能直接用于其他账号；发布完成后，这里会提供实际安装链接和对应截图。</p>
-        <p>网页和桌面版使用同一账号，各自确认Notique已安装并启用。不要将下方的MCP地址填进插件商店搜索框。</p>
+        <p>Beta期间可以手动创建云端连接，不需要等待公开上架，也不需要上传插件ZIP。先用自己的账号打开<a href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">ChatGPT插件页</a>。如果没有创建入口，到“设置 → 账户安全与登录”开启开发者模式，再返回插件页。</p>
+        <p><strong>① 点击“添加 → 创建MCP应用”。</strong>部分界面显示“创建插件”。</p>
+        <figure className={styles.guideShot}>
+          <Image src="/guides/assets/notique-mcp-add-menu.jpg" alt="ChatGPT插件页，红圈标出添加按钮和创建MCP应用入口" width={1280} height={720} unoptimized />
+          <span className={styles.guideRing} style={{left:'78.5%',top:'2.5%',width:'8%',height:'8%'}} aria-hidden="true" />
+          <span className={styles.guideRing} style={{left:'73%',top:'19%',width:'13%',height:'8%'}} aria-hidden="true" />
+        </figure>
+        <p><strong>② 填名称、服务地址，身份验证选择OAuth。</strong>名称建议填“Notique Beta”，服务地址复制下表。</p>
+        <figure className={styles.guideShot}>
+          <Image src="/guides/assets/notique-mcp-server-form.jpg" alt="创建插件表单，红圈标出Notique服务地址和高级OAuth设置" width={1280} height={720} unoptimized />
+          <span className={styles.guideRing} style={{left:'27.5%',top:'51.5%',width:'45%',height:'8%'}} aria-hidden="true" />
+          <span className={styles.guideRing} style={{left:'27.5%',top:'70%',width:'45%',height:'14%'}} aria-hidden="true" />
+        </figure>
+        <p><strong>③ 展开“高级OAuth设置”，填写客户端ID。</strong>注册方法选“自定义OAuth客户端”，客户端密钥留空，Token端点身份验证方法选“none”。其余自动发现的端点、回调地址和权限范围保持默认。</p>
+        <table className={styles.guideConfig}>
+          <caption>Notique Beta连接配置</caption>
+          <thead><tr><th scope="col">字段</th><th scope="col">填写内容</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">名称</th><td>Notique Beta</td></tr>
+            <tr><th scope="row">服务器URL</th><td><code>https://notique-evidence-workspace.uclae2e12.chatgpt.site/mcp</code></td></tr>
+            <tr><th scope="row">身份验证</th><td>OAuth</td></tr>
+            <tr><th scope="row">注册方法</th><td>自定义OAuth客户端</td></tr>
+            <tr><th scope="row">OAuth客户端ID</th><td><code>oaiapp_o8TJo8E1GDZwe7ias2IdLbG5</code></td></tr>
+            <tr><th scope="row">OAuth客户端密钥</th><td>留空</td></tr>
+            <tr><th scope="row">Token端点身份验证方法</th><td><code>none</code></td></tr>
+          </tbody>
+        </table>
+        <figure className={styles.guideShot}>
+          <Image src="/guides/assets/notique-mcp-client-config.jpg" alt="高级OAuth配置截图，红圈标出实际Site客户端ID，密钥留空，Token验证方法为none" width={1280} height={720} unoptimized />
+          <span className={styles.guideRing} style={{left:'53%',top:'51%',width:'31%',height:'9%'}} aria-hidden="true" />
+        </figure>
+        <p className={styles.guideCaption}>这个Client ID属于本Notique站点，不是所有MCP通用的ID，也不是用户密码。无需申请API密钥。开发者账号已按此配置完成手动创建、OAuth登录和一次只读调用；其他个人账号的完整流程仍需分别验证。</p>
+        <p><strong>④ 阅读提示，确认后点击“创建”，再继续连接。</strong>登录与本页只读授权相同的ChatGPT账号。返回插件页后，打开“个人”中的Notique Beta，确认出现“已连接至你的账号”。登录页显示原站点名称“Notique Evidence Workspace Demo”是正常的，请核对站点地址。</p>
+        <p>网页和桌面版使用同一账号，在各自的插件页确认Notique Beta已启用。若某个客户端没有创建入口，先在网页完成配置；桌面端仍需确认可以选择该插件。不要将MCP地址填进插件商店搜索框。</p>
       </article>
       <article>
         <h3><span>3</span>新建对话，启用Notique并提问</h3>
-        <p>先列项目，再读取记录，最后核对原文。可以依次复制这三句话：</p>
+        <p>在ChatGPT中选择“工作”模式，新建对话，用@选择刚才创建的“Notique Beta”。先列项目，再读取记录，最后核对原文。可以依次复制这三句话：</p>
         <blockquote>列出我在Notique中可以访问的项目。</blockquote>
         <blockquote>整理这个项目最近的沟通重点和跟进事项，区分草稿与已采纳内容。</blockquote>
         <blockquote>给出这些重点的原文证据，并标明不确定的地方。</blockquote>

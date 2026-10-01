@@ -33,5 +33,10 @@
 .guideRing {position: absolute; border: 3px solid #ff4141; border-radius: 50%; pointer-events: none;}
 .guideSteps .guideCaption {color: #59657b; font-size: 14px;}
 .guideSteps .guidePending {background: #f3f6fd; border-left: 3px solid #6c87c8; border-radius: 4px; padding: 14px 16px;}
+.guideConfig {width: 100%; border-collapse: collapse; font-size: 16px; line-height: 1.6; margin: 20px 0;}
+.guideConfig caption {text-align: left; font-weight: 600; padding-bottom: 12px;}
+.guideConfig th, .guideConfig td {text-align: left; vertical-align: top; padding: 12px; border: 1px solid #e6e6e8;}
+.guideConfig th {width: 30%; background: #f5f6f8; font-weight: 600;}
+.guideConfig code {overflow-wrap: anywhere; word-break: break-word; user-select: text; font-size: 14px;}
 .guideSteps blockquote {background: #f5f6f8; border-left: 3px solid #a7b9df; border-radius: 4px; margin: 12px 0; padding: 14px 18px; font-size: 16px; line-height: 1.8;}
 .guideFooter {display: flex; gap: 20px; flex-wrap: wrap; padding: 12px 0;}

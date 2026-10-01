@@ -92,12 +92,12 @@ export function McpConnectionPage({loginHref, localPreview, returnHref}: {loginH
     </NqSurface>
     <NqSurface className={`${base.record} ${styles.connection}`} aria-label="AI助手连接方式">
       <h2>2. 在AI助手中安装Notique</h2>
-      <p>开启本站授权后，还需在AI助手中安装并启用Notique。公开安装入口准备好后会显示在这里。</p>
+      <p>开启本站授权后，按下方教程在ChatGPT中创建Notique Beta云端连接，再完成登录。Beta期间可手动连接，公开商店安装入口仍在准备。</p>
       <p><a href="#setup-guide">查看本页图文教程 ↓</a></p>
       <p>完成连接后，可以试着问：</p>
       <blockquote>帮我看看最近的沟通记录，有哪些重点和需要跟进的事？</blockquote>
       <p className={styles.help}>这里显示的是Notique的读取授权。AI助手是否已安装连接，以它的插件页为准。AI助手的推理费用按其服务计费。</p>
-      <details><summary>通过连接地址接入</summary><p className={styles.help}>这是服务地址，不是插件商店搜索词。手动连接还需要客户端可用的OAuth配置；只有地址不能保证其他账号接入。请先按教程确认安装入口。</p><output className={styles.endpoint}>{endpoint}</output><NqButton variant="secondary" disabled={!status?.enabled || saving || loading} onClick={() => void copyEndpoint()}><Copy size={14}/>复制连接地址</NqButton></details>
+      <details><summary>通过连接地址接入</summary><p className={styles.help}>将服务地址填入“创建MCP应用”的服务器URL字段，并按下方教程填写OAuth客户端ID。地址与ID需一起配置；登录与本站授权相同的账号。</p><output className={styles.endpoint}>{endpoint}</output><NqButton variant="secondary" disabled={!status?.enabled || saving || loading} onClick={() => void copyEndpoint()}><Copy size={14}/>复制连接地址</NqButton></details>
     </NqSurface>
     <p className={base.feedback} role="status" aria-live="polite">{feedback}</p>
     <McpSetupGuide />
