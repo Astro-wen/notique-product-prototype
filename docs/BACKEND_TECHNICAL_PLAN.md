@@ -383,7 +383,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | ActionHistoryEntry | id、claimRef、text、sourceStatus、executionState、replacementRef、replacementText、latestOutcome | 已替代行动的只读历史。text 与 replacementText 在对应来源不可访问时为 null，replacementRef 沿已确认替代链指向当前行动，无法确定时为 null。executionState 与 latestOutcome 保留原行动的执行记录，新行动按自身ID维护状态及结果。历史行动结果可以通过当前问题修正或撤回，修正范围限该结果原有的问题。 |
 | LatestOutcome | id、revision、text、answerRefs、resultRefs?、updatedAt、freshness? | freshness=current/stale。text 保留结果当时的文字，answerRefs 仅含当前有效答案。相关答案变化后收起为上次结果，当前答案继续在重点中显示。原答案来源失效时正文为空。 resultRefs 仅含独立行动结果的当前精确版本，与 answerRefs 分开。结果作为用户补充进入原主题、复制和概要，修正或撤回沿原结果入口处理。与逐项答案相同的说明复用答案，独立说明不会把问题改为已回答。结果或答案失效后该结果收起为历史，当前输出使用有效信息。 |
 | Question | id、claimRef、revision、resolutionState、answerRefs、latestOutcome | revision 映射 claims.workflowRevision。resolutionState=open/resolved，存在有效已采纳答案才可 resolved latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 已有答案的问题仍可修改，逐条确认答案适用后保存新问题版本，行动完成状态保持。 |
-| OutcomeRequest | expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、answerDecisions?、completeAction | text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability |
+| OutcomeRequest | expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、linkQuestionRefs?、answerDecisions?、completeAction | text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability linkQuestionRefs 为用户明确勾选的当前问题 VersionRef，最多20项，必须同时存在于 resolveQuestions，关联限同项目同沟通，关联与回答在同一事务保存。 |
 | QuestionAnswerRequest | expectedQuestionRevision、expectedContextVersion、answerText、evidenceRefs、answerDecision? | 为当前问题保存人工作答并生成 outcomeId。已有答案时 answerDecision 含 mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability，修正与撤回复用结果接口 |
 | OutcomeCorrectionRequest | expectedOutcomeRevision、expectedContextVersion、operation、replacement? | operation=replace/withdraw。replacement 使用结果字段，事务重新计算受影响问题 |
 | ActionTransitionRequest | expectedActionRevision、expectedContextVersion、operation | operation=complete/reopen/cancel。完成或重开只变更行动执行状态 |
@@ -634,3 +634,11 @@ Bullet.applicability 为并存答案的适用说明，来源是用户明确选�
 稍后处理与恢复仅更新个人延期和卡片修订，校验当前上下文但保留业务 contextVersion。此类操作返回 refreshState=current，正文和概要继续使用原有版本。
 
 提取重点失败后，用户重试失败阶段时携带上一轮的字段校验原因。反馈最多8项，每项最多600字符，并保存在本轮阶段检查点中。关闭页面后继续同一响应，冲突字段仍经过完整校验。
+
+### 10.4 结果与问题的一次提交
+
+OutcomeContent新增可选linkQuestionRefs，携带用户在补结果时明确选择关联的当前问题VersionRef。每个引用必须同时存在于resolveQuestions，最多20项。同空间、同项目、同沟通且当前可读的问题通过精确版本与修订校验后，追加用户确认的informed_by关系，并在同一事务保存答案、完成状态、版本递增及幂等回执。
+
+已有关系继续沿用原接口。未明确选择的新问题仍拒绝关联，历史行动修正沿既有问题范围处理。撤回结果恢复问题状态，行动完成状态保持独立。
+
+提取提示词升级为v9.6，普通服务说明、条件式帮助和长期规则保留为事实，具体约定的下一步保留为行动。日常要点精简缺失期限的重复描述，贷款审批、金额和不确定日期等重要限定继续保留。v9.5已付费阶段仍使用原提示词、64条容量与原检查点，新规则仅用于新分析。前端主题归并、展开和筛选使用已有内容。

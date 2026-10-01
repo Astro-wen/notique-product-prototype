@@ -105,3 +105,34 @@ test('cancel and reopen do not withdraw answers obtained through separate questi
   await transition(db,'cancel');assert.equal((await read(db)).actions[0].executionState,'cancelled');
   await transition(db,'reopen');const s=await read(db);assert.equal(s.actions[0].executionState,'open');assert.equal(s.questions[0].resolutionState,'resolved');
 });
+
+test('one explicitly selected result links a previously unlinked current question and answers it atomically',async t=>{
+  const {db,sqlite}=await setup(t);await decideRecord(db,SCOPE,accept);
+  claim(sqlite,'showtime','open_question','三套房几点开始看？');
+  let s=await read(db);const q=s.questions.find(q=>q.id==='showtime');
+  assert.equal(s.actions[0].questionRefs.some(r=>r.claimId===q.id),false);
+  const body={expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,completeAction:true,text:'15:00，按A、B、C顺序看房',evidenceRefs:[],resolveQuestions:[{questionId:q.id,revision:q.revision,answerText:'15:00，按A、B、C顺序看房'}],linkQuestionRefs:[q.claimRef]};
+  const receipt=await saveOutcome(db,SCOPE,{...located,actionId:'action',key:'shared-answer',request:body});
+  assert.deepEqual(await saveOutcome(db,SCOPE,{...located,actionId:'action',key:'shared-answer',request:body}),receipt);
+  s=await read(db);const a=s.actions[0],answered=s.questions.find(q=>q.id==='showtime');
+  assert.equal(a.executionState,'completed');assert.equal(answered.resolutionState,'resolved');
+  assert.equal(a.latestOutcome.id,answered.latestOutcome.id);
+  assert.ok(a.questionRefs.some(r=>r.claimVersionId===q.claimRef.claimVersionId));
+  assert.equal(s.bullets.filter(b=>b.text===body.text).length,1,'shared input is not also stored as a duplicate result note');
+  assert.equal(s.questions.find(q=>q.id==='question').resolutionState,'open');
+  await correctOutcome(db,SCOPE,{...located,outcomeId:a.latestOutcome.id,key:'withdraw-shared',request:{expectedContextVersion:s.contextVersion,expectedOutcomeRevision:a.latestOutcome.revision,operation:'withdraw'}});
+  s=await read(db);assert.equal(s.actions[0].executionState,'completed');assert.equal(s.questions.find(q=>q.id==='showtime').resolutionState,'open');
+});
+
+test('explicit result links reject stale or other-event questions without partial writes',async t=>{
+  const {db,sqlite}=await setup(t);await decideRecord(db,SCOPE,accept);claim(sqlite,'newq','open_question','交付时间？');
+  const s=await read(db),q=s.questions.find(q=>q.id==='newq');
+  const body={expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,completeAction:true,text:'下周',evidenceRefs:[],resolveQuestions:[{questionId:q.id,revision:q.revision,answerText:'下周'}],linkQuestionRefs:[{...q.claimRef,claimVersionId:'stale'}]};
+  const before=sqlite.prepare('SELECT COUNT(*) n FROM workflow_outcomes').get().n;
+  await assert.rejects(saveOutcome(db,SCOPE,{...located,actionId:'action',key:'stale-link',request:body}),code('dependency_conflict'));
+  sqlite.prepare("INSERT INTO events (id,workspace_id,project_id,event_type,title,occurred_at,sequence_no) VALUES ('other','ws','p','meeting','其他沟通',?,2)").run(T);
+  sqlite.prepare("UPDATE claims SET event_id='other' WHERE id='newq'").run();
+  await assert.rejects(saveOutcome(db,SCOPE,{...located,actionId:'action',key:'cross-event-link',request:{...body,linkQuestionRefs:[q.claimRef]}}),code('dependency_conflict'));
+  assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM workflow_outcomes').get().n,before);
+  assert.equal((await read(db)).actions[0].executionState,'open');
+});

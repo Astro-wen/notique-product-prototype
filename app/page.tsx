@@ -7568,7 +7568,7 @@ function SimpleTestScreen({
             </section>
           </div>}
 
-          {(activeTab === "highlights" || workflowAccessBlocked) && (event ? <RecordPage key={event.id} focusClaimId={focusClaimId} projectId={project.id} eventId={event.id} title={event.title} refreshToken={`${run?.updatedAt ?? ""}:${run?.id ?? ""}:${run?.status ?? ""}`} processing={analysisRunning}
+          {(activeTab === "highlights" || workflowAccessBlocked) && (event ? <RecordPage key={event.id} focusClaimId={focusClaimId} projectId={project.id} eventId={event.id} title={event.title} refreshToken={`${run?.updatedAt ?? ""}:${run?.id ?? ""}:${run?.status ?? ""}`} processing={analysisRunning} materialPending={transcriptionRunning}
             subtitle={`${formatDate(event.occurredAt || event.createdAt,true)} · ${visibleAssets.length} 份材料`} onContinue={onNewEvent}
             onOpenTranscript={()=>selectWorkspaceTab("transcript")} onOpenRecord={openOverviewRecord} onAccessLost={onWorkflowAccessLost} onAccessRestored={onWorkflowAccessRestored}/> : <div className="tab-empty"><h3>先添加一份材料</h3><p>整理完成后，这里会显示重点和需要跟进的事情。</p><button className="button secondary" onClick={()=>selectWorkspaceTab("materials")}>添加材料</button></div>)}
 

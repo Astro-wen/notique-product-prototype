@@ -63,6 +63,14 @@ function buildOutcome(ctx:WriteContext,ledger:ProjectionLedger,subject:LedgerCla
   const historicalCorrection=Boolean(old && subjectType==='action' && subject.type==='next_action' && subject.review_status==='verified' && subject.lifecycle_status==='superseded');
   const permitted=historicalCorrection?[...new Set(ledger.relations.filter(r=>oldRelationIds.includes(r.id)).flatMap(r=>{const q=ledger.claims.find(c=>c.type==='open_question' && (c.id===r.target_claim_id || c.current_version_id===r.target_claim_version_id));return q?[q.id]:[];}))]:subjectType==='action'?projectWorkspace(ledger,subject.event_id,ctx.timestamp,'').actions.find(a=>a.id===subject.id)?.questionRefs.map(r=>r.claimId):[subject.id];
   if(!permitted) throw new WorkflowFault(409,'dependency_conflict','请先将建议加入跟进');
+  for(const ref of content.linkQuestionRefs ?? []) {
+    const q=ledger.claims.find(c=>c.id===ref.claimId && c.current_version_id===ref.claimVersionId && c.type==='open_question' && validClaim(c));
+    if(subjectType!=='action' || historicalCorrection || !q || q.project_id!==subject.project_id || q.event_id!==subject.event_id || !projectWorkspace(ledger,q.event_id,ctx.timestamp,'').questions.some(x=>x.id===q.id))throw new WorkflowFault(409,'dependency_conflict','关联的问题已变化，请重新选择');
+    if(!permitted.includes(q.id)) {
+      plan.statements.push(statement(ctx,`INSERT INTO claim_relations (id,workspace_id,project_id,type,source_claim_version_id,target_claim_version_id,context_version,status,reason,created_at) VALUES (?,?,?,'informed_by',?,?,?,'active',?,?)`,mutationId('rel'),ctx.scope.workspaceId,ctx.projectId,subject.current_version_id,q.current_version_id,ctx.contextVersion,'用户在补结果时关联问题',ctx.timestamp));
+      plan.guards.push(claimGuard(q,ctx.scope));permitted.push(q.id);
+    }
+  }
   // An execution note contributes current information independently of explicit
   // question answers. The same text used as an answer is represented only once.
   if(subjectType==='action' && content.text.trim() && !content.resolveQuestions.some(q=>q.answerText.trim()===content.text.trim())) {

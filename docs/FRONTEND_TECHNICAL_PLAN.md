@@ -87,7 +87,7 @@ M1 产生可读内容，M2 形成已采纳重点与行动，M3 将新答案带�
 
 **用户能够完成的功能：**
 
-- 首页直接添加材料，上传音频、文字、图片及 PDF，录音入口沿用现有能力。首次使用采用自动标题，得到内容后再改名或归档。已有事项中使用继续这件事新增沟通。首页标题固定说明输入与结果，使用说明以添加材料、按需确认、跟进补结果三个步骤呈现。
+- 首页直接添加材料，上传音频、文字、图片及 PDF，录音入口沿用现有能力。首次使用采用自动标题，得到内容后再改名或归档。已有事项中使用添加下一次记录新增沟通。首页标题固定说明输入与结果，使用说明以添加材料、按需确认、跟进补结果三个步骤呈现。
 - 保存材料后先看已有逐字稿，看到成功范围与失败阶段。
 - 选择继续处理或稍后回来，打开既有事项时先看当前状态。
 
@@ -107,11 +107,11 @@ M1 产生可读内容，M2 形成已采纳重点与行动，M3 将新答案带�
 
 **用户能够完成的功能：**
 
-- 先读完整可用记录，草稿与已采纳逐项标明。只把影响已采纳信息、阻塞下一步及值得选择的行动列为需要拍板，首屏最多5条并显示余量，可以为零。普通草稿保留就地确认入口。
+- 先按主题读当前记录，每个主题先显示最多三条概要，详细记录按需展开。页面统一提示自动整理，已确认内容以勾选标记区分。只把影响已采纳信息、阻塞下一步及值得选择的行动列为需要拍板，首屏最多5条并显示余量，可以为零。普通草稿保留就地确认入口。
 - 每张卡只有一个明确主动作，例如确认金额、采用新预算或加入跟进，旁边写明更新去向。改一下就地编辑，不采纳、稍后和历史放在更多菜单。
-- 点击出处跳到原话或音频。发现遗漏可选中原话并补进重点，保存为用户选录原文。处理任意数量后都可直接离开，结束本次为可选操作。
+- 点击出处跳到原话或音频。发现遗漏可选中原话并补进重点，保存为用户选录原文。阅读位置自动保存，处理任意数量后都可直接离开。
 - 从原文补充入口打开 PC 选录窗口。左侧拖选原文或用键盘选录整段，右侧预览保存内容。保存失败保留选择，遇到版本变化后重新核对原文，再保存。关闭未保存选择时可继续或放弃。原文读取复用材料与逐字稿接口，按当前源版本筛选。
-- 主入口复制记录带走当前完整内容，草稿逐项带标识。点击后显示正在同步记录，等待本页已提交的保存及显示同步完成，再按最新回执版本自动复制。保存失败或等待超过15秒时提示重试，输入继续保留。切换记录或账号后结束本次复制。外部更新造成版本冲突时读取最新记录，用户核对后重新复制。仅已确认作为次级导出选项，用户从零次批阅开始就能得到有用结果。剪贴板成功写入后显示已复制，浏览器限制复制时展开可选择的正文。导航中的项目名称负责定位，需要拍板与待跟进数量显示在对应内容区域。
+- 主入口复制记录带走当前完整内容，草稿逐项带标识。点击后显示正在同步记录，等待本页已提交的保存及显示同步完成，再按最新回执版本自动复制。保存失败或等待超过15秒时提示重试，输入继续保留。切换记录或账号后结束本次复制。外部更新造成版本冲突时读取最新记录，用户核对后重新复制。仅已确认作为次级导出选项，用户从零次批阅开始就能得到有用结果。剪贴板成功写入后显示已复制，浏览器限制复制时展开可选择的正文。导航中的项目名称负责定位，待处理入口统一列出需要选择的建议、未回答问题和待跟进行动，同组按稳定信息ID去重计数。
 
 一项具体任务连同原文明确的负责人和任务期限形成一个行动入口，独立预算、审批条件、全局期限和另一项任务各自保留。负责人和日期作为该任务的属性展示，来源未知的字段留空。原文已指派的责任按原句呈现，原文确实提出建议时保留建议语气。草稿标签表示平台尚未批阅，AI来源表示提取或生成途径。
 
@@ -119,7 +119,7 @@ M1 产生可读内容，M2 形成已采纳重点与行动，M3 将新答案带�
 
 上一版概要保持可读。提示词升级后显示更新全文概要入口，从现有重点生成当前版本，原材料的提取结果继续复用。新概要生成期间保留上一版正文和版本提示。
 
-来源就绪的未采纳AI行动进入需要拍板，同一张独立卡或分组只计一次。采纳、明确结束一次意图选择或稍后处理后按当前状态更新数量。普通草稿有原话时保留就地确认入口，用户核对后可以采纳支持度尚未检查的内容。系统分别显示AI支持状态与用户采纳状态。
+来源就绪的未采纳AI行动进入待处理，同一张独立卡或分组只计一次。采纳、明确结束一次意图选择或稍后处理后按当前状态更新数量。普通草稿有原话时保留就地确认入口，用户核对后可以采纳支持度尚未检查的内容。系统分别显示AI支持状态与用户采纳状态。
 
 **页面组件与建议位置：**BulletList、ReviewCard、ReviewQueue、EvidenceDrawer、SummaryFreshness、ReviewFooter、ReportDialog。
 
@@ -393,7 +393,7 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 | ActionHistoryEntry | id、claimRef、text、sourceStatus、executionState、replacementRef、replacementText、latestOutcome | 已替代行动的只读历史。text 与 replacementText 在对应来源不可访问时为 null，replacementRef 沿已确认替代链指向当前行动，无法确定时为 null。executionState 与 latestOutcome 保留原行动的执行记录，新行动按自身ID维护状态及结果。历史行动结果可以通过当前问题修正或撤回，修正范围限该结果原有的问题。 |
 | LatestOutcome | id、revision、text、answerRefs、resultRefs?、updatedAt、freshness? | freshness=current/stale。text 保留结果当时的文字，answerRefs 仅含当前有效答案。相关答案变化后收起为上次结果，当前答案继续在重点中显示。原答案来源失效时正文为空。 resultRefs 仅含独立行动结果的当前精确版本，与 answerRefs 分开。结果作为用户补充进入原主题、复制和概要，修正或撤回沿原结果入口处理。与逐项答案相同的说明复用答案，独立说明不会把问题改为已回答。结果或答案失效后该结果收起为历史，当前输出使用有效信息。 |
 | Question | id、claimRef、revision、resolutionState、answerRefs、latestOutcome | revision 映射 claims.workflowRevision。resolutionState=open/resolved，存在有效已采纳答案才可 resolved latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 已有答案的问题仍可修改，逐条确认答案适用后保存新问题版本，行动完成状态保持。 |
-| OutcomeRequest | expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、answerDecisions?、completeAction | text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability |
+| OutcomeRequest | expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、linkQuestionRefs?、answerDecisions?、completeAction | text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability linkQuestionRefs 为用户明确勾选的当前问题 VersionRef，最多20项，必须同时存在于 resolveQuestions，关联限同项目同沟通，关联与回答在同一事务保存。 |
 | QuestionAnswerRequest | expectedQuestionRevision、expectedContextVersion、answerText、evidenceRefs、answerDecision? | 为当前问题保存人工作答并生成 outcomeId。已有答案时 answerDecision 含 mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability，修正与撤回复用结果接口 |
 | OutcomeCorrectionRequest | expectedOutcomeRevision、expectedContextVersion、operation、replacement? | operation=replace/withdraw。replacement 使用结果字段，事务重新计算受影响问题 |
 | ActionTransitionRequest | expectedActionRevision、expectedContextVersion、operation | operation=complete/reopen/cancel。完成或重开只变更行动执行状态 |
@@ -585,3 +585,12 @@ Bullet.applicability 为并存答案的适用说明，来源是用户明确选�
 稍后处理与恢复仅更新个人延期和卡片修订，校验当前上下文但保留业务 contextVersion。此类操作返回 refreshState=current，正文和概要继续使用原有版本。
 
 提取重点失败后，用户重试失败阶段时携带上一轮的字段校验原因。反馈最多8项，每项最多600字符，并保存在本轮阶段检查点中。关闭页面后继续同一响应，冲突字段仍经过完整校验。
+
+### 10.4 阅读与结果交互简化
+
+- 同主题先显示三条概要，原始细节展开后可确认、修改及查看原话。概要只使用来源可读、引用当前版本的已保存句子。概要未同步时显示当前原子要点，最新修改始终可读取。
+- 已采纳行动、当前结果及该结果明确回答的问题在一个行动入口展示。关联的原始约定在原始记录内展开，单独确认保留为次级操作。过期结果进入历史，当前答案继续独立显示。
+- 补结果只填写一段文字，勾选同时回答的问题，再选择是否完成行动。默认勾选为空。已有答案时明确选择替代或分别适用。关联与回答一次提交，未勾选的问题保持原状态。
+- 已完成行动可继续补结果或修正结果。直接回答问题沿用独立入口。
+- 项目回顾按同一份已保存主题引用归并。首页项目选择保留新建和已有项目，去掉跳过按钮。录音仍在转写时，整理入口禁用。
+- 页面移除重复使用说明、结束本次和多处催办计数。记录自动保存，下一次沟通入口统一为添加下一次记录。

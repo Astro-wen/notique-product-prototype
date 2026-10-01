@@ -31,3 +31,6 @@
 
 .overview :global(.button.primary) { background:#111; border-color:#111; border-radius:6px; }
 .overview :global(.button.primary:hover) { background:#303030; border-color:#303030; }
+
+.topic { border-top: 1px solid var(--nq-border, #e3e5e8); padding-top: 16px; margin-top: 12px; }
+.topic h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }

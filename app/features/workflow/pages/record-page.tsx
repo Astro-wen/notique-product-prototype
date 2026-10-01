@@ -15,8 +15,8 @@ import { SubmitSession } from '../services/submit-session';
 import type { AnalysisRun, ReviewProgress, ReviewProgressRequest, MutationReceipt, WorkspaceSnapshot } from '@/lib/shared/workflow-v2';
 
 const accessError=(e:unknown):e is ApiClientError=>e instanceof ApiClientError && [401,403,404,410].includes(e.status);
-export function RecordPage({ focusClaimId, projectId, eventId, title, subtitle, onContinue, onOpenTranscript, onOpenRecord, refreshToken, processing, onAccessLost, onAccessRestored }: {
-  focusClaimId?:string; projectId:string; eventId:string; title:string; subtitle:string; refreshToken:string; processing:boolean; onContinue:()=>void; onOpenTranscript:()=>void;onOpenRecord?:(eventId:string,claimId?:string)=>void;onAccessLost?:()=>void;onAccessRestored?:()=>void;
+export function RecordPage({ focusClaimId, projectId, eventId, title, subtitle, onContinue, onOpenTranscript, onOpenRecord, refreshToken, processing, materialPending=false, onAccessLost, onAccessRestored }: {
+  focusClaimId?:string; projectId:string; eventId:string; title:string; subtitle:string; refreshToken:string; processing:boolean; materialPending?:boolean; onContinue:()=>void; onOpenTranscript:()=>void;onOpenRecord?:(eventId:string,claimId?:string)=>void;onAccessLost?:()=>void;onAccessRestored?:()=>void;
 }) {
   const client=useQueryClient();
   const [drafts]=useState(()=>new MemoryDraftSession());
@@ -59,11 +59,11 @@ export function RecordPage({ focusClaimId, projectId, eventId, title, subtitle, 
     {[404,410].includes(blocked.status) && <Link className="button quiet" href="/?view=simple" onClick={e=>{if(drafts.getSnapshot().length){e.preventDefault();setRecoveryError("请先复制并放弃保留的输入，再返回项目列表。");}}}>返回项目列表</Link>}
   </section>;
   if (!verified) return <section className="meeting-tab-panel" aria-live="polite"><p>{bootstrap.isError?'暂时无法读取这份记录。':'正在读取这份记录…'}</p>{bootstrap.isError && <NqButton variant="secondary" onClick={()=>void bootstrap.refetch()}>重新读取</NqButton>}</section>;
-  return <LoadedRecordPage key={`${verified.access.workspaceId}:${verified.access.actorId}:${eventId}`} {...{focusClaimId,projectId,eventId,title,subtitle,onContinue,onOpenTranscript,onOpenRecord,refreshToken,processing}} initial={verified} drafts={drafts} onDenied={deny}/>;
+  return <LoadedRecordPage key={`${verified.access.workspaceId}:${verified.access.actorId}:${eventId}`} {...{focusClaimId,projectId,eventId,title,subtitle,onContinue,onOpenTranscript,onOpenRecord,refreshToken,processing,materialPending}} initial={verified} drafts={drafts} onDenied={deny}/>;
 }
 
-function LoadedRecordPage({focusClaimId,projectId,eventId,title,subtitle,onContinue,onOpenTranscript,onOpenRecord,refreshToken,processing,initial,drafts,onDenied}: {
-  focusClaimId?:string;projectId:string;eventId:string;title:string;subtitle:string;onContinue:()=>void;onOpenTranscript:()=>void;onOpenRecord?:(eventId:string,claimId?:string)=>void;initial:WorkspaceSnapshot;refreshToken:string;processing:boolean;drafts:MemoryDraftSession;onDenied:(e:ApiClientError,epoch:number,next?:WorkspaceSnapshot['access'])=>void;
+function LoadedRecordPage({focusClaimId,projectId,eventId,title,subtitle,onContinue,onOpenTranscript,onOpenRecord,refreshToken,processing,materialPending,initial,drafts,onDenied}: {
+  focusClaimId?:string;projectId:string;eventId:string;title:string;subtitle:string;onContinue:()=>void;onOpenTranscript:()=>void;onOpenRecord?:(eventId:string,claimId?:string)=>void;initial:WorkspaceSnapshot;refreshToken:string;processing:boolean;materialPending?:boolean;drafts:MemoryDraftSession;onDenied:(e:ApiClientError,epoch:number,next?:WorkspaceSnapshot['access'])=>void;
 }) {
   const client=useQueryClient();
   const [binding]=useState(()=>drafts.bindEditor({...initial.access,eventId}));
@@ -165,7 +165,7 @@ function LoadedRecordPage({focusClaimId,projectId,eventId,title,subtitle,onConti
     {workspace.isError && <p role="alert">暂时无法同步最新记录。<NqButton variant="quiet" onClick={()=>void workspace.refetch()}>重新读取</NqButton></p>}
     <RecordWorkspace retainedInputs={<RetainedInputs session={drafts} onDiscard={()=>drafts.discard()}/>} focusClaimId={focusClaimId} embedded processing={processing||analysisPending} eventId={eventId} projectId={projectId} title={title} subtitle={subtitle} snapshot={snapshot} sources={[]} canEdit={snapshot.access.canEdit && !workspace.isError}
       analysisHasCoverage={Boolean(analysis.data)} analysisHasNarrative={Boolean(analysis.data?.stages.some(s=>s.name==='更新全文概要'))}
-      analysisPanel={<AnalysisProgress run={analysis.data??null} hasRecord={snapshot.bullets.length>0 || Boolean(snapshot.reaffirmedMentions?.length)} busy={analysisBusy} error={analysisError||(analysis.error instanceof Error?analysis.error.message:'')} canEdit={snapshot.access.canEdit && !workspace.isError} onStart={()=>void operateAnalysis()} onRetry={()=>void operateAnalysis(true)} onReload={()=>void refresh().then(()=>{if(analysisId)void analysis.refetch();}).catch(()=>undefined)}/>}
+      analysisPanel={<AnalysisProgress run={analysis.data??null} hasRecord={snapshot.bullets.length>0 || Boolean(snapshot.reaffirmedMentions?.length)} busy={analysisBusy} materialPending={materialPending} error={analysisError||(analysis.error instanceof Error?analysis.error.message:'')} canEdit={snapshot.access.canEdit && !workspace.isError} onStart={()=>void operateAnalysis()} onRetry={()=>void operateAnalysis(true)} onReload={()=>void refresh().then(()=>{if(analysisId)void analysis.refetch();}).catch(()=>undefined)}/>}
       onMention={(id,body)=>mutate(`mention/${id}`,body,(key,request)=>workflowService.mention(id,request,key))}
       onProgress={saveProgress}
       onSources={async ids=>{assertActive();try{const sources=await workflowService.sources(ids);assertActive();return sources;}catch(e){if(accessError(e))onDenied(e,epoch);throw e;}}} onOpenTranscript={onOpenTranscript} onOpenRecord={onOpenRecord}

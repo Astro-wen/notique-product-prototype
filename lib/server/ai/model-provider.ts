@@ -9,6 +9,7 @@ import {
 import {
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   CLAIM_EXTRACTION_PROMPT_VERSION,
+  COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION,
   isClaimExtractionPromptVersion,
   hasAtomicTaskExtraction,
   extractionClaimLimit,
@@ -1195,10 +1196,11 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   async inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions) {
     const contract=inventoryContractForRun({inventory_prompt_version:options?.extractionPromptVersion ?? CLAIM_EXTRACTION_PROMPT_VERSION});
     const promptVersion=contract.promptVersion;
-    const coverage = promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION;
+    const coverage = (promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION);
     const atomicTasks=hasAtomicTaskExtraction(promptVersion);
     const prompt = [
       sharedTwoStagePromptPrefix(input),
+      ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? ["Use next_action for a specific agreed next step with an observable outcome, such as arranging selected showings or contacting a lender to verify financing. Preserve general service descriptions, hypothetical future assistance and standing policies as property_fact rather than creating tasks. Keep supported unknowns such as unapproved financing and an uncertain lease date. State ordinary points concisely, retain material qualifiers and attribution, and leave absent deadline fields empty instead of appending no-deadline boilerplate to every sentence."] : []),
       "STAGE: ATOMIC FACT INVENTORY",
       "Build an exhaustive inventory of atomic, evidence-backed business propositions in the new event.",
       coverage ? "Return up to 64 atomic candidates. Collect business propositions before prioritizing; UI pagination is independent of this extraction budget. Do not create relations or lifecycle decisions." : "Return up to 24 atomic candidates. Do not apply the final ten-item review limit and do not create relations or lifecycle decisions.",
@@ -1271,6 +1273,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       : "The project scenario is already confirmed; scenario_assessment must be null.";
     const prompt = [
       sharedTwoStagePromptPrefix(input),
+      ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? ["Use next_action for a specific agreed next step with an observable outcome, such as arranging selected showings or contacting a lender to verify financing. Preserve general service descriptions, hypothetical future assistance and standing policies as property_fact rather than creating tasks. Keep supported unknowns such as unapproved financing and an uncertain lease date. State ordinary points concisely, retain material qualifiers and attribution, and leave absent deadline fields empty instead of appending no-deadline boilerplate to every sentence."] : []),
       "STAGE: COVERAGE, LIFECYCLE, AND RELATION VERIFICATION",
       "Audit the supplied atomic inventory against the complete Context Pack, then produce the final human-review queue.",
       "When readable_transcript_segments are present, use them only as a readability aid. They may clarify punctuation or sentence boundaries, but they are not Evidence. Every final evidence item must cite the authoritative raw transcript_segments IDs and exact raw wording.",
@@ -1388,8 +1391,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         "Only cite IDs present in the Context Pack. Do not invent quotes, IDs, timestamps, or facts.",
         "A photo supports only visible observations, not agreement, intent, payment, liability, causation, or hidden conditions.",
         scenarioInstruction,
-        ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? followUpCoverageInstructions() : []),
-        promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? "Identify every evidence-backed business proposition, preserve up to 64, and keep unresolved questions and concrete owner commitments ahead of generic background. Do not combine independent propositions to fit the budget." : "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and preserve up to 24. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
+        ...((promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION) ? followUpCoverageInstructions() : []),
+        ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? ["Use next_action for a specific agreed next step with an observable outcome, such as arranging selected showings or contacting a lender to verify financing. Preserve general service descriptions, hypothetical future assistance and standing policies as property_fact rather than creating tasks. Keep supported unknowns such as unapproved financing and an uncertain lease date. State ordinary points concisely, retain material qualifiers and attribution, and leave absent deadline fields empty instead of appending no-deadline boilerplate to every sentence."] : []),
+        (promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION) ? "Identify every evidence-backed business proposition, preserve up to 64, and keep unresolved questions and concrete owner commitments ahead of generic background. Do not combine independent propositions to fit the budget." : "First identify every candidate business proposition in the new event. Before selecting the final output, run a coverage check over every explicit decision, preference, budget, requirement, constraint, open question, material risk, assignment, date, and deliberately repeated material fact in the event. Then rank the candidates and preserve up to 24. Never combine propositions merely to fit the limit; omit a genuinely lower-priority proposition instead.",
         ...(atomicTasks ? [
           ...taskAtomicityInstructions(),
           "An explicit business decision may include its direct reason when that reason has no independent business meaning. A single material specification or a correction such as '$6,500, not $6,050' is one proposition.",
@@ -1399,7 +1403,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         "If one source sentence repeats an old fact and also introduces new information, emit the unchanged old fact as a reaffirmed occurrence and split every material change, resolution, decision, date, assignment, state, risk, or next step into one or more new atomic claims. Never hide new information inside a reaffirmed statement.",
         "Relation policy: use supersedes only when the same subject now has a changed value, state, assignment, or decision and the old value is no longer current. Use resolves when the new Claim gives a final answer or closure to an active open question, risk, concern, explicitly uncertain Claim, prerequisite, blocker, or outstanding condition. Satisfying a prerequisite is resolves, not supersedes. Use contradicts only when two incompatible active Claims remain unresolved. Use informed_by when the target provides context but is neither changed nor closed. Never attach both supersedes and resolves to the same target.",
         "The verified Context includes lifecycleStatus, uncertainty, openedAt, lastRepeatedAt, and repeatCount. Use these fields to distinguish an unanswered question from a fact that merely changed.",
-        promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? "Within the 64-claim safety bound, retain independently supported critical propositions, unanswered business questions and concrete owner commitments first, then explicit decisions, material changed values, resolved prerequisites, budgets, requirements, constraints, risks and material observations. Keep deliberately reaffirmed material facts before incidental repetition." : "Within the 24-claim safety bound, retain all supported material facts and prioritize explicit decisions, material changed values, resolved questions or prerequisites, commitments, budgets, requirements, constraints, assignments, material risks, and material photo observations. A deliberately repeated material decision, requirement, preference, budget, or constraint must be retained as a reaffirmed occurrence before administrative timing or low-value communication acts. Only incidental repetition and minor observations have lower priority.",
+        (promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION) ? "Within the 64-claim safety bound, retain independently supported critical propositions, unanswered business questions and concrete owner commitments first, then explicit decisions, material changed values, resolved prerequisites, budgets, requirements, constraints, risks and material observations. Keep deliberately reaffirmed material facts before incidental repetition." : "Within the 24-claim safety bound, retain all supported material facts and prioritize explicit decisions, material changed values, resolved questions or prerequisites, commitments, budgets, requirements, constraints, assignments, material risks, and material photo observations. A deliberately repeated material decision, requirement, preference, budget, or constraint must be retained as a reaffirmed occurrence before administrative timing or low-value communication acts. Only incidental repetition and minor observations have lower priority.",
         "A photo should support a business Claim when it visibly corroborates that Claim. Create a standalone photo property_fact only when the visible condition materially changes scope, risk, cost, responsibility, or the next action. Do not create claims for incidental visual clutter.",
         "Set needs_additional_evidence=true when the available evidence does not fully establish the proposition or when an open question still needs an answer. A straightforward unresolved question may have uncertainty=null. Set uncertainty only when two or more values or interpretations remain plausible; then include at least two alternatives, one precise follow-up question, and set needs_additional_evidence=true. Never return uncertainty with needs_additional_evidence=false.",
         "normalized_value must be null or an entries envelope with unique scalar key/value pairs. Use null when no useful normalization exists.",
@@ -1514,7 +1518,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
         providerRequestId: body.id ?? response.headers.get("x-request-id"),
       };
       try {
-        if (promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
+        if ((promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
         const providerContent = isOpenAi
           ? openAiResponseText(body)
           : body.choices?.[0]?.message?.content;

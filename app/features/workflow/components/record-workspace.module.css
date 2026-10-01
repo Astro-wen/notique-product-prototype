@@ -215,3 +215,14 @@
 .relatedFollowups { display: grid; gap: 4px; border-top: 1px solid #e6e6e8; margin-top: 12px; padding-top: 10px; }
 .relatedFollowups button { min-height: 36px; padding: 6px 0; border: 0; background: transparent; color: var(--record-blue); text-align: left; font-size: 14px; line-height: 20px; cursor: pointer; }
 .relatedFollowups button:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+.readingHint { color: var(--nq-muted, #59657b); font-size: 12px; }
+.acceptedMark { color: #276451; display: inline-flex; align-items: center; }
+.topicPreview { padding: 10px 0 8px 20px; margin: 0; font-size: 15px; line-height: 1.9; overflow-wrap: anywhere; }
+.topicPreview li { padding: 4px 0; }
+.topicDetails { padding: 8px 0; }
+.topicDetails > summary { cursor: pointer; color: var(--nq-muted, #59657b); font-size: 13px; padding: 8px 0; }
+.answerSelection { display: flex; align-items: flex-start; gap: 8px; line-height: 1.7; font-size: 14px; }
+.answerSelection input { margin-top: 6px; flex-shrink: 0; }
+.answerSelection small { color: var(--nq-muted, #59657b); white-space: nowrap; }
+.answeredQuestion { flex-basis: 100%; color: var(--nq-muted, #59657b); line-height: 1.7; font-size: 13px; }

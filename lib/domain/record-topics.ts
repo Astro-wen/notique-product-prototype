@@ -5,7 +5,7 @@ const versionKey = (r: {claimId:string;claimVersionId:string}) => JSON.stringify
 
 /** Topic membership affects layout only. It never establishes a ledger relation
  * or changes review, execution or resolution state. */
-export function recordTopics(snapshot: WorkspaceSnapshot, visible: readonly Bullet[]): RecordTopic[] {
+export function recordTopics(snapshot: Pick<WorkspaceSnapshot,'bullets'|'reviewCards'|'questions'|'actions'|'narrative'>, visible: readonly Bullet[]): RecordTopic[] {
   const currentVersions=new Set(snapshot.bullets.flatMap(b=>b.claimRefs.map(versionKey)));
   const assignment=new Map<string,{key:string;title:string}>();
   for(const sentence of snapshot.narrative?.sentenceRefs ?? []) {

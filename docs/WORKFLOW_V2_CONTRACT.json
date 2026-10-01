@@ -239,8 +239,8 @@
     },
     {
       "name": "OutcomeRequest",
-      "fields": "expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、answerDecisions?、completeAction",
-      "rules": "text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability"
+      "fields": "expectedActionRevision、expectedContextVersion、text、evidenceRefs、resolveQuestions、linkQuestionRefs?、answerDecisions?、completeAction",
+      "rules": "text 或有效 evidenceRefs 至少一项。resolveQuestions 逐项提供 questionId、revision、answerText，保存即明确采纳用户补充。已有答案时 answerDecisions 逐问题提供 questionId、mode=replace/coexist、priorAnswerRefs 及 coexist 时的 applicability linkQuestionRefs 为用户明确勾选的当前问题 VersionRef，最多20项，必须同时存在于 resolveQuestions，关联限同项目同沟通，关联与回答在同一事务保存。"
     },
     {
       "name": "QuestionAnswerRequest",
@@ -384,5 +384,13 @@
     "sourceRules": "原文范围处理覆盖与业务信息召回分别验收。qualityNotes仅返回可信当前源修订下的固定提示与原文内容。",
     "budgetRules": "沿用冻结的输出tokens、超时和阶段上限。输出预算耗尽以MODEL_OUTPUT_TOKEN_LIMIT终态记录，保留已有用量。",
     "retryValidationFeedback": "提取重点失败后，用户重试失败阶段时携带上一轮的字段校验原因。反馈最多8项，每项最多600字符，并保存在本轮阶段检查点中。关闭页面后继续同一响应，冲突字段仍经过完整校验。"
+  },
+  "readingInteraction": {
+    "default": "按主题先显示三条概要，细节可展开",
+    "state": "自动保存，已确认以勾选区分",
+    "pending": "建议选择、未回答问题和待跟进行动按稳定ID归并",
+    "outcome": "填写一次结果，明确勾选问题，可同时完成行动",
+    "source": "概要只展示可读且引用当前版本的已保存句子",
+    "promptVersion": "claim-extraction-prompt.v9.6，v9.5冻结任务继续复用原契约"
   }
 }

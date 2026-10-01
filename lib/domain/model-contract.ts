@@ -5,17 +5,18 @@ import type { ContextPack } from "./context-pack";
 export const CLAIM_EXTRACTION_SCHEMA_VERSION = "claim-extraction.v3" as const;
 export const LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.2" as const;
 export const ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.4" as const;
-export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.5" as const;
-export type ClaimExtractionPromptVersion = typeof LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CLAIM_EXTRACTION_PROMPT_VERSION;
+export const COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.5" as const;
+export const CLAIM_EXTRACTION_PROMPT_VERSION = "claim-extraction-prompt.v9.6" as const;
+export type ClaimExtractionPromptVersion = typeof LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CLAIM_EXTRACTION_PROMPT_VERSION;
 export function isClaimExtractionPromptVersion(value: unknown): value is ClaimExtractionPromptVersion {
-  return value === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION || value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+  return value === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION || value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
 }
 
 export function hasAtomicTaskExtraction(value: unknown): boolean {
-  return value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
+  return value === ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || value === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || value === CLAIM_EXTRACTION_PROMPT_VERSION;
 }
 export function extractionClaimLimit(promptVersion: ClaimExtractionPromptVersion): 24 | 64 {
-  return promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? 64 : 24;
+  return (promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION) ? 64 : 24;
 }
 
 export const MODEL_CONTRACT_LIMITS = {

@@ -7,6 +7,7 @@ import { NqButton, NqStatus, NqSurface } from '@/app/components/notique-ui';
 import { ApiClientError } from '@/app/api-client';
 import type { ProjectOverview } from '@/lib/shared/workflow-v2';
 import { workflowService } from '../services/workflow-service';
+import {overviewTopics} from '@/lib/domain/record-reading';
 import styles from './project-overview.module.css';
 
 type Props={projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
@@ -20,7 +21,7 @@ function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {ini
   const key=['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId];
   const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,
     structuralSharing:(old:unknown,next:unknown)=>{const a=old as ProjectOverview|undefined,b=next as ProjectOverview;return a && a.contextVersion>b.contextVersion?a:b;}});
-  const [acceptedOnly,setAcceptedOnly]=useState(false),[bulletLimit,setBulletLimit]=useState(12),[followupLimit,setFollowupLimit]=useState(5),[loadingMore,setLoadingMore]=useState(false),[pageError,setPageError]=useState('');
+  const [acceptedOnly,setAcceptedOnly]=useState(false),[bulletLimit,setBulletLimit]=useState(3),[followupLimit,setFollowupLimit]=useState(5),[loadingMore,setLoadingMore]=useState(false),[pageError,setPageError]=useState('');
   const snapshot=overview.data;
   const denied=overview.error instanceof ApiClientError && [401,403,404,410].includes(overview.error.status);
   if(denied)return <section className="meeting-tab-panel"><p>当前账号已无法访问这个项目。</p></section>;
@@ -39,14 +40,14 @@ function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {ini
     finally{setLoadingMore(false);}
   }
   return <div className={styles.overview} data-testid="project-overview">
-    <header className={styles.header}><div><h1>项目回顾</h1><p>{snapshot.recordSummaries.length} 次沟通 · {snapshot.counts.needsDecisionCount} 项需要拍板 · {snapshot.counts.openQuestionCount} 个问题未解决</p></div>{snapshot.access.canEdit && <NqButton onClick={onContinue}><Plus size={15}/>继续这件事</NqButton>}</header>
+    <header className={styles.header}><div><h1>项目回顾</h1><p>{snapshot.recordSummaries.length} 次沟通</p></div>{snapshot.access.canEdit && <NqButton onClick={onContinue}><Plus size={15}/>添加下一次记录</NqButton>}</header>
     {(overview.isError || pageError) && <div role="alert" className={styles.notice}>{pageError || '暂时无法同步最新项目。'}<NqButton variant="quiet" onClick={()=>{setPageError('');void overview.refetch();}}>重新读取</NqButton></div>}
     {!snapshot.access.canEdit && <p className={styles.notice}>当前为只读模式，可查看重点与相关记录。</p>}
     <div className={styles.grid}>
-      <NqSurface className={styles.panel} aria-label="项目当前重点"><div className={styles.sectionHeading}><h2>当前重点 <small>{bullets.length}</small></h2><div className={styles.filters}><button aria-pressed={!acceptedOnly} onClick={()=>{setAcceptedOnly(false);setBulletLimit(12);}}>全部</button><button aria-pressed={acceptedOnly} onClick={()=>{setAcceptedOnly(true);setBulletLimit(12);}}>已采纳</button></div></div>
+      <NqSurface className={styles.panel} aria-label="项目当前重点"><div className={styles.sectionHeading}><h2>当前重点</h2><div className={styles.filters}><button aria-pressed={!acceptedOnly} onClick={()=>{setAcceptedOnly(false);setBulletLimit(3);}}>全部</button><button aria-pressed={acceptedOnly} onClick={()=>{setAcceptedOnly(true);setBulletLimit(3);}}>已确认</button></div></div>
         {!bullets.length && <p className={styles.empty}>{acceptedOnly?'还没有已采纳内容，可以先读全部重点。':'沟通整理好后，最新重点会汇总在这里。'}</p>}
-        {bullets.slice(0,bulletLimit).map(b=><article key={b.id} className={styles.row} data-testid={`overview-bullet-${b.id}`}><div className={styles.meta}><NqStatus tone={b.reviewState==='accepted'?'success':'info'}>{b.reviewState==='draft'?'AI 草稿':b.origin==='user_input'?'用户补充':b.origin==='user_selection'?'用户选录':'已采纳'}</NqStatus>{b.executionState && <NqStatus tone={b.executionState==='completed'?'success':'pending'}>{b.executionState==='completed'?'已完成':b.executionState==='cancelled'?'已取消':'待跟进'}</NqStatus>}{b.sourceStatus!=='ready' && <NqStatus tone="pending">需要核对依据</NqStatus>}{b.conflictWith?.length && <span>新旧信息待选择</span>}</div><p>{b.sourceStatus==='missing'?'这条内容的出处需要重新核对。':b.text}</p>{b.applicability && <small>适用情况：{b.applicability}</small>}<button className={styles.sourceLink} onClick={()=>open(b.eventId,b.claimRefs[0]?.claimId)}>{records.get(b.eventId)?.title ?? '相关沟通'}<ArrowRight size={13}/></button></article>)}
-        {bullets.length>bulletLimit && <NqButton variant="quiet" onClick={()=>setBulletLimit(n=>n+12)}>再看 {Math.min(12,bullets.length-bulletLimit)} 条重点</NqButton>}
+        {overviewTopics(snapshot,bullets).map(topic=><section key={topic.key} className={styles.topic}><h3>{topic.title}</h3>{topic.bullets.slice(0,bulletLimit).map(b=><article key={b.id} className={styles.row} data-testid={`overview-bullet-${b.id}`}><div className={styles.meta}>{b.reviewState==='accepted' && <span title={b.origin==='user_input'?'用户补充':'已确认'}>✓</span>}{b.executionState && <NqStatus tone={b.executionState==='completed'?'success':'pending'}>{b.executionState==='completed'?'已完成':b.executionState==='cancelled'?'已取消':'待跟进'}</NqStatus>}{b.sourceStatus!=='ready' && <NqStatus tone="pending">需要核对依据</NqStatus>}{b.conflictWith?.length && <span>新旧信息待选择</span>}</div><p>{b.sourceStatus==='missing'?'这条内容的出处需要重新核对。':b.text}</p>{b.applicability && <small>适用情况：{b.applicability}</small>}<button className={styles.sourceLink} onClick={()=>open(b.eventId,b.claimRefs[0]?.claimId)}>{records.get(b.eventId)?.title ?? '相关沟通'}<ArrowRight size={13}/></button></article>)}{topic.bullets.length>bulletLimit && <NqButton variant="quiet" onClick={()=>setBulletLimit(bullets.length)}>查看其余 {topic.bullets.length-bulletLimit} 条</NqButton>}</section>)}
+
       </NqSurface>
       <NqSurface className={styles.panel} aria-label="项目下一步"><h2>接下来</h2>
         {snapshot.nextActions.length>0 && <><h3>正在跟进 <small>{snapshot.nextActions.length}</small></h3>{snapshot.nextActions.slice(0,followupLimit).map(a=><article className={styles.todo} key={a.id}><p>{titleFor(a.id)}</p>{(a.ownerHint || a.dueAt) && <div className={styles.meta}>{a.ownerHint && <small>负责人：{a.ownerHint}</small>}{a.dueAt && <small>期限：{new Date(a.dueAt).toLocaleDateString('zh-CN',{timeZone:'UTC'})}</small>}</div>}{a.basisState==='needs_review' && <NqStatus tone="pending">依据有变化</NqStatus>}<NqButton variant="quiet" onClick={()=>open(a.eventId,a.id)}>继续跟进<ArrowRight size={13}/></NqButton></article>)}</>}
@@ -55,7 +56,7 @@ function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {ini
         {(snapshot.nextActions.length>followupLimit || snapshot.openQuestions.length>followupLimit) && <NqButton variant="quiet" onClick={()=>setFollowupLimit(n=>n+5)}>再看 5 项</NqButton>}
       </NqSurface>
     </div>
-    <NqSurface className={styles.panel} aria-label="项目最近变化"><h2>最近变化</h2><p className={styles.help}>按发生时间回看每次处理，当前重点保留最新版本。</p>
+    <NqSurface className={styles.panel} aria-label="项目最近变化"><h2>最近变化</h2>
       {!snapshot.recentChanges.length && <p className={styles.empty}>确认、修改或补入结果后，变化会记在这里。</p>}
       {snapshot.recentChanges.map(change=><article className={styles.change} key={change.id}><div><p>{change.text}</p><small>{new Date(change.createdAt).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · {records.get(change.eventId)?.title}</small></div><NqButton variant="quiet" onClick={()=>open(change.eventId,change.claimRefs[0]?.claimId)}>查看记录<ArrowRight size={13}/></NqButton></article>)}
       {snapshot.nextCursor && <NqButton variant="secondary" loading={loadingMore} onClick={()=>void moreChanges()}>更早的变化</NqButton>}

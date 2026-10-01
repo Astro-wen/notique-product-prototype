@@ -193,6 +193,7 @@ export type OutcomeContent = {
   evidenceRefs: string[];
   resolveQuestions: Array<{ questionId: string; revision: number; answerText: string }>;
   answerDecisions?: Array<AnswerDecision & { questionId: string }>;
+  linkQuestionRefs?: VersionRef[];
 };
 export type OutcomeRequest = ContextWrite & OutcomeContent & {
   expectedActionRevision: number;
@@ -377,7 +378,9 @@ function outcomeContent(v: RecordValue, prefix = ""): OutcomeContent {
     (d) => d.questionId, field("answerDecisions"),
   );
   if (decisions?.some((d) => !resolveQuestions.some((q) => q.questionId === d.questionId))) invalid(field("answerDecisions"), "旧答案选择必须对应本次回答的问题");
-  return { text: body, evidenceRefs, resolveQuestions, ...(decisions ? { answerDecisions: decisions } : {}) };
+  const linkQuestionRefs=v.linkQuestionRefs===undefined?undefined:unique(list(v.linkQuestionRefs,field('linkQuestionRefs'),ref),r=>r.claimId,field('linkQuestionRefs'));
+  if(linkQuestionRefs?.some(r=>!resolveQuestions.some(q=>q.questionId===r.claimId)))invalid(field('linkQuestionRefs'),'关联的问题必须在本次明确回答');
+  return { text: body, evidenceRefs, resolveQuestions, ...(decisions ? { answerDecisions: decisions } : {}),...(linkQuestionRefs?{linkQuestionRefs}:{}) };
 }
 
 function decisionRequest(value: unknown): DecisionRequest {
@@ -431,7 +434,7 @@ function decisionRequest(value: unknown): DecisionRequest {
   return { ...context(v), operation, expectedCardRevision: integer(v.expectedCardRevision, "expectedCardRevision", 1), members, ...(operation === "defer" ? { deferUntil: v.deferUntil == null ? null : timestamp(v.deferUntil, "deferUntil") } : {}) };
 }
 
-const contentFields = ["text", "evidenceRefs", "resolveQuestions", "answerDecisions"];
+const contentFields = ["text", "evidenceRefs", "resolveQuestions", "answerDecisions", "linkQuestionRefs"];
 const validators: { [K in keyof WorkflowRequestMap]: (value: unknown) => WorkflowRequestMap[K] } = {
   McpConnectionRequest(value) {
     const v = record(value);

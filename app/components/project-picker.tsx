@@ -70,7 +70,7 @@ export function ProjectPicker({ projects, onChoose, onSkip, busy = false }: Prop
   return (
     <Modal
       title="放进哪个项目"
-      description="选一个现有项目，或者新建一个。直接关掉就按新建项目处理。"
+      description="默认新建项目，也可以选择下面的已有项目。"
       onClose={onSkip}
       dismissible={!busy}
     >
@@ -114,7 +114,6 @@ export function ProjectPicker({ projects, onChoose, onSkip, busy = false }: Prop
           </div>
         )}
         <div className="modal-actions">
-          <button className="button secondary" disabled={busy} onClick={onSkip}>跳过</button>
           <button className="button primary" disabled={busy} onClick={() => onChoose(null)}><Plus size={15} />新建项目</button>
         </div>
       </div>

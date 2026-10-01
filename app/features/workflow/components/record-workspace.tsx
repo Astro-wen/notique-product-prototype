@@ -2,11 +2,11 @@
 
 import { useEffect, useLayoutEffect, useId, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowLeft, Check, ChevronDown, Copy, FileText, Link2, Plus, Undo2 } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, Link2, Plus, Undo2 } from "lucide-react";
 import { NqButton as BaseButton, NqStatus } from "@/app/components/notique-ui";
 import { Modal } from "@/app/components/modal";
-import { currentRecordBullets, priorityCards, recordDisplayBullets } from "@/lib/domain/workflow-v2";
-import { recordTopics } from "@/lib/domain/record-topics";
+import { currentRecordBullets, recordDisplayBullets } from "@/lib/domain/workflow-v2";
+import { readingTopics, pendingItems } from '@/lib/domain/record-reading';
 import { userMayAcceptSupport } from "@/lib/domain/review-support";
 import type { MentionDecisionRequest, ReviewProgress, ReviewProgressRequest, SourceHighlightRequest, ActionTransitionRequest, DecisionRequest, MemberDecisionOperation, OutcomeRequest, OutcomeCorrectionRequest, QuestionAnswerRequest, ReportRequest, ReviewCard, RevertDecisionRequest, WorkspaceSnapshot } from "@/lib/shared/workflow-v2";
 import { useMemoryDrafts,useDraftCheckpoint } from "./memory-drafts";
@@ -65,7 +65,7 @@ function NqButton(props: ComponentProps<typeof BaseButton>) {
 
 type Editor = { questionChoices?:FactChoices; touched?:boolean; initialOrigin?:"source_statement"|"user_input"; base?: WorkspaceSnapshot; conflict?: boolean; kind: "edit" | "answer"; id: string; value: string; initial: string; origin: "source_statement" | "user_input" };
 
-export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCoverage=false, analysisHasNarrative=false, focusClaimId, onMention, onProgress, onHighlight, onHighlightSources, onRevert, embedded = false, processing = false, eventId, projectId, onOpenTranscript, onOpenRecord, onSources, onOutcome, onCorrection, title, subtitle, snapshot, sources, onDecide, onTransition, onAnswer, onReport, onContinue, canEdit = true }: RecordWorkspaceProps) {
+export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCoverage=false, analysisHasNarrative=false, focusClaimId, onMention, onProgress, onHighlight, onHighlightSources, onRevert, embedded = false, processing = false, eventId, projectId, onOpenRecord, onSources, onOutcome, onCorrection, title, subtitle, snapshot, sources, onDecide, onTransition, onAnswer, onReport, onContinue, canEdit = true }: RecordWorkspaceProps) {
   const memory=useMemoryDrafts();
   const retainedDrafts=useSyncExternalStore(memory?.subscribe ?? subscribeReady,memory?.getSnapshot ?? emptyDraftSnapshot,emptyDraftSnapshot);
   const [recoveries]=useState(()=>({inline:memory?.restored('inline'),outcome:memory?.restored('outcome'),members:memory?.restored('members'),conflict:memory?.restored('conflict'),highlight:memory?.restored('highlight'),question:memory?.restored('question')}));
@@ -74,14 +74,14 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const contentRoot=useRef<HTMLDivElement>(null);
   const lastSeen=useRef(snapshot.reviewProgress?.lastCardId ?? null);
   const lastSaved=useRef(snapshot.reviewProgress?.lastCardId ?? null);
-  const [resumeCard,setResumeCard]=useState(snapshot.reviewProgress?.lastCardId ?? null);
+  const [resumeCard]=useState(snapshot.reviewProgress?.lastCardId ?? null);
   const [resumed,setResumed]=useState(false);
   const [priorityLimit,setPriorityLimit]=useState(5);
   const [highlightOpen,setHighlightOpen]=useState(Boolean(recoveries.highlight));
   const [outcomeEditor, setOutcomeEditor] = useState<OutcomeTarget | null>(()=>{
     const d=recoveries.outcome;if(!d)return null;
     const target=(d.targetKind==='question'?snapshot.questions:snapshot.actions).find(x=>x.id===d.targetId);
-    if(!target || d.correctionId && target.latestOutcome?.id!==d.correctionId || Object.keys(d.answers).some(id=>!snapshot.questions.some(q=>q.id===id && (d.targetKind==='question'?q.id===d.targetId:('questionRefs' in target && target.questionRefs.some(r=>r.claimId===q.id))))))return null;
+    if(!target || d.correctionId && target.latestOutcome?.id!==d.correctionId || Object.keys(d.answers).some(id=>!snapshot.questions.some(q=>q.id===id && (d.targetKind==='question'?q.id===d.targetId:('questionRefs' in target && (target.questionRefs.some(r=>r.claimId===q.id) || !d.correctionId && snapshot.reviewCards.some(c=>c.sourceStatus==='ready' && c.eventId===snapshot.reviewCards.find(a=>a.memberRefs.some(r=>r.claimId===target.id))?.eventId && c.memberRefs.some(r=>r.claimId===q.id))))))))return null;
     return {kind:d.targetKind,id:d.targetId,...(d.correctionId?{correction:target.latestOutcome!}:{})};
   });
   const [conflictTarget,setConflictTarget]=useState<string|null>(()=>recoveries.conflict && snapshot.reviewCards.some(c=>c.id===recoveries.conflict!.targetId && c.conflicts?.length)?recoveries.conflict.targetId:null);
@@ -116,7 +116,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const [filter, setFilter] = useState<"all" | "decisions" | "accepted">("all");
   const inputId = useId();
   const lastDecision=snapshot.recentDecisions?.[0];
-  const priorities = priorityCards(snapshot.reviewCards);
+  const priorities = pendingItems(snapshot);
   const inlineClaim=editor?.kind==='answer'?editor.id:editor?.base?.reviewCards.find(c=>c.id===editor.id)?.members[0]?.claimId;
   useDraftCheckpoint(editor && inlineClaim && (editor.touched || editor.origin!==editor.initialOrigin)?{kind:'inline',targetId:editor.id,mode:editor.kind,claimId:inlineClaim,...(editor.touched?{value:editor.value}:{}),origin:editor.origin,...(editor.questionChoices?{questionChoices:editor.questionChoices}:{})}:null);
   const unrestored=Boolean(recoveries.inline&&!editor || recoveries.outcome&&!outcomeEditor || recoveries.members&&!memberTarget || recoveries.conflict&&!conflictTarget || recoveries.question&&!questionTarget);
@@ -244,17 +244,17 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const RecordElement = embedded ? "section" : "main";
   const recordBullets = recordDisplayBullets(currentRecordBullets(snapshot.bullets, snapshot.questions),snapshot.reviewCards);
   const prioritySelection=priorities.slice(0,priorityLimit);
-  const selectedPriorityIds=new Set(prioritySelection.flatMap(c=>c.memberRefs.map(r=>r.claimVersionId)));
+  const selectedPriorityIds=new Set(prioritySelection.flatMap(c=>c.claimIds));
   const shownBullets = recordBullets.filter((bullet) => {
     if (filter === "accepted") return bullet.reviewState === "accepted";
-    if (filter === "decisions") return bullet.claimRefs.some(r=>selectedPriorityIds.has(r.claimVersionId));
+    if (filter === "decisions") return bullet.claimRefs.some(r=>selectedPriorityIds.has(r.claimId));
     return true;
   });
   // The focused queue follows the same impact order as server counts. The
   // complete reading view retains its original narrative order.
-  if(filter==='decisions')shownBullets.sort((a,b)=>prioritySelection.findIndex(c=>c.memberRefs.some(r=>a.claimRefs.some(x=>x.claimVersionId===r.claimVersionId)))-prioritySelection.findIndex(c=>c.memberRefs.some(r=>b.claimRefs.some(x=>x.claimVersionId===r.claimVersionId))));
+  if(filter==='decisions')shownBullets.sort((a,b)=>prioritySelection.findIndex(c=>c.claimIds.some(id=>a.claimRefs.some(x=>x.claimId===id)))-prioritySelection.findIndex(c=>c.claimIds.some(id=>b.claimRefs.some(x=>x.claimId===id))));
   useEffect(()=>{
-    if(!onProgress || !ready || dirty || pending.size || processing || snapshot.reviewProgress?.finishedAt || (resumeCard && !resumed))return;
+    if(!onProgress || !ready || dirty || pending.size || processing || (resumeCard && !resumed))return;
     let timer:ReturnType<typeof setTimeout>|undefined;
     const visible=new Map<Element,number>();
     const markPosition=(cardId:string)=>{
@@ -285,8 +285,8 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   useEffect(()=>{
     if(!ready || !focusClaimId || focusedRequest.current===focusClaimId)return;
     const bullet=recordBullets.find(b=>b.claimRefs.some(r=>r.claimId===focusClaimId));
-    const target=document.getElementById(`workflow-action-${focusClaimId}`) ?? (bullet?document.getElementById(`record-bullet-${bullet.id}`):null);
-    if(target){focusedRequest.current=focusClaimId;target.scrollIntoView({block:'center'});target.focus({preventScroll:true});}
+    const target=document.getElementById(`workflow-question-${focusClaimId}`) ?? document.getElementById(`workflow-action-${focusClaimId}`) ?? (bullet?document.getElementById(`record-bullet-${bullet.id}`):null);
+    if(target){for(let node=target.parentElement;node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true;focusedRequest.current=focusClaimId;target.scrollIntoView({block:'center'});target.focus({preventScroll:true});}
   },[ready,focusClaimId,recordBullets]);
   function showFollowup(actionId?: string) {
     if(dirty){setError("请先保存或取消当前输入。");return;}
@@ -302,7 +302,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     const bullet=recordBullets.find(b=>savedCard?.memberRefs.some(r=>b.claimRefs.some(x=>x.claimId===r.claimId))) ?? recordBullets.find(b=>snapshot.questions.some(q=>savedCard?.memberRefs.some(r=>r.claimId===q.id) && q.answerRefs.some(a=>b.claimRefs.some(x=>x.claimVersionId===a.claimVersionId))));
     setFilter('all');setResumed(true);
     if(onProgress)void onProgress({snapshotId:snapshot.snapshotId,lastCardId:savedCard?.id ?? null,mode:'bookmark'}).catch(()=>undefined);
-    requestAnimationFrame(()=>{const target=bullet?document.getElementById(`record-bullet-${bullet.id}`):null;target?.scrollIntoView({block:'center'});target?.focus({preventScroll:true});});
+    requestAnimationFrame(()=>{const target=bullet?document.getElementById(`record-bullet-${bullet.id}`):null;if(target)for(let node=target.parentElement;node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true;target?.scrollIntoView({block:'center'});target?.focus({preventScroll:true});});
   }
   function openOutcome(target: OutcomeTarget) {
     if(dirty || outcomeEditor) {setError("请先保存或取消当前输入。");return;}
@@ -311,7 +311,8 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
   const renderOutcome = (kind: OutcomeTarget['kind'], id: string) => outcomeEditor?.kind===kind && outcomeEditor.id===id && onOutcome && onCorrection && <div className={styles.actionEditor}><OutcomeEditor readOnly={!canEdit} target={outcomeEditor} snapshot={snapshot} onSaveOutcome={(targetId,body)=>trackWrite(targetId,()=>onOutcome(targetId,body))} onAnswer={(targetId,body)=>trackWrite(targetId,()=>onAnswer(targetId,body))} onCorrection={(targetId,body)=>trackWrite(targetId,()=>onCorrection(targetId,body))} onClose={()=>setOutcomeEditor(null)} onSaved={()=>{setOutcomeEditor(null);setFeedback("结果已保存，重点已更新。");}}/></div>;
   function adjustAction(actionId:string) {
     const card=snapshot.reviewCards.find(c=>c.memberRefs.some(r=>r.claimId===actionId));
-    if(!card || card.members.length!==1) {setError("请先打开这条行动对应的记录。");return;}
+    if(!card) {setError("请先打开这条行动对应的记录。");return;}
+    if(card.members.length>1){setMemberTarget({cardId:card.id,editClaimId:actionId});return;}
     setBasisTarget(null);setFilter("all");
     openEditor({kind:"edit",id:card.id,value:card.members[0].statement,initial:card.members[0].statement,origin:"user_input"});
     requestAnimationFrame(()=>document.querySelector(`[data-testid="bullet-${actionId}"]`)?.scrollIntoView({block:"center",behavior:"smooth"}));
@@ -349,13 +350,13 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
         const currentEdit = editor?.id === id;
         const sourceId = `source-${bullet.id}`;
         return <article className={`${styles.bullet} ${needsDecision ? styles.needsDecision : ""}`} key={bullet.id} id={`record-bullet-${bullet.id}`} tabIndex={-1} data-review-card={card?.id} data-testid={`bullet-${bullet.id}`}>
-          <div className={styles.bulletMeta}><NqStatus tone={bullet.reviewState === "accepted" ? "success" : "info"}>{bullet.reviewState === "accepted" ? bullet.origin === "user_input" ? "用户补充" : bullet.origin === "user_selection" ? "用户选录" : "已采纳" : bullet.origin === "user_input" || bullet.origin === "user_selection" ? "用户补充" : "AI 草稿"}</NqStatus>{needsDecision && <span className={styles.decisionHint}>需要你拍板</span>}{bullet.sourceStatus !== "ready" && <NqStatus tone="pending">需要补充依据</NqStatus>}</div>
+          <div className={styles.bulletMeta}>{bullet.reviewState === "accepted" && <span className={styles.acceptedMark} title={bullet.origin==="user_input"?"用户补充":"已确认"} aria-label="已采纳"><Check size={14}/></span>}{bullet.sourceStatus !== "ready" && <NqStatus tone="pending">需要核对来源</NqStatus>}</div>
           {relatedQuestions.filter(q=>!bullet.claimRefs.some(r=>r.claimId===q.id)).map(q=><p key={q.id} className={styles.reason}>对应问题：{titleFor(q.id)}</p>)}
           {!currentEdit && <p className={styles.statement}>{bullet.text}</p>}
-          {companion && <details className={styles.outcomeHistory} data-testid={`intent-related-${card!.id}`}><summary>{actionOverlap?companion.origin==='user_input'||companion.origin==='user_selection'?'我的行动':'AI 建议':companion.kind==='record'?'相关记录':'行动建议'} · {companion.reviewState==='accepted'?'已采纳':companion.reviewState==='rejected'?'已移出记录':companion.origin==='user_input'||companion.origin==='user_selection'?'用户补充':'AI 草稿'}</summary><p>{snapshot.bullets.find(b=>b.claimRefs.some(r=>r.claimId===companion.claimId && r.claimVersionId===companion.claimVersionId))?.sourceStatus==='ready'?companion.statement:'这条内容的出处需要重新核对。'}</p></details>}
+          {companion && <details className={styles.outcomeHistory} data-testid={`intent-related-${card!.id}`}><summary>{actionOverlap?companion.origin==='user_input'||companion.origin==='user_selection'?'我的行动':'AI 建议':companion.kind==='record'?'相关记录':'行动建议'} · {companion.reviewState==='accepted'?'已采纳':companion.reviewState==='rejected'?'已移出记录':companion.origin==='user_input'||companion.origin==='user_selection'?'用户补充':'AI 草稿'}</summary><p>{snapshot.bullets.find(b=>b.claimRefs.some(r=>r.claimId===companion.claimId && r.claimVersionId===companion.claimVersionId))?.sourceStatus==='ready'?companion.statement:'这条内容的出处需要重新核对。'}</p>{sameIntent && intentRecord?.reviewState==='draft' && userMayAcceptSupport(intentRecord.supportStatus) && card?.sourceStatus==='ready' && <NqButton variant="quiet" onClick={()=>void decision(card!,'confirm',intentRecord.claimId)} loading={pending.has(id)} disabled={decisionLocked}>确认这条记录</NqButton>}</details>}
           {(snapshot.reaffirmedMentions ?? []).filter(m=>m.associationState==='confirmed' && m.targetState==='current' && m.sourceStatus==='ready' && bullet.claimRefs.some(r=>r.claimId===m.claimRef.claimId && r.claimVersionId===m.claimRef.claimVersionId)).map(mention=><details className={styles.outcomeHistory} key={mention.id} data-testid={`mention-${mention.id}`}><summary>本次再次提及 · 沿用原事项</summary>{mention.sources.map((source,index)=><blockquote key={index}>{source.quote ?? '本次出处需要重新核对。'}</blockquote>)}{mentionLink(mention.targetEventId,mention.claimRef.claimId)}</details>)}
           {bullet.applicability && <p className={styles.reason}>适用情况：{bullet.applicability}</p>}
-          {needsDecision && <p className={styles.reason}>{card.reason}</p>}
+          {needsDecision && card.reasonCode!=="action_choice" && <p className={styles.reason}>{card.reason}</p>}
           {renderEditor(id)}
           <div className={styles.inlineActions}>
             {followedAction && <NqButton variant="quiet" onClick={()=>showFollowup(followedAction.id)}>查看跟进</NqButton>}
@@ -364,8 +365,8 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
             {canEdit && card && actionOverlap && card.disposition!=='processed' && !currentEdit && <><NqButton id={`members-${card.id}`} disabled={decisionLocked} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setMemberTarget({cardId:card.id});}}>核对两种行动</NqButton><NqButton variant="quiet" disabled={decisionLocked} onClick={()=>void decision(card,card.disposition==='deferred'?'restore':'defer')}>{card.disposition==='deferred'?'恢复处理':'稍后处理'}</NqButton></>}
             {canEdit && card && sameIntent && !currentEdit && <>
               {intentAction?.reviewState==='draft' && intentRecord?.reviewState!=='rejected' && card.sourceStatus==='ready' && <NqButton variant={needsDecision?'primary':'quiet'} onClick={()=>void decision(card,'accept_action',intentAction.claimId)} loading={pending.has(id)} disabled={decisionLocked}><Plus size={14}/>加入跟进</NqButton>}
-              {intentRecord?.reviewState==='draft' && userMayAcceptSupport(intentRecord.supportStatus) && card.sourceStatus==='ready' && <NqButton variant="quiet" onClick={()=>void decision(card,'confirm',intentRecord.claimId)} loading={pending.has(id)} disabled={decisionLocked}><Check size={14}/>确认记录</NqButton>}
-              {intentRecord && intentRecord.reviewState!=='rejected' && <NqButton variant="quiet" onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setMemberTarget({cardId:card.id,editClaimId:intentRecord.claimId});}}>改记录</NqButton>}
+
+              {intentRecord && intentRecord.reviewState!=='rejected' && <NqButton variant="quiet" onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setMemberTarget({cardId:card.id,editClaimId:intentRecord.claimId});}}>修改</NqButton>}
               {intentFollowup?.basisState==='needs_review' && <NqButton onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setBasisTarget(intentFollowup.id);}}>核对依据</NqButton>}
               <details className={styles.menu}><summary id={`members-${card.id}`}>更多 <ChevronDown size={12}/></summary><div><button onClick={event=>{if(dirty){setError("请先保存或取消当前输入。");return;}event.currentTarget.closest("details")?.removeAttribute("open");setMemberTarget({cardId:card.id});}}>同组逐条处理</button>{intentAction?.reviewState==='draft' && <button disabled={decisionLocked} onClick={()=>void decision(card,'reject',intentAction.claimId)}>不跟进</button>}{(needsDecision || card.disposition==='deferred') && <button disabled={decisionLocked} onClick={()=>void decision(card,card.disposition==='deferred'?'restore':'defer')}>{card.disposition==='deferred'?'恢复处理':'稍后处理'}</button>}</div></details>
             </>}
@@ -386,7 +387,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
           {question && renderEditor(question.id)}{question && renderOutcome("question",question.id)}
         </article>;
   };
-  const renderAction = (action: WorkspaceSnapshot["actions"][number]) => { return <article key={action.id} id={`workflow-action-${action.id}`} tabIndex={-1} data-testid={`action-${action.id}`} className={styles.action}>
+  const renderAction = (action: WorkspaceSnapshot["actions"][number]) => { const card=snapshot.reviewCards.find(c=>c.memberRefs.some(r=>r.claimId===action.id)); const member=card?.members.find(m=>m.claimId===action.id); const companion=card?.sameIntent?card.members.find(m=>m.claimId===card.sameIntent!.recordRef.claimId):undefined; const answered=snapshot.questions.filter(q=>q.latestOutcome?.id===action.latestOutcome?.id && q.resolutionState==="resolved"); return <article key={action.id} id={`workflow-action-${action.id}`} tabIndex={-1} data-testid={`action-${action.id}`} className={styles.action}>
         {canEdit && action.executionState !== "cancelled" && <button className={styles.check} aria-label={`${action.executionState === "completed" ? "重开" : "完成"}：${titleFor(action.id)}`} aria-pressed={action.executionState === "completed"} disabled={!ready || decisionLocked} onClick={() => void run(action.id, () => onTransition(action.id, { expectedContextVersion: snapshot.contextVersion, expectedActionRevision: action.revision, operation: action.executionState === "completed" ? "reopen" : "complete" }), action.executionState === "completed" ? "已重新打开跟进。" : "已完成。有新答案时可以继续补充。")}>{action.executionState === "completed" && <Check size={16} />}</button>}
         <div className={styles.actionBody}><p>{titleFor(action.id)}</p><span>{action.executionState === "completed" ? "已完成" : action.executionState === "cancelled" ? "已取消" : "待跟进"}{action.basisState === "needs_review" ? " · 依据有变化" : ""}</span>{(action.ownerHint || action.dueAt) && <p className={styles.actionMeta}>{action.ownerHint && <span>负责人：{action.ownerHint}</span>}{action.dueAt && <span>期限：{new Date(action.dueAt).toLocaleDateString('zh-CN',{timeZone:'UTC'})}</span>}</p>}{action.latestOutcome && (action.latestOutcome.freshness==='stale'?<details className={styles.outcomeHistory}><summary>上次结果 · 相关答案已变化</summary><p>{action.latestOutcome.text || '当时的结果依据需要重新核对。'}</p><small>当前答案已在上方重点更新。</small></details>:<p className={styles.outcome}>{action.latestOutcome.text}</p>)}</div>
         {canEdit && !onOutcome && action.questionRefs.length === 1 && snapshot.questions.some((q) => q.id === action.questionRefs[0].claimId && q.resolutionState === "open") && <NqButton variant="quiet" onClick={() => { const questionId = action.questionRefs[0].claimId; setFilter("all"); openEditor({ kind: "answer", id: questionId, value: "", initial: "", origin: "user_input" }); }}>补结果</NqButton>}
@@ -396,18 +397,18 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
           {action.latestOutcome && onCorrection && <details className={styles.menu}><summary>结果操作 <ChevronDown size={12}/></summary><div><button onClick={event=>{event.currentTarget.closest("details")?.removeAttribute("open");openOutcome({kind:"action",id:action.id,correction:action.latestOutcome!});}}>修正结果</button><button onClick={()=>setWithdrawTarget(action.latestOutcome!.id)}>撤回这次结果</button></div></details>}
           <details className={styles.menu}><summary>行动操作 <ChevronDown size={12}/></summary><div><button onClick={event=>{event.currentTarget.closest("details")?.removeAttribute("open");adjustAction(action.id);}} disabled={pending.has(action.id)}>调整行动</button><button onClick={()=>void run(action.id,()=>onTransition(action.id,{expectedContextVersion:snapshot.contextVersion,expectedActionRevision:action.revision,operation:action.executionState === "cancelled" ? "reopen" : "cancel"}),"行动状态已更新。")} disabled={decisionLocked}>{action.executionState === "cancelled" ? "重新跟进" : "取消行动"}</button></div></details>
         </div>}
-        {renderOutcome("action",action.id)}
+        {card && <NqButton variant="quiet" id={`action-source-${action.id}`} onClick={()=>void openSources(member?{...card,members:[member],memberRefs:[action.claimRef]}:card,`#action-source-${action.id}`)}><Link2 size={14}/>原话</NqButton>}{companion && <details className={styles.outcomeHistory}><summary>原始记录</summary><p>{companion.statement}</p>{companion.reviewState==='draft' && canEdit && userMayAcceptSupport(companion.supportStatus) && <NqButton variant="quiet" disabled={decisionLocked} onClick={()=>void decision(card!,'confirm',companion.claimId)}>确认这条记录</NqButton>}</details>}{answered.map(q=><div key={q.id} id={`workflow-question-${q.id}`} tabIndex={-1} className={styles.answeredQuestion}><span>已回答：{titleFor(q.id)}</span>{canEdit && <NqButton variant="quiet" disabled={decisionLocked} onClick={()=>openOutcome({kind:'question',id:q.id})}>更新答案</NqButton>}{renderOutcome('question',q.id)}</div>)}{card && renderEditor(card.id)}{renderOutcome("action",action.id)}
 </article>;
   };
   return <div ref={contentRoot} className={`${styles.workspace} ${embedded ? styles.embedded : ""}`} data-ready={ready}>
     {!embedded && <div className={styles.topbar}><Link href="/?view=simple"><ArrowLeft size={15} /> 工作空间</Link><span>Notique AI</span></div>}
     <header className={styles.header}>
-      <div>{!embedded && <><p className={styles.eyebrow}>沟通记录</p><h1>{title}</h1><p className={styles.subtitle}>{subtitle}</p></>}{embedded && <p className={styles.subtitle}>读完即可带走，需要修改的内容就在这里处理。</p>}</div>
-      <div className={styles.headerActions}>{onHighlight && onHighlightSources && canEdit && <NqButton id="add-source-highlight" variant="quiet" disabled={pending.has('report')} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setHighlightOpen(true);}}>从原文补充</NqButton>}{onOpenTranscript && <NqButton variant="quiet" onClick={onOpenTranscript}>查看原文</NqButton>}<NqButton onClick={() => void copy("mixed")} loading={pending.has("report")}><Copy size={15} />{pending.has('report')?'正在同步记录':'复制记录'}</NqButton><details className={styles.menu}><summary aria-label="记录的更多操作"><ChevronDown size={16} /></summary><div><button disabled={pending.has('report')} onClick={() => void copy("accepted")}>仅导出已采纳内容</button></div></details></div>
+      <div>{!embedded && <><p className={styles.eyebrow}>沟通记录</p><h1>{title}</h1><p className={styles.subtitle}>{subtitle}</p></>}</div>
+      <div className={styles.headerActions}>{onHighlight && onHighlightSources && canEdit && <NqButton id="add-source-highlight" variant="quiet" disabled={pending.has('report')} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setHighlightOpen(true);}}>从原文补充</NqButton>}<NqButton onClick={() => void copy("mixed")} loading={pending.has("report")}><Copy size={15} />{pending.has('report')?'正在同步记录':'复制记录'}</NqButton><details className={styles.menu}><summary aria-label="记录的更多操作"><ChevronDown size={16} /></summary><div><button disabled={pending.has('report')} onClick={() => void copy("accepted")}>仅导出已采纳内容</button></div></details></div>
     </header>
     {analysisPanel}
     {(feedback || canEdit && onRevert && lastDecision && !lastDecision.reverted) && <div className={styles.feedback} aria-live="polite" role="status">{feedback}{canEdit && onRevert && lastDecision && !lastDecision.reverted && <NqButton variant="quiet" loading={pending.has(lastDecision.id)} disabled={decisionLocked} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}void run(lastDecision.id,()=>onRevert(lastDecision.id,{expectedContextVersion:snapshot.contextVersion,expectedDecisionRevision:lastDecision.revision}),"已撤销这次处理，记录已恢复。");}}>撤销上次处理</NqButton>}</div>}
-    {(resumeCard && !resumed || snapshot.reviewProgress?.finishedAt) && <div className={styles.resumeNotice}><span>{snapshot.reviewProgress?.finishedAt?`本次阅读已保存，还有 ${snapshot.counts.needsDecisionCount} 项需要拍板。`:'已保存上次的阅读位置。'}</span><NqButton variant="quiet" onClick={()=>void resumeReading()}>{snapshot.reviewProgress?.finishedAt?'继续处理':'回到上次位置'}</NqButton></div>}
+    {resumeCard && !resumed && <div className={styles.resumeNotice}><span>已自动保存</span><NqButton variant="quiet" onClick={()=>void resumeReading()}>回到上次位置</NqButton></div>}
     {unrestored && retainedInputs}
     {error && <div className={styles.error} role="alert">{error}</div>}
     {!canEdit && <p className={styles.notice}>当前为只读模式，可查看记录与出处。</p>}
@@ -416,11 +417,11 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     {snapshot.narrative?.text && <details className={styles.narrative} data-testid="record-narrative" key={`narrative-${snapshot.narrative.basedOnContextVersion}-${snapshot.narrative.freshness}`}>
       <summary>{snapshot.narrative.freshness==='current'?'查看全文概要':'查看上一版概要'}</summary>
       {snapshot.narrative.freshness!=='current' && <p className={styles.reason}>这份概要尚未同步最近的修改，当前内容以下方重点为准。</p>}
-      {snapshot.narrative.sentenceRefs.map((sentence,index)=><p key={index}><NqStatus tone={sentence.reviewState==='accepted'?'success':'info'}>{sentence.reviewState==='accepted'?'依据已采纳':'含草稿'}</NqStatus>{sentence.text}</p>)}
+      {snapshot.narrative.sentenceRefs.map((sentence,index)=><p key={index}>{sentence.text}</p>)}
     </details>}
     <RecordElement className={styles.record}>
-      <div className={`${styles.sectionHeader} ${styles.recordNavigation}`}><div><h2>本次重点 <span>{recordBullets.length+standaloneMentions.length}</span></h2><p>同一件事放在一起，先读或复制，再处理你在意的地方。</p></div><div className={styles.recordTools}><div className={styles.filters} aria-label="重点范围"><button disabled={!ready} aria-pressed={filter === "all"} onClick={() => changeFilter("all")}>全部</button><button disabled={!ready} aria-pressed={filter === "decisions"} onClick={() => changeFilter("decisions")}>需要拍板 {snapshot.counts.needsDecisionCount}</button><button disabled={!ready} aria-pressed={filter === "accepted"} onClick={() => changeFilter("accepted")}>已采纳</button></div>{snapshot.actions.length>0 && <NqButton variant="secondary" aria-label="查看跟进事项" onClick={()=>showFollowup()}>跟进事项 {snapshot.counts.openActionCount} 待跟进</NqButton>}</div></div>
-      {!shownBullets.length && !shownMentions.length && <p className={styles.empty}>{filter === "decisions" ? "当前没有需要你拍板的事项。" : filter === "accepted" ? "还没有已采纳内容，可以先阅读全部记录。" : "材料整理好后，重点会出现在这里。"}{filter !== "all" && <button onClick={() => setFilter("all")}>查看完整记录</button>}</p>}
+      <div className={`${styles.sectionHeader} ${styles.recordNavigation}`}><div><h2>本次重点</h2><small className={styles.readingHint}>自动整理{snapshot.counts.draftCount>0?" · 含未确认内容":""}</small></div><div className={styles.recordTools}><div className={styles.filters} aria-label="重点范围"><button disabled={!ready} aria-pressed={filter === "all"} onClick={() => changeFilter("all")}>记录</button><button disabled={!ready} aria-pressed={filter === "decisions"} onClick={() => changeFilter("decisions")}>待处理 {priorities.length}</button><button disabled={!ready} aria-pressed={filter === "accepted"} onClick={() => changeFilter("accepted")}>已确认</button></div></div></div>
+      {!shownBullets.length && !shownMentions.length && <p className={styles.empty}>{filter === "decisions" ? "当前没有待处理事项。" : filter === "accepted" ? "还没有已采纳内容，可以先阅读全部记录。" : "材料整理好后，重点会出现在这里。"}{filter !== "all" && <button onClick={() => setFilter("all")}>查看完整记录</button>}</p>}
       {!!shownMentions.length && <div className={styles.bullets}>{shownMentions.map(mention=><article className={styles.bullet} key={mention.id} data-testid={`mention-${mention.id}`}>
         <div className={styles.bulletMeta}><NqStatus tone={mention.sourceStatus==='ready' && mention.associationState==='proposed'?'info':'pending'}>{mention.sourceStatus!=='ready'?'本次出处待核对':mention.associationState==='proposed'?'再次提及 · 关联待核对':mention.targetState==='changed'?'原事项已更新':mention.targetState==='retired'?'原事项已移出当前跟进':'原事项需要重新核对'}</NqStatus></div>
         <p className={styles.statement}>{mention.statement ?? '本次出处已变化，请重新核对材料。'}</p>
@@ -430,17 +431,22 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
           <NqButton variant="quiet" disabled={decisionLocked} onClick={()=>{if(dirty){setError('请先保存或取消当前输入。');return;}void run(mention.id,()=>onMention(mention.id,{expectedContextVersion:snapshot.contextVersion,targetRef:mention.claimRef,operation:'reject'}),'已忽略此次关联。');}}>忽略</NqButton>
         </div>}</details>
       </article>)}</div>}
-      {filter==='decisions' ? <div className={styles.bullets}>{shownBullets.map(renderBullet)}</div> : <div className={styles.topics}>{recordTopics(snapshot,shownBullets).map(topic=><section key={topic.key} className={styles.topic} aria-labelledby={`topic-${topic.key}`} data-testid={`topic-${topic.key}`}>
-        <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
-        <div className={styles.bullets}>{topic.bullets.map(renderBullet)}</div>
-        {topic.actions.length>0 && <div className={styles.topicFollowups}><h4>跟进与结果</h4>{topic.actions.map(renderAction)}</div>}
-        {topic.relatedActionRefs.length>0 && <div className={styles.relatedFollowups}>{topic.relatedActionRefs.map(ref=>{const action=snapshot.actions.find(a=>a.claimRef.claimId===ref.claimId && a.claimRef.claimVersionId===ref.claimVersionId);return action?<button key={action.id} onClick={()=>showFollowup(action.id)} aria-label={`查看相关跟进：${titleFor(action.id)}`}>相关跟进：{titleFor(action.id)}</button>:null;})}</div>}
-      </section>)}</div>}
-      {filter==='decisions' && snapshot.actions.length>0 && <div className={styles.followups}><h3>跟进与结果</h3>{snapshot.actions.map(renderAction)}</div>}
+      {filter==='decisions' ? <div className={styles.bullets}>{shownBullets.filter(b=>!snapshot.actions.some(a=>b.claimRefs.some(r=>r.claimId===a.id))).map(renderBullet)}{snapshot.actions.filter(a=>selectedPriorityIds.has(a.id)).map(renderAction)}</div> : <div className={styles.topics}>{readingTopics(snapshot,shownBullets).map(topic=>{
+        const details=topic.detail.filter(b=>!topic.interactive.some(x=>x.id===b.id));
+        return <section key={topic.key} className={styles.topic} aria-labelledby={`topic-${topic.key}`} data-testid={`topic-${topic.key}`}>
+          <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
+          {topic.preview.length>0 ? <ul className={styles.topicPreview}>{topic.preview.map((sentence,index)=><li key={index}>{sentence.text}</li>)}</ul> : <div className={styles.bullets}>{details.slice(0,3).map(renderBullet)}</div>}
+          {details.length>(topic.preview.length?0:3) && <details className={styles.topicDetails}><summary>查看详细记录 · {details.length} 条</summary><div className={styles.bullets}>{(topic.preview.length?details:details.slice(3)).map(renderBullet)}</div></details>}
+          {topic.interactive.length>0 && <div className={styles.bullets}>{topic.interactive.map(renderBullet)}</div>}
+          {topic.actions.length>0 && <div className={styles.topicFollowups}>{topic.actions.map(renderAction)}</div>}
+          {topic.relatedActionRefs.length>0 && <div className={styles.relatedFollowups}>{topic.relatedActionRefs.map(ref=>{const action=snapshot.actions.find(a=>a.claimRef.claimId===ref.claimId && a.claimRef.claimVersionId===ref.claimVersionId);return action?<button key={action.id} onClick={()=>showFollowup(action.id)}>查看相关跟进</button>:null;})}</div>}
+        </section>;
+      })}</div>}
       {filter==='decisions' && priorities.length>priorityLimit && <div className={styles.priorityRemainder}><span>先处理这 {prioritySelection.length} 项，还有 {priorities.length-priorityLimit} 项。</span><NqButton variant="secondary" onClick={()=>setPriorityLimit(value=>value+5)}>再看 5 项</NqButton></div>}
       {!!snapshot.actionHistory?.length && <details className={styles.decisionHistory} data-testid="action-history"><summary>已替代的跟进 <span>{snapshot.actionHistory.length}</span></summary><ul>{snapshot.actionHistory.map(action=><li key={action.id} data-testid={`historical-action-${action.id}`}><div><span>已替代 · {action.executionState==='completed'?'当时已完成':action.executionState==='cancelled'?'当时已取消':'当时待跟进'}</span><p>{action.text || '原行动的出处需要重新核对。'}</p>{action.replacementText && <small>现在跟进：{action.replacementText}</small>}{action.latestOutcome && <p className={styles.outcome}>当时结果：{action.latestOutcome.text || '当时的结果依据需要重新核对。'}</p>}</div></li>)}</ul></details>}
       {!!snapshot.recentDecisions?.length && <details className={styles.decisionHistory}><summary>最近处理</summary><ul>{snapshot.recentDecisions.map(d=><li key={d.id} data-testid={`decision-${d.id}`}><div><span>{d.operation==="confirm_mention"?"沿用原事项":d.operation==="convert_mention"?"作为独立信息":d.operation==="reject_mention"?"忽略关联":d.operation==="review_members"?"逐条处理":d.operation==="edit"?"修改":d.operation==="reject"?"不采纳":d.operation==="accept_action"?"行动决定":d.operation==="resolve_conflict"?d.choiceMode==="keep_existing"?"保留原信息":d.choiceMode==="use_candidate"?"采用新信息":d.choiceMode==="coexist"?"分别适用":"新旧信息选择":"确认"}{d.reverted?" · 已撤销":""}</span><p>{d.summary}</p></div>{canEdit && onRevert && !d.reverted && <NqButton variant="quiet" loading={pending.has(d.id)} disabled={decisionLocked} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}void run(d.id,()=>onRevert(d.id,{expectedContextVersion:snapshot.contextVersion,expectedDecisionRevision:d.revision}),"已撤销这次处理，记录已恢复。");}}>撤销</NqButton>}</li>)}</ul></details>}
-      <footer className={styles.footer}><span><FileText size={15} /> 记录与出处保持关联</span>{onProgress && !snapshot.reviewProgress?.finishedAt && <NqButton variant="quiet" loading={pending.has('progress')} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}void run('progress',async()=>{const saved=await onProgress({snapshotId:snapshot.snapshotId,lastCardId:lastSeen.current ?? snapshot.reviewProgress?.lastCardId ?? null,mode:'finish_session'});setResumeCard(saved.lastCardId);},"本次进度已保存，可以随时继续。");}}>结束本次</NqButton>}{onContinue && <NqButton variant="secondary" onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}onContinue();}}><Plus size={14} />继续这件事</NqButton>}</footer>
+      {onContinue && <footer className={styles.footer}><span>已自动保存</span><NqButton variant="secondary" onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}onContinue();}}><Plus size={14}/>添加下一次记录</NqButton></footer>}
+
     </RecordElement>
     {highlightOpen && onHighlight && onHighlightSources && <SourceHighlightEditor contextVersion={snapshot.contextVersion} canEdit={canEdit} onLoad={onHighlightSources} onSave={onHighlight} onClose={saved=>{setHighlightOpen(false);if(saved){setFilter("all");setFeedback("原话已保存为用户选录，出处已关联。");}}}/>}
     {questionTarget && <QuestionEditor questionId={questionTarget} snapshot={snapshot} canEdit={canEdit} onDecide={onDecide} onClose={saved=>{setQuestionTarget(null);if(saved){setFilter("all");setFeedback("问题已修改，答案和跟进已同步更新。");}}} onSource={member=>{const card=snapshot.reviewCards.find(c=>c.memberRefs.some(r=>r.claimId===questionTarget));if(card)void openSources({...card,members:[member],memberRefs:[{claimId:member.claimId,claimVersionId:member.claimVersionId}]},"");}}/>}
