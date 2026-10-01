@@ -109,10 +109,12 @@
 .embedded .needsDecision { border-left: 3px solid #4b75f2; padding-left: 14px; }
 .embedded .bullet:last-child { border-bottom: 0; }
 .embedded .statement { margin: 7px 0; }
-.workspace .action { display: grid; grid-template-columns: 23px minmax(0, 1fr) auto; }
+.workspace .action { display: grid; grid-template-columns: 23px minmax(0, 1fr); }
 .workspace .actionBody { grid-column: 2; }
-.workspace .actionControls { grid-column: 3; }
+.workspace .actionControls { grid-column: 2; min-width: 0; }
 .workspace .actionEditor { grid-column: 1 / -1; }
+.workspace .action > :global(.button) { grid-column: 2; justify-self: start; }
+.workspace .action > .outcomeHistory, .workspace .answeredQuestion { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
   .workspace .action { grid-template-columns: 23px minmax(0, 1fr); }
   .workspace .actionControls { grid-column: 2; }
