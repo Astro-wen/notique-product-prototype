@@ -145,7 +145,7 @@ export type ProjectOverview = {
   counts: { draftCount: number; needsDecisionCount: number; openActionCount: number; openQuestionCount: number };
   snapshotId: string;
   contextVersion: number;
-  currentBullets: Array<Bullet & { eventId: string; executionState?: Action["executionState"] }>;
+  currentBullets: Array<Bullet & { eventId: string; kind?: "record" | "question" | "action" | "result"; executionState?: Action["executionState"] }>;
   recentChanges: Array<{ id: string; eventId: string; text: string; claimRefs: VersionRef[]; createdAt: string }>;
   openQuestions: Array<Question & { eventId: string }>;
   nextActions: Array<Action & { eventId: string }>;

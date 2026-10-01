@@ -257,4 +257,7 @@
 .mentionList { margin: 24px 0 16px; border-top: 1px solid #e6e6e8; padding-top: 16px; }
 .mentionList > summary { cursor: pointer; color: #59657b; font-size: 13px; padding: 6px 0; }
 .mentionList .statement { font-size: 14px; }
+.topic .awaitingAnswer,.embedded .topic .awaitingAnswer,.awaitingAnswer { margin: 10px 0; padding: 14px 16px; border: 1px solid #eedfc4; border-left: 3px solid #cb9a47; border-radius: 8px; background: #fffaf1; }
+.awaitingAnswer .statement { margin-top: 8px; }
+.moduleNumber { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 5px; margin-right: 10px; border-radius: 5px; background: #171717; color: #fff; font-size: 12px; font-weight: 600; vertical-align: middle; }
 .workspace.embedded { max-width: 1160px; margin-inline: auto; }

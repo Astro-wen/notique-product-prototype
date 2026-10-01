@@ -15,7 +15,9 @@ export function projectOverview(ledger:ProjectionLedger,now:string):ProjectOverv
   for(const {event,snapshot} of records)for(const bullet of currentRecordBullets(snapshot.bullets,snapshot.questions)) {
     const sourceEvent=byId.get(bullet.claimRefs[0]?.claimId)?.event_id ?? event.id;
     const action=snapshot.actions.find(a=>bullet.claimRefs.some(r=>r.claimId===a.id));
-    if(!bullets.has(bullet.id))bullets.set(bullet.id,{...bullet,eventId:sourceEvent,...(action?{executionState:action.executionState}:{})});
+    const claim=byId.get(bullet.claimRefs[0]?.claimId);
+    const kind:NonNullable<ProjectOverview['currentBullets'][number]['kind']>=claim?.type==='open_question'?'question':claim?.type==='next_action'?'action':readJson<{workflow_kind?:string}>(claim?.normalized_value_json,{}).workflow_kind==='result'?'result':'record';
+    if(!bullets.has(bullet.id))bullets.set(bullet.id,{...bullet,eventId:sourceEvent,kind,...(action?{executionState:action.executionState}:{})});
   }
   const recentChanges:ProjectOverview['recentChanges']=(ledger.changes ?? []).filter(c=>c.event_id && ledger.events.some(e=>e.id===c.event_id) && changeLabels[c.kind]).toSorted((a,b)=>b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)).map(change=>{
     const frozen=readJson<FrozenChange[]>(change.changed_refs_json,[]).filter(r=>r.text && r.claimRefs?.length);

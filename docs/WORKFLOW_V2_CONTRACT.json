@@ -427,5 +427,22 @@
     "legacyRecovery": "v9.11沿用冻结提示与上下文。仅因handled_ref校验失败的付费响应可按原编号GET取回，重新完整校验并记录原错误，v9.10及以前任务继续原契约。",
     "emptyResultRule": "通过覆盖校验的原事项按ID去重计入本次候选，全部已处理且没有新草稿时正常完成。",
     "quoteHintRule": "按同一原事项、同一材料的直接片段合集核对定位提示。口头uh、um、重复冠词或代词及分段省略可匹配，原文及原引用保持原样。金额、否定、未引用片段和新条件继续校验。"
+  },
+  "projectWorkbench": {
+    "questionLabel": "待解答",
+    "questionAppearance": "浅琥珀色卡片，原有调整问题和补答案入口",
+    "moduleNumber": "主题标题前黑色数字方块，逐字稿保持原样",
+    "overviewBulletKind": [
+      "record",
+      "question",
+      "action",
+      "result"
+    ],
+    "content": "当前要点按主题用 bullet points 汇总，接下来列出待办、模型已有行动建议和开放问题",
+    "addTodo": "读取最新工作区，核对 claim 与精确版本及卡片修订后，调用已有 accept_action。冲突、重复行动和失效来源通过原记录核对。",
+    "completeTodo": "调用已有 action transition，不改变问题答案",
+    "copy": "沿用项目报告接口，全部记录或已采纳范围，剪贴板失败提供可选文字",
+    "updates": "项目页直接复用答案和结果编辑组件，版本冲突保留输入。补答案和结果更新相同账本，刷新当前要点、项目回顾和后续导出",
+    "reads": "页面读取复用已有结果，不创建新的提取任务"
   }
 }
