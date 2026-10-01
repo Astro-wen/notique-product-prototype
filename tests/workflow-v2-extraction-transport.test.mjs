@@ -64,3 +64,12 @@ test('reaffirmed accepted claims restore both target IDs and keep exact-version 
  assert.equal(validateExtractClaimsOutput(wrong,x).valid,false);
  assert.deepEqual(t.decode(t.encode({reaffirmed_target_claim_id:original.claimId,reaffirmed_target_version_id:original.claimVersionId})),{reaffirmed_target_claim_id:original.claimId,reaffirmed_target_version_id:original.claimVersionId});
 });
+
+test('draft continuity links restore their own exact claim and version references',()=>{
+ const x=structuredClone(input);x.draft_context={enabled:true,claims:[{claimId:'cl_draft',claimVersionId:'cv_draft',statement:'Draft budget.',normalizedValue:null}]};
+ const t=extractionTransport(x),short=t.input.draft_context.claims[0];
+ const decoded=t.decode({target_draft_claim_id:short.claimId,target_draft_claim_version_id:short.claimVersionId});
+ assert.deepEqual(decoded,{target_draft_claim_id:'cl_draft',target_draft_claim_version_id:'cv_draft'});
+ assert.equal(t.decode({target_draft_claim_id:'c9999'}).target_draft_claim_id,'c9999');
+ assert.equal(t.decode({statement:short.claimId}).statement,short.claimId);
+});

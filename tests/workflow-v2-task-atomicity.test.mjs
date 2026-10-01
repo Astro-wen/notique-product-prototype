@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { workflowDatabase, seed, SCOPE, T } from './helpers/workflow-database.mjs';
-import { CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
+import { SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
 import { INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
 import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 
@@ -78,7 +78,7 @@ function model(t, answer) {
 const promptOf = request => request.body?.input?.[0]?.content?.[0]?.text;
 
 test('decoder-only failure rereads its paid verify after a failed escalation without another POST',async t=>{
- const {sqlite}=await setup(t);queue(sqlite);
+ const {sqlite}=await setup(t);queue(sqlite,{runPrompt:SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION});
  const requests=model(t,(r,n)=>r.method==='GET'?{id:'paid_reference_verify',status:'completed',output_text:JSON.stringify(verification()),usage}:r.body.text.format.schema.properties.schema_version.enum[0]===INVENTORY_SCHEMA_VERSION?{id:`inventory_${n}`,status:'completed',output_text:JSON.stringify(inventory()),usage}:{id:'paid_reference_verify',status:'queued'});
  assert.equal((await processExtractionRun('run')).status,'background_pending');
  const paid=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
@@ -96,7 +96,7 @@ test('decoder-only failure rereads its paid verify after a failed escalation wit
 });
 
 test('a failed base stays failed while its paid escalated decoder response is recovered',async t=>{
- const {sqlite}=await setup(t);queue(sqlite);
+ const {sqlite}=await setup(t);queue(sqlite,{runPrompt:SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION});
  const requests=model(t,(r,n)=>r.method==='GET'?{id:'paid_escalated',status:'completed',output_text:JSON.stringify(verification()),usage}:r.body.text.format.schema.properties.schema_version.enum[0]===INVENTORY_SCHEMA_VERSION?{id:`inventory_${n}`,status:'completed',output_text:JSON.stringify(inventory()),usage}:{id:'paid_base',status:'queued'});
  assert.equal((await processExtractionRun('run')).status,'background_pending');
  const paid=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
@@ -132,13 +132,15 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const result = await processExtractionRun(created.run.id); assert.equal(result.status, 'succeeded', JSON.stringify({ result, error: sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id) })); assert.equal(requests.length, 2); assert.equal(result.persistedClaims, 4);
   for (const request of requests) { assert.match(promptOf(request), /One concrete task is one atomic next_action/); assert.match(promptOf(request), /Never infer a year from the current clock/); }
   assert.match(promptOf(requests[1]), /outcome=merged with the same single final next_action/);
+  assert.match(promptOf(requests[1]), /copy the exact verified_context target statement/);
+  assert.match(promptOf(requests[1]), /including null/);
   const w = await readWorkspace(db, SCOPE, 'e', {}, T); assert.equal(w.bullets.length, 4); assert.equal(w.reviewCards.length, 4); assert.equal(w.actions.length, 0); assert.ok(w.bullets.every(b => b.reviewState === 'draft'));
   const tasks = sqlite.prepare("SELECT c.type,v.statement,v.normalized_value_json FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.type='next_action' ORDER BY c.client_claim_key").all();
   assert.equal(tasks.length, 2); assert.deepEqual(tasks.map(c => JSON.parse(c.normalized_value_json).owner), ['小陈', '小林']);
   assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
 });
 
-for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
+for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
   const { sqlite } = await setup(t); queue(sqlite, { runPrompt, schema, frozen });
   const requests = model(t, (r, n) => {
     if (r.method === 'GET') return { id: 'synthetic_paid_verify', status: 'completed', output_text: JSON.stringify(verification(schema)), usage };
