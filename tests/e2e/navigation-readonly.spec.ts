@@ -55,8 +55,7 @@ test("browser back returns from the core workspace to the exact prior route", as
 
   await page.locator("button.brand:visible").first().click();
   await expect(page).toHaveURL(/\?view=simple$/);
-  await expect(page.getByRole("heading", { name: /^上传录音或笔记/ })).toBeVisible();
-  await expect(page.getByText("先读完整记录，按需确认重点，再跟进和补结果", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^上传录音、笔记、图片/ })).toBeVisible();
 
   await page.goBack();
   await expect(page).toHaveURL(/\?view=projects$/);

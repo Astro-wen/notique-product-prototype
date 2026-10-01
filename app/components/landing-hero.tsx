@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
 import { ArrowRight, FileText, Images, Mic, Upload } from "lucide-react";
 import { NqActionCard } from "./notique-ui";
 import { greetingFor } from "@/lib/domain/greeting";
@@ -20,6 +20,21 @@ export type LandingHeroProps = {
   /** 录音面板和上传进度由父组件塞进来，它们依赖工作区的状态。 */
   children?: ReactNode;
 };
+
+const UPLOADS = ["录音", "笔记", "图片"];
+const BUILDS = ["重点", "待办事项", "项目回顾"];
+const ROTATE_MS = 3000;
+const HEADLINE = `上传${UPLOADS.join("、")}，整理成${BUILDS.join("、")}`;
+
+function Rotator({ words, current }: { words: string[]; current: number }) {
+  return (
+    <span className="landing-rotator">
+      {words.map((word, index) => (
+        <span key={word} className={index === current ? "is-current" : ""}>{word}</span>
+      ))}
+    </span>
+  );
+}
 
 /** 本机时钟没有「订阅」这回事，退订也就什么都不做。 */
 const subscribeToNothing = () => () => {};
@@ -43,11 +58,22 @@ export function LandingHero({
 }: LandingHeroProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragDepth, setDragDepth] = useState(0);
+  const [halfStep, setHalfStep] = useState(0);
+  const uploadIndex = Math.floor((halfStep + 1) / 2) % UPLOADS.length;
+  const buildIndex = Math.floor(halfStep / 2) % BUILDS.length;
   // 问候语要读本机时钟，服务端没有这个东西，所以服务端渲染成空、客户端渲染成
   // 问候语。useSyncExternalStore 的第三个参数就是为这种两边不同准备的：它让
   // React 知道这处不一致是故意的，不会当成 hydration 错误。
   const hello = useSyncExternalStore(subscribeToNothing, clientGreeting, serverGreeting);
   const ready = useSyncExternalStore(subscribeToNothing, clientReady, serverReady);
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setHalfStep((step) => (step + 1) % (2 * UPLOADS.length * BUILDS.length)),
+      ROTATE_MS / 2,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
 
   function takeFiles(files: FileList | null) {
     const list = Array.from(files ?? []);
@@ -88,11 +114,10 @@ export function LandingHero({
             使用说明<ArrowRight size={14} aria-hidden="true" />
           </button>
         </div>
-        <h1>
-          <span className="landing-build">上传录音或笔记</span>
-          <span className="landing-build">整理成<span className="landing-accent">重点和下一步</span></span>
+        <h1 aria-label={HEADLINE}>
+          <span className="landing-build" aria-hidden="true">上传<Rotator words={UPLOADS} current={uploadIndex} /></span>
+          <span className="landing-build" aria-hidden="true">整理成<Rotator words={BUILDS} current={buildIndex} /></span>
         </h1>
-        <p className="landing-sub">查看原文和重点，确认后可跟进或补充结果</p>
       </header>
 
       <div className="landing-actions">
