@@ -49,3 +49,27 @@ export function canResumeProcessingModelStage(
   return persisted.status === "processing"
     && modelStageFrozenInputMatches(persisted, expected);
 }
+
+
+/** Freeze validation guidance on the user-requested retry, including GET recovery. */
+export function inventoryRetryFeedback(
+  persisted: (PersistedModelStageContract & { error_code?: string | null; error_details?: unknown }) | null,
+  expected: ModelStageFrozenInput,
+): string[] {
+  if (!persisted || !modelStageFrozenInputMatches(persisted, expected)) return [];
+  const details = persisted.error_details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return [];
+  const data = details as Record<string, unknown>;
+  if (persisted.status === "processing") {
+    return Array.isArray(data.retry_validation_feedback)
+      ? data.retry_validation_feedback.filter((v): v is string => typeof v === "string").slice(0, 8).map(v => v.slice(0, 600))
+      : [];
+  }
+  if (persisted.status !== "failed" || persisted.error_code !== "MODEL_OUTPUT_INVALID" || !Array.isArray(data.issues)) return [];
+  return data.issues.slice(0, 8).flatMap(issue => {
+    if (!issue || typeof issue !== "object" || Array.isArray(issue)) return [];
+    const { path, message } = issue as Record<string, unknown>;
+    return typeof path === "string" && typeof message === "string"
+      ? [`${path.slice(0, 200)}: ${message.slice(0, 380)}`] : [];
+  });
+}

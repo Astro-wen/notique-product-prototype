@@ -71,6 +71,7 @@ import {
   upsertExtractionModelStage,
 } from "@/lib/server/db/extraction-stage-repository";
 import {
+  inventoryRetryFeedback,
   canResumeProcessingModelStage,
   canReuseSucceededModelStage,
   type ModelStageFrozenInput,
@@ -323,6 +324,7 @@ async function runModelStage<T>(input: {
     idempotencyKey: string;
     resumeProviderResponseId?: string;
     onProviderResponse: (response: { id: string; status: string }) => Promise<void>;
+    qualityFeedback?: string[];
   }) => Promise<{ output: T; usage: ModelUsage }>;
 }): Promise<{ output: T; usage: ModelUsage; reused: boolean }> {
   const existing = await getLatestExtractionModelStage(String(input.run.id), input.stage);
@@ -334,6 +336,10 @@ async function runModelStage<T>(input: {
     schemaVersion: input.schemaVersion,
     inputHash: input.inputHash,
   };
+  const retryFeedback = input.stage === "inventory" ? inventoryRetryFeedback(existing, frozenInput) : [];
+  const stageDetails = retryFeedback.length
+    ? { ...input.details, retry_validation_feedback: retryFeedback }
+    : input.details;
   const canReuseExisting = Boolean(
     existing && canReuseSucceededModelStage(existing, frozenInput),
   );
@@ -372,7 +378,7 @@ async function runModelStage<T>(input: {
       schemaVersion: input.schemaVersion,
       status: "processing",
       inputHash: input.inputHash,
-      errorDetails: input.details,
+      errorDetails: stageDetails,
       startedAt,
     });
   }
@@ -390,7 +396,7 @@ async function runModelStage<T>(input: {
       inputHash: input.inputHash,
       providerRequestId: response.id,
       errorDetails: {
-        ...input.details,
+        ...stageDetails,
         background_response_status: response.status,
       },
       startedAt,
@@ -403,6 +409,7 @@ async function runModelStage<T>(input: {
         ? { resumeProviderResponseId: existing.provider_request_id }
         : {}),
       onProviderResponse,
+      ...(retryFeedback.length ? { qualityFeedback: retryFeedback } : {}),
     });
     const finishedAt = now();
     await upsertExtractionModelStage({
@@ -421,7 +428,7 @@ async function runModelStage<T>(input: {
       cachedTokens: result.usage.cachedTokens,
       providerRequestId: result.usage.providerRequestId,
       validatedOutput: result.output,
-      errorDetails: input.details,
+      errorDetails: stageDetails,
       startedAt,
       finishedAt,
       durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
@@ -452,7 +459,7 @@ async function runModelStage<T>(input: {
         inputHash: input.inputHash,
         providerRequestId: null,
         errorCode: error.code,
-        errorDetails: { ...input.details, ...sanitizedIssue(error) },
+        errorDetails: { ...stageDetails, ...sanitizedIssue(error) },
         startedAt,
         finishedAt,
         durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
@@ -484,7 +491,7 @@ async function runModelStage<T>(input: {
       cachedTokens: usage?.cachedTokens ?? null,
       providerRequestId: usage?.providerRequestId ?? null,
       errorCode: errorCode(error),
-      errorDetails: { ...input.details, ...sanitizedIssue(error) },
+      errorDetails: { ...stageDetails, ...sanitizedIssue(error) },
       startedAt,
       finishedAt,
       durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),

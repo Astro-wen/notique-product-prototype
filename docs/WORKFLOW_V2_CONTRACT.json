@@ -382,6 +382,7 @@
     "frozenLegacyRules": "v9.2至v9.4沿用各自schema与24条限制，继续既有响应、用量和请求身份。",
     "priorityRules": "保留来源明确的未决问题、负责人承诺和所属事项，训练中的举例保留训练语境。已知遗漏及容量提示从候选处置账本派生。",
     "sourceRules": "原文范围处理覆盖与业务信息召回分别验收。qualityNotes仅返回可信当前源修订下的固定提示与原文内容。",
-    "budgetRules": "沿用冻结的输出tokens、超时和阶段上限。输出预算耗尽以MODEL_OUTPUT_TOKEN_LIMIT终态记录，保留已有用量。"
+    "budgetRules": "沿用冻结的输出tokens、超时和阶段上限。输出预算耗尽以MODEL_OUTPUT_TOKEN_LIMIT终态记录，保留已有用量。",
+    "retryValidationFeedback": "提取重点失败后，用户重试失败阶段时携带上一轮的字段校验原因。反馈最多8项，每项最多600字符，并保存在本轮阶段检查点中。关闭页面后继续同一响应，冲突字段仍经过完整校验。"
   }
 }

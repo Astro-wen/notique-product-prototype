@@ -632,3 +632,5 @@ WorkspaceSnapshot.access 由服务端返回 workspaceId、actorId 和 canEdit。
 Bullet.applicability 为并存答案的适用说明，来源是用户明确选择时保存的关系范围。页面和导出一起展示，避免两个不同条件下的答案看起来互相矛盾。
 
 稍后处理与恢复仅更新个人延期和卡片修订，校验当前上下文但保留业务 contextVersion。此类操作返回 refreshState=current，正文和概要继续使用原有版本。
+
+提取重点失败后，用户重试失败阶段时携带上一轮的字段校验原因。反馈最多8项，每项最多600字符，并保存在本轮阶段检查点中。关闭页面后继续同一响应，冲突字段仍经过完整校验。

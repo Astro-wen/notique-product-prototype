@@ -1206,6 +1206,11 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       ...(atomicTasks ? taskAtomicityInstructions() : ["Split separate amounts, dates, decisions, assignments, requirements, questions, risks, conditions, approvals, and next actions."]),
       coverage ? "Mark a proposition critical when its omission changes approved money or scope, accountability, approval authority, a committed milestone, legal or safety exposure, or an unresolved project blocker. Explain every critical choice in critical_reason. Independently retain every source-supported unanswered business question and concrete owner commitment even when critical=false." : "Critical is a rare omission-intolerant fact: money or approved scope, legal or safety exposure, final approval authority, a responsible party whose omission changes accountability, a committed milestone, or an unresolved blocker that can stop the project. Do not mark a fact critical merely because it contains any date, amount, assignment, follow-up, repeated fact, or administrative step. Return at most 10 critical candidates; keep other supported material facts with critical=false. Explain every critical choice in critical_reason.",
       "A photo supports only visible observations. Never infer agreement, liability, causation, structural status, hidden conditions, or price from an image.",
+      ...(options?.qualityFeedback?.length ? [
+        "The previous inventory failed deterministic validation. Correct these fields while retaining every source-supported proposition:",
+        options.qualityFeedback.join("\n"),
+        "normalized_value entries have unique keys. When two values concern different subjects or periods, give them distinct descriptive keys or separate atomic candidates. Preserve their meaning in the statement and evidence.",
+      ] : []),
       `Return strict JSON matching ${contract.schemaVersion}.`,
     ].join("\n\n");
     const result = await this.requestStructuredOutput(

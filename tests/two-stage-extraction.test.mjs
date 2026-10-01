@@ -612,3 +612,17 @@ test("a disposition pointing at a claim that does not exist is still rejected", 
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
 });
+
+test('inventory retry freezes bounded validation feedback and excludes stale or transport failures',async()=>{
+  const {inventoryRetryFeedback}=await import('../lib/server/jobs/model-stage-contract.ts');
+  const frozen={provider:'openai',model:'test',reasoningEffort:'high',promptVersion:'inventory',schemaVersion:'schema',inputHash:'hash'};
+  const row={status:'failed',provider:'openai',model:'test',reasoning_effort:'high',prompt_version:'inventory',schema_version:'schema',input_hash:'hash',error_code:'MODEL_OUTPUT_INVALID',error_details:{issues:[{path:'$.claims[9].normalized_value.entries[1].key',message:'Normalized value keys must be unique.'}]}};
+  const feedback=inventoryRetryFeedback(row,frozen);
+  assert.deepEqual(feedback,['$.claims[9].normalized_value.entries[1].key: Normalized value keys must be unique.']);
+  assert.deepEqual(inventoryRetryFeedback({...row,status:'processing',error_details:{retry_validation_feedback:feedback}},frozen),feedback);
+  assert.deepEqual(inventoryRetryFeedback({...row,input_hash:'different'},frozen),[]);
+  assert.deepEqual(inventoryRetryFeedback({...row,error_code:'MODEL_TIMEOUT'},frozen),[]);
+  assert.deepEqual(inventoryRetryFeedback({...row,status:'succeeded'},frozen),[]);
+  const bounded=inventoryRetryFeedback({...row,error_details:{issues:Array.from({length:20},()=>({path:'p'.repeat(500),message:'m'.repeat(1000)}))}},frozen);
+  assert.equal(bounded.length,8);assert.ok(bounded.every(v=>v.length<=600));
+});

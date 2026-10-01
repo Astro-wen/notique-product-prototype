@@ -78,3 +78,19 @@ test('already paid high-effort checkpoint resumes its frozen configuration with 
  assert.equal((await dispatchWorkflowOutbox()).succeeded,1);assert.deepEqual(requests,['GET']);const after=JSON.parse(job(sqlite).payload_json).checkpoint;
  assert.deepEqual(after.config,before.config);assert.equal(after.config.reasoningEffort,'high');assert.equal(after.inputHash,before.inputHash);assert.equal(after.attempt,before.attempt);assert.equal(after.generation,before.generation);assert.equal(after.providerResponseId,'synthetic_paid');
 });
+
+test('actual inventory adapter sends prior validation guidance and still rejects conflicting keys without a hidden repair',async t=>{
+ await setup(t);const requests=[];
+ globalThis.fetch=async(url,init)=>{
+  assert.ok(String(url).startsWith('https://model.invalid/'));const body=JSON.parse(init.body);requests.push(body);
+  return json({id:'duplicate_inventory',status:'completed',output_text:JSON.stringify({schema_version:'claim-inventory.v4',event_id:'e',candidates:[{normalized_value:{entries:[{key:'forecast',value:'rising'},{key:'forecast',value:'falling'}]}}]}),usage});
+ };
+ const provider=createModelProvider(runtime,{reasoningEffort:'high',maxOutputTokens:64000,timeoutMs:25000});
+ const context={project:{id:'p',scenario:null,locale:'en',context_version:0},verified_context:{active_claims:[],recent_history:[],open_questions:[],active_risks:[],glossary:[]},draft_context:{enabled:false,claims:[]},new_event:{event_id:'e',transcript_segments:[],photos:[],documents:[]}};
+ await assert.rejects(provider.inventoryClaims(context,{qualityFeedback:['$.claims[9].normalized_value.entries[1].key: Normalized value keys must be unique.']}),error=>{
+  assert.equal(error.code,'MODEL_OUTPUT_INVALID');assert.ok(error.issues.some(i=>/unique/.test(i.message)));assert.equal(error.usage.providerRequestId,'duplicate_inventory');return true;
+ });
+ assert.equal(requests.length,1);assert.equal(requests[0].reasoning.effort,'high');assert.equal(requests[0].max_output_tokens,64000);
+ const prompt=requests[0].input[0].content[0].text;
+ assert.ok(prompt.includes('$.claims[9].normalized_value.entries[1].key'));assert.ok(prompt.includes('distinct descriptive keys or separate atomic candidates'));
+});
