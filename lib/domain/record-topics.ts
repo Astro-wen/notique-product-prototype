@@ -7,10 +7,11 @@ const versionKey = (r: {claimId:string;claimVersionId:string}) => JSON.stringify
  * or changes review, execution or resolution state. */
 export function recordTopics(snapshot: Pick<WorkspaceSnapshot,'bullets'|'reviewCards'|'questions'|'actions'|'narrative'>, visible: readonly Bullet[]): RecordTopic[] {
   const currentVersions=new Set(snapshot.bullets.flatMap(b=>b.claimRefs.map(versionKey)));
+  const topicOrder=new Map<string,number>();
   const assignment=new Map<string,{key:string;title:string}>();
   for(const sentence of snapshot.narrative?.sentenceRefs ?? []) {
     if(!sentence.topic || typeof sentence.topic.key!=='string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(sentence.topic.key) || typeof sentence.topic.title!=='string' || !sentence.topic.title.trim() || sentence.topic.title.length>80)continue;
-    for(const ref of sentence.claimRefs)if(currentVersions.has(versionKey(ref)))assignment.set(versionKey(ref),sentence.topic);
+    for(const ref of sentence.claimRefs)if(currentVersions.has(versionKey(ref))){assignment.set(versionKey(ref),sentence.topic);if(!topicOrder.has(sentence.topic.key))topicOrder.set(sentence.topic.key,topicOrder.size);}
   }
   const topicFor=(refs:readonly {claimId:string;claimVersionId:string}[])=>refs.map(r=>assignment.get(versionKey(r))).find(Boolean);
   // A current answer occupies its question's original subject, even while the
@@ -65,5 +66,5 @@ export function recordTopics(snapshot: Pick<WorkspaceSnapshot,'bullets'|'reviewC
       if(group && !group.relatedActionRefs.some(r=>versionKey(r)===versionKey(action.claimRef)))group.relatedActionRefs.push(action.claimRef);
     }
   }
-  return [...groups.values()];
+  return [...groups.values()].sort((a,b)=>(topicOrder.get(a.key) ?? Number.MAX_SAFE_INTEGER)-(topicOrder.get(b.key) ?? Number.MAX_SAFE_INTEGER));
 }

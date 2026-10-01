@@ -31,3 +31,13 @@ test('a link alone cannot silently resolve a question and duplicate links are re
  assert.throws(()=>parseWorkflowRequest('OutcomeRequest',{...b,linkQuestionRefs:[ref('time')]}),WorkflowValidationError);
  assert.throws(()=>parseWorkflowRequest('OutcomeRequest',{...b,resolveQuestions:[{questionId:'time',revision:1,answerText:'15点'}],linkQuestionRefs:[ref('time'),ref('time')]}),WorkflowValidationError);
 });
+
+test('saved subject order survives random claim IDs and different visible filters',()=>{
+ const s=fixture();s.actions=[];s.questions=[];
+ s.bullets=[bullet('background'),bullet('budget')];
+ s.narrative={freshness:'current',sentenceRefs:[{text:'Current budget',topic:{key:'money',title:'预算'},claimRefs:[ref('budget')]},{text:'Context',topic:{key:'context',title:'背景'},claimRefs:[ref('background')]}]};
+ assert.deepEqual(readingTopics(s,s.bullets).map(t=>t.key),['money','context']);
+ assert.deepEqual(readingTopics(s,[s.bullets[0]]).map(t=>t.key),['context']);
+ const overview={currentBullets:s.bullets.map(b=>({...b,eventId:'e'})),recordSummaries:[{eventId:'e',narrative:s.narrative}]};
+ assert.deepEqual(overviewTopics(overview,overview.currentBullets).map(t=>t.title),['预算','背景']);
+});

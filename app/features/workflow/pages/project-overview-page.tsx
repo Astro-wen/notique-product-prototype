@@ -10,22 +10,23 @@ import { workflowService } from '../services/workflow-service';
 import {overviewTopics} from '@/lib/domain/record-reading';
 import styles from './project-overview.module.css';
 
-type Props={projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
+type Props={processing?:boolean;projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
 export function ProjectOverviewPage(props:Props) {
   const entry=useQuery({queryKey:['notique','workflow-v2-overview-entry',props.projectId],queryFn:({signal})=>workflowService.getOverview(props.projectId,{},signal),gcTime:0,staleTime:0,refetchOnWindowFocus:false,retry:false});
   if(!entry.data)return <section className="meeting-tab-panel" aria-live="polite"><p>{entry.isError?'暂时无法读取项目回顾。':'正在读取项目回顾…'}</p>{entry.isError && <NqButton variant="secondary" onClick={()=>void entry.refetch()}>重新读取</NqButton>}</section>;
   return <LoadedOverview key={`${entry.data.access.workspaceId}:${entry.data.access.actorId}:${props.projectId}`} {...props} initial={entry.data}/>;
 }
-function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {initial:ProjectOverview}) {
+function LoadedOverview({projectId,onOpenRecord,onContinue,processing=false,initial}:Props & {initial:ProjectOverview}) {
   const client=useQueryClient();
   const key=['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId];
-  const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,
+  const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,refetchInterval:q=>processing||q.state.data?.recordSummaries.some(r=>r.narrative?.freshness==='updating')?3000:false,
     structuralSharing:(old:unknown,next:unknown)=>{const a=old as ProjectOverview|undefined,b=next as ProjectOverview;return a && a.contextVersion>b.contextVersion?a:b;}});
   const [acceptedOnly,setAcceptedOnly]=useState(false),[expandedTopics,setExpandedTopics]=useState<Set<string>>(()=>new Set()),[followupLimit,setFollowupLimit]=useState(5),[loadingMore,setLoadingMore]=useState(false),[pageError,setPageError]=useState('');
   const snapshot=overview.data;
   const denied=overview.error instanceof ApiClientError && [401,403,404,410].includes(overview.error.status);
   if(denied)return <section className="meeting-tab-panel"><p>当前账号已无法访问这个项目。</p></section>;
   if(!snapshot)return <section className="meeting-tab-panel"><p>正在读取项目回顾…</p></section>;
+  const unfinished=snapshot.recordSummaries.filter(r=>!r.coverage.complete);
   const records=new Map(snapshot.recordSummaries.map(r=>[r.eventId,r]));
   const titleFor=(id:string)=>snapshot.currentBullets.find(b=>b.claimRefs.some(r=>r.claimId===id))?.text ?? '打开相关记录';
   const bullets=snapshot.currentBullets.filter(b=>!acceptedOnly || b.reviewState==='accepted');
@@ -42,6 +43,7 @@ function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {ini
   return <div className={styles.overview} data-testid="project-overview">
     <header className={styles.header}><div><h1>项目回顾</h1><p>{snapshot.recordSummaries.length} 次沟通</p></div>{snapshot.access.canEdit && <NqButton onClick={onContinue}><Plus size={15}/>添加下一次记录</NqButton>}</header>
     {(overview.isError || pageError) && <div role="alert" className={styles.notice}>{pageError || '暂时无法同步最新项目。'}<NqButton variant="quiet" onClick={()=>{setPageError('');void overview.refetch();}}>重新读取</NqButton></div>}
+    {unfinished.length>0 && <p className={styles.notice} role="status">还有 {unfinished.length} 次记录尚未整理完成。<NqButton variant="quiet" onClick={()=>open(unfinished[0].eventId)}>查看记录与进度<ArrowRight size={13}/></NqButton></p>}
     {!snapshot.access.canEdit && <p className={styles.notice}>当前为只读模式，可查看重点与相关记录。</p>}
     <div className={styles.grid}>
       <NqSurface className={styles.panel} aria-label="项目当前重点"><div className={styles.sectionHeading}><h2>当前重点</h2><div className={styles.filters}><button aria-pressed={!acceptedOnly} onClick={()=>{setAcceptedOnly(false);setExpandedTopics(new Set());}}>全部</button><button aria-pressed={acceptedOnly} onClick={()=>{setAcceptedOnly(true);setExpandedTopics(new Set());}}>已确认</button></div></div>
@@ -52,7 +54,7 @@ function LoadedOverview({projectId,onOpenRecord,onContinue,initial}:Props & {ini
       <NqSurface className={styles.panel} aria-label="项目下一步"><h2>接下来</h2>
         {snapshot.nextActions.length>0 && <><h3>正在跟进 <small>{snapshot.nextActions.length}</small></h3>{snapshot.nextActions.slice(0,followupLimit).map(a=><article className={styles.todo} key={a.id}><p>{titleFor(a.id)}</p>{(a.ownerHint || a.dueAt) && <div className={styles.meta}>{a.ownerHint && <small>负责人：{a.ownerHint}</small>}{a.dueAt && <small>期限：{new Date(a.dueAt).toLocaleDateString('zh-CN',{timeZone:'UTC'})}</small>}</div>}{a.basisState==='needs_review' && <NqStatus tone="pending">依据有变化</NqStatus>}<NqButton variant="quiet" onClick={()=>open(a.eventId,a.id)}>继续跟进<ArrowRight size={13}/></NqButton></article>)}</>}
         {snapshot.openQuestions.length>0 && <><h3>还需要答案 <small>{snapshot.openQuestions.length}</small></h3>{snapshot.openQuestions.slice(0,followupLimit).map(q=><article className={styles.todo} key={q.id}><p>{titleFor(q.id)}</p><NqButton variant="quiet" onClick={()=>open(q.eventId,q.id)}>{snapshot.access.canEdit?'去补答案':'查看问题'}<ArrowRight size={13}/></NqButton></article>)}</>}
-        {!snapshot.nextActions.length && !snapshot.openQuestions.length && <p className={styles.empty}>当前没有待跟进行动或未决问题。</p>}
+        {!snapshot.nextActions.length && !snapshot.openQuestions.length && <p className={styles.empty}>{unfinished.length?'整理完成后，下一步会显示在这里。':'当前没有待跟进行动或未决问题。'}</p>}
         {(snapshot.nextActions.length>followupLimit || snapshot.openQuestions.length>followupLimit) && <NqButton variant="quiet" onClick={()=>setFollowupLimit(n=>n+5)}>再看 5 项</NqButton>}
       </NqSurface>
     </div>

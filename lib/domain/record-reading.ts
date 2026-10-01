@@ -32,10 +32,12 @@ export function pendingItems(snapshot: Pick<WorkspaceSnapshot,'reviewCards'|'que
 /** Same headings as the record, with exact-version membership from saved summaries. */
 export function overviewTopics(snapshot: ProjectOverview, visible: ProjectOverview['currentBullets']) {
   const topics=new Map<string, {key:string;title:string;bullets:ProjectOverview['currentBullets']}>();
+  const order=new Map<string,number>();
   const byVersion=new Map<string,RecordTopic>();
   for(const record of snapshot.recordSummaries) {
     const bullets=snapshot.currentBullets.filter(b=>b.eventId===record.eventId);
     const groups=recordTopics({bullets,reviewCards:[],questions:[],actions:[],narrative:record.narrative},bullets);
+    for(const group of groups) {const key=JSON.stringify([group.key,group.title]);if(!order.has(key))order.set(key,order.size);}
     for(const group of groups) for(const b of group.bullets) for(const r of b.claimRefs)byVersion.set(JSON.stringify(r),group);
   }
   for(const b of visible) {
@@ -44,5 +46,5 @@ export function overviewTopics(snapshot: ProjectOverview, visible: ProjectOvervi
     if(!topics.has(key))topics.set(key,{key,title,bullets:[]});
     topics.get(key)!.bullets.push(b);
   }
-  return [...topics.values()];
+  return [...topics.values()].sort((a,b)=>(order.get(a.key) ?? Number.MAX_SAFE_INTEGER)-(order.get(b.key) ?? Number.MAX_SAFE_INTEGER));
 }
