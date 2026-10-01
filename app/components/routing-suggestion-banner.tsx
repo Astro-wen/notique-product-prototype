@@ -36,7 +36,7 @@ export function RoutingSuggestionBanner({
       <span className="workflow-reading-icon" aria-hidden="true"><FolderOpen /></span>
       <div>
         <strong>这条记录可能属于 {name}</strong>
-        <p>根据本次概要建议，请确认项目是否正确。移动记录时，材料和逐字稿也会移入该项目。</p>
+        <p>按概要推荐的项目不一定对，请核对。材料和逐字稿会随记录一起移动。</p>
       </div>
       <span className="workflow-reading-actions">
         <button className="text-button" disabled={busy} onClick={onDismiss}>不用了</button>
