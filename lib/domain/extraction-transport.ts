@@ -7,7 +7,7 @@ export function extractionTransport(input: ContextPack) {
   const used=new Set<string>();
   const counters=new Map<string,number>();
   const referenceKeys=new Set(['eventId','event_id','assetVersionId','asset_version_id','claimId','claim_id','target_claim_id','target_draft_claim_id','reaffirmed_target_claim_id','claimVersionId','claim_version_id','target_claim_version_id','target_draft_claim_version_id','reaffirmed_target_version_id']);
-  const referenceArrays=new Set(['segmentIds','segment_ids','sourceSegmentIds','source_segment_ids','evidenceRefIds','evidence_ref_ids']);
+  const referenceArrays=new Set(['segmentIds','segment_ids','sourceSegmentIds','source_segment_ids','evidenceRefIds','evidence_ref_ids','closure_version_ids']);
   const literalKeys=new Set(['textRaw','textNormalized','statement','quote_hint','quote_raw','observation','normalizedValue','normalized_value','readableText','modelUrl','uncertainty','reason','meaning','term']);
   const collect=(value:unknown):void=>{
     if(Array.isArray(value)){value.forEach(collect);return;}

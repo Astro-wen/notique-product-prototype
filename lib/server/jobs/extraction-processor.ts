@@ -1,3 +1,5 @@
+import {closedFollowupContext} from "@/lib/domain/closed-followup-context";
+import {loadWorkflowLedger} from "@/lib/server/workflow/snapshot-store";
 import { verificationWaitBudget } from "@/lib/domain/verification-wait-budget";
 import { ANALYSIS_SOURCE_SQL } from "@/lib/server/workflow/analysis-service";
 import { classifyActionStatement } from "@/lib/domain/action-classification";
@@ -26,6 +28,7 @@ import {
 } from "@/lib/domain/evidence";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
+  HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   isClaimExtractionPromptVersion,
   extractionClaimLimit,
@@ -832,6 +835,11 @@ async function loadContextInput(run: Row): Promise<{
       evidenceRefIds: claim.evidence_ref_ids,
       })),
   });
+  if(frozenModelParams.verification_prompt_version===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION) {
+    const workflowLedger=await loadWorkflowLedger(getD1(),{...scope,access:'demo'},String(run.project_id));
+    if(workflowLedger.contextVersion!==Number(run.context_version))throw new ProcessingFault('CLAIM_VERSION_CONFLICT','Project context changed before closure evidence was frozen.');
+    contextPack.verified_context.closed_followups=closedFollowupContext(workflowLedger,ledger,String(run.event_id),segments);
+  }
   const snapshotContext = contextSnapshotView(contextPack);
   const contextSnapshotJson = JSON.stringify(snapshotContext);
   const maxInputTokens = configuredInteger(bindings.MAX_RUN_INPUT_TOKENS, 120_000);

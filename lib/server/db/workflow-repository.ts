@@ -152,7 +152,20 @@ export async function getWorkflowSnapshot(
                   AND c.workspace_id = e.workspace_id), 0) +
               COALESCE((SELECT COUNT(*) FROM claim_occurrence_candidates occ
                 WHERE occ.extraction_run_id = e.active_run_id
-                  AND occ.workspace_id = e.workspace_id), 0) AS candidate_count,
+                  AND occ.workspace_id = e.workspace_id), 0) +
+              COALESCE((SELECT COUNT(DISTINCT c.id)
+                FROM json_each(COALESCE((SELECT s.validated_output_json
+                  FROM extraction_model_stages s WHERE s.run_id=er.id
+                    AND s.status='succeeded' AND s.schema_version='claim-verification.v7'
+                    AND s.stage IN ('verify','verify_escalated')
+                  ORDER BY CASE s.stage WHEN 'verify_escalated' THEN 2 ELSE 1 END DESC,
+                    s.attempt DESC LIMIT 1), '{}'), '$.candidate_dispositions') handled
+                JOIN claims c ON c.id=json_extract(handled.value,'$.handled_ref.claim_id')
+                  AND c.current_version_id=json_extract(handled.value,'$.handled_ref.claim_version_id')
+                  AND c.workspace_id=e.workspace_id AND c.event_id=e.id
+                  AND c.lifecycle_status NOT IN ('withdrawn','superseded')
+                WHERE er.status IN ('succeeded','completed_with_warnings')
+                  AND json_extract(handled.value,'$.outcome')='already_handled'),0) AS candidate_count,
               COALESCE((SELECT COUNT(*) FROM claims c
                 WHERE c.extraction_run_id = e.active_run_id
                   AND c.workspace_id = e.workspace_id

@@ -11,6 +11,7 @@ import {
 import {
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   CLAIM_EXTRACTION_PROMPT_VERSION,
+  HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION,
   CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION,
   COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION,
@@ -51,6 +52,8 @@ import {
   type InventorySchemaVersion,
   verificationClaimLimit,
   VERIFICATION_SCHEMA_VERSION,
+  HANDLED_VERIFICATION_SCHEMA_VERSION,
+  hasFollowupCoverage,
   LEGACY_VERIFICATION_SCHEMA_VERSION,
   inventoryContractForRun,
   verificationContractForRun,
@@ -466,12 +469,16 @@ function verificationJsonSchema(version:VerificationSchemaVersion = VERIFICATION
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["inventory_key", "outcome", "final_claim_keys", "reason"],
+          required: ["inventory_key", "outcome", "final_claim_keys", "reason",...(version===HANDLED_VERIFICATION_SCHEMA_VERSION?["handled_ref"]:[])],
           properties: {
+            ...(version===HANDLED_VERIFICATION_SCHEMA_VERSION?{handled_ref:{anyOf:[{type:"null"},{type:"object",additionalProperties:false,required:["claim_id","claim_version_id","closure_version_ids","confidence"],properties:{
+              claim_id:{type:"string",minLength:1,maxLength:200},claim_version_id:{type:"string",minLength:1,maxLength:200},
+              closure_version_ids:{type:"array",minItems:1,maxItems:64,items:{type:"string",minLength:1,maxLength:200}},confidence:{type:"number",minimum:0.9,maximum:1},
+            }}]}}:{}),
             inventory_key: { type: "string", minLength: 1, maxLength: MODEL_CONTRACT_LIMITS.identifierLength },
             outcome: {
               type: "string",
-              enum: ["included", "merged", "duplicate", "unsupported", "lower_priority"],
+              enum: ["included", "merged", "duplicate", "unsupported", "lower_priority",...(version===HANDLED_VERIFICATION_SCHEMA_VERSION?["already_handled"]:[])],
             },
             final_claim_keys: {
               type: "array",
@@ -982,7 +989,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       };
       try {
         const version = (schema.properties as {schema_version?: {enum?: unknown[]}} | undefined)?.schema_version?.enum?.[0];
-        if ((version === INVENTORY_SCHEMA_VERSION || version === VERIFICATION_SCHEMA_VERSION || version === WORKFLOW_NARRATIVE_SCHEMA_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
+        if ((version === INVENTORY_SCHEMA_VERSION || hasFollowupCoverage(version) || version === WORKFLOW_NARRATIVE_SCHEMA_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
         const content = isOpenAi
           ? openAiResponseText(body)
           : body.choices?.[0]?.message?.content;
@@ -1209,7 +1216,8 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
 
   async inventoryClaims(input: ContextPack, options?: ModelStageRequestOptions) {
     const contract=inventoryContractForRun({inventory_prompt_version:options?.extractionPromptVersion ?? CLAIM_EXTRACTION_PROMPT_VERSION});
-    const promptVersion=contract.promptVersion;
+    const frozenPromptVersion=contract.promptVersion;
+    const promptVersion=frozenPromptVersion===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION?CLAIM_EXTRACTION_PROMPT_VERSION:frozenPromptVersion;
     const transport=(promptVersion===SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION||promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION)?extractionTransport(input):null;
     if(transport){input=transport.input;options={...options,qualityFeedback:transport.feedback(options?.qualityFeedback??[])};}
     const coverage = (promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION);
@@ -1284,11 +1292,12 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   async verifyClaims(input: ContextPack, inventory: InventoryOutput, options?: ModelStageRequestOptions) {
     const originalInput=input,originalInventory=inventory;
     const version=options?.verificationSchemaVersion ?? VERIFICATION_SCHEMA_VERSION;
-    const promptVersion=verificationContractForRun({verification_schema_version:version,...(options?.extractionPromptVersion ? {verification_prompt_version:options.extractionPromptVersion} : {})}).promptVersion;
+    const frozenPromptVersion=verificationContractForRun({verification_schema_version:version,...(options?.extractionPromptVersion ? {verification_prompt_version:options.extractionPromptVersion} : {})}).promptVersion;
+    const promptVersion=frozenPromptVersion===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION?CLAIM_EXTRACTION_PROMPT_VERSION:frozenPromptVersion;
     const transport=(promptVersion===SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION||promptVersion===CLAIM_EXTRACTION_PROMPT_VERSION)?extractionTransport(input):null;
     if(transport){input=transport.input;inventory=transport.encode(inventory);options={...options,qualityFeedback:transport.feedback(options?.qualityFeedback??[])};}
     const atomicTasks=hasAtomicTaskExtraction(promptVersion);
-    const coverage = version === VERIFICATION_SCHEMA_VERSION;
+    const coverage = hasFollowupCoverage(version);
     const scenarioInstruction = input.project.scenario === null
       ? "Return exactly 2 or 3 distinct scenario candidates grounded in this event."
       : "The project scenario is already confirmed; scenario_assessment must be null.";
@@ -1299,6 +1308,12 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       ...concreteTaskInstructions(promptVersion),
       "STAGE: COVERAGE, LIFECYCLE, AND RELATION VERIFICATION",
       ...(promptVersion === CLAIM_EXTRACTION_PROMPT_VERSION ? ["For disposition=reaffirmed, copy the exact verified_context target statement, type and normalizedValue, including null, into statement, type and normalized_value. Both target IDs must identify that exact current version. Return relations=[]. A paraphrase, changed structured value, new condition or new result must use disposition=new with both reaffirmed target IDs null. Preserve user-confirmed wording and values exactly. Previously answered questions and completed actions retain their current state. Repeating the original recording does not reopen or resolve them."] : []),
+      ...(version===HANDLED_VERIFICATION_SCHEMA_VERSION?[
+        "verified_context.closed_followups identifies user-confirmed answered questions and completed actions originating in this same event and exact material versions. It includes the precise item version, current closure versions, current answer text and original raw evidence. Audit every inventory candidate against these items before creating new follow-up suggestions.",
+        "Use candidate outcome=already_handled only for the same original question or concrete task from exactly that original raw evidence, with identity confidence at least 0.9. Copy the exact claimId and claimVersionId to handled_ref.claim_id and claim_version_id and ALL closureRefs.claimVersionId values to closure_version_ids. Map it to no final claim. The existing item, accepted answer and execution state remain authoritative. Reprocessing this recording does not create a new question, contradict its later answer, reopen the old question or create another task.",
+        "Every other disposition has handled_ref=null. A similar topic, different event or material, newly added condition, uncertain identity or stale closure does not qualify. Preserve a new independently supported question or commitment with included/merged and exact evidence. A new genuine disagreement remains an explicit review proposal. Rejected or withdrawn answers and reopened actions are not covered.",
+        "An older statement that a prerequisite was missing at this meeting does not contradict a later saved answer solely because time has passed. Retain material meeting-time facts as historical statements with source attribution and informed_by to the exact later answer where justified. The old fact alone is not a fresh unanswered question. Keep distinct remaining conditions as their own supported questions.",
+      ]:[]),
       "Audit the supplied atomic inventory against the complete Context Pack, then produce the final human-review queue.",
       "When readable_transcript_segments are present, use them only as a readability aid. They may clarify punctuation or sentence boundaries, but they are not Evidence. Every final evidence item must cite the authoritative raw transcript_segments IDs and exact raw wording.",
       scenarioInstruction,
@@ -1390,6 +1405,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
   }
 
   async extractClaims(input: ContextPack, signal?: AbortSignal, promptVersion: ClaimExtractionPromptVersion = CLAIM_EXTRACTION_PROMPT_VERSION) {
+    if(promptVersion===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION)promptVersion=CLAIM_EXTRACTION_PROMPT_VERSION;
     if(!isClaimExtractionPromptVersion(promptVersion))throw new ModelProviderRequestError('Unsupported frozen extraction prompt.',null);
     const atomicTasks=hasAtomicTaskExtraction(promptVersion);
     if (this.provider === "deepseek" && input.new_event.photos.length) {

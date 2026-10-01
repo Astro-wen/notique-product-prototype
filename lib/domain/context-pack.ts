@@ -24,6 +24,18 @@ export type ContextPackAsset = {
   modelUrl: string;
 };
 
+/** Current, user-confirmed closure of an item from the very same source. */
+export type ClosedFollowupContext = {
+  claimId: string;
+  claimVersionId: string;
+  eventId: string;
+  type: 'open_question' | 'next_action';
+  statement: string;
+  state: 'answered' | 'completed';
+  closureRefs: Array<{claimId:string;claimVersionId:string;statement:string}>;
+  sourceEvidence: Array<{assetVersionId:string;segmentIds:string[];quoteRaw:string}>;
+};
+
 /**
  * A prior unreviewed AI candidate. It may help the verifier notice continuity,
  * but it is deliberately weaker than ContextClaim: it has no lifecycle state
@@ -70,6 +82,8 @@ export type ContextPack = {
     recent_history: ContextClaim[];
     open_questions: ContextClaim[];
     active_risks: ContextClaim[];
+    /** Only new v9.11 runs carry this field. Paid older inputs stay unchanged. */
+    closed_followups?: ClosedFollowupContext[];
   };
   draft_context: {
     enabled: boolean;

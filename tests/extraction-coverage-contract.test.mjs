@@ -6,8 +6,8 @@ import {existsSync,readFileSync} from 'node:fs';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {workflowDatabase,seed,insert,SCOPE} from './helpers/workflow-database.mjs';
-import {CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
-import {INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,VERIFICATION_SCHEMA_VERSION,ATOMIC_VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,inventoryContractForRun,verificationContractForRun,validateInventoryOutput,assessVerificationEscalation,verificationCoverageWarnings} from '../lib/domain/two-stage-extraction.ts';
+import {HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
+import {HANDLED_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,VERIFICATION_SCHEMA_VERSION,ATOMIC_VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,inventoryContractForRun,verificationContractForRun,validateInventoryOutput,assessVerificationEscalation,verificationCoverageWarnings} from '../lib/domain/two-stage-extraction.ts';
 import {extractionCoverageSummary} from '../lib/domain/extraction-coverage.ts';
 
 // Replace only the deployment's bindings. The actual model adapter, stage
@@ -136,14 +136,14 @@ test('coverage notes sanitize unknown errors, invalid flags, duplicate statement
  assert.equal(notes.omittedStatements.length,200);assert.equal(notes.omittedStatements[0],'unresolved count');assert.equal(notes.omittedStatements[1].length,8000);assert.ok(!JSON.stringify(notes).includes('private-error'));
 });
 
-test('new run freezes inventory v4, verification v6, both 64 limits and configured token budget without provider work',async t=>{
+test('new run freezes inventory v4, verification v7, both 64 limits and configured token budget without provider work',async t=>{
  const {sqlite}=await setup(t);globalThis.fetch=async()=>{throw Error('Run creation must not invoke a model.');};
  for(const budget of [24000,64000]){
   sqlite.prepare("UPDATE extraction_runs SET status='succeeded'").run();sqlite.prepare("UPDATE events SET material_status='ready',active_run_id=NULL WHERE id='e'").run();
   Object.assign(globalThis.notiqueCoverageTest.bindings,{AI_TWO_PASS_PIPELINE:'1',AI_MAX_OUTPUT_TOKENS:String(budget),WORKSPACE_MONTHLY_TOKEN_BUDGET:'1000000'});
   const created=await createExtractionRun(SCOPE,'e',`new-contract-${budget}`,['av']);assert.equal(created.created,true);
   const row=sqlite.prepare('SELECT * FROM extraction_runs WHERE id=?').get(created.run.id),params=JSON.parse(row.model_params_json);
-  assert.equal(row.prompt_version,CLAIM_EXTRACTION_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,VERIFICATION_SCHEMA_VERSION);
+  assert.equal(row.prompt_version,HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,HANDLED_VERIFICATION_SCHEMA_VERSION);assert.equal(params.closed_followup_policy,'same-source-current-closure.v1');
   assert.equal(params.inventory_candidate_limit,64);assert.equal(params.final_claim_limit,64);assert.equal(params.retention_policy,'explicit-followups.v1');assert.equal(params.max_output_tokens,budget);
   assert.equal(sqlite.prepare('SELECT count(*) n FROM extraction_model_stages').get().n,0);
  }

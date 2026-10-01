@@ -10,10 +10,10 @@ import {
   twoPassPipelineEnabled,
 } from "@/lib/domain/model-config";
 import {
-  CLAIM_EXTRACTION_PROMPT_VERSION,
+  HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
 } from "@/lib/domain/model-contract";
-import { TWO_STAGE_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION, VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from "@/lib/domain/two-stage-extraction";
+import { HANDLED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from "@/lib/domain/two-stage-extraction";
 import { parseTranscript } from "@/lib/domain/transcript";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
@@ -2553,20 +2553,21 @@ export async function createExtractionRun(
       escalation_reasoning_effort: escalationReasoningEffort,
       optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
       background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
+      closed_followup_policy: pipelineEnabled ? "same-source-current-closure.v1" : null,
       two_pass_pipeline: pipelineEnabled,
-      verification_schema_version: pipelineEnabled ? VERIFICATION_SCHEMA_VERSION : null,
-      inventory_prompt_version: pipelineEnabled ? TWO_STAGE_EXTRACTION_PROMPT_VERSION : null,
+      verification_schema_version: pipelineEnabled ? HANDLED_VERIFICATION_SCHEMA_VERSION : null,
+      inventory_prompt_version: pipelineEnabled ? HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : null,
       inventory_schema_version: pipelineEnabled ? INVENTORY_SCHEMA_VERSION : null,
       inventory_candidate_limit: pipelineEnabled ? TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates : null,
       final_claim_limit: pipelineEnabled ? TWO_STAGE_EXTRACTION_LIMITS.finalClaims : null,
       retention_policy: pipelineEnabled ? EXTRACTION_RETENTION_POLICY : null,
-      verification_prompt_version: pipelineEnabled ? VERIFICATION_PROMPT_VERSION : null,
+      verification_prompt_version: pipelineEnabled ? HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : null,
       draft_context: draftContextEnabled,
       draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
       max_output_tokens: maxOutputTokens,
       timeout_ms: timeoutMs,
-      prompt_version: CLAIM_EXTRACTION_PROMPT_VERSION,
+      prompt_version: HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
       schema_version: CLAIM_EXTRACTION_SCHEMA_VERSION,
       parser_version: "transcript-parser.v1",
       locale: project.locale,
@@ -2649,8 +2650,9 @@ export async function createExtractionRun(
     escalation_reasoning_effort: escalationReasoningEffort,
     optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
     background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
+    closed_followup_policy: pipelineEnabled ? "same-source-current-closure.v1" : null,
     two_pass_pipeline: pipelineEnabled,
-    ...(pipelineEnabled ? {verification_schema_version: VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: TWO_STAGE_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION, inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates, final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY, verification_prompt_version: VERIFICATION_PROMPT_VERSION} : {}),
+    ...(pipelineEnabled ? {verification_schema_version: HANDLED_VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION, inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates, final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY, verification_prompt_version: HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION} : {}),
     draft_context: draftContextEnabled,
     draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,
@@ -2754,7 +2756,7 @@ export async function createExtractionRun(
       bindings.AI_PROVIDER,
       bindings.AI_MODEL,
       modelParamsJson,
-      CLAIM_EXTRACTION_PROMPT_VERSION,
+      HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
       CLAIM_EXTRACTION_SCHEMA_VERSION,
       timestamp,
       timestamp,
