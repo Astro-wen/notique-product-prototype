@@ -46,5 +46,6 @@ export function overviewTopics(snapshot: ProjectOverview, visible: ProjectOvervi
     if(!topics.has(key))topics.set(key,{key,title,bullets:[]});
     topics.get(key)!.bullets.push(b);
   }
+  for(const topic of topics.values())topic.bullets.sort((a,b)=>Number(!(a.reviewState==='accepted'&&a.origin==='user_input'&&a.sourceStatus==='ready'))-Number(!(b.reviewState==='accepted'&&b.origin==='user_input'&&b.sourceStatus==='ready')));
   return [...topics.values()].sort((a,b)=>(order.get(a.key) ?? Number.MAX_SAFE_INTEGER)-(order.get(b.key) ?? Number.MAX_SAFE_INTEGER));
 }

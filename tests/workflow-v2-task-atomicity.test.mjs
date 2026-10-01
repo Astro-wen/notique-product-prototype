@@ -91,6 +91,7 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const created = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']);
   const frozen = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
   assert.equal(created.run.prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, VERIFICATION_SCHEMA_VERSION);
+  assert.equal(frozen.optional_verification_wait_ms, 120_000);
   const replay = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']); assert.equal(replay.created, false); assert.equal(replay.run.input_hash, created.run.input_hash);
   const requests = model(t, (r, n) => ({ id: `synthetic_${n}`, status: 'completed', output_text: JSON.stringify(r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION ? inventory() : verification()), usage }));
   const result = await processExtractionRun(created.run.id); assert.equal(result.status, 'succeeded', JSON.stringify({ result, error: sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id) })); assert.equal(requests.length, 2); assert.equal(result.persistedClaims, 4);

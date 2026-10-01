@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Plus } from 'lucide-react';
 import { NqButton, NqStatus, NqSurface } from '@/app/components/notique-ui';
@@ -10,17 +10,20 @@ import { workflowService } from '../services/workflow-service';
 import {overviewTopics} from '@/lib/domain/record-reading';
 import styles from './project-overview.module.css';
 
-type Props={processing?:boolean;projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
+type Props={processing?:boolean;refreshToken?:string;projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
 export function ProjectOverviewPage(props:Props) {
   const entry=useQuery({queryKey:['notique','workflow-v2-overview-entry',props.projectId],queryFn:({signal})=>workflowService.getOverview(props.projectId,{},signal),gcTime:0,staleTime:0,refetchOnWindowFocus:false,retry:false});
   if(!entry.data)return <section className="meeting-tab-panel" aria-live="polite"><p>{entry.isError?'暂时无法读取项目回顾。':'正在读取项目回顾…'}</p>{entry.isError && <NqButton variant="secondary" onClick={()=>void entry.refetch()}>重新读取</NqButton>}</section>;
   return <LoadedOverview key={`${entry.data.access.workspaceId}:${entry.data.access.actorId}:${props.projectId}`} {...props} initial={entry.data}/>;
 }
-function LoadedOverview({projectId,onOpenRecord,onContinue,processing=false,initial}:Props & {initial:ProjectOverview}) {
+function LoadedOverview({projectId,onOpenRecord,onContinue,processing=false,refreshToken,initial}:Props & {initial:ProjectOverview}) {
   const client=useQueryClient();
   const key=['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId];
   const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,refetchInterval:q=>processing||q.state.data?.recordSummaries.some(r=>r.narrative?.freshness==='updating')?3000:false,
     structuralSharing:(old:unknown,next:unknown)=>{const a=old as ProjectOverview|undefined,b=next as ProjectOverview;return a && a.contextVersion>b.contextVersion?a:b;}});
+  useEffect(()=>{
+    if(!processing)void client.invalidateQueries({queryKey:['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId],exact:true});
+  },[client,initial.access.workspaceId,initial.access.actorId,projectId,processing,refreshToken]);
   const [acceptedOnly,setAcceptedOnly]=useState(false),[expandedTopics,setExpandedTopics]=useState<Set<string>>(()=>new Set()),[followupLimit,setFollowupLimit]=useState(5),[loadingMore,setLoadingMore]=useState(false),[pageError,setPageError]=useState('');
   const snapshot=overview.data;
   const denied=overview.error instanceof ApiClientError && [401,403,404,410].includes(overview.error.status);

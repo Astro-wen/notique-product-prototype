@@ -41,3 +41,10 @@ test('saved subject order survives random claim IDs and different visible filter
  const overview={currentBullets:s.bullets.map(b=>({...b,eventId:'e'})),recordSummaries:[{eventId:'e',narrative:s.narrative}]};
  assert.deepEqual(overviewTopics(overview,overview.currentBullets).map(t=>t.title),['预算','背景']);
 });
+
+test('overview promotes accepted current user results without hiding original records or stale items',()=>{
+ const original={...bullet('original'),eventId:'e'},result={...bullet('result'),eventId:'e',origin:'user_input',reviewState:'accepted'},stale={...bullet('stale'),eventId:'e',origin:'user_input',reviewState:'accepted',sourceStatus:'stale'};
+ const s={currentBullets:[original,stale,result],recordSummaries:[{eventId:'e',narrative:{sentenceRefs:[{text:'current',topic,claimRefs:[ref('original'),ref('stale'),ref('result')]}]}}]};
+ const before=structuredClone(s);
+ assert.deepEqual(overviewTopics(s,s.currentBullets)[0].bullets.map(b=>b.id),['result','original','stale']);assert.deepEqual(s,before);
+});

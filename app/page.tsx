@@ -7618,7 +7618,7 @@ function SimpleTestScreen({
             </> : <div className="tab-empty"><span aria-hidden="true"><FileText /></span><h3>先选一条记录</h3><p>选中之后才能读原文和确认要点</p><button className="button secondary" onClick={() => setActiveTab("materials")}>去添加材料</button></div>}
           </div>}
 
-          {!workflowAccessBlocked && activeTab === "results" && <ProjectOverviewPage processing={analysisRunning || transcriptionRunning || currentAudioPreparations.length > 0} projectId={project.id} onOpenRecord={openOverviewRecord} onContinue={onNewEvent}/>}
+          {!workflowAccessBlocked && activeTab === "results" && <ProjectOverviewPage refreshToken={`${run?.updatedAt ?? ""}:${run?.id ?? ""}:${run?.status ?? ""}`} processing={analysisRunning || transcriptionRunning || currentAudioPreparations.length > 0} projectId={project.id} onOpenRecord={openOverviewRecord} onContinue={onNewEvent}/>}
         </article>
       </section>}
 

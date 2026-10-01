@@ -1,3 +1,4 @@
+import { verificationWaitBudget } from "@/lib/domain/verification-wait-budget";
 import { ANALYSIS_SOURCE_SQL } from "@/lib/server/workflow/analysis-service";
 import { classifyActionStatement } from "@/lib/domain/action-classification";
 import { canResolveClaim } from "@/lib/domain/relation-policy";
@@ -2254,7 +2255,7 @@ export async function processExtractionRun(
                 extractionPromptVersion: verificationContract.promptVersion,
                 verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
-                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
+                backgroundStallMs: verificationWaitBudget(timeoutMs ?? MAX_AI_TIMEOUT_MS, frozenModelParams.optional_verification_wait_ms, Boolean(acceptedVerification), storedEscalationReasons),
                 qualityFeedback: [
                   ...storedEscalationReasons,
                   "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
@@ -2337,7 +2338,7 @@ export async function processExtractionRun(
                 extractionPromptVersion: verificationContract.promptVersion,
                 verificationSchemaVersion: verificationContract.schemaVersion,
                 promptCacheKey: `notique:${leased.id}:two-stage`,
-                backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS,
+                backgroundStallMs: verificationWaitBudget(timeoutMs ?? MAX_AI_TIMEOUT_MS, frozenModelParams.optional_verification_wait_ms, Boolean(acceptedVerification), assessment.reasons),
                 qualityFeedback: [
                   ...assessment.reasons,
                   ...(assessment.droppedCriticalInventoryKeys.length

@@ -2022,5 +2022,6 @@ test("后台响应卡住：产物和分块都丢掉旧 id 重发，抽取阶段�
   assert.match(stalledBranch, /status: "failed"/);
   assert.match(stalledBranch, /providerRequestId: null/);
   // 清点、核对、两处重核，四个阶段调用点都带预算。
-  assert.equal((processor.match(/backgroundStallMs: timeoutMs \?\? MAX_AI_TIMEOUT_MS/g) || []).length, 4);
+  assert.equal((processor.match(/backgroundStallMs: timeoutMs \?\? MAX_AI_TIMEOUT_MS/g) || []).length, 2);
+  assert.equal((processor.match(/backgroundStallMs: verificationWaitBudget\(/g) || []).length, 2);
 });

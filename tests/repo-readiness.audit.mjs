@@ -225,7 +225,7 @@ test("reasoning effort is frozen per Run and Run Debug exposes execution limits"
   );
   assert.match(
     core,
-    /inputHash\s*=\s*await shaText[\s\S]{0,1200}max_output_tokens:\s*maxOutputTokens[\s\S]{0,200}timeout_ms:\s*timeoutMs/i,
+    /inputHash\s*=\s*await shaText[\s\S]{0,1400}max_output_tokens:\s*maxOutputTokens[\s\S]{0,200}timeout_ms:\s*timeoutMs/i,
     "frozen output and timeout limits must participate in the immutable Run input hash",
   );
   assert.match(

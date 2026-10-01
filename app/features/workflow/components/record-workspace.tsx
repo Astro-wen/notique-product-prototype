@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Check, ChevronDown, Copy, Link2, Play, Plus, Undo2 } from "lucide-react";
 import { NqButton as BaseButton, NqStatus } from "@/app/components/notique-ui";
 import { Modal } from "@/app/components/modal";
-import { currentRecordBullets, recordDisplayBullets } from "@/lib/domain/workflow-v2";
+import { currentRecordBullets, recordDisplayBullets, sameVersion } from "@/lib/domain/workflow-v2";
 import { readingTopics, pendingItems } from '@/lib/domain/record-reading';
 import { userMayAcceptSupport } from "@/lib/domain/review-support";
 import type { MentionDecisionRequest, ReviewProgress, ReviewProgressRequest, SourceHighlightRequest, ActionTransitionRequest, DecisionRequest, MemberDecisionOperation, OutcomeRequest, OutcomeCorrectionRequest, QuestionAnswerRequest, ReportRequest, ReviewCard, RevertDecisionRequest, WorkspaceSnapshot } from "@/lib/shared/workflow-v2";
@@ -427,12 +427,21 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
       </article>)}</div>}
       {filter==='decisions' ? <div className={styles.bullets}>{shownBullets.filter(b=>!snapshot.actions.some(a=>b.claimRefs.some(r=>r.claimId===a.id))).map(renderBullet)}{snapshot.actions.filter(a=>selectedPriorityIds.has(a.id)).map(renderAction)}</div> : <div className={styles.topics}>{readingTopics(snapshot,shownBullets).map(topic=>{
         const details=topic.detail.filter(b=>!topic.interactive.some(x=>x.id===b.id));
-        return <section key={topic.key} className={styles.topic} aria-labelledby={`topic-${topic.key}`} data-testid={`topic-${topic.key}`}>
-          <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
+        const resultActions=topic.actions.filter(a=>a.latestOutcome?.freshness==='current');
+        const latestAnswers=topic.interactive.filter(b=>snapshot.questions.some(q=>q.resolutionState==='resolved'&&q.latestOutcome?.freshness==='current'&&q.answerRefs.some(r=>b.claimRefs.some(x=>sameVersion(x,r)))));
+        const currentInteractive=topic.interactive.filter(b=>!latestAnswers.includes(b));
+        const hasLatestResult=resultActions.length>0||latestAnswers.length>0;
+        const communication=<>
           {topic.preview.length>0 ? <ul className={styles.topicPreview}>{topic.preview.map((sentence,index)=><li key={index}>{sentence.text}</li>)}</ul> : <div className={styles.bullets}>{details.slice(0,3).map(renderBullet)}</div>}
           {details.length>(topic.preview.length?0:3) && <details className={styles.topicDetails}><summary>查看详细记录 · {details.length-(topic.preview.length?0:3)} 条</summary><div className={styles.bullets}>{(topic.preview.length?details:details.slice(3)).map(renderBullet)}</div></details>}
-          {topic.interactive.length>0 && <div className={styles.bullets}>{topic.interactive.map(renderBullet)}</div>}
-          {topic.actions.length>0 && <div className={styles.topicFollowups}>{topic.actions.map(renderAction)}</div>}
+        </>;
+        return <section key={topic.key} className={styles.topic} aria-labelledby={`topic-${topic.key}`} data-testid={`topic-${topic.key}`}>
+          <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
+          {latestAnswers.length>0 && <div className={styles.bullets}>{latestAnswers.map(renderBullet)}</div>}
+          {resultActions.length>0 && <div className={styles.topicFollowups}>{resultActions.map(renderAction)}</div>}
+          {hasLatestResult ? <details className={styles.topicDetails}><summary>沟通时的记录</summary>{communication}</details> : communication}
+          {currentInteractive.length>0 && <div className={styles.bullets}>{currentInteractive.map(renderBullet)}</div>}
+          {topic.actions.length>resultActions.length && <div className={styles.topicFollowups}>{topic.actions.filter(a=>!resultActions.includes(a)).map(renderAction)}</div>}
           {topic.relatedActionRefs.length>0 && <div className={styles.relatedFollowups}>{topic.relatedActionRefs.map(ref=>{const action=snapshot.actions.find(a=>a.claimRef.claimId===ref.claimId && a.claimRef.claimVersionId===ref.claimVersionId);return action?<button key={action.id} onClick={()=>showFollowup(action.id)}>查看相关跟进</button>:null;})}</div>}
         </section>;
       })}</div>}
