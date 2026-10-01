@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {extractionTransport} from '../lib/domain/extraction-transport.ts';
 import {canonicalizeTranscriptEvidence} from '../lib/domain/evidence.ts';
+import {validateExtractClaimsOutput,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
 
 const event='evt_00000000000000000000000000000001',asset='av_00000000000000000000000000000001';
 const segment=i=>({id:`seg_${asset}_${String(i).padStart(5,'0')}`,assetVersionId:asset,eventId:event,ordinal:i,speaker:'Speaker 1',startMs:i*1000,endMs:(i+1)*1000,textRaw:`Source ${i}: amount is approximately $12,000.`,textNormalized:`Source ${i}: amount is approximately $12,000.`,parserVersion:'v1'});
@@ -46,4 +47,20 @@ test('inventory references and repair feedback use stable mappings on a resumed 
  assert.deepEqual(a.encode(inventory),b.encode(inventory));
  assert.deepEqual(a.decode(a.encode(inventory)),inventory);
  assert.deepEqual(a.feedback([JSON.stringify({asset_version_id:asset,segment_ids:[segment(0).id]})]),[JSON.stringify({asset_version_id:'a0',segment_ids:['s0']})]);
+});
+
+test('reaffirmed accepted claims restore both target IDs and keep exact-version validation',()=>{
+ const x=structuredClone(input);
+ const original={claimId:'cl_confirmed_bedroom',claimVersionId:'cv_confirmed_bedroom',type:'requirement',statement:'Four bedrooms.',normalizedValue:null};
+ x.verified_context.active_claims=[original];
+ const t=extractionTransport(x),short=t.input.verified_context.active_claims[0];
+ const claim={client_claim_key:'bed',disposition:'reaffirmed',reaffirmed_target_claim_id:short.claimId,reaffirmed_target_version_id:short.claimVersionId,type:'requirement',statement:original.statement,normalized_value:null,materiality:'high',confidence:.99,needs_additional_evidence:false,uncertainty:null,evidence:[{kind:'text',asset_version_id:'a0',segment_ids:['s0'],quote_hint:x.new_event.transcript_segments[0].textRaw,evidence_role:'direct'}],relations:[]};
+ const output={schema_version:CLAIM_EXTRACTION_SCHEMA_VERSION,event_id:t.input.new_event.event_id,scenario_assessment:null,claims:[claim]};
+ const decoded=t.decode(output);
+ assert.equal(decoded.claims[0].reaffirmed_target_claim_id,original.claimId);
+ assert.equal(decoded.claims[0].reaffirmed_target_version_id,original.claimVersionId);
+ assert.equal(validateExtractClaimsOutput(decoded,x).valid,true);
+ const wrong=t.decode({...output,claims:[{...claim,reaffirmed_target_version_id:'v9999'}]});
+ assert.equal(validateExtractClaimsOutput(wrong,x).valid,false);
+ assert.deepEqual(t.decode(t.encode({reaffirmed_target_claim_id:original.claimId,reaffirmed_target_version_id:original.claimVersionId})),{reaffirmed_target_claim_id:original.claimId,reaffirmed_target_version_id:original.claimVersionId});
 });

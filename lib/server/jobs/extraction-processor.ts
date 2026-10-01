@@ -75,6 +75,7 @@ import {
   inventoryRetryFeedback,
   canResumeProcessingModelStage,
   canReuseSucceededModelStage,
+  canRecoverFailedReferenceDecoding,
   type ModelStageFrozenInput,
 } from "@/lib/server/jobs/model-stage-contract";
 import { parseJson } from "@/lib/server/http/api";
@@ -338,7 +339,7 @@ async function runModelStage<T>(input: {
     inputHash: input.inputHash,
   };
   const retryFeedback = input.stage === "inventory" ? inventoryRetryFeedback(existing, frozenInput) : [];
-  const stageDetails = retryFeedback.length
+  let stageDetails = retryFeedback.length
     ? { ...input.details, retry_validation_feedback: retryFeedback }
     : input.details;
   const canReuseExisting = Boolean(
@@ -354,9 +355,11 @@ async function runModelStage<T>(input: {
     }
     return { output, usage: stageUsage(existing), reused: true };
   }
+  const referenceRepair = Boolean(existing && canRecoverFailedReferenceDecoding(existing, frozenInput));
   const canResumeExisting = Boolean(
-    existing && canResumeProcessingModelStage(existing, frozenInput),
+    existing && (canResumeProcessingModelStage(existing, frozenInput) || referenceRepair),
   );
+  if(referenceRepair)stageDetails={...stageDetails,reference_decoder_repair:{original_error:existing!.error_details}};
   const attempt = canResumeExisting
     ? existing!.attempt
     : Math.max(Number(input.run.attempt_no ?? 1), (existing?.attempt ?? 0) + 1);
@@ -2139,6 +2142,10 @@ export async function processExtractionRun(
         (existingEscalated.status === "processing" || existingEscalated.status === "succeeded"),
       );
       const escalationTerminalFailure = existingEscalated?.status === "failed";
+      const repairBaseReference = Boolean(existingVerify && canRecoverFailedReferenceDecoding(existingVerify, {
+        provider:providerName,model:modelName,reasoningEffort:verifierEffort,
+        promptVersion:`${verificationContract.promptVersion}:verify`,schemaVersion:verificationContract.schemaVersion,inputHash:verifyInputHash,
+      }));
 
       if (escalationInFlight) {
         // Once escalation has a durable Response ID, it is a dependency
@@ -2168,7 +2175,7 @@ export async function processExtractionRun(
           // recoverable; never supersede it with another paid POST.
           throw new ModelTimeoutError();
         }
-      } else if (escalationTerminalFailure && existingVerify?.status === "failed") {
+      } else if (escalationTerminalFailure && existingVerify?.status === "failed" && !repairBaseReference) {
         // The bounded pipeline has spent its verify + escalation attempts.
         // Do not turn a failed escalation into an unbounded verify retry loop.
         verificationFailure = new ProcessingFault(
