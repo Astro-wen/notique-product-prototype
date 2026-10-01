@@ -436,7 +436,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
         return <section key={topic.key} className={styles.topic} aria-labelledby={`topic-${topic.key}`} data-testid={`topic-${topic.key}`}>
           <header className={styles.topicHeader}><h3 id={`topic-${topic.key}`}>{topic.title}</h3></header>
           {topic.preview.length>0 ? <ul className={styles.topicPreview}>{topic.preview.map((sentence,index)=><li key={index}>{sentence.text}</li>)}</ul> : <div className={styles.bullets}>{details.slice(0,3).map(renderBullet)}</div>}
-          {details.length>(topic.preview.length?0:3) && <details className={styles.topicDetails}><summary>查看详细记录 · {details.length} 条</summary><div className={styles.bullets}>{(topic.preview.length?details:details.slice(3)).map(renderBullet)}</div></details>}
+          {details.length>(topic.preview.length?0:3) && <details className={styles.topicDetails}><summary>查看详细记录 · {details.length-(topic.preview.length?0:3)} 条</summary><div className={styles.bullets}>{(topic.preview.length?details:details.slice(3)).map(renderBullet)}</div></details>}
           {topic.interactive.length>0 && <div className={styles.bullets}>{topic.interactive.map(renderBullet)}</div>}
           {topic.actions.length>0 && <div className={styles.topicFollowups}>{topic.actions.map(renderAction)}</div>}
           {topic.relatedActionRefs.length>0 && <div className={styles.relatedFollowups}>{topic.relatedActionRefs.map(ref=>{const action=snapshot.actions.find(a=>a.claimRef.claimId===ref.claimId && a.claimRef.claimVersionId===ref.claimVersionId);return action?<button key={action.id} onClick={()=>showFollowup(action.id)}>查看相关跟进</button>:null;})}</div>}
