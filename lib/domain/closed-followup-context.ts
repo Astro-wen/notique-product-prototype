@@ -39,6 +39,17 @@ export type HandledFollowupRef = {
   confidence:number;
 };
 
+// Inventory quote_hint is a locator hint, not the saved original quotation.
+// Tolerate ASR fillers and repeated articles/pronouns only at this boundary.
+// Negations, quantities and other repeated words retain their original order.
+function quoteHintMatches(raw:string,hint:string):boolean {
+  const normalize=(s:string)=>s.toLowerCase().replace(/[’‘]/g,"'").replace(/\b(?:uh|um)\b/g,' ').replace(/[^\p{L}\p{N}']/gu,' ').replace(/\b(a|i|we|you|the)\s+\1\b/g,'$1').replace(/\s+/g,' ').trim();
+  const text=normalize(raw),parts=hint.split(/\.{3}|…/).map(normalize);
+  if(parts.some(part=>!part))return false;
+  let offset=0;
+  return parts.every(part=>{const at=text.indexOf(part,offset);if(at<0)return false;offset=at+part.length;return true;});
+}
+
 /** Exact IDs, current closure and source provenance gate a model identity proposal. */
 export function validHandledFollowup(candidate:{type:string;evidence:unknown[]},proof:unknown,context?:ContextPack):boolean {
   if(!proof || typeof proof!=='object' || Array.isArray(proof) || !context)return false;
@@ -49,10 +60,21 @@ export function validHandledFollowup(candidate:{type:string;evidence:unknown[]},
   const versions=target.closureRefs.map(r=>r.claimVersionId).sort();
   if(JSON.stringify([...p.closure_version_ids].sort())!==JSON.stringify(versions))return false;
   if(!candidate.evidence.length)return false;
-  return candidate.evidence.every(raw=>{
+  const segmentById=new Map(context.new_event.transcript_segments.map(s=>[s.id,s]));
+  let directCount=0;
+  const valid=candidate.evidence.every(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return false;
     const e=raw as {kind:string;asset_version_id:string;segment_ids:string[];quote_hint:string;evidence_role:string};
-    if(!['transcript','text'].includes(e.kind) || e.evidence_role!=='direct' || !Array.isArray(e.segment_ids) || !e.segment_ids.length || typeof e.quote_hint!=='string' || !e.quote_hint.trim())return false;
-    return target.sourceEvidence.some(source=>source.assetVersionId===e.asset_version_id && e.segment_ids.every(id=>source.segmentIds.includes(id)) && source.quoteRaw.includes(e.quote_hint));
+    if(!['transcript','text'].includes(e.kind) || !['direct','corroborating'].includes(e.evidence_role) || !Array.isArray(e.segment_ids) || !e.segment_ids.length || typeof e.quote_hint!=='string' || !e.quote_hint.trim())return false;
+    const sources=target.sourceEvidence.filter(source=>source.assetVersionId===e.asset_version_id);
+    if(!sources.length)return false;
+    const segments=e.segment_ids.map(id=>segmentById.get(id));
+    if(segments.some(s=>!s || s.assetVersionId!==e.asset_version_id || s.eventId!==context.new_event.event_id))return false;
+    if(e.evidence_role==='corroborating')return true;
+    directCount++;
+    const covered=new Set(sources.flatMap(source=>source.segmentIds));
+    if(!e.segment_ids.every(id=>covered.has(id)))return false;
+    return quoteHintMatches(segments.map(s=>s!.textRaw).join(' '),e.quote_hint);
   });
+  return valid && directCount>0;
 }

@@ -123,7 +123,7 @@ test('unanswered questions and changed source are absent from closed coverage',a
  assert.equal((await context(db)).verified_context.closed_followups.length,0);
 });
 
-for(const paid of [false,true])test(`real processor retains answered/completed ledger without reopening or extra verification, paid recovery=${paid}`,async t=>{
+for(const paid of [false,true,'failed_coverage'])test(`real processor retains answered/completed ledger without reopening or extra verification, paid recovery=${paid}`,async t=>{
  const {db,sqlite}=await setup(t),before=await read(db),pack=await context(db),transport=extractionTransport(pack),requests=[];
  const created=await createExtractionRun(SCOPE,'e',`closed-${paid}`,['av']);
  const frozen=JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
@@ -131,23 +131,37 @@ for(const paid of [false,true])test(`real processor retains answered/completed l
  globalThis.fetch=async(url,init={})=>{
   assert.ok(String(url).startsWith('https://model.invalid/'));
   const r={url:String(url),method:init.method,body:init.body?JSON.parse(init.body):null};requests.push(r);
-  if(r.method==='GET')return json({id:'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode(verification(pack))),usage});
+  if(r.method==='GET'){
+   const out=verification(pack);if(paid==='failed_coverage'&&!r.url.endsWith('/paid_closure_escalated'))out.candidate_dispositions[0].handled_ref.closure_version_ids=['question_v1'];
+   return json({id:r.url.endsWith('/paid_closure_escalated')?'paid_closure_escalated':'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode(out)),usage});
+  }
   const schema=r.body.text.format.schema.properties.schema_version.enum[0];
   if(schema===INVENTORY_SCHEMA_VERSION)return json({id:'paid_inventory',status:'completed',output_text:JSON.stringify(transport.encode(inventory())),usage});
-  const prompt=r.body.input[0].content[0].text;assert.match(prompt,/already_handled/);assert.match(prompt,/closed_followups/);
+  const prompt=r.body.input[0].content[0].text;assert.match(prompt,/already_handled/);assert.match(prompt,/closed_followups/);assert.match(prompt,/Never cite the unresolved question itself as its closure/);
   assert.ok(r.body.text.format.schema.properties.candidate_dispositions.items.required.includes('handled_ref'));
   return json(paid?{id:'paid_closed_verify',status:'queued'}:{id:'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode(verification(pack))),usage});
  };
  let result=await processExtractionRun(created.run.id);
- if(paid){assert.equal(result.status,'background_pending',JSON.stringify(result));result=await processExtractionRun(created.run.id);}
+ if(paid){
+  assert.equal(result.status,'background_pending',JSON.stringify(result));
+  if(paid==='failed_coverage'){
+   const saved=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE run_id=? AND stage='verify'").get(created.run.id);
+   const details=JSON.stringify({issues:[{path:'$.candidate_dispositions[0].handled_ref',message:'Handled candidate must reference an exact current closure of the same item and source.'}]});
+   sqlite.prepare("UPDATE extraction_model_stages SET status='failed',error_code='MODEL_OUTPUT_INVALID',error_details_json=? WHERE id=?").run(details,saved.id);
+   sqlite.prepare("INSERT INTO extraction_model_stages(id,run_id,stage,attempt,provider,model,reasoning_effort,prompt_version,schema_version,status,input_hash,provider_request_id,error_code,error_details_json,started_at,created_at,updated_at) SELECT 'failed_closure',run_id,'verify_escalated',attempt,provider,model,reasoning_effort,replace(prompt_version,':verify',':verify_escalated'),schema_version,'failed','original_escalated_hash','paid_closure_escalated','MODEL_OUTPUT_INVALID',?,started_at,created_at,updated_at FROM extraction_model_stages WHERE id=?").run(details,saved.id);
+   sqlite.prepare("UPDATE extraction_runs SET status='queued',lease_owner=NULL,lease_expires_at=NULL WHERE id=?").run(created.run.id);
+  }
+  result=await processExtractionRun(created.run.id);
+ }
  assert.equal(result.status,'succeeded',JSON.stringify({result,error:sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id)}));
  assert.equal(result.persistedClaims,0);
  const workflow=await getWorkflowSnapshot(SCOPE,'p');assert.equal(workflow.events[0].candidate_count,2);assert.equal(workflow.events[0].display_status,'complete');
- assert.deepEqual(requests.map(r=>r.method),paid?['POST','POST','GET']:['POST','POST']);
+ assert.deepEqual(requests.map(r=>r.method),paid==='failed_coverage'?['POST','POST','GET','GET']:paid?['POST','POST','GET']:['POST','POST']);
  const after=await read(db);assert.deepEqual(after.questions.find(q=>q.id==='question').answerRefs,before.questions.find(q=>q.id==='question').answerRefs);
  assert.equal(after.questions.find(q=>q.id==='question').resolutionState,'resolved');assert.equal(after.actions.find(a=>a.id==='action').executionState,'completed');assert.equal(after.actions.find(a=>a.id==='action').basisState,'current');
- assert.equal(sqlite.prepare("SELECT count(*) AS n FROM extraction_model_stages WHERE run_id=? AND stage='verify_escalated'").get(created.run.id).n,0);
- const stage=sqlite.prepare("SELECT validated_output_json FROM extraction_model_stages WHERE run_id=? AND stage='verify'").get(created.run.id);
+ assert.equal(sqlite.prepare("SELECT count(*) AS n FROM extraction_model_stages WHERE run_id=? AND stage='verify_escalated'").get(created.run.id).n,paid==='failed_coverage'?1:0);
+ const stage=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE run_id=? AND stage=?").get(created.run.id,paid==='failed_coverage'?'verify_escalated':'verify');
+ if(paid==='failed_coverage'){assert.equal(stage.input_hash,'original_escalated_hash');assert.equal(stage.provider_request_id,'paid_closure_escalated');assert.equal(stage.attempt,1);assert.ok(JSON.parse(stage.error_details_json).closure_coverage_repair.original_error);assert.equal(sqlite.prepare("SELECT status FROM extraction_model_stages WHERE run_id=? AND stage='verify'").get(created.run.id).status,'failed');}
  assert.equal(JSON.parse(stage.validated_output_json).candidate_dispositions[0].handled_ref.claim_version_id,'question_v1');
 });
 
@@ -172,4 +186,17 @@ test('withdrawn answer or stale original material removes handled coverage',asyn
  workflow.evidence=workflow.evidence.map(e=>e.claim_version_id==='action_v1'?{...e,availability:'stale'}:e);
  assert.deepEqual(closedFollowupContext(workflow,sourceLedger,'e',segments),[]);
  assert.deepEqual(closedFollowupContext(await loadWorkflowLedger(db,SCOPE,'p'),sourceLedger,'e',segments.map(s=>({...s,assetVersionId:'new-version'}))),[]);
+});
+
+
+test('handled provenance spans original split citations and ASR locator hints without changing raw text',async t=>{
+ const {db}=await setup(t),pack=await context(db),target=pack.verified_context.closed_followups.find(c=>c.type==='next_action');
+ pack.new_event.transcript_segments=[{...segments[0],id:'s1',textRaw:'Would it be fair to uh set up a a tour on those homes today and uh right after this meeting'},{...segments[0],id:'s2',textRaw:"Uh I'll go ahead and just uh put these in, so that way here when we finish up we'll head out and go see these."},{...segments[0],id:'s3',textRaw:'These three homes.'}];
+ target.sourceEvidence=pack.new_event.transcript_segments.slice(0,2).map(s=>({assetVersionId:'av',segmentIds:[s.id],quoteRaw:s.textRaw}));
+ const candidate={type:'next_action',evidence:[{kind:'text',asset_version_id:'av',segment_ids:['s1','s2'],quote_hint:"set up a tour on those homes today and right after this meeting ... I'll go ahead and just put these in ... we'll head out and go see these",evidence_role:'direct'},{kind:'text',asset_version_id:'av',segment_ids:['s3'],quote_hint:'These three homes.',evidence_role:'corroborating'}]};
+ const original=JSON.stringify(pack);assert.equal(validHandledFollowup(candidate,proof(target),pack),true);assert.equal(JSON.stringify(pack),original);
+ candidate.evidence[0].quote_hint='set up four tours';assert.equal(validHandledFollowup(candidate,proof(target),pack),false);
+ candidate.evidence[0].quote_hint='not not approved';pack.new_event.transcript_segments[0].textRaw='not approved';assert.equal(validHandledFollowup(candidate,proof(target),pack),false);
+ candidate.evidence[0].segment_ids=['s3'];assert.equal(validHandledFollowup(candidate,proof(target),pack),false);
+ candidate.evidence=candidate.evidence.filter(e=>e.evidence_role==='corroborating');assert.equal(validHandledFollowup(candidate,proof(target),pack),false);
 });

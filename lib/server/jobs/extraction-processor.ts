@@ -28,6 +28,7 @@ import {
 } from "@/lib/domain/evidence";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
+  STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
   isClaimExtractionPromptVersion,
@@ -79,6 +80,7 @@ import {
   canResumeProcessingModelStage,
   canReuseSucceededModelStage,
   canRecoverFailedReferenceDecoding,
+  canRecoverFailedClosureCoverage,
   type ModelStageFrozenInput,
 } from "@/lib/server/jobs/model-stage-contract";
 import { parseJson } from "@/lib/server/http/api";
@@ -360,10 +362,12 @@ async function runModelStage<T>(input: {
     }
     return { output, usage: stageUsage(existing), reused: true };
   }
+  const closureRepair=Boolean(existing && canRecoverFailedClosureCoverage(existing,frozenInput));
   const referenceRepair = Boolean(existing && canRecoverFailedReferenceDecoding(existing, frozenInput));
   const canResumeExisting = Boolean(
-    existing && (canResumeProcessingModelStage(existing, frozenInput) || referenceRepair),
+    existing && (canResumeProcessingModelStage(existing, frozenInput) || referenceRepair || closureRepair),
   );
+  if(closureRepair)stageDetails={...stageDetails,closure_coverage_repair:{original_error:existing!.error_details}};
   if(referenceRepair)stageDetails={...stageDetails,reference_decoder_repair:{original_error:existing!.error_details}};
   const attempt = canResumeExisting
     ? existing!.attempt
@@ -835,7 +839,7 @@ async function loadContextInput(run: Row): Promise<{
       evidenceRefIds: claim.evidence_ref_ids,
       })),
   });
-  if(frozenModelParams.verification_prompt_version===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION) {
+  if(frozenModelParams.verification_prompt_version===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION||frozenModelParams.verification_prompt_version===STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION) {
     const workflowLedger=await loadWorkflowLedger(getD1(),{...scope,access:'demo'},String(run.project_id));
     if(workflowLedger.contextVersion!==Number(run.context_version))throw new ProcessingFault('CLAIM_VERSION_CONFLICT','Project context changed before closure evidence was frozen.');
     contextPack.verified_context.closed_followups=closedFollowupContext(workflowLedger,ledger,String(run.event_id),segments);
@@ -2152,19 +2156,19 @@ export async function processExtractionRun(
         String(leased.id),
         "verify_escalated",
       );
-      const repairEscalatedReference = Boolean(existingEscalated && canRecoverFailedReferenceDecoding(existingEscalated, {
+      const repairEscalatedReference = Boolean(existingEscalated && (canRecoverFailedReferenceDecoding(existingEscalated, {
         provider:providerName,model:modelName,reasoningEffort:escalationEffort,
         promptVersion:`${verificationContract.promptVersion}:verify_escalated`,schemaVersion:verificationContract.schemaVersion,inputHash:existingEscalated.input_hash,
-      }));
+      }) || canRecoverFailedClosureCoverage(existingEscalated,{provider:providerName,model:modelName,reasoningEffort:escalationEffort,promptVersion:`${verificationContract.promptVersion}:verify_escalated`,schemaVersion:verificationContract.schemaVersion,inputHash:existingEscalated.input_hash})));
       const escalationInFlight = Boolean(
         existingEscalated &&
         (existingEscalated.status === "processing" || existingEscalated.status === "succeeded" || repairEscalatedReference),
       );
       const escalationTerminalFailure = existingEscalated?.status === "failed";
-      const repairBaseReference = Boolean(existingVerify && canRecoverFailedReferenceDecoding(existingVerify, {
+      const repairBaseReference = Boolean(existingVerify && (canRecoverFailedReferenceDecoding(existingVerify, {
         provider:providerName,model:modelName,reasoningEffort:verifierEffort,
         promptVersion:`${verificationContract.promptVersion}:verify`,schemaVersion:verificationContract.schemaVersion,inputHash:verifyInputHash,
-      }));
+      }) || canRecoverFailedClosureCoverage(existingVerify,{provider:providerName,model:modelName,reasoningEffort:verifierEffort,promptVersion:`${verificationContract.promptVersion}:verify`,schemaVersion:verificationContract.schemaVersion,inputHash:verifyInputHash})));
 
       if (escalationInFlight) {
         // Once escalation has a durable Response ID, it is a dependency

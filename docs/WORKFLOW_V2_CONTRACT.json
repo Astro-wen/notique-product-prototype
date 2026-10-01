@@ -394,7 +394,7 @@
     "promptVersion": "claim-extraction-prompt.v9.6，v9.5冻结任务继续复用原契约"
   },
   "closedFollowupCoverage": {
-    "promptVersion": "claim-extraction-prompt.v9.11",
+    "promptVersion": "claim-extraction-prompt.v9.12",
     "verificationSchemaVersion": "claim-verification.v7",
     "frozenPolicy": "same-source-current-closure.v1",
     "contextField": "verified_context.closed_followups",
@@ -409,7 +409,8 @@
     "sourceRule": "候选引用同一次沟通、同一原文版本及原事项片段中的原话。新材料和新条件继续核对。",
     "closureRule": "已回答问题引用全部当前有效答案，已完成行动引用当前完成记录。直接补答案以保存后的问题解答状态为准。",
     "ledgerRule": "通过覆盖校验后保留原事项、答案及完成状态，候选处置保存在模型阶段。撤回、重新打开或出处失效时重新核对。",
-    "legacyRecovery": "v9.10及以前已启动任务沿用冻结的提示、参数、输入和付费响应。",
-    "emptyResultRule": "通过覆盖校验的原事项按ID去重计入本次候选，全部已处理且没有新草稿时正常完成。"
+    "legacyRecovery": "v9.11沿用冻结提示与上下文。仅因handled_ref校验失败的付费响应可按原编号GET取回，重新完整校验并记录原错误，v9.10及以前任务继续原契约。",
+    "emptyResultRule": "通过覆盖校验的原事项按ID去重计入本次候选，全部已处理且没有新草稿时正常完成。",
+    "quoteHintRule": "按同一原事项、同一材料的直接片段合集核对定位提示。口头uh、um、重复冠词或代词及分段省略可匹配，原文及原引用保持原样。金额、否定、未引用片段和新条件继续校验。"
   }
 }

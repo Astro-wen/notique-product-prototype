@@ -6,7 +6,7 @@ import {existsSync,readFileSync} from 'node:fs';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {workflowDatabase,seed,insert,SCOPE} from './helpers/workflow-database.mjs';
-import {HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
+import {STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
 import {HANDLED_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,VERIFICATION_SCHEMA_VERSION,ATOMIC_VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,inventoryContractForRun,verificationContractForRun,validateInventoryOutput,assessVerificationEscalation,verificationCoverageWarnings} from '../lib/domain/two-stage-extraction.ts';
 import {extractionCoverageSummary} from '../lib/domain/extraction-coverage.ts';
 
@@ -143,7 +143,7 @@ test('new run freezes inventory v4, verification v7, both 64 limits and configur
   Object.assign(globalThis.notiqueCoverageTest.bindings,{AI_TWO_PASS_PIPELINE:'1',AI_MAX_OUTPUT_TOKENS:String(budget),WORKSPACE_MONTHLY_TOKEN_BUDGET:'1000000'});
   const created=await createExtractionRun(SCOPE,'e',`new-contract-${budget}`,['av']);assert.equal(created.created,true);
   const row=sqlite.prepare('SELECT * FROM extraction_runs WHERE id=?').get(created.run.id),params=JSON.parse(row.model_params_json);
-  assert.equal(row.prompt_version,HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,HANDLED_VERIFICATION_SCHEMA_VERSION);assert.equal(params.closed_followup_policy,'same-source-current-closure.v1');
+  assert.equal(row.prompt_version,STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,HANDLED_VERIFICATION_SCHEMA_VERSION);assert.equal(params.closed_followup_policy,'same-source-current-closure.v1');
   assert.equal(params.inventory_candidate_limit,64);assert.equal(params.final_claim_limit,64);assert.equal(params.retention_policy,'explicit-followups.v1');assert.equal(params.max_output_tokens,budget);
   assert.equal(sqlite.prepare('SELECT count(*) n FROM extraction_model_stages').get().n,0);
  }

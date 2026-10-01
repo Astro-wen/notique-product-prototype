@@ -89,3 +89,14 @@ export function inventoryRetryFeedback(
       ? [`${path.slice(0, 200)}: ${message.slice(0, 380)}`] : [];
   });
 }
+
+
+/** Revalidate the exact paid v7 response after fixing source-hint matching. */
+export function canRecoverFailedClosureCoverage(
+  persisted:PersistedModelStageContract & {provider_request_id?:string|null;error_code?:string|null;error_details?:unknown},
+  expected:ModelStageFrozenInput,
+):boolean {
+  if(persisted.status!=='failed'||persisted.error_code!=='MODEL_OUTPUT_INVALID'||!persisted.provider_request_id||persisted.schema_version!=='claim-verification.v7'||!/^claim-extraction-prompt\.v9\.(?:11|12):verify(?:_escalated)?$/.test(persisted.prompt_version)||!modelStageFrozenInputMatches(persisted,expected))return false;
+  const details=persisted.error_details as {issues?:Array<{path?:string;message?:string}>}|null;
+  return Boolean(Array.isArray(details?.issues)&&details.issues.length&&details.issues.every(i=>i&&/^\$\.candidate_dispositions\[\d+\]\.handled_ref$/.test(i.path??'')&&i.message==='Handled candidate must reference an exact current closure of the same item and source.'));
+}

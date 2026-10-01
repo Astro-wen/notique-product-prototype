@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { workflowDatabase, seed, SCOPE, T } from './helpers/workflow-database.mjs';
-import { HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
+import { STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
 import { HANDLED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
 import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 
@@ -188,7 +188,7 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const { db, sqlite } = await setup(t);
   const created = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']);
   const frozen = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
-  assert.equal(created.run.prompt_version, HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, HANDLED_VERIFICATION_SCHEMA_VERSION);
+  assert.equal(created.run.prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, HANDLED_VERIFICATION_SCHEMA_VERSION);
   assert.equal(frozen.optional_verification_wait_ms, 120_000);
   assert.equal(frozen.background_queue_wait_ms,120_000);
   const replay = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']); assert.equal(replay.created, false); assert.equal(replay.run.input_hash, created.run.input_hash);
@@ -201,7 +201,7 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const w = await readWorkspace(db, SCOPE, 'e', {}, T); assert.equal(w.bullets.length, 4); assert.equal(w.reviewCards.length, 4); assert.equal(w.actions.length, 0); assert.ok(w.bullets.every(b => b.reviewState === 'draft'));
   const tasks = sqlite.prepare("SELECT c.type,v.statement,v.normalized_value_json FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.type='next_action' ORDER BY c.client_claim_key").all();
   assert.equal(tasks.length, 2); assert.deepEqual(tasks.map(c => JSON.parse(c.normalized_value_json).owner), ['小陈', '小林']);
-  assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
+  assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
 });
 
 for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
