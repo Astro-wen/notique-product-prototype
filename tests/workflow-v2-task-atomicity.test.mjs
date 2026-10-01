@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { workflowDatabase, seed, SCOPE, T } from './helpers/workflow-database.mjs';
-import { CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
+import { CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
 import { INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
 import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 
@@ -102,7 +102,7 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
 });
 
-for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
+for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
   const { sqlite } = await setup(t); queue(sqlite, { runPrompt, schema, frozen });
   const requests = model(t, (r, n) => {
     if (r.method === 'GET') return { id: 'synthetic_paid_verify', status: 'completed', output_text: JSON.stringify(verification(schema)), usage };

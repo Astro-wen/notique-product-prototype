@@ -1303,7 +1303,7 @@ test("verification safely removes dangling bookkeeping without weakening evidenc
   assert.match(verificationMethod, /final_claim_keys: included \? referencedKeys : \[\]/);
   assert.ok(
     verificationMethod.indexOf("candidate_dispositions: source.candidate_dispositions.map") <
-      verificationMethod.indexOf("validateVerificationOutput(candidateValue, inventory, input)"),
+      verificationMethod.indexOf("validateVerificationOutput(candidateValue, originalInventory, originalInput)"),
     "provider bookkeeping normalization must happen before strict evidence-aware verification",
   );
 });

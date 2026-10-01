@@ -27,7 +27,7 @@ test('repair guidance uses the same frozen aliases and supports multiple version
  assert.deepEqual(validateWorkflowNarrative(t.decode(output(t.input.bullets.flatMap(b=>b.claimRefs))),same).sentences.flatMap(s=>s.claim_refs),same.bullets.flatMap(b=>b.claimRefs));
 });
 test('frozen v9.6 and current v9.7 extraction retain the same coverage schema',()=>{
- for(const v of ['claim-extraction-prompt.v9.6','claim-extraction-prompt.v9.7','claim-extraction-prompt.v9.8']){
+ for(const v of ['claim-extraction-prompt.v9.6','claim-extraction-prompt.v9.7','claim-extraction-prompt.v9.8','claim-extraction-prompt.v9.9']){
   assert.equal(inventoryContractForRun({inventory_prompt_version:v}).candidateLimit,64);
   assert.equal(verificationContractForRun({verification_schema_version:'claim-verification.v6',verification_prompt_version:v}).claimLimit,64);
  }
