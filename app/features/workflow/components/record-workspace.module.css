@@ -228,3 +228,11 @@
 .answerSelection input { margin-top: 6px; flex-shrink: 0; }
 .answerSelection small { color: var(--nq-muted, #59657b); white-space: nowrap; }
 .answeredQuestion { flex-basis: 100%; color: var(--nq-muted, #59657b); line-height: 1.7; font-size: 13px; }
+
+.analysis .analysisDisclosure { margin-top: 0; }
+.analysisDisclosure > summary { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 16px; padding: 6px 0; }
+.analysisDetailLabel { color: var(--record-blue); font-size: 12px; white-space: nowrap; }
+.analysisDisclosure[open] > .analysisBar { margin-top: 8px; }
+.analysis { margin-bottom: 8px; padding-bottom: 6px; }
+.feedback { margin-bottom: 8px; }
+.embedded .record { padding: 16px 24px; }

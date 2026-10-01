@@ -9,7 +9,7 @@ import type {
 } from "./model-contract";
 // The explicit extension keeps Node's native TypeScript runner and the
 // application bundler resolving this same source module identically.
-import { COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
+import { SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 import type { WorkflowNarrativePromptVersion } from "./workflow-narrative.ts";
@@ -25,13 +25,13 @@ export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v6" as const;
 export const LEGACY_VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
 export const VERIFICATION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
 export type VerificationSchemaVersion = typeof VERIFICATION_SCHEMA_VERSION | typeof ATOMIC_VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
-export type ExtractionStagePromptVersion = typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+export type ExtractionStagePromptVersion = typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
 export const EXTRACTION_RETENTION_POLICY = "explicit-followups.v1" as const;
 
 export function inventoryContractForRun(params: Record<string, unknown>): {schemaVersion: InventorySchemaVersion; promptVersion: ExtractionStagePromptVersion; candidateLimit: 24 | 64} {
   const promptVersion = params.inventory_prompt_version ?? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION;
-  if (promptVersion !== LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion !== ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== TWO_STAGE_EXTRACTION_PROMPT_VERSION) throw new Error("Unsupported frozen inventory prompt.");
-  const modern = promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+  if (promptVersion !== LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion !== ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== TWO_STAGE_EXTRACTION_PROMPT_VERSION) throw new Error("Unsupported frozen inventory prompt.");
+  const modern = promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === TWO_STAGE_EXTRACTION_PROMPT_VERSION;
   const schemaVersion = modern ? INVENTORY_SCHEMA_VERSION : LEGACY_INVENTORY_SCHEMA_VERSION;
   const candidateLimit = modern ? 64 : 24;
   if (params.inventory_schema_version !== undefined && params.inventory_schema_version !== schemaVersion) throw new Error("Unsupported frozen inventory schema.");
@@ -43,7 +43,7 @@ export function verificationContractForRun(params: Record<string, unknown>): {sc
   const version = params.verification_schema_version ?? LEGACY_VERIFICATION_SCHEMA_VERSION;
   if (version !== LEGACY_VERIFICATION_SCHEMA_VERSION && version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && version !== VERIFICATION_SCHEMA_VERSION) throw new Error("Unsupported frozen verification schema.");
   const promptVersion = params.verification_prompt_version ?? (version === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? LEGACY_VERIFICATION_PROMPT_VERSION : VERIFICATION_PROMPT_VERSION);
-  const allowed: readonly unknown[] = version === LEGACY_VERIFICATION_SCHEMA_VERSION ? [LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION] : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? [LEGACY_VERIFICATION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION] : [COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION];
+  const allowed: readonly unknown[] = version === LEGACY_VERIFICATION_SCHEMA_VERSION ? [LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION] : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? [LEGACY_VERIFICATION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION] : [COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION];
   if (!allowed.includes(promptVersion)) throw new Error("Unsupported frozen verification prompt.");
   const claimLimit = version === VERIFICATION_SCHEMA_VERSION ? 64 : 24;
   if (params.final_claim_limit !== undefined && params.final_claim_limit !== claimLimit) throw new Error("Unsupported frozen final claim limit.");

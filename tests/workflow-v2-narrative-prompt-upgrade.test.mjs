@@ -50,7 +50,7 @@ test('v2 separates platform review metadata from source modality while the exact
     { text: '建议小陈整理报价，如果预算允许再采购', claimRefs: [{ claimId: 'proposal', claimVersionId: 'proposal_v1' }], origin: 'ai_suggestion', reviewState: 'accepted' },
   ] };
   assert.equal(SCHEMA, 'workflow-narrative.v1');
-  assert.equal(CURRENT, 'workflow-narrative-prompt.v5');
+  assert.equal(CURRENT, 'workflow-narrative-prompt.v6');
   const before = structuredClone(input);
   const prompt = workflowNarrativePrompt(input);
   assert.match(prompt, /ai_suggestion means an AI-extracted candidate action/);
@@ -304,4 +304,22 @@ test('old cached projection versions cannot restore a current label after the pr
   f.sqlite.prepare('UPDATE workflow_snapshots SET payload_json=? WHERE id=?').run(JSON.stringify(old), snapshot.snapshotId);
   await assert.rejects(readWorkspace(f.db, SCOPE, 'e', { snapshotId: snapshot.snapshotId }, plus(12000)), e => e.code === 'cursor_expired');
   assert.equal(f.sqlite.prepare('SELECT count(*) n FROM workflow_outbox').get().n, 0);
+});
+
+
+test('paid v5 formatting retains its original IDs and prompt after the compact v6 upgrade', async t => {
+  const f=await setup(t);await oldCheckpoint(f);
+  const saved=payload(f.sqlite);saved.checkpoint.promptVersion='workflow-narrative-prompt.v5';
+  saved.checkpoint.inputHash=await digestValue({input:saved.checkpoint.input,config,schemaVersion:SCHEMA,promptVersion:saved.checkpoint.promptVersion});
+  f.sqlite.prepare('UPDATE workflow_outbox SET payload_json=? WHERE id=?').run(JSON.stringify(saved),'legacy');
+  let calls=0;
+  const result=await run(f.db,{async summarizeWorkflow(input,options){
+    calls++;assert.equal(options.workflowNarrativePromptVersion,'workflow-narrative-prompt.v5');
+    assert.equal(options.resumeProviderResponseId,'resp_legacy');
+    assert.deepEqual(input,saved.checkpoint.input);
+    assert.match(workflowNarrativePrompt(input,[],options.workflowNarrativePromptVersion),/smallest set of independent user outcomes/);
+    return {output:{...output(input),sentences:input.bullets.map(b=>({text:b.text,claim_refs:b.claimRefs,topic:{key:'existing',title:'原有事项'}}))},usage};
+  }});
+  assert.equal(result.succeeded,1);assert.equal(calls,1);
+  assert.equal(payload(f.sqlite).checkpoint.inputHash,saved.checkpoint.inputHash);
 });

@@ -15,7 +15,7 @@ export function AnalysisProgress({run,hasRecord,busy,materialPending=false,error
   const label=materialPending?'正在转写录音':summaryOnly?(pending?'重点已更新，全文概要正在同步':'重点可用，全文概要尚未更新'):pending?(hasRecord?'正在整理，已有记录仍可阅读':'正在整理这份记录'):failed.length?(hasRecord?'记录可阅读，部分整理尚未完成':'本次整理尚未完成'):run?.state==='cancelled'?'本次整理已停止':run&&!run.coverage.complete?'材料范围已有变化，可重新整理':needsSourceReview?(hasRecord?'重点可用，部分内容需回看原文':'部分内容需回看原文'):summaryRefreshOnly?'重点可用，可以更新全文概要':run?'整理完成':'材料准备好后，可以整理记录';
   const statusLabel={queued:'等待处理',running:'正在处理',partial:'部分完成',succeeded:'已完成',failed:'未完成',cancelled:'已停止'} as const;
   return <section className={styles.analysis} aria-label="记录整理进度">
-    <div className={styles.analysisBar}><span role="status">{label}</span><div>
+    <details className={styles.analysisDisclosure} open={!hasRecord}><summary><span role="status">{label}</span><span className={styles.analysisDetailLabel}>查看处理情况</span></summary><div className={styles.analysisBar}><div>
       {canEdit && run?.retryable && <NqButton variant="secondary" loading={busy} disabled={pending||busy||materialPending} onClick={onRetry}>{summaryRefreshOnly?'更新全文概要':'重试失败部分'}</NqButton>}
       {canEdit && <NqButton variant="quiet" loading={busy} disabled={pending||busy||materialPending} onClick={onStart}>{run?'重新整理':'整理记录'}</NqButton>}
     </div></div>
@@ -30,5 +30,6 @@ export function AnalysisProgress({run,hasRecord,busy,materialPending=false,error
       <p>{run.coverage.totalSegments>0?<>原文已处理 {run.coverage.completedSegments} / {run.coverage.totalSegments} 段{run.coverage.complete?'':'，其余范围仍需整理'}。</>:run.coverage.complete?'材料已处理完成。':'材料仍需整理。'}</p>
       {failed.length>0 && !run.retryable && <p>{outputLimitReached?'这次整理已用完输出容量。可以先查看原文，或把材料分成较短的记录再整理。':'当前材料或整理条件有变化，可以重新整理这份记录。'}</p>}
     </details>}
+    </details>
   </section>;
 }
