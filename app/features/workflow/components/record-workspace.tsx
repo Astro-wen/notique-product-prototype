@@ -412,7 +412,7 @@ export function RecordWorkspace({ retainedInputs, analysisPanel, analysisHasCove
     {unrestored && retainedInputs}
     {error && <div className={styles.error} role="alert">{error}</div>}
     {!canEdit && <p className={styles.notice}>当前为只读模式，可查看记录与出处。</p>}
-    {!analysisHasCoverage && !snapshot.coverage.complete && <p className={styles.notice}>{processing ? "正在整理：已完成" : "当前已整理"} {snapshot.coverage.completedSegments}/{snapshot.coverage.totalSegments} 段，先看已有内容。</p>}
+    {!analysisHasCoverage && !snapshot.coverage.complete && snapshot.coverage.totalSegments > 0 && <p className={styles.notice}>{processing ? "正在整理：已完成" : "当前已整理"} {snapshot.coverage.completedSegments}/{snapshot.coverage.totalSegments} 段{snapshot.bullets.length > 0 ? "，可以先看已有重点。" : "。"}</p>}
     {!analysisHasNarrative && snapshot.narrative && snapshot.narrative.freshness !== "current" && <p className={styles.notice}>{snapshot.narrative.freshness === "updating" ? "概要正在更新" : snapshot.narrative.freshness === "failed" ? "概要暂时未能更新" : "概要需要重新整理"}，下面已显示最新要点。</p>}
     {snapshot.narrative?.text && <details className={styles.narrative} data-testid="record-narrative" key={`narrative-${snapshot.narrative.basedOnContextVersion}-${snapshot.narrative.freshness}`}>
       <summary>{snapshot.narrative.freshness==='current'?'查看全文概要':'查看上一版概要'}</summary>

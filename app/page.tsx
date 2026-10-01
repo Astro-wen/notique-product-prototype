@@ -6367,7 +6367,10 @@ function TranscriptArtifactsPanel({
       setActiveAudioAssetId("");
       setAudioPlaying(false);
       setAudioCurrentTime(0);
-      setAudioDuration(0);
+      // A transcript refresh can keep the same loaded audio element.
+      // Its metadata event will not fire again, so retain its actual duration.
+      const duration = audioRef.current?.duration;
+      setAudioDuration(duration != null && Number.isFinite(duration) ? duration : 0);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [sourceSelectionRevision]);
@@ -6746,7 +6749,12 @@ function TranscriptArtifactsPanel({
       onDurationChange={() => setAudioDuration(Number.isFinite(audioRef.current?.duration) ? audioRef.current?.duration || 0 : 0)}
       onPlay={() => { setAudioPlaying(true); syncPlaybackHighlight(); }}
       onPause={() => setAudioPlaying(false)}
-      onTimeUpdate={() => { setAudioCurrentTime(audioRef.current?.currentTime || 0); syncPlaybackHighlight(); }}
+      onTimeUpdate={() => {
+        const audio = audioRef.current;
+        setAudioCurrentTime(audio?.currentTime || 0);
+        if (audio && Number.isFinite(audio.duration)) setAudioDuration(audio.duration);
+        syncPlaybackHighlight();
+      }}
       onSeeking={() => {
         if (!programmaticAudioSeek.current) pendingPlaybackTarget.current = null;
       }}
@@ -6782,7 +6790,12 @@ function TranscriptArtifactsPanel({
     {playbackAudioAssetId && <footer className="reader-audio-player" aria-label="录音播放器">
           <button className="audio-play-button" aria-label={`${audioPlaying ? "暂停" : "播放"}录音：${playbackAudioLabel}`} onClick={() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play().catch(() => undefined); else audio.pause(); }}>{audioPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</button>
           <button className="audio-skip-button" aria-label="后退 1 秒" title="后退 1 秒" onClick={() => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 1); }}><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M11 5a9 9 0 1 1-5 4M11 1v7H4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><text x="14" y="18" textAnchor="middle" fill="currentColor" stroke="none" fontSize="11">1</text></svg></button>
-          <button className="audio-skip-button" aria-label="前进 1 秒" title="前进 1 秒" onClick={() => { if (audioRef.current) audioRef.current.currentTime = Math.min(audioDuration, audioRef.current.currentTime + 1); }}><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M17 5a9 9 0 1 0 5 4M17 1v7h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><text x="14" y="18" textAnchor="middle" fill="currentColor" stroke="none" fontSize="11">1</text></svg></button>
+          <button className="audio-skip-button" aria-label="前进 1 秒" title="前进 1 秒" onClick={() => {
+            const audio = audioRef.current;
+            if (!audio) return;
+            const nextTime = audio.currentTime + 1;
+            audio.currentTime = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(audio.duration, nextTime) : nextTime;
+          }}><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M17 5a9 9 0 1 0 5 4M17 1v7h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><text x="14" y="18" textAnchor="middle" fill="currentColor" stroke="none" fontSize="11">1</text></svg></button>
           <AudioTimeline src={`/api/v1/assets/${encodeURIComponent(playbackAudioAssetId)}/evidence-view`} duration={audioDuration} currentTime={audioCurrentTime} chapters={orderedSummaryChapters.filter((chapter) => audioAssetIdForVersion(chapter.assetVersionId) === playbackAudioAssetId)} onSeek={(seconds) => { if (audioRef.current) audioRef.current.currentTime = seconds; setAudioCurrentTime(seconds); }} />
           <label><span className="visually-hidden">播放速度</span><select aria-label="播放速度" value={audioRate} onChange={(change) => { const next = Number(change.target.value); setAudioRate(next); if (audioRef.current) audioRef.current.playbackRate = next; }}><option value={0.75}>0.75×</option><option value={1}>1×</option><option value={1.25}>1.25×</option><option value={1.5}>1.5×</option><option value={2}>2×</option></select></label>
         </footer>}
