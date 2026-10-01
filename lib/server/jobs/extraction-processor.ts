@@ -2137,9 +2137,13 @@ export async function processExtractionRun(
         String(leased.id),
         "verify_escalated",
       );
+      const repairEscalatedReference = Boolean(existingEscalated && canRecoverFailedReferenceDecoding(existingEscalated, {
+        provider:providerName,model:modelName,reasoningEffort:escalationEffort,
+        promptVersion:`${verificationContract.promptVersion}:verify_escalated`,schemaVersion:verificationContract.schemaVersion,inputHash:existingEscalated.input_hash,
+      }));
       const escalationInFlight = Boolean(
         existingEscalated &&
-        (existingEscalated.status === "processing" || existingEscalated.status === "succeeded"),
+        (existingEscalated.status === "processing" || existingEscalated.status === "succeeded" || repairEscalatedReference),
       );
       const escalationTerminalFailure = existingEscalated?.status === "failed";
       const repairBaseReference = Boolean(existingVerify && canRecoverFailedReferenceDecoding(existingVerify, {

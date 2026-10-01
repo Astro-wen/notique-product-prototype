@@ -84,7 +84,7 @@ test('decoder-only failure rereads its paid verify after a failed escalation wit
  const paid=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
  const details=JSON.stringify({issues:[{path:'$.claims[1].reaffirmed_target_version_id',message:'Reaffirmed target must be the current active claim version in this Context Pack.'}]});
  sqlite.prepare("UPDATE extraction_model_stages SET status='failed',error_code='MODEL_OUTPUT_INVALID',error_details_json=? WHERE id=?").run(details,paid.id);
- sqlite.prepare(`INSERT INTO extraction_model_stages (id,run_id,stage,attempt,provider,model,reasoning_effort,prompt_version,schema_version,status,input_hash,provider_request_id,error_code,error_details_json,started_at,created_at,updated_at) SELECT 'failed_escalation',run_id,'verify_escalated',attempt,provider,model,reasoning_effort,replace(prompt_version,':verify',':verify_escalated'),schema_version,'failed','prior_failure_hash','paid_prior_escalation','MODEL_OUTPUT_INVALID',?,started_at,created_at,updated_at FROM extraction_model_stages WHERE id=?`).run(details,paid.id);
+ sqlite.prepare(`INSERT INTO extraction_model_stages (id,run_id,stage,attempt,provider,model,reasoning_effort,prompt_version,schema_version,status,input_hash,provider_request_id,error_code,error_details_json,started_at,created_at,updated_at) SELECT 'failed_escalation',run_id,'verify_escalated',attempt,provider,model,reasoning_effort,replace(prompt_version,':verify',':verify_escalated'),schema_version,'failed','prior_failure_hash','paid_prior_escalation','MODEL_OUTPUT_INVALID',?,started_at,created_at,updated_at FROM extraction_model_stages WHERE id=?`).run(JSON.stringify({issues:[{path:'$.claims[1].statement',message:'Changed fact'}]}),paid.id);
  sqlite.prepare("UPDATE extraction_runs SET status='queued',lease_owner=NULL,lease_expires_at=NULL WHERE id='run'").run();
  const result=await processExtractionRun('run');
  assert.equal(result.status,'succeeded',JSON.stringify(result));
@@ -93,6 +93,23 @@ test('decoder-only failure rereads its paid verify after a failed escalation wit
  const repaired=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
  assert.equal(repaired.status,'succeeded');assert.equal(repaired.attempt,paid.attempt);assert.equal(repaired.input_hash,paid.input_hash);assert.equal(repaired.provider_request_id,paid.provider_request_id);
  assert.deepEqual(JSON.parse(repaired.error_details_json).reference_decoder_repair.original_error,JSON.parse(details));
+});
+
+test('a failed base stays failed while its paid escalated decoder response is recovered',async t=>{
+ const {sqlite}=await setup(t);queue(sqlite);
+ const requests=model(t,(r,n)=>r.method==='GET'?{id:'paid_escalated',status:'completed',output_text:JSON.stringify(verification()),usage}:r.body.text.format.schema.properties.schema_version.enum[0]===INVENTORY_SCHEMA_VERSION?{id:`inventory_${n}`,status:'completed',output_text:JSON.stringify(inventory()),usage}:{id:'paid_base',status:'queued'});
+ assert.equal((await processExtractionRun('run')).status,'background_pending');
+ const paid=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify'").get();
+ const baseDetails=JSON.stringify({issues:[{path:'$.claims[1].statement',message:'Changed fact'}]});
+ const decoderDetails=JSON.stringify({issues:[{path:'$.claims[1].reaffirmed_target_version_id',message:'Reaffirmed target must be the current active claim version in this Context Pack.'}]});
+ sqlite.prepare("UPDATE extraction_model_stages SET status='failed',error_code='MODEL_OUTPUT_INVALID',error_details_json=? WHERE id=?").run(baseDetails,paid.id);
+ sqlite.prepare(`INSERT INTO extraction_model_stages (id,run_id,stage,attempt,provider,model,reasoning_effort,prompt_version,schema_version,status,input_hash,provider_request_id,error_code,error_details_json,started_at,created_at,updated_at) SELECT 'paid_escalation',run_id,'verify_escalated',attempt,provider,model,reasoning_effort,replace(prompt_version,':verify',':verify_escalated'),schema_version,'failed','prior_failure_hash','paid_escalated','MODEL_OUTPUT_INVALID',?,started_at,created_at,updated_at FROM extraction_model_stages WHERE id=?`).run(decoderDetails,paid.id);
+ sqlite.prepare("UPDATE extraction_runs SET status='queued',lease_owner=NULL,lease_expires_at=NULL WHERE id='run'").run();
+ assert.equal((await processExtractionRun('run')).status,'succeeded');
+ assert.deepEqual(requests.map(r=>r.method),['POST','POST','GET']);assert.ok(requests.at(-1).url.endsWith('/paid_escalated'));
+ assert.equal(sqlite.prepare("SELECT status FROM extraction_model_stages WHERE stage='verify'").get().status,'failed');
+ const repaired=sqlite.prepare("SELECT * FROM extraction_model_stages WHERE stage='verify_escalated'").get();assert.equal(repaired.status,'succeeded');assert.equal(repaired.attempt,paid.attempt);assert.equal(repaired.input_hash,'prior_failure_hash');assert.equal(repaired.provider_request_id,'paid_escalated');
+ assert.deepEqual(JSON.parse(repaired.error_details_json).reference_decoder_repair.original_error,JSON.parse(decoderDetails));
 });
 
 test('three task attribute inventory keys merge without losing critical coverage or independent propositions', () => {
