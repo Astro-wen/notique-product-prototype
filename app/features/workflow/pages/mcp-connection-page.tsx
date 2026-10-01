@@ -77,10 +77,10 @@ export function McpConnectionPage({loginHref, localPreview, returnHref}: {loginH
   const label = !status ? '正在读取' : !status.authenticated ? '登录后授权' : status.enabled ? '已授权' : '未授权';
   return <div className={`${base.workspace} ${styles.page}`}>
     <nav className={base.topbar} aria-label="连接页导航"><Link href={returnHref}><ArrowLeft size={16}/>返回工作区</Link><span className={styles.brand}><NotebookPen size={17}/> Notique AI</span></nav>
-    <header className={base.header}><div><p className={base.eyebrow}>你的AI助手</p><h1>让AI助手读懂你的记录</h1><p className={base.subtitle}>把已有重点和原话交给自己的AI助手，继续整理、提问或写作。</p></div><Link2 size={28} aria-hidden="true"/></header>
+    <header className={base.header}><div><p className={base.eyebrow}>AI 助手连接</p><h1>连接 Notique 到 AI 助手</h1><p className={base.subtitle}>连接后可在 AI 助手中查询记录、总结重点和核对原文。</p></div><Link2 size={28} aria-hidden="true"/></header>
     <NqSurface className={`${base.record} ${styles.authorization}`} aria-label="AI助手只读授权">
       <div className={styles.heading}><h2>1. 开启只读授权</h2><NqStatus tone={status?.enabled ? 'success' : 'info'}>{issue ? '状态待确认' : label}</NqStatus></div>
-      <p>读取你有权访问的项目、沟通原文和已生成的结果。草稿与已采纳重点分别标明，采纳和改错仍在Notique中完成。</p>
+      <p>授权后，AI 助手可读取你有权访问的项目、原文和已有结果。返回内容会标明草稿或已采纳；确认和修改需在 Notique 中完成。</p>
       {status?.authenticated && <dl><div><dt>当前账号</dt><dd>{status.accountEmail}</dd></div><div><dt>授权有效期</dt><dd>{status.enabled && status.expiresAt ? new Date(status.expiresAt).toLocaleDateString('zh-CN') : '开启后30天'}</dd></div></dl>}
       {status && !status.authenticated && <p className={styles.help}>{localPreview ? '本地预览暂未登录。正式站支持登录并授权。' : '先登录当前账号，再选择是否授权。'}</p>}
       <div className={styles.buttons}>
@@ -92,11 +92,11 @@ export function McpConnectionPage({loginHref, localPreview, returnHref}: {loginH
     </NqSurface>
     <NqSurface className={`${base.record} ${styles.connection}`} aria-label="AI助手连接方式">
       <h2>2. 在AI助手中安装Notique</h2>
-      <p>开启本站授权后，按下方教程在ChatGPT中创建Notique Beta云端连接，再完成登录。Beta期间可手动连接，公开商店安装入口仍在准备。</p>
-      <p><a href="#setup-guide">查看本页图文教程 ↓</a></p>
-      <p>完成连接后，可以试着问：</p>
+      <p>开启授权后，按下方教程在 ChatGPT 中添加 Notique Beta 并登录。Beta 支持手动连接，暂未公开上架。</p>
+      <p><a href="#setup-guide">查看连接教程</a></p>
+      <p>连接后可提问：</p>
       <blockquote>帮我看看最近的沟通记录，有哪些重点和需要跟进的事？</blockquote>
-      <p className={styles.help}>这里显示的是Notique的读取授权。AI助手是否已安装连接，以它的插件页为准。AI助手的推理费用按其服务计费。</p>
+      <p className={styles.help}>本页显示 Notique 的读取授权，连接是否启用请查看 AI 助手的插件页。AI 助手的使用费用按其服务方案计费。</p>
       <details><summary>通过连接地址接入</summary><p className={styles.help}>将服务地址填入“创建MCP应用”的服务器URL字段，并按下方教程填写OAuth客户端ID。地址与ID需一起配置；登录与本站授权相同的账号。</p><output className={styles.endpoint}>{endpoint}</output><NqButton variant="secondary" disabled={!status?.enabled || saving || loading} onClick={() => void copyEndpoint()}><Copy size={14}/>复制连接地址</NqButton></details>
     </NqSurface>
     <p className={base.feedback} role="status" aria-live="polite">{feedback}</p>

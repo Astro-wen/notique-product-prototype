@@ -1169,7 +1169,7 @@ function AssetUploadProgressCard({ progress, onCancel }: { progress: AssetUpload
   </section>;
 }
 
-function MaterialSyncingCard({ detail = "已收到，好了会自动更新" }: { detail?: string }) {
+function MaterialSyncingCard({ detail = "材料已收到，处理完成后自动更新" }: { detail?: string }) {
   return <div className="material-syncing-card" role="status" aria-live="polite" aria-busy="true">
     <span className="material-syncing-spinner" aria-hidden="true" />
     <div><strong>正在准备内容</strong><p>{detail}</p></div>
@@ -1656,7 +1656,7 @@ function ResultContent({ tab, data, events, onOpenClaim, onSelect, onResolveCont
   }
   if (tab === "actions") {
     const actions = objectItems(data);
-    if (!actions.length) return <div className="action-empty-state"><EmptyState title="目前没有下一步行动" body="AI 提的建议要先确认，确认过的才会出现在这里" /><div><button className="button primary" onClick={onOpenAiSuggestions}>查看 AI 建议</button></div></div>;
+    if (!actions.length) return <div className="action-empty-state"><EmptyState title="目前没有下一步行动" body="确认并采纳行动建议后，会显示在这里" /><div><button className="button primary" onClick={onOpenAiSuggestions}>查看 AI 建议</button></div></div>;
     return <div className="action-list">{actions.map((item, index) => {
       const claimId = firstString(item, ["claim_id"]);
       const status = firstString(item, ["status"]) || "ai_suggested";
@@ -4812,7 +4812,7 @@ export default function Home() {
         ).then(async (transcription) => {
           flash(transcription.orchestrationMode === "chunked"
             ? `“${uploadFile.name}”的 ${transcription.chunkCount ?? transcription.chunks.length} 段正在并行识别`
-            : `“${uploadFile.name}”正在识别说话人，好了会自动整理`);
+            : `“${uploadFile.name}”正在识别说话人，完成后自动整理`);
           if (routeRef.current.projectId === targetProjectId && routeRef.current.eventId === targetEventId) {
             await loadSimpleProject(targetProjectId, targetEventId, "replace");
           }
@@ -6782,7 +6782,7 @@ function TranscriptArtifactsPanel({
           <div className="readable-meta transcript-turn-meta" data-testid="transcript-turn-meta"><span className="transcript-speaker-mark" aria-hidden="true"><AudioLines /></span><strong>{displaySpeakerLabel(group.speaker)}</strong>{audioAssetIdForVersion(group.assetVersionId) ? <button aria-label={transcriptPlaybackLabel(group.startMs, "前三秒播放")} onClick={() => playAt(group.startMs, group.key, "raw", group.assetVersionId)}>{compactTranscriptTimestamp(group.startMs)}</button> : <time className="transcript-turn-time">{compactTranscriptTimestamp(group.startMs)}</time>}{group.interruptionMarker && <em className="transcript-interruption-marker">{group.interruptionMarker}</em>}</div>
           <button className={`transcript-copy-button${provisional ? " preview-only" : ""}`} data-testid="transcript-turn-body" aria-disabled={provisional || undefined} aria-pressed={selected} onClick={() => { if (!provisional) selectTranscriptGroup(group, "raw"); }}><span>{group.text}</span><small className="visually-hidden">{provisional ? "稳定片段预览" : sourceOnly ? "选择这段原话" : "打开处理面板"}</small></button>
         </article></Fragment>;
-      })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "loading" ? <div className="reader-section-empty" role="status"><span className="spinner" aria-hidden="true" /><strong>正在读取逐字稿…</strong></div> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已显示的内容不受影响</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传 Transcript 或等待录音转写完成后，原始版本会永久保留在这里。" />}
+      })}{filteredRawGroups.length === 0 && <div className="reader-filter-empty"><strong>没有符合筛选的原话</strong><button className="text-button" onClick={() => { setTranscriptSearch(""); setSpeakerFilter("all"); setOnlyKeySources(false); }}>清除筛选</button></div>}{filteredRawGroups.length > visibleRawGroups.length && <button className="reader-load-more" onClick={() => setVisibleTranscriptGroups((count) => count + 240)}>继续加载 {Math.min(240, filteredRawGroups.length - visibleRawGroups.length)} 段</button>}</> : transcriptState === "loading" ? <div className="reader-section-empty" role="status"><span className="spinner" aria-hidden="true" /><strong>正在读取逐字稿…</strong></div> : transcriptState === "error" ? <div className="reader-section-empty error"><strong>原始逐字稿暂时没有读到</strong><p>已显示的内容不受影响</p><button className="button secondary" onClick={() => void refreshTranscript()}>重新读取原稿</button></div> : <EmptyState title="还没有原始逐字稿" body="上传逐字稿或等待录音转写完成后，可在这里查看原文。" />}
     </div>}
 
         </div>
@@ -6867,7 +6867,7 @@ function TranscriptArtifactsPanel({
           {visiblePendingReviewCount > 0 ? <div className="rail-pending-list">
             {pendingClaims.map((claim) => <button id={`rail-pending-${claim.id}`} key={claim.id} onClick={() => selectClaimInRail(claim)}><span><small>{typeLabel(claim.type)}{claim.needsAdditionalEvidence ? " · 需要更多证据" : ""}</small><strong>{claim.statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
             {pendingOccurrences.map((candidate) => <button id={`rail-occurrence-${candidate.id}`} key={candidate.id} onClick={onOpenFullReview}><span><small>再次提到 · 需要判断</small><strong>{candidate.proposed_statement || candidate.target_statement}</strong></span><ArrowRight aria-hidden="true" /></button>)}
-          </div> : analysisRunning ? <div className="rail-loading" role="status"><span className="spinner" aria-hidden="true" /><span><strong>待确认内容仍在整理</strong><small>{claims.length || occurrenceCandidates.length ? `已发现 ${claims.length + occurrenceCandidates.length} 条，好了就能确认` : "可以先读逐字稿，好了会自动更新"}</small></span></div> : analysisComplete ? <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length || occurrenceCandidates.length ? "本次重点已处理完成" : "没有需要确认的内容"}</strong><p>{claims.length || occurrenceCandidates.length ? "已确认的内容会进入项目记忆，原文保留" : "这次分析没有发现需要人工确认的重点。"}</p></div> : analysisRun ? <div className="rail-complete-state warning"><AlertTriangle aria-hidden="true" /><strong>重点整理未完成</strong><p>逐字稿不受影响；可以稍后重新尝试，待确认内容不会被当成准确记录。</p></div> : <div className="rail-complete-state"><FileText aria-hidden="true" /><strong>还没开始整理</strong><p>可以先阅读逐字稿；需要时再重新启动分析。</p></div>}
+          </div> : analysisRunning ? <div className="rail-loading" role="status"><span className="spinner" aria-hidden="true" /><span><strong>待确认内容仍在整理</strong><small>{claims.length || occurrenceCandidates.length ? `已发现 ${claims.length + occurrenceCandidates.length} 条，整理完成后可确认` : "可以先读逐字稿，重点整理完成后自动更新"}</small></span></div> : analysisComplete ? <div className="rail-complete-state"><CheckCircle2 aria-hidden="true" /><strong>{claims.length || occurrenceCandidates.length ? "本次重点已处理完成" : "没有需要确认的内容"}</strong><p>{claims.length || occurrenceCandidates.length ? "已确认的内容会汇总到项目中，原文仍可查看" : "这次分析没有发现需要人工确认的重点。"}</p></div> : analysisRun ? <div className="rail-complete-state warning"><AlertTriangle aria-hidden="true" /><strong>重点整理未完成</strong><p>逐字稿不受影响；可以稍后重新尝试，待确认内容不会被当成准确记录。</p></div> : <div className="rail-complete-state"><FileText aria-hidden="true" /><strong>还没开始整理</strong><p>可以先阅读逐字稿；需要时再重新启动分析。</p></div>}
 
         </div>}
 
@@ -6969,7 +6969,7 @@ function AudioTranscriptionProgressPanel({
   const statusText = failed
     ? "可以重试"
     : preparing
-      ? "录音已保存，转好自动打开"
+      ? "录音已保存，转写完成后自动打开"
       : chunksFinished
         ? "快好了"
         : hasChunkPlan && progress.total > 0
@@ -7186,13 +7186,13 @@ function SimpleTestScreen({
       title: projectWorkflow.completed > 0 ? "下一条记录已就绪" : "按顺序整理每条记录",
       body: projectWorkflow.pendingTotal > 0
         ? `前面还有 ${projectWorkflow.pendingTotal} 条待确认，不影响整理下一条`
-        : "一次整理一条记录，整理好就能读，确认可以随时做",
+        : "每次整理一条记录，完成后可阅读和确认",
     },
     running: {
       title: rawTranscriptAvailable ? "逐字稿已就绪，正在整理重点" : "正在准备本次内容",
       body: rawTranscriptAvailable
-        ? "可以先读原文，概要好了会自动更新"
-        : "好了会自动更新",
+        ? "可以先读原文，概要生成后自动更新"
+        : "处理完成后自动更新",
     },
     empty_output: {
       title: `第 ${workflowPosition}/${projectWorkflow.total} 条记录没有整理出要点`,
@@ -7211,8 +7211,8 @@ function SimpleTestScreen({
       body: `${projectWorkflow.pendingTotal} 条待确认，只有确认过的才会进入报告`,
     },
     partially_reviewed: {
-      title: "项目进展包含 AI 草稿和可信记忆",
-      body: `${projectWorkflow.pendingTotal} 条内容仍待核对。未核对草稿不会进入 Timeline、Brief 或正式报告。`,
+      title: "项目进展包含草稿和已确认内容",
+      body: `${projectWorkflow.pendingTotal} 条内容仍待核对。未确认的草稿不会进入时间线、会前简报或正式报告。`,
     },
     complete: {
       title: projectWorkflow.ignoredEmptyCount > 0 ? "全部记录已整理" : "全部记录已整理",
@@ -7529,7 +7529,7 @@ function SimpleTestScreen({
 
           {factsRunningInBackground && readingAid && activeTab !== "highlights" && activeTab !== "results" && activeTab !== "transcript" && activeTab !== "materials" && <aside className="workflow-reading-banner" aria-live="polite">
             <span className="workflow-reading-icon" aria-hidden="true"><CheckCircle2 /></span>
-            <div><strong>{readingAidLabel}已经可以阅读</strong><p>事实识别仍在后台，不需要留在等待页。{readingAid === "summary" ? " AI 草稿 · 找得到原句，不等于核对过" : " 原始逐字稿仍是最终核对依据。"}</p></div>
+            <div><strong>{readingAidLabel}已经可以阅读</strong><p>重点仍在后台整理，可以离开此页。{readingAid === "summary" ? " AI 草稿，引用原文但尚未人工确认" : " 原始逐字稿仍是最终核对依据。"}</p></div>
             <button className="button secondary" onClick={() => openReadingAid(readingAid)}>{readingAid === "summary" ? "先看 AI 摘要" : "查看原文"}</button>
           </aside>}
 
@@ -7556,7 +7556,7 @@ function SimpleTestScreen({
 
             <section className="materials-section" aria-busy={busy === "asset" || busy === "simple-start"}>
               <header><div><h3>材料</h3><p>{event ? `${visibleAssets.length} 份材料` : "上传后自动建一条记录"}</p></div></header>
-              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在创建记录…" : "内容已收到，好了会自动更新"} />}
+              {(busy === "asset" || busy === "simple-start") && !currentAssetUpload && <MaterialSyncingCard detail={busy === "simple-start" ? "正在创建记录…" : "材料已收到，处理完成后自动更新"} />}
               <MaterialShelf
                 assets={visibleAssets}
                 busy={Boolean(busy)}
@@ -8022,7 +8022,7 @@ function OccurrenceReviewCard({ candidate, busy, onOpen, onVerdict, onConvert }:
 function ReviewCompletionScreen({ project, session, destination, onContinue }: { project: Project | null; session: ReviewSession | null; destination: ReviewSummaryDestination | null; onContinue: () => void }) {
   const outcome = session?.outcome;
   const aiInitial = (session?.initialPendingClaimCount ?? 0) + (session?.initialPendingOccurrenceCount ?? 0);
-  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮确认完成" body="下面展示 AI 草稿经过人工确认后发生了什么。正式报告仍只读取已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark" aria-hidden="true"><Check /></span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮确认。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>现在什么变成了正式内容？</h2><p>确认过的进入报告和下一条记录，不采纳的不进入</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看下次准备" : "准备下一条"}</button></section></div>;
+  return <div className="page review-completion-page"><PageHeader eyebrow={project?.name} title="本轮确认完成" body="查看本轮确认结果。正式报告只包含已确认内容。" /><section className="panel review-outcome-hero"><span className="completion-mark" aria-hidden="true"><Check /></span><div><h2>AI 提出了 {aiInitial} 条候选信息</h2><p>你用 {formatReviewDuration(session?.durationMs ?? 0)} 完成本轮确认。</p></div></section><div className="review-outcome-grid"><article><strong>{outcome?.confirmedClaimCount ?? 0}</strong><span>直接确认的事实</span></article><article><strong>{outcome?.editedClaimCount ?? 0}</strong><span>修改后确认</span></article><article><strong>{outcome?.rejectedClaimCount ?? 0}</strong><span>未采纳</span></article><article><strong>{outcome?.humanAddedClaimCount ?? 0}</strong><span>AI 漏项后人工补充</span></article><article><strong>{outcome?.confirmedOccurrenceCount ?? 0}</strong><span>确认再次出现</span></article><article><strong>{(outcome?.acceptedRelationCount ?? 0) + (outcome?.rejectedRelationCount ?? 0)}</strong><span>人工判断的关系</span></article></div><section className="panel review-outcome-explanation"><h2>已确认内容的用途</h2><p>确认过的进入报告和下一条记录，不采纳的不进入</p><button className="button primary" disabled={!destination} onClick={onContinue}>{destination?.complete ? "查看下次准备" : "准备下一条"}</button></section></div>;
 }
 
 function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSession, reviewClockNow, onBack, onRetry, onOpen, onOccurrenceVerdict, onOccurrenceConvert, busy }: { state: AsyncState; issue: ApiIssue | null; claims: Claim[]; occurrenceCandidates: OccurrenceCandidate[]; reviewSession: ReviewSession | null; reviewClockNow: number; onBack: () => void; onRetry: () => void; onOpen: (id: string) => void; onOccurrenceVerdict: (candidate: OccurrenceCandidate, action: "confirm" | "reject") => void; onOccurrenceConvert: (candidate: OccurrenceCandidate, claims: OccurrenceNewClaim[]) => void; busy: string | null }) {
@@ -8040,7 +8040,7 @@ function ReviewScreen({ state, issue, claims, occurrenceCandidates, reviewSessio
     : 0;
   return (
     <div className="page narrow-page">
-      <PageHeader eyebrow="待确认" title="确认重要内容" body="一条一条看原话，然后决定留不留" back={onBack} backLabel="返回 AI 草稿" />
+      <PageHeader eyebrow="待确认" title="确认重要内容" body="对照原文，确认、修改或不采纳" back={onBack} backLabel="返回 AI 草稿" />
       {issue && <ErrorNotice issue={issue} onRetry={onRetry} />}
       {reviewSession && <section className={`review-timing ${reviewSession.status}`}><div><span className="section-kicker">确认用时</span><strong>{reviewSession.status === "active" ? "正在计时" : reviewSession.status === "completed" ? "本轮确认已完成" : "本轮计时已结束"}</strong><p>{reviewSession.status === "active" ? `开始时 ${initialCount} 条，目前还剩 ${remainingCount} 条。刷新或关闭页面不会重置。` : `本次共处理 ${initialCount} 条，结果已由服务器保存。`}</p></div><time>{formatReviewDuration(elapsedMs)}</time>{reviewSession.status === "completed" && <span className={elapsedMs <= 120000 ? "timing-pass" : "timing-over"}>{elapsedMs <= 120000 ? "达到两分钟目标" : "超过两分钟目标"}</span>}</section>}
       <div className="filter-tabs"><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待确认</button><button className={filter === "reviewed" ? "active" : ""} onClick={() => setFilter("reviewed")}>已处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div>

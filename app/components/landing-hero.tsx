@@ -85,20 +85,20 @@ export function LandingHero({
           <p className="landing-greeting">{hello}</p>
           {/* 这一页说的是「上传什么、得到什么」，怎么得到的放在这后面。 */}
           <button type="button" className="text-button landing-explain" disabled={!ready} onClick={onExplain}>
-            这东西怎么工作<ArrowRight size={14} aria-hidden="true" />
+            使用说明<ArrowRight size={14} aria-hidden="true" />
           </button>
         </div>
         <h1>
           <span className="landing-build">上传录音或笔记</span>
           <span className="landing-build">整理成<span className="landing-accent">重点和下一步</span></span>
         </h1>
-        <p className="landing-sub">先读完整记录，按需确认重点，再跟进和补结果</p>
+        <p className="landing-sub">查看原文和重点，确认后可跟进或补充结果</p>
       </header>
 
       <div className="landing-actions">
-        <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "录音面板在下面，点这里收起" : "用这台设备的麦克风，录完自动转写"} active={recorderOpen} disabled={!ready || busy} onClick={onRecord} />
+        <NqActionCard icon={Mic} kind="record" title="直接录音" description={recorderOpen ? "点击收起录音面板" : "使用麦克风录音，结束后自动转写"} active={recorderOpen} disabled={!ready || busy} onClick={onRecord} />
         <NqActionCard icon={Upload} kind="audio" title="上传音频" description="会议录音、语音备忘录" disabled={!ready || busy} onClick={onPickAudio} />
-        <NqActionCard icon={FileText} kind="text" title="上传文件" description="已有逐字稿，直接整理重点" disabled={!ready || busy} onClick={onPickTranscript} />
+        <NqActionCard icon={FileText} kind="text" title="上传文件" description="逐字稿、文字笔记" disabled={!ready || busy} onClick={onPickTranscript} />
         <NqActionCard icon={Images} kind="photo" title="上传图片" description="手写笔记、白板、纸质材料" disabled={!ready || busy} onClick={onPickPhoto} />
       </div>
 
@@ -106,12 +106,12 @@ export function LandingHero({
         <span className="landing-dropzone-mark" aria-hidden="true">
           {uploading ? <i className="spinner" /> : <Upload />}
         </span>
-        <strong>{uploading ? "正在收下材料…" : "把文件拖到这里，或点击选择"}</strong>
+        <strong>{uploading ? "正在上传…" : "把文件拖到这里，或点击选择"}</strong>
         {uploading
-          ? <small>处理完会自动打开，不用等在这一页</small>
+          ? <small>处理完成后自动打开记录</small>
           // 格式和"会自动建项目"分成两行，挤在一行时会从词中间断开。
           : <><small>音频 MP3 / M4A / WAV / WebM　文本 TXT / VTT / SRT / JSON　图片 JPG / PNG / HEIC</small>
-            <small>第一份材料会自动建好项目，不用先想名字</small></>}
+            <small>首次上传会自动创建项目</small></>}
       </button>
 
       {children}

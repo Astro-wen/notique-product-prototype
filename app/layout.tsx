@@ -4,18 +4,18 @@ import { NotiqueQueryProvider } from "./query-provider";
 
 export const metadata: Metadata = {
   title: "Notique AI",
-  description: "上传录音或逐字稿，自动整理重点、原话、待确认内容和下一步。",
+  description: "上传录音、逐字稿或笔记，查看原文、整理重点并记录跟进结果。",
   icons: {
     icon: "/favicon.svg",
   },
   openGraph: {
     title: "Notique AI",
-    description: "边读、边听、边处理；重要信息始终可以回到原话。",
+    description: "查看沟通记录和原文，确认重点并记录跟进结果。",
   },
   twitter: {
     card: "summary_large_image",
     title: "Notique AI",
-    description: "边读、边听、边处理；重要信息始终可以回到原话。",
+    description: "查看沟通记录和原文，确认重点并记录跟进结果。",
   },
 };
 

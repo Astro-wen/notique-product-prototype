@@ -63,7 +63,7 @@ export function ProjectOverviewList({
   const activeSection = projectOverviewSections.find((section) => section.key === filter);
 
   if (rows.length === 0) {
-    return <p className="muted">还没有整理出项目记录。完成一次分析后，这里会显示关键事实、需求、负责人和下一步。</p>;
+    return <p className="muted">还没有项目记录。整理沟通材料后，可在这里查看重点和跟进事项。</p>;
   }
 
   return <div className="project-overview">

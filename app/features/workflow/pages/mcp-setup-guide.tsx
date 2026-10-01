@@ -3,7 +3,7 @@ import styles from './mcp-connection.module.css';
 
 export function McpSetupGuide() {
   return <section id="setup-guide" className={styles.guide} aria-labelledby="setup-guide-title">
-    <h2 id="setup-guide-title">一步一步连接自己的AI助手</h2>
+    <h2 id="setup-guide-title">连接步骤</h2>
     <p className={styles.help}>使用自己的ChatGPT账号。当前Beta共用一个工作空间，授权后读取的是允许共享的Beta资料。</p>
     <div className={styles.guideSteps}>
       <article>
@@ -24,7 +24,7 @@ export function McpSetupGuide() {
       </article>
       <article>
         <h3><span>2</span>在AI助手里连接Notique</h3>
-        <p>Beta期间可以手动创建云端连接，不需要等待公开上架，也不需要上传插件ZIP。先用自己的账号打开<a href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">ChatGPT插件页</a>。如果没有创建入口，到“设置 → 账户安全与登录”开启开发者模式，再返回插件页。</p>
+        <p>Beta 期间可手动添加连接。用自己的账号打开<a href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">ChatGPT插件页</a>。如果没有创建入口，到“设置 → 账户安全与登录”开启开发者模式，再返回插件页。</p>
         <p><strong>① 点击“添加 → 创建MCP应用”。</strong>部分界面显示“创建插件”。</p>
         <figure className={styles.guideShot}>
           <Image src="/guides/assets/notique-mcp-add-menu.jpg" alt="ChatGPT插件页，红圈标出添加按钮和创建MCP应用入口" width={1280} height={720} unoptimized />
@@ -55,13 +55,13 @@ export function McpSetupGuide() {
           <Image src="/guides/assets/notique-mcp-client-config.jpg" alt="高级OAuth配置截图，红圈标出实际Site客户端ID，密钥留空，Token验证方法为none" width={1280} height={720} unoptimized />
           <span className={styles.guideRing} style={{left:'53%',top:'51%',width:'31%',height:'9%'}} aria-hidden="true" />
         </figure>
-        <p className={styles.guideCaption}>这个Client ID属于本Notique站点，不是所有MCP通用的ID，也不是用户密码。无需申请API密钥。开发者账号已按此配置完成手动创建、OAuth登录和一次只读调用；其他个人账号的完整流程仍需分别验证。</p>
+        <p className={styles.guideCaption}>此 Client ID 用于连接当前 Notique 站点，用户可共用，无需申请 API 密钥。开发者账号已验证创建、登录和一次读取；其他个人账号尚未完成验证。</p>
         <p><strong>④ 阅读提示，确认后点击“创建”，再继续连接。</strong>登录与本页只读授权相同的ChatGPT账号。返回插件页后，打开“个人”中的Notique Beta，确认出现“已连接至你的账号”。登录页显示原站点名称“Notique Evidence Workspace Demo”是正常的，请核对站点地址。</p>
         <p>网页和桌面版使用同一账号，在各自的插件页确认Notique Beta已启用。若某个客户端没有创建入口，先在网页完成配置；桌面端仍需确认可以选择该插件。不要将MCP地址填进插件商店搜索框。</p>
       </article>
       <article>
         <h3><span>3</span>新建对话，启用Notique并提问</h3>
-        <p>在ChatGPT中选择“工作”模式，新建对话，用@选择刚才创建的“Notique Beta”。先列项目，再读取记录，最后核对原文。可以依次复制这三句话：</p>
+        <p>在ChatGPT中选择“工作”模式，新建对话，用@选择刚才创建的“Notique Beta”。可依次复制以下问题：</p>
         <blockquote>列出我在Notique中可以访问的项目。</blockquote>
         <blockquote>整理这个项目最近的沟通重点和跟进事项，区分草稿与已采纳内容。</blockquote>
         <blockquote>给出这些重点的原文证据，并标明不确定的地方。</blockquote>
