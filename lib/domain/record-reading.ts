@@ -15,7 +15,7 @@ export function readingTopics(snapshot: WorkspaceSnapshot, visible: readonly Bul
     // Older wording never becomes a current preview after a correction.
     const preview = (snapshot.narrative?.freshness==='current' ? snapshot.narrative.sentenceRefs : []).filter(s => s.topic?.key===topic.key && s.claimRefs.length>0 && s.claimRefs.every(r=>current.has(JSON.stringify(r))) && !s.claimRefs.some(r=>interactive.some(b=>b.claimRefs.some(x=>sameVersion(x,r))) || followed.has(r.claimId) || [...results,...ownAnswers].some(x=>sameVersion(x,r))) ).slice(0,3);
     return {...topic, detail, interactive, preview};
-  });
+  }).filter(topic=>topic.detail.length || topic.preview.length || topic.actions.length || topic.relatedActionRefs.length);
 }
 
 export function pendingItems(snapshot: Pick<WorkspaceSnapshot,'reviewCards'|'questions'|'actions'>) {

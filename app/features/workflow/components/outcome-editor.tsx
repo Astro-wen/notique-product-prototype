@@ -76,22 +76,23 @@ export function OutcomeEditor({readOnly=false,target,snapshot,onSaveOutcome,onAn
       if(cause instanceof ApiClientError && cause.status===409) setConflict(true);
     } finally {setPending(false);}
   }
-  return <form className={styles.editor} aria-label={correction?'修正结果':'补充结果'} onSubmit={e=>{e.preventDefault();void save();}}>
-    {correction?.freshness==='stale' && <p className={styles.notice}>这次结果里的答案已有变化。请按下方当前答案核对后保存。</p>}
-    {shared && <><label htmlFor={`${prefix}-shared`}>跟进结果</label><textarea readOnly={readOnly} id={`${prefix}-shared`} autoFocus value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={3} maxLength={4000}/></>}
-    {questions.map(q=><div key={q.id} className={styles.answerField}>
-      {shared?<label className={styles.answerSelection}><input type="checkbox" disabled={readOnly || pending || !selectedIds.includes(q.id) && selectedIds.length>=20} checked={selectedIds.includes(q.id)} onChange={e=>setSelectedIds(ids=>e.target.checked?[...ids,q.id]:ids.filter(id=>id!==q.id))}/>同时用于回答：{textFor(q.claimRef.claimVersionId)}{!suggested.has(q.id) && <small>其他问题</small>}</label>:<label htmlFor={`${prefix}-${q.id}`}>{textFor(q.claimRef.claimVersionId)}</label>}
-      {!shared && <textarea readOnly={readOnly} autoFocus={questions[0]?.id===q.id} id={`${prefix}-${q.id}`} aria-label={questions.length===1?'补充答案':`回答：${textFor(q.claimRef.claimVersionId)}`} value={answers[q.id]??''} onChange={e=>{setAnswers({...answers,[q.id]:e.target.value});setTouched({...touched,[q.id]:true});}} rows={3} maxLength={4000}/>}
+  const renderQuestion=(q:typeof questions[number])=><div key={q.id} className={styles.answerField}>
+      {shared?<label className={styles.answerSelection}><input type="checkbox" disabled={readOnly || pending || !selectedIds.includes(q.id) && selectedIds.length>=20} checked={selectedIds.includes(q.id)} onChange={e=>setSelectedIds(ids=>e.target.checked?[...ids,q.id]:ids.filter(id=>id!==q.id))}/>同时用于回答：{textFor(q.claimRef.claimVersionId)}</label>:<label htmlFor={`${prefix}-${q.id}`}>{textFor(q.claimRef.claimVersionId)}</label>}
+      {!shared && <textarea disabled={pending} readOnly={readOnly} autoFocus={questions[0]?.id===q.id} id={`${prefix}-${q.id}`} aria-label={questions.length===1?'补充答案':`回答：${textFor(q.claimRef.claimVersionId)}`} value={answers[q.id]??''} onChange={e=>{setAnswers({...answers,[q.id]:e.target.value});setTouched({...touched,[q.id]:true});}} rows={3} maxLength={4000}/>}
       {(!shared || selectedIds.includes(q.id)) && externalRefs(q).length>0 && <fieldset className={styles.answerChoice} disabled={readOnly || pending}><legend>这个问题已有答案</legend>
         {externalRefs(q).map(ref=><p key={ref.claimVersionId}>{textFor(ref.claimVersionId)}</p>)}
         <label><input type="radio" name={`${prefix}-${q.id}-choice`} checked={choices[q.id]?.mode==='replace'} onChange={()=>updateChoice(q.id,{mode:'replace'})}/> 用新答案替代</label>
         <label><input type="radio" name={`${prefix}-${q.id}-choice`} checked={choices[q.id]?.mode==='coexist'} onChange={()=>updateChoice(q.id,{mode:'coexist'})}/> 两个答案分别适用</label>
         {choices[q.id]?.mode==='coexist' && <input aria-label="适用情况" placeholder="例如：十二万是标准方案，十五万是加急方案" value={choices[q.id].applicability} onChange={e=>updateChoice(q.id,{applicability:e.target.value})} maxLength={4000}/>}
       </fieldset>}
-    </div>)}
+    </div>;
+  return <form className={styles.editor} aria-label={correction?'修正结果':'补充结果'} onSubmit={e=>{e.preventDefault();void save();}}>
+    {correction?.freshness==='stale' && <p className={styles.notice}>这次结果里的答案已有变化。请按下方当前答案核对后保存。</p>}
+    {shared && <><label htmlFor={`${prefix}-shared`}>跟进结果</label><textarea disabled={pending} readOnly={readOnly} id={`${prefix}-shared`} autoFocus value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={3} maxLength={4000}/></>}
+    {shared ? <>{questions.filter(q=>suggested.has(q.id)).map(renderQuestion)}{questions.some(q=>!suggested.has(q.id)) && <details className={styles.topicDetails} open={restored && questions.some(q=>!suggested.has(q.id) && selectedIds.includes(q.id)) || undefined}><summary>回答其他问题 · {questions.filter(q=>!suggested.has(q.id)).length}</summary>{questions.filter(q=>!suggested.has(q.id)).map(renderQuestion)}</details>}</> : questions.map(renderQuestion)}
     {target.kind==='action' && <>
       {!shared && questions.length>0 && !noteOpen && <NqButton className={styles.addNote} variant="quiet" onClick={()=>setNoteOpen(true)}>添加补充说明</NqButton>}
-      {!shared && (!questions.length || noteOpen) && <><label htmlFor={`${prefix}-note`}>{questions.length?'补充说明，可留空':'跟进结果'}</label><textarea readOnly={readOnly} id={`${prefix}-note`} autoFocus={!questions.length} value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={2} maxLength={10000}/></>}
+      {!shared && (!questions.length || noteOpen) && <><label htmlFor={`${prefix}-note`}>{questions.length?'补充说明，可留空':'跟进结果'}</label><textarea disabled={pending} readOnly={readOnly} id={`${prefix}-note`} autoFocus={!questions.length} value={note} onChange={e=>{setNote(e.target.value);setNoteTouched(true);}} rows={2} maxLength={10000}/></>}
       {!correction && action?.executionState==='open' && <label className={styles.origin}><input type="checkbox" disabled={readOnly || pending} checked={complete} onChange={e=>setComplete(e.target.checked)}/> 同时标记行动完成</label>}
     </>}
     {error && <p role="alert" className={styles.error}>{error}</p>}
