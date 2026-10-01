@@ -86,7 +86,17 @@ export function validateWorkflowNarrative(value: unknown, input: WorkflowNarrati
     sentences.push({ text: sentence.text.trim(), claim_refs: refs, ...(topic ? {topic} : {}) });
   }
   if (topics.size && (topics.size > 40 || sentences.some(s=>!s.topic))) issues.push('Assign every sentence to a topic, at most 40 topics.');
-  if ([...available].some(key => !covered.has(key))) issues.push('Cover all input versions, including drafts, pending choices and unanswered questions.');
+  const missing = [...available].filter(key => !covered.has(key));
+  if (missing.length) {
+    // A generic coverage warning left the single repair unable to identify the
+    // omitted point in long records. Send bounded, exact references and source
+    // wording; the final validator still requires every frozen version.
+    const details = input.bullets.flatMap(b => {
+      const refs = b.claimRefs.filter(r => missing.includes(refKey(r)));
+      return refs.length ? [{ text: b.text.slice(0, 800), claim_refs: refs }] : [];
+    }).slice(0, 20);
+    issues.push('Cover all input versions, including drafts, pending choices and unanswered questions. Missing input points: ' + JSON.stringify(details));
+  }
   if (sentences.reduce((n, s) => n + s.text.length, 0) > 20000) issues.push('Keep the full narrative within 20000 characters.');
   if (issues.length) throw new WorkflowNarrativeInvalidError(issues);
   return { schema_version: WORKFLOW_NARRATIVE_SCHEMA_VERSION, event_id: input.eventId, sentences };

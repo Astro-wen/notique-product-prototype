@@ -1,4 +1,4 @@
-import { validateWorkflowNarrative, workflowNarrativePrompt, workflowNarrativeSchema, WorkflowNarrativeInvalidError, type WorkflowNarrativeInput, type WorkflowNarrativeProvider } from '@/lib/domain/workflow-narrative';
+import { WORKFLOW_NARRATIVE_SCHEMA_VERSION, validateWorkflowNarrative, workflowNarrativePrompt, workflowNarrativeSchema, WorkflowNarrativeInvalidError, type WorkflowNarrativeInput, type WorkflowNarrativeProvider } from '@/lib/domain/workflow-narrative';
 import type { ContextPack } from "@/lib/domain/context-pack";
 import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
@@ -968,7 +968,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
       };
       try {
         const version = (schema.properties as {schema_version?: {enum?: unknown[]}} | undefined)?.schema_version?.enum?.[0];
-        if ((version === INVENTORY_SCHEMA_VERSION || version === VERIFICATION_SCHEMA_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
+        if ((version === INVENTORY_SCHEMA_VERSION || version === VERIFICATION_SCHEMA_VERSION || version === WORKFLOW_NARRATIVE_SCHEMA_VERSION) && body.status === "incomplete" && body.incomplete_details?.reason === "max_output_tokens") throw new ModelOutputBudgetExhaustedError(usage);
         const content = isOpenAi
           ? openAiResponseText(body)
           : body.choices?.[0]?.message?.content;

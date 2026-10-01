@@ -359,7 +359,8 @@ test("the project-level entry never preselects a Scenario or auto-reviews Claims
   const simpleScreen = declarationSource("SimpleTestScreen");
   assert.doesNotMatch(simpleScreen, /onAnalyze/);
   assert.doesNotMatch(simpleScreen, /onRetryRunStatus/);
-  assert.match(simpleScreen, /onClick=\{onProjectWorkflowAction\}/);
+  assert.match(simpleScreen, /onClick=\{projectWorkflow\.phase === "complete" \? \(\) => onResult\("brief-card"\) : onProjectWorkflowAction\}/);
+  assert.match(simpleScreen, /onClick=\{\(\) => selectWorkspaceTab\("highlights"\)\}>查看整理进度/);
   assert.match(
     simpleScreen,
     /\{workflowActionable && <button className="project-workflow-action"/,

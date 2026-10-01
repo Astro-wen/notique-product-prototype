@@ -47,7 +47,7 @@ export function buildTranscriptText(title: string, turns: ExportTurn[]): string 
     .filter((turn) => turn.text.trim())
     .map((turn) => {
       const clock = turn.startMs == null ? "" : `[${clockTimestamp(turn.startMs)}] `;
-      return `${clock}${turn.speaker}\n${turn.text.trim()}`;
+      return `${clock}${turn.speaker}:\n${turn.text.trim()}`;
     });
   return `${title}\n\n${blocks.join("\n\n")}\n`;
 }

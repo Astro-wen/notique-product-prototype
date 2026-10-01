@@ -144,25 +144,80 @@ function parseJson(content: string): DraftSegment[] {
   });
 }
 
+export type PlainTranscriptCue = {
+  speaker: string | null;
+  startMs: number | null;
+  text: string;
+  hasTimestamp: boolean;
+  hasSpeaker: boolean;
+};
+
+/** Shared by new TXT imports and read-only display of historical TXT rows.
+ * A cue with empty text is metadata for the following body, not spoken text. */
+export function parsePlainTranscriptCue(value: string): PlainTranscriptCue | null {
+  const line = value.trim();
+  const timed = line.match(/^(?:\[((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\]|((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?))(?:\s+(.*))?$/);
+  const startMs = timed ? parseTimestampMs(timed[1] ?? timed[2]) : null;
+  // Invalid timestamps remain literal source text, rather than losing a prefix.
+  const hasTimestamp = timed !== null && startMs !== null;
+  const text = hasTimestamp ? (timed[3] ?? "").trim() : line;
+  const labeled = text.match(/^([^:：\n]{1,80})[:：]\s*(.*)$/);
+  let speaker: string | null = null;
+  let body = text;
+  if (labeled) {
+    const label = labeled[1].trim();
+    // Colon-delimited prose and field headings are not speaker declarations.
+    const field = /^(?:https?|ftp|mailto|note|warning|budget|cost|price|date|time|topic|agenda|status|schedule|location|count|content|reason|conclusion|action|result|description|备注|注意|警告|说明|预算|费用|价格|时间|日期|主题|议程|安排|地点|人数|数量|内容|原因|结论|结果|项目预算|项目安排)$/i;
+    const role = /^(?:(?:speaker|spk|person|participant|说话人|发言人|讲话人|说话者)[\s_-]*[\p{L}\p{N}]+|buyer|agent|host|interviewer|interviewee|moderator|主持人|采访者|受访者|客户|讲师)$/iu;
+    const englishName = /^[A-Z][a-zA-Z'-]*(?:\s+[A-Z][a-zA-Z'-]*){0,2}$/;
+    const timedName = hasTimestamp && /^(?:[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,2}|[\p{Script=Han}]{2,8})$/u.test(label);
+    if (!field.test(label) && (role.test(label) || englishName.test(label) || timedName)) {
+      speaker = label;
+      body = labeled[2].trim();
+    }
+  }
+  if (!hasTimestamp && speaker === null) return null;
+  return {speaker, startMs: hasTimestamp ? startMs : null, text: body, hasTimestamp, hasSpeaker: speaker !== null};
+}
+
 function parsePlainText(content: string): DraftSegment[] {
   const lines = content.replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n");
   const result: DraftSegment[] = [];
-  const timestampPrefix = /^\[?((?:\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\]?\s+(.*)$/;
+  let block: DraftSegment | null = null;
+  const flush = () => {
+    if (block?.text.trim()) result.push(block);
+    block = null;
+  };
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (!line) continue;
-    const timed = line.match(timestampPrefix);
-    const value = timed ? timed[2] : line;
-    const parsed = splitSpeaker(value);
-    if (!parsed.text) continue;
-    result.push({
-      speaker: parsed.speaker,
-      startMs: timed ? parseTimestampMs(timed[1]) : null,
-      endMs: null,
-      text: parsed.text,
-    });
+    if (!line) {
+      if (block?.text) flush();
+      continue;
+    }
+    const cue = parsePlainTranscriptCue(line);
+    if (cue) {
+      if (block?.text) flush();
+      if (cue.text) {
+        // Preserve existing one-line cue segmentation and ordinal-based IDs.
+        result.push({speaker: cue.speaker ?? block?.speaker ?? null,
+          startMs: cue.hasTimestamp ? cue.startMs : block?.startMs ?? null,
+          endMs: null, text: cue.text});
+        block = null;
+      } else {
+        if (!block) block = {speaker: null, startMs: null, endMs: null, text: ""};
+        // A new speaker without a time never inherits another speaker's time.
+        if (cue.hasSpeaker && block.speaker !== null && block.speaker !== cue.speaker) block.startMs = null;
+        if (cue.hasTimestamp) block.startMs = cue.startMs;
+        if (cue.hasSpeaker) block.speaker = cue.speaker;
+      }
+    } else if (block) {
+      block.text += `${block.text ? "\n" : ""}${line}`;
+    } else {
+      result.push({speaker: null, startMs: null, endMs: null, text: line});
+    }
   }
+  flush();
   return result;
 }
 

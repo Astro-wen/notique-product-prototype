@@ -1,3 +1,5 @@
+import { parsePlainTranscriptCue } from '../lib/domain/transcript.ts';
+
 export type TranscriptDisplaySegment = {
   key: string;
   assetVersionId: string | null;
@@ -133,6 +135,78 @@ function canMerge(
   return group.text.length + next.text.length + 1 <= MAX_GROUP_CHARACTERS;
 }
 
+type PreparedDisplaySegment = {
+  segment: TranscriptDisplaySegment;
+  segmentCount: number;
+  explicitTurn: boolean;
+};
+
+/** Older TXT imports stored a cue and its speech as separate immutable rows.
+ * Derive their presentation together while retaining every original anchor. */
+function prepareLegacyCueSegments(segments: TranscriptDisplaySegment[]): PreparedDisplaySegment[] {
+  const prepared: PreparedDisplaySegment[] = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const first = segments[index];
+    const firstCue = parsePlainTranscriptCue(first.text);
+    if (!first.assetVersionId || !firstCue || firstCue.text) {
+      prepared.push({ segment: first, segmentCount: 1, explicitTurn: false });
+      continue;
+    }
+    const headers: TranscriptDisplaySegment[] = [];
+    let speaker: string | null = null;
+    let startMs: number | null = null;
+    let cursor = index;
+    let conflicting = false;
+    // A timestamp line followed by a speaker line is also one explicit cue.
+    for (; cursor < Math.min(segments.length, index + 3); cursor += 1) {
+      const header = segments[cursor];
+      const cue = parsePlainTranscriptCue(header.text);
+      if (header.assetVersionId !== first.assetVersionId || !cue || cue.text) break;
+      const cueSpeaker = cue.speaker ?? header.speaker;
+      const cueTime = cue.startMs ?? header.startMs;
+      if (
+        cue.speaker && header.speaker && speakerIdentity(cue.speaker) !== speakerIdentity(header.speaker)
+        || cue.startMs != null && header.startMs != null && cue.startMs !== header.startMs
+        || speaker && cueSpeaker && speakerIdentity(speaker) !== speakerIdentity(cueSpeaker)
+        || startMs != null && cueTime != null && startMs !== cueTime
+      ) { conflicting = true; break; }
+      speaker ??= cueSpeaker;
+      startMs ??= cueTime;
+      headers.push(header);
+    }
+    const body = segments[cursor];
+    // v1 also mistook a prose prefix before a colon for a speaker. Recover it
+    // only beneath an explicit cue, when punctuation identifies it as prose.
+    const prosePrefix = body?.speaker && /[.,!?。！？]/u.test(body.speaker)
+      && !parsePlainTranscriptCue(`${body.speaker}:`) ? body.speaker : null;
+    if (
+      conflicting || !headers.length || !body || body.assetVersionId !== first.assetVersionId
+      || body.speaker != null && !prosePrefix || body.startMs != null || body.endMs != null
+      || !body.text.trim() || parsePlainTranscriptCue(body.text)
+      || /^[^\n]{1,80}[:：]\s*$/u.test(body.text)
+    ) {
+      prepared.push({ segment: first, segmentCount: 1, explicitTurn: false });
+      continue;
+    }
+    prepared.push({
+      segment: {
+        ...body,
+        key: [...headers.map(header => header.key), body.key].join("--"),
+        speaker,
+        startMs,
+        text: prosePrefix ? `${prosePrefix}: ${body.text}` : body.text,
+        sourceIds: unique([...headers.flatMap(header => header.sourceIds), ...body.sourceIds]),
+        edits: [...headers.flatMap(header => header.edits), ...body.edits],
+        needsCheck: headers.some(header => header.needsCheck) || body.needsCheck,
+      },
+      segmentCount: headers.length + 1,
+      explicitTurn: true,
+    });
+    index = cursor;
+  }
+  return prepared;
+}
+
 /**
  * Combines adjacent fragments from the same speaker for reading only.
  * Every original segment ID and timestamp remains attached to the group so
@@ -142,7 +216,7 @@ export function groupConsecutiveSpeakerSegments(
   segments: TranscriptDisplaySegment[],
 ): TranscriptDisplayGroup[] {
   const groups: TranscriptDisplayGroup[] = [];
-  for (const segment of segments) {
+  for (const { segment, segmentCount, explicitTurn } of prepareLegacyCueSegments(segments)) {
     const normalized: TranscriptDisplaySegment = {
       ...segment,
       text: segment.text.trim(),
@@ -150,8 +224,8 @@ export function groupConsecutiveSpeakerSegments(
       edits: [...segment.edits],
     };
     const previous = groups.at(-1);
-    if (!previous || !canMerge(previous, normalized)) {
-      groups.push({ ...normalized, segmentCount: 1, interruptionMarker: null });
+    if (!previous || explicitTurn || !canMerge(previous, normalized)) {
+      groups.push({ ...normalized, segmentCount, interruptionMarker: null });
       continue;
     }
     previous.key = `${previous.key}--${normalized.key}`;
@@ -160,7 +234,7 @@ export function groupConsecutiveSpeakerSegments(
     previous.sourceIds = unique([...previous.sourceIds, ...normalized.sourceIds]);
     previous.edits = [...previous.edits, ...normalized.edits];
     previous.needsCheck ||= normalized.needsCheck;
-    previous.segmentCount += 1;
+    previous.segmentCount += segmentCount;
   }
   return markObviousInterruptions(groups);
 }

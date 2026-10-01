@@ -26,10 +26,10 @@ test("the text export keeps every turn and drops only what it cannot know", () =
     { speaker: "Speaker 2", startMs: 90_000, text: "   " },
   ]);
   assert.match(text, /^第一次沟通 · 易读版\n\n/);
-  assert.match(text, /\[0:00:00\] Speaker 1\nHow are you\?/);
+  assert.match(text, /\[0:00:00\] Speaker 1:\nHow are you\?/);
   // No timestamp → no clock, never an invented one.
-  assert.match(text, /\n\nSpeaker 2\nI'm doing great\./);
-  assert.match(text, /\[0:01:20\] Speaker 1\npadded/);
+  assert.match(text, /\n\nSpeaker 2:\nI'm doing great\./);
+  assert.match(text, /\[0:01:20\] Speaker 1:\npadded/);
   assert.doesNotMatch(text, /0:01:30/, "an empty turn exports nothing");
 });
 
@@ -52,4 +52,23 @@ test("filenames stay readable and file-system safe", () => {
   assert.equal(exportFilename('a/b\\c:d*e?f"g<h>i|j', "原文", "txt"), "a b c d e f g h i j · 原文.txt");
   assert.equal(exportFilename("", "字幕", "srt"), "逐字稿 · 字幕.srt");
   assert.equal(exportFilename("x".repeat(120), "原文", "txt").length, 80 + " · 原文.txt".length);
+});
+
+test('TXT export can be imported again with the same speaker, timestamps and speech', async()=>{
+ const {parseTranscript}=await import('../lib/domain/transcript.ts');
+ const turns=[{speaker:'Speaker A',startMs:0,text:'First sentence.\nSame turn.'},{speaker:'Speaker B',startMs:26000,text:'Let me ask you this.'},{speaker:'Speaker C',startMs:null,text:'An untimed answer.'}];
+ const text=buildTranscriptText('Exported meeting',turns);
+ const imported=parseTranscript({assetVersionId:'roundtrip',eventId:'e',filename:'roundtrip.txt',content:text});
+ assert.equal(imported[0].textRaw,'Exported meeting');
+ assert.deepEqual(imported.slice(1).map(s=>({speaker:s.speaker,startMs:s.startMs,text:s.textRaw})),turns);
+});
+
+test('historical cue repair exports actual timed speech as SRT and preserves every source reference', async()=>{
+ const {groupConsecutiveSpeakerSegments}=await import('../app/transcript-display.ts');
+ const row=(key,text,startMs=null)=>({key,text,startMs,endMs:null,speaker:null,assetVersionId:'av',sourceIds:[key],edits:[],needsCheck:false});
+ const groups=groupConsecutiveSpeakerSegments([row('h-a','Speaker A:',0),row('b-a','Actual speech.'),row('h-b','Speaker B:',26000),row('b-b','A question.')]);
+ const srt=buildTranscriptSrt(groups.map(g=>({speaker:g.speaker,startMs:g.startMs,endMs:g.endMs,text:g.text})));
+ assert.match(srt,/00:00:00,000 --> 00:00:26,000\nSpeaker A: Actual speech\./);
+ assert.match(srt,/Speaker B: A question\./);
+ assert.deepEqual(groups.flatMap(g=>g.sourceIds),['h-a','b-a','h-b','b-b']);
 });

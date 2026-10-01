@@ -362,7 +362,15 @@
       "workflow-narrative-prompt.v3",
       "workflow-narrative-prompt.v4"
     ],
-    "grouping": "以用户可独立推进的事项组织同一次概要，保留精确引用与各项状态。"
+    "grouping": "以用户可独立推进的事项组织同一次概要，保留精确引用与各项状态。",
+    "formatting": {
+      "reasoningEffort": "low",
+      "maxOutputTokens": 6000,
+      "frozenRecovery": "已有检查点继续沿用原配置、供应商响应与用量。",
+      "validation": "服务端校验精确版本引用、批阅状态与全部输入版本覆盖。",
+      "budgetExhaustion": "MODEL_OUTPUT_TOKEN_LIMIT保留用量并进入终态。",
+      "repairFeedback": "漏项反馈包含缺失文字与精确版本，最多20条，每条文字最多800字符。一次定向修复，最终仍校验全量覆盖。"
+    }
   },
   "extractionCoverage": {
     "promptVersion": "claim-extraction-prompt.v9.5",

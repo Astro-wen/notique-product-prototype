@@ -3,13 +3,17 @@ import test from "node:test";
 import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { declarationSource, uiSource } from "./helpers/ui-source.mjs";
+import { parsePlainTranscriptCue } from '../lib/domain/transcript.ts';
 
 const source = readFileSync(new URL("../app/transcript-display.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const cjsModule = { exports: {} };
-new Function("module", "exports", compiled)(cjsModule, cjsModule.exports);
+new Function("module", "exports", "require", compiled)(cjsModule, cjsModule.exports, specifier => {
+  assert.equal(specifier, '../lib/domain/transcript.ts');
+  return { parsePlainTranscriptCue };
+});
 const {
   activeTranscriptGroupKeyAt,
   groupConsecutiveSpeakerSegments,
@@ -293,4 +297,43 @@ test("a timestamp is a seek control only when a recording backs it", () => {
   const fallbacks = [...uiSource.matchAll(/<time className="transcript-turn-time">/g)];
   assert.equal(fallbacks.length, 2, "each guarded site falls back to a plain timestamp");
   assert.doesNotMatch(uiSource, /disabled=\{!audioAssetIdForVersion/, "no permanently disabled play control remains");
+});
+
+test('historical TXT speaker-only rows bind to their speech, time and all original source anchors',()=>{
+ const row=(key,text,startMs=null)=>segment({key,text,speaker:null,startMs,endMs:null,sourceIds:[key]});
+ const input=[row('a-header','Speaker A:',0),row('a-body','The appraiser population is changing.'),row('b-header','Speaker B:',26000),row('b-body','Let me ask you this.')];
+ const before=structuredClone(input),groups=groupConsecutiveSpeakerSegments(input);
+ assert.equal(groups.length,2);
+ assert.equal(groups[0].speaker,'Speaker A');assert.equal(groups[0].startMs,0);assert.equal(groups[0].text,'The appraiser population is changing.');
+ assert.deepEqual(groups[0].sourceIds,['a-header','a-body']);assert.equal(groups[0].segmentCount,2);
+ assert.equal(groups[1].speaker,'Speaker B');assert.equal(groups[1].startMs,26000);assert.equal(groups[1].text,'Let me ask you this.');
+ assert.deepEqual(groups[1].sourceIds,['b-header','b-body']);assert.deepEqual(input,before);
+});
+
+test('historical time/speaker split keeps corrections and does not invent a missing time',()=>{
+ const row=(key,text,extra={})=>segment({key,text,speaker:null,startMs:null,endMs:null,sourceIds:[key],...extra});
+ const groups=groupConsecutiveSpeakerSegments([row('time','00:26'),row('speaker','Speaker B:',{needsCheck:true,edits:[{kind:'source-check'}]}),row('body','Let me ask you this.'),row('speaker-c','Speaker C:'),row('body-c','We need an answer.')]);
+ assert.equal(groups.length,2);assert.equal(groups[0].speaker,'Speaker B');assert.equal(groups[0].startMs,26000);
+ assert.deepEqual(groups[0].sourceIds,['time','speaker','body']);assert.equal(groups[0].needsCheck,true);assert.deepEqual(groups[0].edits,[{kind:'source-check'}]);
+ assert.equal(groups[1].speaker,'Speaker C');assert.equal(groups[1].startMs,null);
+});
+
+test('historical cue repair refuses conflicting metadata, cross-asset bodies and ordinary field headings',()=>{
+ const row=(key,text,extra={})=>segment({key,text,speaker:null,startMs:null,endMs:null,sourceIds:[key],...extra});
+ for(const input of [
+  [row('h','Speaker A:'),row('b','Text',{assetVersionId:'different'})],
+  [row('h','Speaker A:'),row('b','Text',{speaker:'Speaker B',startMs:42000})],
+  [row('h','Budget:'),row('b','$800')],
+  [row('h','00:12',{startMs:13000}),row('b','Text')],
+ ]){
+  const groups=groupConsecutiveSpeakerSegments(input);assert.equal(groups.length,2);assert.deepEqual(groups.flatMap(g=>g.sourceIds),['h','b']);
+ }
+});
+
+test('an explicit historical speaker cue restores a prose prefix misclassified by the old colon parser',()=>{
+ const rows=[segment({key:'header',text:'Speaker C:',speaker:null,startMs:142000,endMs:null,sourceIds:['header']}),segment({key:'body',text:'when November 2nd comes, fees may change.',speaker:'Yeah. And so, taking that into effect',startMs:null,endMs:null,sourceIds:['body']})];
+ const before=structuredClone(rows),groups=groupConsecutiveSpeakerSegments(rows);
+ assert.equal(groups.length,1);assert.equal(groups[0].speaker,'Speaker C');assert.equal(groups[0].startMs,142000);
+ assert.equal(groups[0].text,'Yeah. And so, taking that into effect: when November 2nd comes, fees may change.');
+ assert.deepEqual(groups[0].sourceIds,['header','body']);assert.deepEqual(rows,before);
 });

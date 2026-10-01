@@ -6002,7 +6002,6 @@ function TranscriptArtifactsPanel({
     viewState: chaptersState,
     timedSegmentCount: availableRawSegments.filter((segment) => segment.start_ms != null).length,
   });
-  const displayChapters: Record<string, unknown>[] = useFallbackChapters ? fallbackChapters(availableRawSegments) : generatedChapters;
   const rawSegmentById = new Map(availableRawSegments.map((segment) => [segment.id, segment]));
   const readableDisplaySegments = (readableContent ? recordArray(readableContent.segments) : []).map((segment, index) => ({
       key: firstString(segment, ["readable_key"]) || `readable-${index}`,
@@ -6047,6 +6046,13 @@ function TranscriptArtifactsPanel({
       needsCheck: false,
     })),
   );
+  const chapterGroupBySource = new Map(rawDisplayGroups.flatMap(group => group.sourceIds.map(id => [id, group] as const)));
+  const chapterSegments = availableRawSegments.map(segment => {
+    const group = chapterGroupBySource.get(segment.id);
+    return group ? { ...segment, speaker: group.speaker,
+      text: group.sourceIds[0] === segment.id ? group.text : segment.text } : segment;
+  });
+  const displayChapters: Record<string, unknown>[] = useFallbackChapters ? fallbackChapters(chapterSegments) : generatedChapters;
   const audioAssetIdByTranscriptVersion = new Map(
     event.assets.flatMap((asset) => {
       const sourceAudioAssetId = stringValue(asset.transform?.source_audio_asset_id);
@@ -6562,11 +6568,11 @@ function TranscriptArtifactsPanel({
     let mime = "text/plain;charset=utf-8";
     if (kind === "srt") {
       filename = exportFilename(title, "字幕", "srt");
-      body = buildTranscriptSrt(availableRawSegments.map((segment) => ({
-        speaker: displaySpeakerLabel(segment.speaker),
-        startMs: segment.start_ms ?? null,
-        endMs: segment.end_ms ?? null,
-        text: segment.text,
+      body = buildTranscriptSrt(rawDisplayGroups.map((group) => ({
+        speaker: displaySpeakerLabel(group.speaker),
+        startMs: group.startMs ?? null,
+        endMs: group.endMs ?? null,
+        text: group.text,
       })));
       mime = "application/x-subrip;charset=utf-8";
     } else {
@@ -7605,7 +7611,7 @@ function SimpleTestScreen({
 
       {loadingSelection && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
-      {run && !analysisRunning && !analysisDone && <div className="simple-recovery"><p>最近一次分析状态：{statusLabel(run.status)}。{run.errorMessage ? ` ${run.errorMessage}` : "材料没有丢失，可以按整组顺序重新处理。"}</p><button className="button secondary" disabled={!workflowStepActionable || Boolean(busy)} onClick={onProjectWorkflowAction}>{busy === "project-workflow" ? "正在检查…" : workflowSelectedCurrent ? "重新整理" : "先选一条记录"}</button></div>}
+      {run && !analysisRunning && !analysisDone && activeTab !== "highlights" && <div className="simple-recovery"><p>这份记录还有未完成的整理，已保存的材料和重点仍可阅读。</p><button className="button secondary" onClick={() => selectWorkspaceTab("highlights")}>查看整理进度</button></div>}
     </div>
   );
 }

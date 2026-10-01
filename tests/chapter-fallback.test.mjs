@@ -89,7 +89,8 @@ test("the reading workspace shows fallback chapters only when the model ones are
   assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?viewState: chaptersState,/);
   // 生成中显示转圈和「内容生成中」。
   assert.match(page, /chaptersState === "generating" \? <ReadingGenerating \/>/);
-  assert.match(page, /useFallbackChapters \? fallbackChapters\(availableRawSegments\) : generatedChapters/);
+  assert.match(page, /useFallbackChapters \? fallbackChapters\(chapterSegments\) : generatedChapters/);
+  assert.match(page, /const chapterSegments = availableRawSegments\.map/);
   assert.match(page, /const chapterAnchors = displayChapters\.flatMap/);
   // 兜底章节必须标出来，不能冒充 AI 章节。
   assert.match(page, /useFallbackChapters && <p className="rail-muted chapter-fallback-note">/);
