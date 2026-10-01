@@ -64,7 +64,10 @@ export async function mapAnalysisRun(row:Row):Promise<AnalysisRun> {
  const extractionState=state(row.status);
  const stages:AnalysisRun['stages']=[];
  const names:Record<string,string>={inventory:'提取重点',verify:'核对出处',verify_escalated:'复核疑点'};
- for(const s of model) stages.push({id:s.id,name:names[s.stage]??'分析材料',state:state(s.status),retryable:extractionRetry && s.status==='failed' && repairable(s.error_code),errorCode:s.error_code});
+ for(const s of model) {
+  const runningRetry=s.attempt>1 && ['queued','processing','running'].includes(s.status);
+  stages.push({id:s.id,name:`${names[s.stage]??'分析材料'}${runningRetry?' · 自动重试':''}`,state:state(s.status),retryable:extractionRetry && s.status==='failed' && repairable(s.error_code),errorCode:s.error_code});
+ }
  // Publication/transport failures can occur after every paid stage succeeded.
  if(!model.length || !published(row.status) && model.every(s=>s.status==='succeeded') || row.status==='failed' && !stages.some(s=>s.retryable)) stages.push({id:`${row.id}:extraction`,name:input.two_pass_pipeline?'整理记录':'提取重点',state:extractionState,retryable:extractionRetry,errorCode:row.error_code as string|null});
  for(const a of artifacts(row)) stages.push({id:a.id,name:({summary:'原文概要',chapters:'章节整理',speakers:'发言摘要',key_points:'原文要点',overview:'原文总览'} as Record<string,string>)[a.kind]??'整理原文',state:state(a.status),retryable:current && a.status==='failed' && repairable(a.error_code),errorCode:a.error_code});

@@ -29,6 +29,21 @@ test('failed verification retries without erasing successful inventory or its pr
  const same=await retryAnalysis(db,SCOPE,'run',body,'retry',plus(2));assert.equal(same.id,after.id);assert.equal(sqlite.prepare('SELECT count(*) n FROM extraction_runs').get().n,1);
  await assert.rejects(retryAnalysis(db,SCOPE,'run',{...body,stageIds:['inventory']},'retry'),code('idempotency_conflict'));
 });
+test('an automatic retry is visible while keeping the paid history and latest stage identity',async t=>{
+ const {db,sqlite}=await setup(t);
+ sqlite.prepare("UPDATE extraction_runs SET status='processing' WHERE id='run'").run();
+ stage(sqlite,'inventory','inventory','succeeded');stage(sqlite,'verify_old','verify','failed');stage(sqlite,'verify_retry','verify','processing',2);
+ const before=sqlite.prepare('SELECT total_changes() n').get().n;
+ const run=await readAnalysisRun(db,SCOPE,'run');
+ assert.equal(run.state,'running');
+ assert.equal(run.stages.find(s=>s.id==='verify_retry').name,'核对出处 · 自动重试');
+ assert.equal(run.stages.some(s=>s.id==='verify_old'),false);
+ assert.equal(sqlite.prepare("SELECT count(*) n FROM extraction_model_stages WHERE stage='verify'").get().n,2);
+ assert.equal(sqlite.prepare('SELECT total_changes() n').get().n,before);
+ sqlite.prepare("UPDATE extraction_model_stages SET status='succeeded',validated_output_json='{}' WHERE id='verify_retry'").run();
+ const complete=await readAnalysisRun(db,SCOPE,'run');
+ assert.equal(complete.stages.find(s=>s.id==='verify_retry').name,'核对出处');
+});
 test('retry rejects stale progress and successful or foreign stage IDs',async t=>{
  const {db,sqlite}=await setup(t);failedRun(sqlite);stage(sqlite,'inventory','inventory','succeeded');stage(sqlite,'verify','verify','failed');const before=await readAnalysisRun(db,SCOPE,'run');
  for(const id of ['inventory','other'])await assert.rejects(retryAnalysis(db,SCOPE,'run',{expectedRunRevision:before.revision,stageIds:[id]},id),code('dependency_conflict'));

@@ -5,6 +5,7 @@ import styles from './record-workspace.module.css';
 
 export function AnalysisProgress({run,hasRecord,busy,materialPending=false,error,canEdit,onStart,onRetry,onReload}:{run:AnalysisRun|null;hasRecord:boolean;busy:boolean;materialPending?:boolean;error:string;canEdit:boolean;onStart:()=>void;onRetry:()=>void;onReload:()=>void}) {
   const pending=run?.stages.some(s=>s.state==='queued'||s.state==='running')||run?.state==='queued'||run?.state==='running';
+  const automaticRetry=run?.stages.some(s=>s.name.endsWith(' · 自动重试')&&(s.state==='queued'||s.state==='running'));
   const failed=run?.stages.filter(s=>s.state==='failed')??[];
   const outputLimitReached=failed.some(s=>s.errorCode==='MODEL_OUTPUT_TOKEN_LIMIT');
   const outdatedSummary=run?.stages.some(s=>s.errorCode==='NARRATIVE_PROMPT_OUTDATED'&&s.retryable)??false;
@@ -12,7 +13,7 @@ export function AnalysisProgress({run,hasRecord,busy,materialPending=false,error
   const summaryOnly=run?.stages.some(s=>s.name==='更新全文概要'&&(s.state==='queued'||s.state==='running'||s.state==='failed')) && !run.stages.some(s=>s.name!=='更新全文概要'&&(s.state==='queued'||s.state==='running'||s.state==='failed'));
   const quality=run?.qualityNotes;
   const needsSourceReview=Boolean(quality&&(quality.omittedStatements.length||quality.inventoryLimitReached||quality.finalClaimLimitReached||quality.followUpOmitted));
-  const label=materialPending?'正在转写录音':summaryOnly?(pending?'重点已更新，全文概要正在同步':'重点可用，全文概要尚未更新'):pending?(hasRecord?'正在整理，已有记录仍可阅读':'正在整理这份记录'):failed.length?(hasRecord?'记录可阅读，部分整理尚未完成':'本次整理尚未完成'):run?.state==='cancelled'?'本次整理已停止':run&&!run.coverage.complete?'材料范围已有变化，可重新整理':needsSourceReview?(hasRecord?'重点可用，部分内容需回看原文':'部分内容需回看原文'):summaryRefreshOnly?'重点可用，可以更新全文概要':run?'整理完成':'材料准备好后，可以整理记录';
+  const label=materialPending?'正在转写录音':automaticRetry?'核对耗时较长，正在自动重试':summaryOnly?(pending?'重点已更新，全文概要正在同步':'重点可用，全文概要尚未更新'):pending?(hasRecord?'正在整理，已有记录仍可阅读':'正在整理这份记录'):failed.length?(hasRecord?'记录可阅读，部分整理尚未完成':'本次整理尚未完成'):run?.state==='cancelled'?'本次整理已停止':run&&!run.coverage.complete?'材料范围已有变化，可重新整理':needsSourceReview?(hasRecord?'重点可用，部分内容需回看原文':'部分内容需回看原文'):summaryRefreshOnly?'重点可用，可以更新全文概要':run?'整理完成':'材料准备好后，可以整理记录';
   const statusLabel={queued:'等待处理',running:'正在处理',partial:'部分完成',succeeded:'已完成',failed:'未完成',cancelled:'已停止'} as const;
   return <section className={styles.analysis} aria-label="记录整理进度">
     <details className={styles.analysisDisclosure} open={!hasRecord}><summary><span role="status">{label}</span><span className={styles.analysisDetailLabel}>查看处理情况</span></summary><div className={styles.analysisBar}><div>
