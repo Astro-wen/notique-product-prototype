@@ -115,7 +115,6 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
   useEffect(()=>()=>{copyController.current?.abort(new DOMException('已切换记录','AbortError'));},[]);
   const [filter, setFilter] = useState<"all" | "decisions" | "accepted">("all");
   const inputId = useId();
-  const lastDecision=snapshot.recentDecisions?.[0];
   const priorities = pendingItems(snapshot);
   const inlineClaim=editor?.kind==='answer'?editor.id:editor?.base?.reviewCards.find(c=>c.id===editor.id)?.members[0]?.claimId;
   useDraftCheckpoint(editor && inlineClaim && (editor.touched || editor.origin!==editor.initialOrigin)?{kind:'inline',targetId:editor.id,mode:editor.kind,claimId:inlineClaim,...(editor.touched?{value:editor.value}:{}),origin:editor.origin,...(editor.questionChoices?{questionChoices:editor.questionChoices}:{})}:null);
@@ -407,7 +406,7 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
       <div className={styles.headerActions}>{resumeCard && !resumed && <NqButton variant="quiet" onClick={()=>void resumeReading()}>回到上次位置</NqButton>}{onHighlight && onHighlightSources && canEdit && <NqButton id="add-source-highlight" variant="quiet" disabled={pending.has('report')} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}setHighlightOpen(true);}}>从原文补充</NqButton>}<NqButton onClick={() => void copy(filter === "accepted" ? "accepted" : "mixed")} loading={pending.has("report")}><Copy size={15} />{pending.has('report')?'正在同步记录':filter==='accepted'?'复制已确认':'复制记录'}</NqButton><details className={styles.menu}><summary aria-label="记录的更多操作"><ChevronDown size={16} /></summary><div><button disabled={pending.has('report')} onClick={() => void copy("accepted")}>仅导出已采纳内容</button></div></details></div>
     </header>
     {analysisPanel}
-    {feedback && <div className={styles.feedback} aria-live="polite" role="status">{feedback}{canEdit && onRevert && lastDecision && !lastDecision.reverted && <NqButton variant="quiet" loading={pending.has(lastDecision.id)} disabled={decisionLocked} onClick={()=>{if(dirty){setError("请先保存或取消当前输入。");return;}void run(lastDecision.id,()=>onRevert(lastDecision.id,{expectedContextVersion:snapshot.contextVersion,expectedDecisionRevision:lastDecision.revision}),"已撤销这次处理，记录已恢复。");}}>撤销上次处理</NqButton>}</div>}
+    {feedback && <div className={styles.feedback} aria-live="polite" role="status">{feedback}</div>}
     {unrestored && retainedInputs}
     {error && <div className={styles.error} role="alert">{error}</div>}
     {!canEdit && <p className={styles.notice}>当前为只读模式，可查看记录与出处。</p>}
