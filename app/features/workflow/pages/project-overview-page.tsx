@@ -8,6 +8,7 @@ import { ApiClientError } from '@/app/api-client';
 import type { ProjectOverview } from '@/lib/shared/workflow-v2';
 import { workflowService } from '../services/workflow-service';
 import {overviewTopics} from '@/lib/domain/record-reading';
+import {projectOverviewPollInterval} from '@/lib/domain/overview-refresh';
 import styles from './project-overview.module.css';
 
 type Props={processing?:boolean;refreshToken?:string;projectId:string;onOpenRecord:(eventId:string,claimId?:string)=>void;onContinue:()=>void};
@@ -19,7 +20,7 @@ export function ProjectOverviewPage(props:Props) {
 function LoadedOverview({projectId,onOpenRecord,onContinue,processing=false,refreshToken,initial}:Props & {initial:ProjectOverview}) {
   const client=useQueryClient();
   const key=['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId];
-  const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,refetchInterval:q=>processing||q.state.data?.recordSummaries.some(r=>r.narrative?.freshness==='updating')?3000:false,
+  const overview=useQuery({queryKey:key,initialData:initial,queryFn:({signal})=>workflowService.getOverview(projectId,{},signal),gcTime:0,staleTime:1000,refetchOnWindowFocus:'always',retry:false,refetchInterval:q=>projectOverviewPollInterval(q.state.data,processing,q.state.error instanceof ApiClientError && [401,403,404,410].includes(q.state.error.status)),
     structuralSharing:(old:unknown,next:unknown)=>{const a=old as ProjectOverview|undefined,b=next as ProjectOverview;return a && a.contextVersion>b.contextVersion?a:b;}});
   useEffect(()=>{
     if(!processing)void client.invalidateQueries({queryKey:['notique','workflow-v2-overview',initial.access.workspaceId,initial.access.actorId,projectId],exact:true});

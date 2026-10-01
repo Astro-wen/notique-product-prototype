@@ -5,5 +5,10 @@ const expected={provider:'test',model:'test',reasoningEffort:'high',promptVersio
 const stage={status:'failed',provider:'test',model:'test',reasoning_effort:'high',prompt_version:expected.promptVersion,schema_version:expected.schemaVersion,input_hash:'frozen',provider_request_id:'paid',error_code:'MODEL_OUTPUT_INVALID',error_details:{issues:[{path:'$.claims[1].reaffirmed_target_version_id',message:'Reaffirmed target must be the current active claim version in this Context Pack.'}]}};
 test('paid decoder recovery requires exact frozen inputs and the specific reference error',()=>{
  assert.equal(canRecoverFailedReferenceDecoding(stage,expected),true);
+ const modern={...expected,promptVersion:'claim-extraction-prompt.v9.10:verify'};
+ const metadata={...stage,prompt_version:modern.promptVersion,error_details:{issues:[{path:'$.claims[7].normalized_value',message:'A reaffirmed occurrence must keep the target normalized value exactly; changed or additional facts require a new atomic claim.'}]}};
+ assert.equal(canRecoverFailedReferenceDecoding(metadata,modern),true);
+ assert.equal(canRecoverFailedReferenceDecoding({...metadata,input_hash:'changed'},modern),false);
+ assert.equal(canRecoverFailedReferenceDecoding({...metadata,error_code:'MODEL_OUTPUT_TOKEN_LIMIT'},modern),false);
  for(const patch of [{provider_request_id:null},{input_hash:'changed'},{prompt_version:'claim-extraction-prompt.v9.8:verify'},{error_code:'MODEL_OUTPUT_TOKEN_LIMIT'},{status:'processing'},{error_details:{issues:[{path:'$.claims[1].statement',message:'Changed fact'}]}},{error_details:{issues:{length:1}}},{error_details:null}])assert.equal(canRecoverFailedReferenceDecoding({...stage,...patch},expected),false);
 });

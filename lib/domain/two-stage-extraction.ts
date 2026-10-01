@@ -159,6 +159,7 @@ export interface TwoStageModelProvider extends ModelProvider {
 }
 
 export type ModelStageRequestOptions = {
+  onOutputRepair?: (repairs: string[]) => Promise<void>;
   extractionPromptVersion?: ExtractionStagePromptVersion;
   workflowNarrativePromptVersion?: WorkflowNarrativePromptVersion;
   verificationSchemaVersion?: VerificationSchemaVersion;
@@ -380,7 +381,7 @@ export function validateInventoryOutput(value: unknown): ContractValidation<Inve
  * 只改这两类。内容层面的问题（漏掉候选、矛盾没解决）交给
  * assessVerificationEscalation，那边本来就在看。
  */
-export function repairVerificationOutput(value: unknown): { value: unknown; repairs: string[] } {
+export function repairVerificationOutput(value: unknown, context?: ContextPack): { value: unknown; repairs: string[] } {
   if (!record(value)) return { value, repairs: [] };
   const repairs: string[] = [];
   const repaired: Record<string, unknown> = { ...value };
@@ -403,8 +404,23 @@ export function repairVerificationOutput(value: unknown): { value: unknown; repa
 
   if (Array.isArray(value.claims)) {
     let changed = false;
+    const targets=new Map((context?.verified_context.active_claims ?? []).map(c=>[c.claimId,c]));
     const claims = value.claims.map((claim) => {
       if (!record(claim)) return claim;
+      const target=typeof claim.reaffirmed_target_claim_id==='string'?targets.get(claim.reaffirmed_target_claim_id):undefined;
+      const original=target?.normalizedValue, returned=claim.normalized_value;
+      // workflow_kind is a server-owned discriminator. Restore only the
+      // observed answer/completion mix-up; every factual field stays exact.
+      if(claim.disposition==='reaffirmed' && target && claim.reaffirmed_target_version_id===target.claimVersionId &&
+        claim.type==='next_action' && target.type==='next_action' && claim.statement===target.statement &&
+        record(original) && record(returned) && original.workflow_kind==='completion' && returned.workflow_kind==='answer' &&
+        Object.keys(original).length===3 && Object.keys(returned).length===3 && original.status==='completed' &&
+        returned.status===original.status && typeof original.completed_action_claim_id==='string' &&
+        returned.completed_action_claim_id===original.completed_action_claim_id) {
+        changed=true;
+        repairs.push(`restored completion workflow kind for ${claim.client_claim_key}`);
+        return {...claim,normalized_value:{...returned,workflow_kind:'completion'}};
+      }
       // 给了不确定性就是需要补证据，模型把标志位留成 false 属于自相矛盾。
       // true 是保守的一边：它只会让这条进人工核对，不会让它更容易通过。
       if (claim.uncertainty != null && claim.needs_additional_evidence !== true) {
@@ -428,7 +444,7 @@ export function validateVerificationOutput(
 ): ContractValidation<VerificationOutput> {
   const issues: ModelContractIssue[] = [];
   if (!record(rawValue)) return { valid: false, issues: [{ path: "$", message: "Expected an object." }], output: null };
-  const { value: repairedValue, repairs } = repairVerificationOutput(rawValue);
+  const { value: repairedValue, repairs } = repairVerificationOutput(rawValue, context);
   const value = repairedValue as Record<string, unknown>;
   const legacy=value.schema_version===LEGACY_VERIFICATION_SCHEMA_VERSION;
   const claimLimit = verificationClaimLimit(value.schema_version as VerificationSchemaVersion);

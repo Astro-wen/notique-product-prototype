@@ -323,6 +323,7 @@ async function runModelStage<T>(input: {
   details?: Record<string, unknown>;
   validate: (value: unknown) => T | null;
   invoke: (options: {
+    onOutputRepair?: (repairs: string[]) => Promise<void>;
     idempotencyKey: string;
     resumeProviderResponseId?: string;
     onProviderResponse: (response: { id: string; status: string }) => Promise<void>;
@@ -413,6 +414,7 @@ async function runModelStage<T>(input: {
         ? { resumeProviderResponseId: existing.provider_request_id }
         : {}),
       onProviderResponse,
+      onOutputRepair:async repairs=>{stageDetails={...stageDetails,output_repairs:repairs};},
       ...(retryFeedback.length ? { qualityFeedback: retryFeedback } : {}),
     });
     const finishedAt = now();
@@ -2157,7 +2159,19 @@ export async function processExtractionRun(
         // running; doing so can terminally finish the Run and orphan the
         // escalation. A succeeded base Verify is safe to reuse for the final
         // quality comparison, but a failed base Verify must stay failed.
-        if (existingVerify?.status === "succeeded") {
+        if(repairBaseReference){
+          try {
+          verifyStage=await runModelStage<VerificationOutput>({
+            run:leased,stage:'verify',provider:providerName,model:modelName,reasoningEffort:verifierEffort,
+            promptVersion:`${verificationContract.promptVersion}:verify`,schemaVersion:verificationContract.schemaVersion,inputHash:verifyInputHash,
+            validate:value=>validateVerificationOutput(value,inventoryStage.output,verificationContext).output,
+            invoke:stageOptions=>verifierProvider.verifyClaims(verificationContext,inventoryStage.output,{...stageOptions,extractionPromptVersion:verificationContract.promptVersion,verificationSchemaVersion:verificationContract.schemaVersion,promptCacheKey:`notique:${leased.id}:two-stage`,backgroundStallMs:timeoutMs ?? MAX_AI_TIMEOUT_MS}),
+          });
+          }catch(error){
+            if(error instanceof ModelOutputBudgetExhaustedError || !(error instanceof ModelOutputInvalidError))throw error;
+            verificationFailure=error;
+          }
+        } else if (existingVerify?.status === "succeeded") {
           const validatedBase = validateVerificationOutput(
             existingVerify.validated_output,
             inventoryStage.output,

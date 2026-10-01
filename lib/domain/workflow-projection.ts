@@ -211,9 +211,22 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
       : null;
     return [e.id, previous?.id ?? e.active_run_id];
   }));
+  // A new model draft list does not retire references the user has already
+  // used for an action or an answer. Source/version checks still apply below.
+  const humanAnchors=new Set<string>();
+  for(const meta of ledger.actions){
+    const action=ledger.claims.find(c=>c.id===meta.claim_id);
+    if(action && accepted(action) && current(action))for(const basis of readJson<VersionRef[]>(meta.basis_version_refs_json,[]))humanAnchors.add(basis.claimId);
+  }
+  for(const relation of ledger.relations){
+    const source=ledger.claims.find(c=>c.current_version_id===relation.source_claim_version_id);
+    const target=ledger.claims.find(c=>c.current_version_id===relation.target_claim_version_id);
+    if(source && target && accepted(source) && current(source) &&
+      (relation.status==='active' && relation.type==='resolves' || source.type==='next_action' && relation.type==='informed_by' && ['active','proposed'].includes(relation.status)))humanAnchors.add(target.id);
+  }
   const visible = ledger.claims.filter(c => {
     const e = events.get(c.event_id);
-    return e && (accepted(c) || c.version_source === 'human' || c.source !== 'ai' || readableRuns.get(e.id) === c.extraction_run_id);
+    return e && (accepted(c) || humanAnchors.has(c.id) || c.version_source === 'human' || c.source !== 'ai' || readableRuns.get(e.id) === c.extraction_run_id);
   });
   const byVersion = new Map(visible.map(c => [c.current_version_id, c]));
   const relations = ledger.relations.filter(r => byVersion.has(r.source_claim_version_id) && byVersion.has(r.target_claim_version_id));

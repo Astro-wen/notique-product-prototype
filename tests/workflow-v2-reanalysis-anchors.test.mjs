@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {workflowDatabase,seed,claim,relation,insert,SCOPE,T} from './helpers/workflow-database.mjs';
+import {dispatchWorkflowCommand} from '../lib/server/workflow/commands.ts';
+import {readWorkspace} from '../lib/server/workflow/snapshot-store.ts';
+const read=db=>readWorkspace(db,SCOPE,'e',{},T);
+const send=(db,path,body)=>dispatchWorkflowCommand(db,SCOPE,path.split('/'),body,crypto.randomUUID());
+test('reanalysis preserves exact human-used basis and answered question links without keeping unrelated old drafts',async t=>{
+ const {db,sqlite,close}=await workflowDatabase();t.after(close);seed(sqlite);relation(sqlite,'extra-basis','action','budget','informed_by','proposed');claim(sqlite,'obsolete','other','旧的无关联草稿');
+ let s=await read(db),card=s.reviewCards.find(c=>c.memberRefs.some(m=>m.claimId==='action'));
+ await send(db,`review-cards/${card.id}/decisions`,{operation:'accept_action',expectedContextVersion:s.contextVersion,expectedCardRevision:card.revision,members:[{...card.memberRefs[0],operation:'accept_action'}]});
+ s=await read(db);
+ await send(db,'actions/action/outcomes',{expectedContextVersion:s.contextVersion,expectedActionRevision:s.actions[0].revision,text:'报价十二万元',evidenceRefs:[],resolveQuestions:[{questionId:'question',revision:s.questions[0].revision,answerText:'报价十二万元'}],completeAction:true});
+ const before=await read(db);assert.equal(before.actions[0].latestOutcome.freshness,'current');
+ const run=sqlite.prepare("SELECT * FROM extraction_runs WHERE id='run'").get();insert(sqlite,'extraction_runs',{...run,id:'run2',idempotency_key:'run2',input_hash:'run2',status:'succeeded'});sqlite.prepare("UPDATE events SET active_run_id='run2' WHERE id='e'").run();
+ const after=await read(db);assert.equal(after.analysisRunId,'run2');
+ assert.deepEqual(after.actions,before.actions);assert.equal(after.questions.find(q=>q.id==='question').resolutionState,'resolved');
+ assert.deepEqual(after.questions.find(q=>q.id==='question').answerRefs,before.questions[0].answerRefs);
+ assert.equal(after.bullets.some(b=>b.id==='obsolete'),false);
+ sqlite.prepare("UPDATE assets SET current_version_id=NULL WHERE id='asset'").run();
+ const stale=await read(db);assert.equal(stale.actions[0].basisState,'needs_review');assert.equal(stale.actions[0].executionState,'completed');
+});

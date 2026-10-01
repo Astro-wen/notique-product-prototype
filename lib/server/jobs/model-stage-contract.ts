@@ -50,18 +50,20 @@ export function canResumeProcessingModelStage(
     && modelStageFrozenInputMatches(persisted, expected);
 }
 
-/** A v9.9 decoder repair can reread the same paid response. Unknown or stale
+/** Reference or internal completion metadata repair can reread the same paid response. Unknown or stale
  * targets still fail normal context validation, without starting another POST. */
 export function canRecoverFailedReferenceDecoding(
   persisted: PersistedModelStageContract & { provider_request_id?: string | null; error_code?: string | null; error_details?: unknown },
   expected: ModelStageFrozenInput,
 ): boolean {
   if (persisted.status !== 'failed' || persisted.error_code !== 'MODEL_OUTPUT_INVALID' || !persisted.provider_request_id ||
-    !/^claim-extraction-prompt\.v9\.9:verify(?:_escalated)?$/.test(persisted.prompt_version) || !modelStageFrozenInputMatches(persisted, expected)) return false;
+    !/^claim-extraction-prompt\.v9\.(?:9|10):verify(?:_escalated)?$/.test(persisted.prompt_version) || !modelStageFrozenInputMatches(persisted, expected)) return false;
   const details = persisted.error_details as { issues?: Array<{path?:string;message?:string}> } | null;
   return Boolean(Array.isArray(details?.issues) && details.issues.length && details.issues.every(issue =>
-    issue && /^\$\.claims\[\d+\]\.reaffirmed_target_version_id$/.test(issue.path ?? '') &&
-    issue.message === 'Reaffirmed target must be the current active claim version in this Context Pack.'));
+    issue && (/^\$\.claims\[\d+\]\.reaffirmed_target_version_id$/.test(issue.path ?? '') &&
+    issue.message === 'Reaffirmed target must be the current active claim version in this Context Pack.' ||
+    persisted.prompt_version.startsWith('claim-extraction-prompt.v9.10:') && /^\$\.claims\[\d+\]\.normalized_value$/.test(issue.path ?? '') &&
+    issue.message === 'A reaffirmed occurrence must keep the target normalized value exactly; changed or additional facts require a new atomic claim.')));
 }
 
 

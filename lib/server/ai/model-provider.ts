@@ -1382,6 +1382,7 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
     if (validated.output.schema_version !== version) {
       throw new ModelOutputInvalidError([{path:"$.schema_version", message:"Output does not match the frozen verification schema."}], result.usage);
     }
+    if(validated.repairs?.length)await options?.onOutputRepair?.(validated.repairs);
     return { output: validated.output, usage: result.usage };
   }
 
