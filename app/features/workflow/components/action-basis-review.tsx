@@ -28,7 +28,7 @@ export function ActionBasisReview({actionId,snapshot,onDecide,onClose,onAdjust}:
     } catch(e) {setError(e instanceof Error?e.message:'保存失败，请重试。');if(e instanceof ApiClientError && e.status===409)setConflict(true);}
     finally {setPending(false);}
   }
-  return <Modal title="核对行动依据" description="对照变化，决定是否继续跟进。已完成的记录会保留。" onClose={()=>{if(!pending)onClose();}}>
+  return <Modal title="核对行动依据" description="对照变化，决定是否继续跟进。" dismissible={!pending} onClose={()=>{if(!pending)onClose();}}>
     <div className={styles.basisReview}>
       <p className={styles.statement}>{base.bullets.find(b=>b.claimRefs.some(r=>r.claimId===actionId))?.text}</p>
       {changed.map((b,index)=><div className={styles.basisChange} key={`${b.acceptedRef.claimId}-${index}`}>

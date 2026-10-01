@@ -12,6 +12,7 @@ export default function WorkflowPreviewPage() {
   const state = useRef(snapshot);
   const [readOnly, setReadOnly] = useState(false);
   const [failNext, setFailNext] = useState(false);
+  const [delayNext,setDelayNext] = useState(false);
 
   function mutate(expected: number, work: (next: WorkspaceSnapshot) => void) {
     if (readOnly) throw new Error("当前为只读模式。");
@@ -30,9 +31,11 @@ export default function WorkflowPreviewPage() {
       <span>交互预览 · 合成示例，刷新重置</span>
       <label><input type="checkbox" checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)} /> 只读模式</label>
       <button onClick={() => setFailNext(true)} disabled={failNext} style={{ color: "inherit", background: "white", border: "1px solid #b9c9ff", padding: "4px 8px", borderRadius: 4 }}>模拟下次保存失败</button>
+      <label><input type="checkbox" checked={delayNext} onChange={e=>setDelayNext(e.target.checked)}/> 模拟保存延迟 3 秒</label>
     </aside>
     <RecordWorkspace title="新居装修 · 方案沟通" subtitle="9 月 28 日 · 18 分钟 · 一份沟通记录" snapshot={snapshot} sources={previewSources} canEdit={!readOnly}
       onDecide={async (id, raw) => {
+        if(delayNext){setDelayNext(false);await new Promise(resolve=>window.setTimeout(resolve,3000));}
         const request = parseWorkflowRequest("DecisionRequest", raw);
         mutate(request.expectedContextVersion, (next) => {
           const card = next.reviewCards.find((c) => c.id === id);
