@@ -64,8 +64,10 @@ import {
   listExtractionModelStageDebug,
   listExtractionModelStageTimings,
 } from "@/lib/server/db/extraction-stage-repository";
+import { READING_ARTIFACT_DEFINITIONS } from "@/lib/domain/reading-pipeline";
 import {
   ensureEventAiArtifactRuns,
+  prepareEventAiArtifactRuns,
   listEventAiArtifactRunDebug,
 } from "@/lib/server/db/event-ai-artifact-repository";
 import type {
@@ -2502,10 +2504,10 @@ export async function createExtractionRun(
       }))
     : [];
   const hasTranscriptInput = manifest.some((item) => item.kind === "transcript" || item.kind === "text");
-  const eventSummaryEnabled = !workflow && hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
+  const eventSummaryEnabled = hasTranscriptInput && bindings.AI_EVENT_SUMMARY !== "0";
   // 易读逐字稿已经删掉，冻结参数里如实记成 false。
   const readableTranscriptEnabled = false;
-  const artifactStageCount = Number(eventSummaryEnabled) + Number(readableTranscriptEnabled);
+  const artifactStageCount = eventSummaryEnabled ? READING_ARTIFACT_DEFINITIONS.length : 0;
   const maxModelStages = (pipelineEnabled ? 3 : 1) + artifactStageCount;
   const reservedModelTokens =
     estimatedInputTokens * maxModelStages + maxOutputTokens * maxModelStages;
@@ -2589,7 +2591,7 @@ export async function createExtractionRun(
         { existing_run_id: existing.id },
       );
     }
-    if (!workflow) await ensureEventAiArtifactRuns({
+    await ensureEventAiArtifactRuns({
       workspaceId: scope.workspaceId,
       projectId: String(existing.project_id),
       eventId,
@@ -2597,7 +2599,7 @@ export async function createExtractionRun(
       inputManifestJson: String(existing.input_manifest_json),
       provider: String(existing.provider),
       model: String(existing.model),
-    });
+    }, workflow?.guard);
     return { run: extractionRunRecord(existing), created: false };
   }
 
@@ -2617,7 +2619,7 @@ export async function createExtractionRun(
         { existing_run_id: activeEventRun.id },
       );
     }
-    if (!workflow) await ensureEventAiArtifactRuns({
+    await ensureEventAiArtifactRuns({
       workspaceId: scope.workspaceId,
       projectId: String(activeEventRun.project_id),
       eventId,
@@ -2625,7 +2627,7 @@ export async function createExtractionRun(
       inputManifestJson: String(activeEventRun.input_manifest_json),
       provider: String(activeEventRun.provider),
       model: String(activeEventRun.model),
-    });
+    }, workflow?.guard);
     return { run: extractionRunRecord(activeEventRun), created: false };
   }
 
@@ -2781,6 +2783,14 @@ export async function createExtractionRun(
     db.prepare('DELETE FROM workflow_snapshots WHERE workspace_id = ? AND project_id = ?')
       .bind(scope.workspaceId, project.id),
   );
+  // Persist every reading view before acknowledging material submission. The
+  // transaction rolls them back together if ownership or source guards fail.
+  const reading = await prepareEventAiArtifactRuns({
+    workspaceId: scope.workspaceId, projectId: String(project.id), eventId,
+    extractionRunId: runId, inputManifestJson,
+    provider: bindings.AI_PROVIDER, model: bindings.AI_MODEL,
+  });
+  statements.push(...reading.statements);
   if (scenarioGuardId) {
     statements.push(db.prepare(`DELETE FROM mutation_guards WHERE id = ?`).bind(scenarioGuardId));
   }
@@ -2803,7 +2813,7 @@ export async function createExtractionRun(
       [eventId, idempotencyKey, scope.workspaceId],
     );
     if (raced && String(raced.input_hash) === inputHash) {
-      if (!workflow) await ensureEventAiArtifactRuns({
+      await ensureEventAiArtifactRuns({
         workspaceId: scope.workspaceId,
         projectId: String(raced.project_id),
         eventId,
@@ -2811,7 +2821,7 @@ export async function createExtractionRun(
         inputManifestJson: String(raced.input_manifest_json),
         provider: String(raced.provider),
         model: String(raced.model),
-      });
+      }, workflow?.guard);
       return { run: extractionRunRecord(raced), created: false };
     }
     if (raced) {
@@ -2838,7 +2848,7 @@ export async function createExtractionRun(
           { existing_run_id: activeEventRace.id },
         );
       }
-      if (!workflow) await ensureEventAiArtifactRuns({
+      await ensureEventAiArtifactRuns({
         workspaceId: scope.workspaceId,
         projectId: String(activeEventRace.project_id),
         eventId,
@@ -2846,7 +2856,7 @@ export async function createExtractionRun(
         inputManifestJson: String(activeEventRace.input_manifest_json),
         provider: String(activeEventRace.provider),
         model: String(activeEventRace.model),
-      });
+      }, workflow?.guard);
       return { run: extractionRunRecord(activeEventRace), created: false };
     }
     const quotaState = await first(
@@ -2877,15 +2887,6 @@ export async function createExtractionRun(
     }
     throw error;
   }
-  if (!workflow) await ensureEventAiArtifactRuns({
-    workspaceId: scope.workspaceId,
-    projectId: String(project.id),
-    eventId,
-    extractionRunId: runId,
-    inputManifestJson,
-    provider: String(bindings.AI_PROVIDER),
-    model: String(bindings.AI_MODEL),
-  });
   return { run: await getExtractionRun(scope, runId), created: true };
 }
 

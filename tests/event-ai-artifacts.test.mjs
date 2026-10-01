@@ -1223,7 +1223,7 @@ test("new and retried reading artifacts use low effort while existing Runs keep 
     readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8"),
   ]);
   const initialCreation = repository.slice(
-    repository.indexOf("export async function ensureEventAiArtifactRuns"),
+    repository.indexOf("export async function prepareEventAiArtifactRuns"),
     repository.indexOf("export async function listEventAiArtifacts"),
   );
   const retryCreation = repository.slice(

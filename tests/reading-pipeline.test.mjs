@@ -74,7 +74,7 @@ test("the four views are created as separate runs; the old four-in-one is no lon
     "utf8",
   );
   const creation = repository.slice(
-    repository.indexOf("export async function ensureEventAiArtifactRuns"),
+    repository.indexOf("export async function prepareEventAiArtifactRuns"),
     repository.indexOf("export async function listEventAiArtifacts"),
   );
   assert.match(creation, /READING_ARTIFACT_DEFINITIONS/);
@@ -120,4 +120,64 @@ test("the reader merges per-kind artifacts and still reads the legacy four-in-on
   assert.match(page, /return own\.length \? own : recordArray\(legacySummaryContent\?\.\[field\]\)/);
   assert.match(page, /const generatedChapters = viewField\(chaptersPair, "chapters"\)/);
   assert.match(page, /const keyPoints = viewField\(keyPointsPair, "key_points"\)/);
+});
+
+// Execute the production queue builder against the migrated database. Provider
+// calls are outside queue creation and are deliberately absent from this test.
+async function readingQueueFixture(t) {
+  const [{ default: ts }, { workflowDatabase, seed, T }, { createHash }, contracts] = await Promise.all([
+    import('typescript'), import('./helpers/workflow-database.mjs'), import('node:crypto'),
+    import('../lib/domain/event-ai-artifacts.ts'),
+  ]);
+  const fixture = await workflowDatabase(); t.after(fixture.close); seed(fixture.sqlite);
+  const repository = await readFile(new URL('../lib/server/db/event-ai-artifact-repository.ts', import.meta.url), 'utf8');
+  const source = repository.slice(repository.indexOf('type ReadingRunInput ='), repository.indexOf('export async function listEventAiArtifacts'));
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const cjsModule = { exports: {} };
+  const config = { AI_EVENT_SUMMARY: '1' };
+  new Function('module', 'exports', 'getBindings', 'getD1', 'parseJson', 'now', 'id', 'hashText', 'READING_ARTIFACT_DEFINITIONS', 'EVENT_AI_ARTIFACT_CONTRACTS', 'EVENT_AI_ARTIFACT_REASONING_EFFORTS', 'all', 'runRecord', compiled)(
+    cjsModule, cjsModule.exports, () => config, () => fixture.db, JSON.parse, () => T, prefix => `${prefix}_${crypto.randomUUID()}`,
+    async value => createHash('sha256').update(value).digest('hex'), READING_ARTIFACT_DEFINITIONS,
+    contracts.EVENT_AI_ARTIFACT_CONTRACTS, contracts.EVENT_AI_ARTIFACT_REASONING_EFFORTS,
+    async (sql, values) => (await fixture.db.prepare(sql).bind(...values).all()).results, row => row,
+  );
+  return { ...fixture, ...cjsModule.exports, config, input: { workspaceId: 'ws', projectId: 'p', eventId: 'e', extractionRunId: 'run', inputManifestJson: JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]), provider: 'synthetic', model: 'synthetic' } };
+}
+
+test('transcript-ready submission queues all four reading views before any view is visited and reuses them on retry', async t => {
+  const f = await readingQueueFixture(t);
+  const prepared = await f.prepareEventAiArtifactRuns(f.input);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM event_ai_artifact_runs').get().n, 0);
+  await f.db.batch(prepared.statements);
+  const rows = f.sqlite.prepare('SELECT id,kind,status FROM event_ai_artifact_runs ORDER BY kind').all();
+  assert.deepEqual(rows.map(r => r.kind), ['chapters', 'key_points', 'overview', 'speakers']);
+  assert.ok(rows.every(r => r.status === 'queued'));
+  const reused = await f.ensureEventAiArtifactRuns(f.input);
+  assert.deepEqual(reused.map(r => r.id).sort(), rows.map(r => r.id).sort());
+  const secondRun = await f.prepareEventAiArtifactRuns({ ...f.input, extractionRunId: 'run-after-retry' });
+  assert.deepEqual(secondRun.keys, prepared.keys);
+});
+
+test('reading tasks roll back together with an invalid submission guard', async t => {
+  const f = await readingQueueFixture(t);
+  const prepared = await f.prepareEventAiArtifactRuns(f.input);
+  await assert.rejects(f.db.batch([...prepared.statements, f.db.prepare("INSERT INTO mutation_guards (id,guard_value,created_at) VALUES ('stale',0,'test')")]));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM event_ai_artifact_runs').get().n, 0);
+});
+
+test('disabled reading generation and materials without a transcript create no reading tasks', async t => {
+  const f = await readingQueueFixture(t);
+  const photos = await f.prepareEventAiArtifactRuns({ ...f.input, inputManifestJson: '[{"kind":"photo"}]' });
+  assert.equal(photos.statements.length, 0);
+  f.config.AI_EVENT_SUMMARY = '0';
+  assert.equal((await f.prepareEventAiArtifactRuns(f.input)).statements.length, 0);
+});
+
+test('retry handoff checks its source and permission guard before creating missing reading jobs', async t => {
+  const f = await readingQueueFixture(t);
+  await assert.rejects(f.ensureEventAiArtifactRuns(f.input, { sql: '0', values: [] }));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM event_ai_artifact_runs').get().n, 0);
+  const rows = await f.ensureEventAiArtifactRuns(f.input, { sql: '1', values: [] });
+  assert.equal(rows.length, 4);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM mutation_guards').get().n, 0);
 });

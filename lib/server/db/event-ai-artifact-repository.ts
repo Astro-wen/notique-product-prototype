@@ -387,7 +387,7 @@ export async function persistReadableTranscriptChunk(
   ]);
 }
 
-export async function ensureEventAiArtifactRuns(input: {
+type ReadingRunInput = {
   workspaceId: string;
   projectId: string;
   eventId: string;
@@ -395,11 +395,14 @@ export async function ensureEventAiArtifactRuns(input: {
   inputManifestJson: string;
   provider: string;
   model: string;
-}): Promise<EventAiArtifactRunRecord[]> {
+};
+
+/** Queue all reading views in the same transaction as their source analysis. */
+export async function prepareEventAiArtifactRuns(input: ReadingRunInput): Promise<{ statements: D1PreparedStatement[]; keys: string[] }> {
   const bindings = getBindings();
-  if (bindings.AI_EVENT_SUMMARY === "0") return [];
+  if (bindings.AI_EVENT_SUMMARY === "0") return { statements: [], keys: [] };
   const manifest = parseJson<Array<{ kind?: unknown }>>(input.inputManifestJson, []);
-  if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return [];
+  if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return { statements: [], keys: [] };
   const timestamp = now();
   // 四合一的 summary 不再生产（历史产物仍可读）。四个视图各自一次调用、
   // 各自一份契约，靠 reading-pipeline 里的依赖图决定先后。
@@ -420,6 +423,7 @@ export async function ensureEventAiArtifactRuns(input: {
       })),
   ];
   const ensuredKeys: string[] = [];
+  const statements: D1PreparedStatement[] = [];
   for (const definition of definitions.filter((item) => item.enabled)) {
     const runId = id("earun");
     const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[definition.kind];
@@ -442,7 +446,7 @@ export async function ensureEventAiArtifactRuns(input: {
     }));
     const idempotencyKey = inputHash;
     ensuredKeys.push(idempotencyKey);
-    await getD1()
+    statements.push(getD1()
       .prepare(
         `INSERT OR IGNORE INTO event_ai_artifact_runs (
            id, workspace_id, project_id, event_id, extraction_run_id, kind,
@@ -470,10 +474,20 @@ export async function ensureEventAiArtifactRuns(input: {
         timestamp,
         timestamp,
         timestamp,
-      )
-      .run();
+      ));
   }
+  return { statements, keys: ensuredKeys };
+}
+
+export async function ensureEventAiArtifactRuns(input: ReadingRunInput, guard?: { sql: string; values: unknown[] }): Promise<EventAiArtifactRunRecord[]> {
+  const { statements, keys: ensuredKeys } = await prepareEventAiArtifactRuns(input);
   if (!ensuredKeys.length) return [];
+  if (guard) {
+    const guardId = id("reading_guard");
+    statements.unshift(getD1().prepare(`INSERT INTO mutation_guards (id,guard_value,created_at) SELECT ?,CASE WHEN ${guard.sql} THEN 1 ELSE 0 END,?`).bind(guardId, ...guard.values, now()));
+    statements.push(getD1().prepare('DELETE FROM mutation_guards WHERE id=?').bind(guardId));
+  }
+  await getD1().batch(statements);
   // 按内容指纹取回。复用的那些行挂在更早那次抽取上，用 extraction_run_id
   // 查会漏掉它们。
   const rows = await all(

@@ -199,7 +199,7 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
       expectedContextVersion: snapshot.contextVersion, expectedCardRevision: card.revision,
       operation, members: card.memberRefs.filter(ref=>!claimId || ref.claimId===claimId).map((ref) => ({ ...ref, operation })),
       ...(operation === "defer" ? { deferUntil: null } : {}),
-    }), operation === "accept_action" ? "已加入跟进，记录已更新。" : operation === "defer" ? "已留待稍后。" : operation === "reject" ? "已移出当前记录。" : "已更新记录。");
+    }), operation === "accept_action" ? "已加入跟进，记录已更新。" : operation === "defer" ? "已留待稍后。" : operation === "reject" ? "已移出当前记录。" : operation === "confirm" ? "已加入已确认内容，复制已确认时会包含这条。" : "已更新记录。");
   }
   async function saveEditor() {
     if (!editor) return;
@@ -217,7 +217,7 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
         await onAnswer(question.id, { expectedContextVersion: base.contextVersion, expectedQuestionRevision: question.revision, answerText: current.value, evidenceRefs: [] });
       }
       memory?.clear('inline');setEditor((value) => value?.id === current.id ? null : value);
-    }, current.kind === "edit" ? "修改已保存，记录已更新。" : "答案已保存，已更新重点。");
+    }, current.kind === "edit" ? "要点已修改并采纳，复制记录会使用新内容。" : "答案已保存，已更新重点。");
   }
   async function copy(scope: ReportRequest["scope"]) {
     if(copyController.current)return;
@@ -436,6 +436,7 @@ export function RecordWorkspace({ onOpenTranscript, retainedInputs, analysisPane
     {!analysisHasNarrative && snapshot.narrative && snapshot.narrative.freshness !== "current" && <p className={styles.notice}>{snapshot.narrative.freshness === "updating" ? "概要正在更新" : snapshot.narrative.freshness === "failed" ? "概要暂时未能更新" : "概要需要重新整理"}，下面已显示最新要点。</p>}
     <RecordElement className={styles.record}>
       <div className={`${styles.sectionHeader} ${styles.recordNavigation}`}><div><h2>本次重点</h2><small className={styles.readingHint}>{shownBullets.some(b=>b.reviewState==='draft')?"含未确认内容":"已确认内容"}</small></div><div className={styles.recordTools}><div className={styles.filters} aria-label="重点范围"><button disabled={!ready} aria-pressed={filter === "all"} onClick={() => changeFilter("all")}>记录</button><button disabled={!ready} aria-pressed={filter === "decisions"} onClick={() => changeFilter("decisions")}>待处理 {priorities.length}</button><button disabled={!ready} aria-pressed={filter === "accepted"} onClick={() => changeFilter("accepted")}>已确认</button></div></div></div>
+      {canEdit && shownBullets.length > 0 && <p className={styles.readingHint}>确认后加入已确认内容，修改后更新要点和导出。原始逐字稿保留。</p>}
       {!shownBullets.length && !shownMentions.length && <p className={styles.empty}>{filter === "decisions" ? "当前没有待处理事项。" : filter === "accepted" ? "还没有已采纳内容，可以先阅读全部记录。" : processing?"重点正在核对出处，可以先读原文。":"材料整理好后，重点会出现在这里。"}{filter==='all' && processing && onOpenTranscript && <button onClick={onOpenTranscript}>先读原文</button>}{filter !== "all" && <button onClick={() => setFilter("all")}>查看完整记录</button>}</p>}
       {filter==='decisions' ? <div className={styles.bullets}>{readingBullets.filter(b=>!snapshot.actions.some(a=>b.claimRefs.some(r=>r.claimId===a.id))).map(renderReadingBullet)}{snapshot.actions.filter(a=>selectedPriorityIds.has(a.id)).map(renderAction)}</div> : <div className={styles.topics}>{readingTopics(snapshot,readingBullets).map(topic=>{
         const details=topic.detail.filter(b=>!topic.interactive.some(x=>x.id===b.id));

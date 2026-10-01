@@ -5667,7 +5667,7 @@ function TranscriptArtifactsPanel({
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [overviewExpanded, setOverviewExpanded] = useState(false);
   const [speakersExpanded, setSpeakersExpanded] = useState(false);
-  const [chaptersExpanded, setChaptersExpanded] = useState(false);
+  const [chaptersExpanded, setChaptersExpanded] = useState(true);
   const workspaceLayoutRef = useRef<HTMLDivElement>(null);
   const [visibleTranscriptGroups, setVisibleTranscriptGroups] = useState(240);
   const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
@@ -6429,7 +6429,7 @@ function TranscriptArtifactsPanel({
     }
     if (!focusRequest && !manuallySelectedTab.current) {
       setTab(fallbackTab);
-      setWorkspaceView(fallbackTab === "summary" ? "points" : "transcript");
+      setWorkspaceView(sourceOnly ? "chapters" : fallbackTab === "summary" ? "points" : "transcript");
     }
   }, [
     event.id,
@@ -6438,6 +6438,7 @@ function TranscriptArtifactsPanel({
     onFocusHandled,
     readableArtifact,
     readableRun,
+    sourceOnly,
     availableRawSegments.length,
     state,
     summaryArtifact,
@@ -6653,7 +6654,7 @@ function TranscriptArtifactsPanel({
       onPointerDown={(event) => { if (audioPlaying && event.target === event.currentTarget) setFollowPlayback(false); }}
       onKeyDown={(event) => { if (audioPlaying && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) setFollowPlayback(false); }}
     >
-    <details className={`reader-extra-views${sourceOnly ? " is-source-only" : ""}`} open={!sourceOnly}><summary>更多阅读方式</summary>
+    <div className={`reader-extra-views${sourceOnly ? " is-source-only" : ""}`}>
     <section className="reader-overview" aria-label="智能速览">
       <h2 className="tingwu-overview-title"><NotebookPen aria-hidden="true" />记录概览</h2>
       {readingProgress.active && <div className="reading-progress" role="status" aria-live="polite" aria-label={`阅读整理 ${readingProgress.done}/${readingProgress.total}`}>
@@ -6668,7 +6669,7 @@ function TranscriptArtifactsPanel({
       ? <Fragment key={pieceIndex}>{piece.text}</Fragment>
       : piece.claimId
         ? <button key={pieceIndex} type="button" className="overview-figure is-claim" title="打开这条结论核对" onClick={() => onOpenClaim(piece.claimId!)}>{piece.text}</button>
-        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="需要时可生成原文概要。" buttonLabel="生成原文概要" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("overview").catch(() => undefined)} />}</section></SmoothResize>
+        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="全文概要生成未完成。" buttonLabel="重新生成概要" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("overview").catch(() => undefined)} />}</section></SmoothResize>
       <header className="reader-intelligence-heading">
         <nav className="reader-insight-tabs" aria-label="智能速览方式">
           <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
@@ -6688,7 +6689,7 @@ function TranscriptArtifactsPanel({
               <button className="tingwu-recall" onClick={() => locateRawSources(ids)}><span aria-hidden="true">↶</span> 回顾</button></footer>
           </div>
         </article>;
-      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="需要时可生成原文要点。" buttonLabel="生成原文要点" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("key_points").catch(() => undefined)} />}
+      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="要点回顾生成未完成。" buttonLabel="重新生成要点" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("key_points").catch(() => undefined)} />}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
@@ -6696,19 +6697,19 @@ function TranscriptArtifactsPanel({
         {useFallbackChapters && <p className="rail-muted chapter-fallback-note">按原文时间定位 <button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact("chapters").catch(() => undefined)}>生成章节摘要</button></p>}
         <div>{(chaptersExpanded ? orderedSummaryChapters : orderedSummaryChapters.slice(0, 2)).map((chapter) => renderChapter(chapter))}</div>
         <button className="text-button chapter-expand" aria-expanded={chaptersExpanded} onClick={() => setChaptersExpanded((value) => !value)}>{chaptersExpanded ? "收起章节" : `展开全部章节（${orderedSummaryChapters.length}）`}</button>
-      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="需要时可生成章节摘要。" buttonLabel="生成章节摘要" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("chapters").catch(() => undefined)} />}
+      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="章节摘要生成未完成。" buttonLabel="重新生成章节" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("chapters").catch(() => undefined)} />}
     </section>}
 
     {insightView === "speakers" && <section className="tingwu-speaker-summaries" aria-label="发言总结内容">
       {generatedSpeakerSummaries.length ? <><div className={speakersExpanded ? "expanded" : "collapsed"}>{generatedSpeakerSummaries.map((speaker, index) => <article key={`${firstString(speaker, ["asset_version_id"])}-${index}`}>
         <div className={`tingwu-speaker-label speaker-tone-${index % 4}`}><span className="speaker-avatar" aria-hidden="true"><Users /></span><span>{displaySpeakerLabel(speaker.speaker)}</span></div>
         <p>{firstString(speaker, ["summary"])}</p>
-      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="需要时可生成发言总结。" buttonLabel="生成发言总结" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("speakers").catch(() => undefined)} />}
+      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="发言总结生成未完成。" buttonLabel="重新生成发言总结" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("speakers").catch(() => undefined)} />}
     </section>}
 
     </SmoothResize>
     <div className="reader-overview-divider"><span>自动整理 · 请结合原文核对</span></div>
-    </section></details>
+    </section></div>
     <header className="transcript-document-toolbar" id="transcript-document">
       <div className="transcript-document-title"><FileText aria-hidden="true" /><strong>原文</strong></div>
       <DropdownMenu.Root>
@@ -7486,8 +7487,8 @@ function SimpleTestScreen({
                 own sub-tab, so two controls with one name did one job. 材料
                 also stops sharing a name with the rail's 来源 (the quote's
                 origin) — the two mean different things. */}
-            <button aria-label="本次重点" aria-current={activeTab === "highlights" ? "page" : undefined} className={activeTab === "highlights" ? "active" : ""} onClick={() => selectWorkspaceTab("highlights")}><b>本次重点</b></button>
             <button aria-label="原文" aria-current={activeTab === "transcript" || activeTab === "review" ? "page" : undefined} className={activeTab === "transcript" || activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}>原文</button>
+            <button aria-label="本次重点" aria-current={activeTab === "highlights" ? "page" : undefined} className={activeTab === "highlights" ? "active" : ""} onClick={() => selectWorkspaceTab("highlights")}><b>本次重点</b></button>
             <button aria-label="材料" aria-current={activeTab === "materials" ? "page" : undefined} className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
             <span className="meeting-tabs-scope" aria-hidden="true" />
             <button aria-label="整个项目" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<ArrowRight aria-hidden="true" /></button>
