@@ -391,7 +391,11 @@
     "pending": "建议选择、未回答问题和待跟进行动按稳定ID归并",
     "outcome": "填写一次结果，明确勾选问题，可同时完成行动",
     "source": "概要只展示可读且引用当前版本的已保存句子",
-    "promptVersion": "claim-extraction-prompt.v9.6，v9.5冻结任务继续复用原契约"
+    "promptVersion": "claim-extraction-prompt.v9.6，v9.5冻结任务继续复用原契约",
+    "answeredQuestion": "当前答案优先，原问题按需展开",
+    "comparison": "精确当前问题的新旧提法同组显示并计数，各版本和选择独立保留",
+    "export": "沿保存主题归并所有当前条目，保留草稿、出处状态、适用条件和执行状态",
+    "editing": "保存、复制与撤回期间拦截其他写入口，撤回提交期间窗口保持"
   },
   "closedFollowupCoverage": {
     "promptVersion": "claim-extraction-prompt.v9.12",

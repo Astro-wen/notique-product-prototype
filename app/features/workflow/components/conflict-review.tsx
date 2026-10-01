@@ -38,18 +38,18 @@ export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClos
   } catch(e) {setError(e instanceof Error?e.message:'保存失败，请重试。');if(e instanceof ApiClientError && e.status===409)setStale(true);}
   finally {setPending(false);}
  }
- return <Modal returnFocusSelector={`#conflict-${cardId}`} title={actionConflict?"决定接下来跟进哪项":"决定采用哪条信息"} description={actionConflict?"对照原行动与新建议，选择接下来跟进的事项。":"对照新旧内容，选择这份记录接下来使用的信息。"} dismissible={!pending} onClose={close}>
+ return <Modal returnFocusSelector={`#conflict-${cardId}`} title={questionConflict?"核对问题":actionConflict?"选择跟进事项":"核对新旧信息"} description={questionConflict?"查看新旧提法和已有答案。":"对照内容，选择保留哪一条。"} dismissible={!pending} onClose={close}>
   <div className={`${styles.memberReview} ${styles.questionReview} ${styles.questionSimple}`}>
    <div className={styles.questionContent} role="region" aria-label="新旧内容与选择" tabIndex={0}>
    {!conflict || !candidate?<p>这条差异已处理或发生变化，请返回记录查看。</p>:<>
     {(card?.conflicts?.length ?? 0)>1 && <label>需要核对的原信息<select value={index} onChange={e=>{setIndex(Number(e.target.value));setMode(null);}}>{card!.conflicts!.map((c,i)=><option key={c.relationId} value={i}>{c.existing.statement}</option>)}</select></label>}
     <div className={styles.basisChange}><div><span>原来已采纳</span><p>{conflict.existing.statement}</p>{actionConflict && <small>{conflict.existingActionState==='completed'?'当时已完成':conflict.existingActionState==='cancelled'?'当时已取消':'待跟进'}</small>}<NqButton variant="quiet" onClick={()=>onSource(conflict.existing)}>查看原信息出处</NqButton></div><div><span>这次的新信息</span><p>{candidate.statement}</p><NqButton variant="quiet" onClick={()=>onSource(candidate)}>查看新信息出处</NqButton></div></div>
     <fieldset className={styles.conflictChoices} disabled={pending || !canEdit}><legend>这次采用哪种方式</legend>
-     <label><input type="radio" name="conflict-choice" checked={mode==='use_candidate'} disabled={!canAdopt} onChange={()=>setMode('use_candidate')}/><span>{actionConflict?'改为跟进新行动':'采用新信息'}<small>{actionConflict?'原行动和完成记录保留在历史，新行动单独跟进。':'原信息保留在历史中，相关答案随之更新。'}</small></span></label>
+     {canAdopt && <label><input type="radio" name="conflict-choice" checked={mode==='use_candidate'} disabled={!canAdopt} onChange={()=>setMode('use_candidate')}/><span>{actionConflict?'改为跟进新行动':'采用新信息'}<small>{actionConflict?'原行动和完成记录保留在历史，新行动单独跟进。':'原信息保留在历史中。'}</small></span></label>}
      <label><input type="radio" name="conflict-choice" checked={mode==='keep_existing'} onChange={()=>setMode('keep_existing')}/><span>{actionConflict?'继续原行动':'保留原信息'}<small>{actionConflict?'原行动的状态和结果保持，这次的新建议收起。':'这次的新信息移出当前记录。'}</small></span></label>
-     <label><input type="radio" name="conflict-choice" checked={mode==='coexist'} disabled={!canAdopt} onChange={()=>setMode('coexist')}/><span>{actionConflict?'两项都跟进':'两条信息分别适用'}<small>写明各自的适用情况，一起保留。</small></span></label>
+     {canAdopt && <label><input type="radio" name="conflict-choice" checked={mode==='coexist'} disabled={!canAdopt} onChange={()=>setMode('coexist')}/><span>{actionConflict?'两项都跟进':'两条信息分别适用'}<small>写明各自的适用情况，一起保留。</small></span></label>}
     </fieldset>
-    {!canAdopt && <div className={styles.notice}><p>{questionConflict?'问题与已有答案需要一起核对，当前可以保留原信息。':!actionKindsMatch?'这条建议与原行动类型不同，当前可以保留原信息。':'新信息的出处或支持情况需要补齐，当前可以保留原信息。'}</p>{onQuestion && relatedQuestions.map((q,i)=><NqButton key={q.id} variant="quiet" disabled={pending} onClick={()=>{finish();onQuestion(q.id);}}>核对已有问题{relatedQuestions.length>1?` ${i+1}`:''}</NqButton>)}</div>}
+    {!canAdopt && <div className={styles.notice}><p>{questionConflict?'可修改已有问题和答案，或保留原信息。':!actionKindsMatch?'可保留原信息，或返回记录调整内容。':'请先核对新信息的出处。'}</p>{onQuestion && relatedQuestions.map((q,i)=><NqButton key={q.id} variant="quiet" disabled={pending} onClick={()=>{finish();onQuestion(q.id);}}>核对已有问题{relatedQuestions.length>1?` ${i+1}`:''}</NqButton>)}</div>}
     {mode==='coexist' && <label className={styles.conflictScope}>适用情况<textarea value={applicability} onChange={e=>setApplicability(e.target.value)} maxLength={4000} rows={3} readOnly={!canEdit || pending} placeholder={actionConflict?"例如：原行动负责询价，新行动负责确认交期。":"例如：原预算用于一期，新预算用于二期。"}/></label>}
    </>}
    {error && <p role="alert" className={styles.error}>{error}</p>}

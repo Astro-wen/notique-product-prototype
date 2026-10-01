@@ -48,3 +48,26 @@ test('overview promotes accepted current user results without hiding original re
  const before=structuredClone(s);
  assert.deepEqual(overviewTopics(s,s.currentBullets)[0].bullets.map(b=>b.id),['result','original','stale']);assert.deepEqual(s,before);
 });
+
+test('explicit current question comparisons count once while preserving both choices and unrelated questions',async()=>{
+ const {questionComparisons}=await import('../lib/domain/record-reading.ts');
+ const old=bullet('time'),candidate=bullet('new-time');
+ const q={...question,resolutionState:'open',answerRefs:[],latestOutcome:null};
+ const card={id:'comparison',kind:'conflict',needsDecision:true,disposition:'active',reasonCode:'accepted_change',memberRefs:[ref('new-time')],members:[{...ref('new-time'),kind:'question'}],conflicts:[{existing:{...ref('time'),kind:'question'},candidateRef:ref('new-time')}]};
+ const s={bullets:[old,candidate],reviewCards:[card],questions:[q,{...q,id:'location',claimRef:ref('location')}],actions:[]};
+ const before=structuredClone(s);
+ assert.deepEqual(pendingItems(s).map(item=>item.claimIds),[['new-time','time'],['location']]);
+ assert.equal(questionComparisons(s)[0].candidates[0].bullet.id,'new-time');
+ assert.deepEqual(s,before);
+ assert.equal(questionComparisons({...s,bullets:[{...old,sourceStatus:'stale'},candidate]}).length,0);
+ assert.equal(questionComparisons({...s,reviewCards:[{...card,conflicts:[{...card.conflicts[0],existing:{...ref('time'),claimVersionId:'old',kind:'question'}}]}]}).length,0);
+ assert.equal(pendingItems({...s,reviewCards:[{...card,conflicts:[{...card.conflicts[0],existing:{...ref('time'),claimVersionId:'old',kind:'question'}}]}]}).length,3);
+});
+
+test('multiple explicit comparisons of the same question share one pending group, processed comparisons separate again',()=>{
+ const q={...question,resolutionState:'open',answerRefs:[],latestOutcome:null};
+ const make=id=>({id,kind:'conflict',needsDecision:true,disposition:'active',reasonCode:'accepted_change',memberRefs:[ref(id)],members:[{...ref(id),kind:'question'}],conflicts:[{existing:{...ref('time'),kind:'question'},candidateRef:ref(id)}]});
+ const s={reviewCards:[make('one'),make('two')],questions:[q],actions:[]};
+ const items=pendingItems(s);assert.equal(items.length,1);assert.deepEqual(new Set(items[0].claimIds),new Set(['one','two','time']));
+ assert.deepEqual(pendingItems({...s,reviewCards:s.reviewCards.map(c=>({...c,disposition:'processed'}))}).map(i=>i.id),['time']);
+});

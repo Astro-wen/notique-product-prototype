@@ -39,7 +39,7 @@ test('an independent followup result returns to its theme, copy and project, wit
   await action.getByRole('button',{name:/^完成：/}).click();await expect(action).toContainText('已完成');
   await page.getByRole('button',{name:'整个项目',exact:true}).click();const overview=page.getByTestId('project-overview');await expect(overview.getByRole('region',{name:'项目当前重点'})).toContainText('三家供应商的报价单已收到。');await expect(overview).toContainText('1 个问题未解决');
   await page.getByRole('button',{name:'本次重点',exact:true}).click();await expect(topic).toContainText('三家供应商的报价单已收到。');await page.reload();await expect(topic).toContainText('三家供应商的报价单已收到。');
-  await action.getByText('结果操作',{exact:true}).click();await action.getByRole('button',{name:'撤回这次结果',exact:true}).click();await page.getByRole('button',{name:'确认撤回',exact:true}).click();
+  await action.getByText('更多',{exact:true}).click();await action.getByRole('button',{name:'撤回这次结果',exact:true}).click();await page.getByRole('button',{name:'确认撤回',exact:true}).click();
   await expect(topic).not.toContainText('三家供应商的报价单已收到。');await expect(action).toContainText('已完成');await expect(page.getByTestId(`bullet-${f.questionId}`)).toContainText('费用是多少');
   await page.getByRole('button',{name:'复制记录',exact:true}).click();await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).not.toContain('供应商的报价单已收到');
   expect(f.analysisEvidence().runs).toEqual(before.runs);expect(f.analysisEvidence().modelStages).toBe(before.modelStages);expect(errors).toEqual([]);expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);

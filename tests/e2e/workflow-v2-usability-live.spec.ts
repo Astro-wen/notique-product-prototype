@@ -82,7 +82,7 @@ test('filtering cannot hide unsaved input and an optional personal note reappear
     expect(saved.actions[0].executionState).toBe('completed');
     expect(saved.actions[0].latestOutcome.text).toBe('已收到书面报价。');
     expect(saved.questions[0].resolutionState).toBe('resolved');
-    await followup.getByText('结果操作',{exact:true}).click();
+    await followup.getByText('更多',{exact:true}).click();
     await followup.getByRole('button',{name:'修正结果',exact:true}).click();
     await expect(page.getByLabel('补充说明，可留空',{exact:true})).toHaveValue('已收到书面报价。');
     await page.getByRole('form',{name:'修正结果',exact:true}).screenshot({path:info.outputPath('optional-note-preserved.png')});

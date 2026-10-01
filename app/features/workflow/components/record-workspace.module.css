@@ -236,3 +236,25 @@
 .analysis { margin-bottom: 8px; padding-bottom: 6px; }
 .feedback { margin-bottom: 8px; }
 .embedded .record { padding: 16px 24px; }
+
+/* Reading has one measure; controls follow the content instead of filling a row. */
+.statement, .topicPreview, .actionBody > p, .sourceBody blockquote p { max-width: 78ch; }
+.statement { line-height: 1.75; }
+.topicPreview { line-height: 1.75; padding-top: 14px; padding-bottom: 10px; }
+.topicPreview li { padding: 6px 0; }
+.topic { padding: 22px 24px; }
+.topicHeader { margin-bottom: 10px; }
+.inlineActions { gap: 8px; margin-top: 8px; }
+.actionControls { gap: 8px; }
+.actionBody .outcome { padding: 14px 16px; margin-top: 14px; }
+.answeredQuestion { display: flex; align-items: start; gap: 12px; flex-wrap: wrap; }
+.answeredQuestion > .outcomeHistory { flex: 1; margin-top: 8px; }
+.answeredQuestion .actionEditor { flex-basis: 100%; }
+.questionGroup { border-bottom: 1px solid #e6e6e8; padding-bottom: 12px; }
+.questionGroup > .bullet { border-bottom: 0; }
+.questionComparison { padding-left: 16px; border-left: 2px solid #d8e2fa; }
+.questionComparison > summary { color: var(--record-blue); cursor: pointer; padding: 8px 0; font-size: 13px; }
+.mentionList { margin: 24px 0 16px; border-top: 1px solid #e6e6e8; padding-top: 16px; }
+.mentionList > summary { cursor: pointer; color: #59657b; font-size: 13px; padding: 6px 0; }
+.mentionList .statement { font-size: 14px; }
+.workspace.embedded { max-width: 1160px; margin-inline: auto; }

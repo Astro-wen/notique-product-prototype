@@ -54,7 +54,7 @@ test('actual record: copy, correct, reload, follow up, answer, correct result an
     await expect(page.getByTestId(`bullet-${fixture.questionId}`)).toHaveCount(0);
     await page.reload();
     await expect(page.getByText('报价十二万元，包含安装。',{exact:true}).first()).toBeVisible();
-    await page.getByText('结果操作',{exact:true}).click();
+    await page.getByTestId(`action-${fixture.actionId}`).getByText('更多',{exact:true}).click();
     await page.getByRole('button',{name:'修正结果',exact:true}).click();
     await page.getByLabel('补充答案',{exact:true}).fill('报价十三万元，包含安装和运输。');
     await page.getByRole('button',{name:'保存修正',exact:true}).click();
@@ -163,7 +163,7 @@ test('changed basis can be reviewed and retained while completed action edits pr
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole('button',{name:'核对依据',exact:true})).toHaveCount(0);
     await expect(page.getByRole('button',{name:/^重开：/})).toBeVisible();
-    await page.getByText('行动操作',{exact:true}).click();
+    await page.getByTestId(`action-${fixture.actionId}`).getByText('更多',{exact:true}).click();
     await page.getByRole('button',{name:'调整行动',exact:true}).click();
     await page.getByLabel('修改重点').fill('向供应商核实包含安装和运输的报价');
     await page.getByRole('button',{name:'保存修改',exact:true}).click();

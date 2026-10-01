@@ -4,6 +4,7 @@ import {
   type Bullet,
   type Action,
   type Coverage,
+  type Narrative,
   type Question,
   type ReaffirmedMention,
   type ReportRequest,
@@ -11,6 +12,7 @@ import {
   type SourceHighlightRequest,
   type VersionRef,
 } from "../shared/workflow-v2.ts";
+import { recordTopics } from './record-topics.ts';
 
 /** Ordinary drafts remain readable without becoming compulsory review work. */
 export function priorityCards(cards: readonly ReviewCard[]): ReviewCard[] {
@@ -74,6 +76,7 @@ export function buildRecordText(input: {
   bullets: readonly Bullet[];
   questions: readonly Question[];
   actions?: readonly Action[];
+  narrative?: Narrative | null;
   coverage: Coverage;
   reaffirmedMentions?: readonly ReaffirmedMention[];
   scope: ReportRequest["scope"];
@@ -84,7 +87,10 @@ export function buildRecordText(input: {
   const lines = [markdown ? `# ${literal(input.title)}` : input.title, ""];
   if (!input.coverage.complete) lines.push(`已整理 ${input.coverage.completedSegments}/${input.coverage.totalSegments} 段，部分材料仍待处理。`, "");
   const bullets = currentRecordBullets(input.bullets, input.questions).filter((b) => input.scope === "mixed" || b.reviewState === "accepted");
-  for (const bullet of bullets) {
+  const topics=recordTopics({bullets:input.bullets as Bullet[],reviewCards:[],questions:input.questions as Question[],actions:[...(input.actions ?? [])],narrative:input.narrative ?? null},bullets).filter(topic=>topic.bullets.length);
+  for (const topic of topics) {
+    if(input.narrative?.sentenceRefs.some(s=>s.topic))lines.push(markdown?`## ${literal(topic.title)}`:topic.title, '');
+    for (const bullet of topic.bullets) {
     if (bullet.sourceStatus !== "ready") {
       // Source text that has become inaccessible is omitted even from mixed exports.
       lines.push(`- 待补依据：${bullet.id}`);
@@ -95,8 +101,11 @@ export function buildRecordText(input: {
     const action=input.actions?.find(a=>bullet.claimRefs.some(r=>sameVersion(r,a.claimRef)));
     const execution=action?` · ${action.executionState==='completed'?'已完成':action.executionState==='cancelled'?'已取消':'待跟进'}`:'';
     lines.push(`- ${literal(body)}${markdown ? "  " : " "}· ${label}${execution}${bullet.conflictWith?.length ? " · 新旧信息待选择" : ""}`);
+    }
+    lines.push('');
   }
   const mentions=input.scope==='mixed'?(input.reaffirmedMentions ?? []).filter(m=>m.associationState!=='confirmed' || m.targetState!=='current' || m.sourceStatus!=='ready' || m.targetText===null):[];
+  if(mentions.length)lines.push(markdown?'## 重复提及':'重复提及','');
   for(const mention of mentions) {
     if(mention.sourceStatus!=='ready' || !mention.statement){lines.push(`- 再次提及，出处待核对：${mention.id}`);continue;}
     const state=mention.associationState==='proposed'?'AI 关联待核对':mention.targetState==='changed'?'关联的原事项已更新':mention.targetState==='retired'?'关联的原事项已移出当前跟进':mention.targetState==='current'?'原事项的依据需要重新核对':'关联的原事项不可访问';
