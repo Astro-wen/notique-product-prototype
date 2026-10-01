@@ -13,7 +13,7 @@ import { AudioTimeline } from "./audio-timeline";
 import { prioritizeSummarySections, readingPriority } from "@/lib/domain/ux-priority";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChangeEvent, FormEvent, Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DropdownMenu } from "radix-ui";
+import { Collapsible, DropdownMenu } from "radix-ui";
 import {
   AlertTriangle,
   ArrowDown,
@@ -5668,6 +5668,7 @@ function TranscriptArtifactsPanel({
   const [overviewExpanded, setOverviewExpanded] = useState(false);
   const [speakersExpanded, setSpeakersExpanded] = useState(false);
   const [chaptersExpanded, setChaptersExpanded] = useState(true);
+  const [readingViewsOpen, setReadingViewsOpen] = useState(true);
   const workspaceLayoutRef = useRef<HTMLDivElement>(null);
   const [visibleTranscriptGroups, setVisibleTranscriptGroups] = useState(240);
   const [rawSegments, setRawSegments] = useState<TranscriptSegment[]>([]);
@@ -6415,6 +6416,7 @@ function TranscriptArtifactsPanel({
       const localWorkspaceView = requestedWorkspaceView.current;
       requestedWorkspaceView.current = null;
       setWorkspaceView(requestedTab === "summary" ? localWorkspaceView ?? "chapters" : "transcript");
+      if (requestedTab === "summary") setReadingViewsOpen(true);
       const restoreScrollY = focusRequest.restoreScrollY;
       if (restoreScrollY != null) {
         summaryScrollY.current = restoreScrollY;
@@ -6654,7 +6656,11 @@ function TranscriptArtifactsPanel({
       onPointerDown={(event) => { if (audioPlaying && event.target === event.currentTarget) setFollowPlayback(false); }}
       onKeyDown={(event) => { if (audioPlaying && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) setFollowPlayback(false); }}
     >
-    <div className={`reader-extra-views${sourceOnly ? " is-source-only" : ""}`}>
+    <Collapsible.Root className={`reader-extra-views${sourceOnly ? " is-source-only" : ""}`} open={readingViewsOpen} onOpenChange={setReadingViewsOpen}>
+      <Collapsible.Trigger className="reader-extra-toggle" aria-label="更多阅读方式">
+        <span><ChevronDown aria-hidden="true" />更多阅读方式</span><small aria-hidden="true">{readingViewsOpen ? "收起" : "展开"}</small>
+      </Collapsible.Trigger>
+      <Collapsible.Content className="reader-extra-content">
     <section className="reader-overview" aria-label="智能速览">
       <h2 className="tingwu-overview-title"><NotebookPen aria-hidden="true" />记录概览</h2>
       {readingProgress.active && <div className="reading-progress" role="status" aria-live="polite" aria-label={`阅读整理 ${readingProgress.done}/${readingProgress.total}`}>
@@ -6709,7 +6715,7 @@ function TranscriptArtifactsPanel({
 
     </SmoothResize>
     <div className="reader-overview-divider"><span>自动整理 · 请结合原文核对</span></div>
-    </section></div>
+    </section></Collapsible.Content></Collapsible.Root>
     <header className="transcript-document-toolbar" id="transcript-document">
       <div className="transcript-document-title"><FileText aria-hidden="true" /><strong>原文</strong></div>
       <DropdownMenu.Root>
