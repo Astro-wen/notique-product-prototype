@@ -82,6 +82,16 @@ test("an OpenAI background stage resumes with GET and never repeats POST", async
   }
 });
 
+test('a mismatched resumed response is rejected before replacing its durable checkpoint', async () => {
+  const checkpoints = [];
+  await assert.rejects(requestOpenAiBackgroundResponse({
+    apiKey: 'test-key', baseUrl: 'https://api.openai.test/v1', requestBody: {}, resumeResponseId: 'paid_original',
+    fetcher: async () => jsonResponse({ id: 'different_response', status: 'completed', output_text: '{}' }),
+    onResponse: async r => checkpoints.push(r),
+  }), error => error instanceof OpenAiBackgroundRequestFailed && error.responseId === 'paid_original' && error.httpStatus === 502);
+  assert.deepEqual(checkpoints, []);
+});
+
 test("a terminal background failure is handled without issuing a replacement POST", async () => {
   const originalFetch = globalThis.fetch;
   const methods = [];
@@ -208,4 +218,35 @@ test("恢复时后台响应超过预算仍无进展：取消并要求重发；�
     }),
     OpenAiBackgroundPending,
   );
+});
+
+test('a frozen queue budget stops queued work earlier while preserving running and legacy budgets',async()=>{
+ for(const [status,queueBudgetMs,cancelExpected] of [['queued',120000,true],['in_progress',120000,false],['queued',undefined,false]]){
+  const calls=[],fetcher=async(url)=>{calls.push(String(url));return jsonResponse({id:'resp_queue',status:String(url).endsWith('/cancel')?'cancelled':status,created_at:Math.floor(Date.now()/1000)-150});};
+  await assert.rejects(requestOpenAiBackgroundResponse({apiKey:'test',baseUrl:'https://api.example.test/v1',requestBody:{},resumeResponseId:'resp_queue',stallBudgetMs:540000,queueBudgetMs,fetcher}),cancelExpected?OpenAiBackgroundStalled:OpenAiBackgroundPending);
+  assert.equal(calls.some(url=>url.endsWith('/cancel')),cancelExpected);
+ }
+});
+
+test('cancellation racing with completion preserves the paid result',async()=>{
+ const calls=[],finished={id:'resp_race',status:'completed',output_text:'paid result',usage:{input_tokens:100,output_tokens:10}};
+ const result=await requestOpenAiBackgroundResponse({apiKey:'test',baseUrl:'https://api.example.test/v1',requestBody:{},resumeResponseId:'resp_race',queueBudgetMs:120000,fetcher:async(url,init={})=>{
+  calls.push([String(url),init.method]);return jsonResponse(String(url).endsWith('/cancel')?finished:{id:'resp_race',status:'queued',created_at:Math.floor(Date.now()/1000)-150});
+ }});
+ assert.deepEqual(result.body,finished);assert.equal(calls.length,2);assert.ok(calls.every(([url,method])=>method==='GET'||url.endsWith('/cancel')));
+});
+
+test('unconfirmed cancellation keeps the same response recoverable instead of authorizing another paid POST',async()=>{
+ for(const cancellation of ['transport','http','running','foreign','empty']){
+  const calls=[];
+  await assert.rejects(requestOpenAiBackgroundResponse({apiKey:'test',baseUrl:'https://api.example.test/v1',requestBody:{},resumeResponseId:'resp_unconfirmed',queueBudgetMs:120000,fetcher:async(url,init={})=>{
+   calls.push([String(url),init.method]);
+   if(!String(url).endsWith('/cancel'))return jsonResponse({id:'resp_unconfirmed',status:'queued',created_at:Math.floor(Date.now()/1000)-150});
+   if(cancellation==='transport')throw new Error('transport');
+   if(cancellation==='http')return jsonResponse({},503);
+   if(cancellation==='empty')return new Response(null,{status:204});
+   return jsonResponse({id:cancellation==='foreign'?'other':'resp_unconfirmed',status:cancellation==='foreign'?'cancelled':'in_progress'});
+  }}),OpenAiBackgroundPending);
+  assert.equal(calls.length,2);assert.ok(calls.every(([url,method])=>method==='GET'||url.endsWith('/cancel')));
+ }
 });

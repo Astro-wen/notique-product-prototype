@@ -323,6 +323,7 @@ async function runModelStage<T>(input: {
   details?: Record<string, unknown>;
   validate: (value: unknown) => T | null;
   invoke: (options: {
+    backgroundQueueBudgetMs?: number;
     onOutputRepair?: (repairs: string[]) => Promise<void>;
     idempotencyKey: string;
     resumeProviderResponseId?: string;
@@ -408,12 +409,16 @@ async function runModelStage<T>(input: {
     });
   };
   try {
+    const frozenQueueBudget = parseJson<Record<string, unknown>>(
+      String(input.run.model_params_json ?? '{}'), {},
+    ).background_queue_wait_ms;
     const result = await input.invoke({
       idempotencyKey: `notique:${input.run.id}:${input.stage}:${attempt}`,
       ...(canResumeExisting && existing?.provider_request_id
         ? { resumeProviderResponseId: existing.provider_request_id }
         : {}),
       onProviderResponse,
+      ...(typeof frozenQueueBudget === 'number' ? { backgroundQueueBudgetMs: frozenQueueBudget } : {}),
       onOutputRepair:async repairs=>{stageDetails={...stageDetails,output_repairs:repairs};},
       ...(retryFeedback.length ? { qualityFeedback: retryFeedback } : {}),
     });

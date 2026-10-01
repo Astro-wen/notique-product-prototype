@@ -121,12 +121,76 @@ test('three task attribute inventory keys merge without losing critical coverage
   assert.equal(output.claims[0].normalized_value.owner, '小陈'); assert.equal(output.claims[0].normalized_value.due_at, '2026-10-08');
 });
 
+for (const recovery of ['cancelled', 'cancel_unconfirmed', 'lost_cancel_reply', 'completed_during_cancel', 'in_progress']) test(`real processor preserves paid stage and publishes once after ${recovery}`, async t => {
+  const { sqlite } = await setup(t);
+  globalThis.notiqueTaskTest.bindings.AI_TIMEOUT_MS = '540000';
+  const created = await createExtractionRun(SCOPE, 'e', `queue-${recovery}`, ['av']);
+  const runId = created.run.id;
+  const createdAt = Math.floor(Date.now() / 1000) - 150;
+  const requests = [];
+  let resumed = false;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.ok(String(url).startsWith('https://model.invalid/'));
+    const request = { url: String(url), method: init.method, body: init.body ? JSON.parse(init.body) : null };
+    requests.push(request);
+    if (request.url.endsWith('/cancel')) {
+      if (recovery === 'cancel_unconfirmed' || recovery === 'lost_cancel_reply') return new Response('Unavailable', { status: 503 });
+      if (recovery === 'completed_during_cancel') return json({ id: 'paid_inventory', status: 'completed', output_text: JSON.stringify(inventory()), usage });
+      return json({ id: 'paid_inventory', status: 'cancelled' });
+    }
+    if (request.method === 'GET' && resumed && recovery === 'lost_cancel_reply') return json({ id: 'paid_inventory', status: 'cancelled', created_at: createdAt });
+    if (request.method === 'GET') return json(resumed
+      ? { id: 'paid_inventory', status: 'completed', output_text: JSON.stringify(inventory()), usage }
+      : { id: 'paid_inventory', status: recovery === 'in_progress' ? 'in_progress' : 'queued', created_at: createdAt });
+    if (request.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION) {
+      const isFirst = requests.filter(r => r.method === 'POST' && !r.url.endsWith('/cancel')).length === 1;
+      return json(isFirst
+        ? { id: 'paid_inventory', status: 'queued', created_at: createdAt }
+        : { id: 'replacement_inventory', status: 'completed', output_text: JSON.stringify(inventory()), usage });
+    }
+    return json({ id: 'paid_verify', status: 'completed', output_text: JSON.stringify(verification()), usage });
+  };
+  assert.equal((await processExtractionRun(runId)).status, 'background_pending');
+  const firstStage = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE run_id=? AND stage='inventory'").get(runId);
+  assert.equal(firstStage.provider_request_id, 'paid_inventory');
+  const second = await processExtractionRun(runId);
+  if (recovery === 'cancelled') {
+    assert.equal(second.status, 'deferred');
+    assert.equal(sqlite.prepare('SELECT status FROM extraction_model_stages WHERE id=?').get(firstStage.id).status, 'failed');
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM claims').get().n, 0);
+    assert.equal((await processExtractionRun(runId)).status, 'succeeded');
+    const stages = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE run_id=? AND stage='inventory' ORDER BY attempt").all(runId);
+    assert.equal(stages.length, 2);
+    assert.equal(stages[1].attempt, firstStage.attempt + 1);
+    assert.equal(stages[1].provider_request_id, 'replacement_inventory');
+  } else if (recovery === 'completed_during_cancel') {
+    assert.equal(second.status, 'succeeded');
+  } else {
+    assert.equal(second.status, 'background_pending');
+    const stage = sqlite.prepare('SELECT * FROM extraction_model_stages WHERE id=?').get(firstStage.id);
+    assert.equal(stage.status, 'processing');
+    assert.equal(stage.provider_request_id, firstStage.provider_request_id);
+    assert.equal(stage.attempt, firstStage.attempt);
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM claims').get().n, 0);
+    resumed = true;
+    if (recovery === 'lost_cancel_reply') assert.equal((await processExtractionRun(runId)).status, 'deferred');
+    assert.equal((await processExtractionRun(runId)).status, 'succeeded');
+  }
+  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM extraction_model_stages WHERE run_id=? AND stage='verify'").get(runId).n, 1);
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM claims').get().n, 4);
+  const generationPosts = requests.filter(r => r.method === 'POST' && !r.url.endsWith('/cancel'));
+  assert.equal(generationPosts.length, recovery === 'cancelled' || recovery === 'lost_cancel_reply' ? 3 : 2);
+  assert.equal(requests.filter(r => r.url.endsWith('/cancel')).length, recovery === 'in_progress' ? 0 : 1);
+  if (recovery !== 'cancelled') assert.equal(sqlite.prepare('SELECT provider_request_id FROM extraction_model_stages WHERE id=?').get(firstStage.id).provider_request_id, 'paid_inventory');
+});
+
 test('run builder freezes new prompt versions, and the processor publishes four complete draft entries in two stages', async t => {
   const { db, sqlite } = await setup(t);
   const created = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']);
   const frozen = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
   assert.equal(created.run.prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, VERIFICATION_SCHEMA_VERSION);
   assert.equal(frozen.optional_verification_wait_ms, 120_000);
+  assert.equal(frozen.background_queue_wait_ms,120_000);
   const replay = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']); assert.equal(replay.created, false); assert.equal(replay.run.input_hash, created.run.input_hash);
   const requests = model(t, (r, n) => ({ id: `synthetic_${n}`, status: 'completed', output_text: JSON.stringify(r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION ? inventory() : verification()), usage }));
   const result = await processExtractionRun(created.run.id); assert.equal(result.status, 'succeeded', JSON.stringify({ result, error: sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id) })); assert.equal(requests.length, 2); assert.equal(result.persistedClaims, 4);

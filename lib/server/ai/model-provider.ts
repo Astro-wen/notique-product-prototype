@@ -117,7 +117,7 @@ export class ModelBackgroundStalledError extends Error {
 
   constructor(
     readonly providerResponseId: string,
-    readonly providerStatus: "queued" | "in_progress",
+    readonly providerStatus: "queued" | "in_progress" | "cancelled",
     readonly ageMs: number,
   ) {
     super(`OpenAI background Response stalled (${providerStatus}, ${Math.round(ageMs / 1000)}s) and was cancelled.`);
@@ -926,6 +926,9 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
               : {}),
             ...(options?.backgroundStallMs
               ? { stallBudgetMs: options.backgroundStallMs }
+              : {}),
+            ...(options?.backgroundQueueBudgetMs
+              ? { queueBudgetMs: options.backgroundQueueBudgetMs }
               : {}),
             signal: controller.signal,
             onResponse: options?.onProviderResponse,

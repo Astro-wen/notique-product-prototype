@@ -1,4 +1,4 @@
-import { OPTIONAL_VERIFICATION_WAIT_MS } from "@/lib/domain/verification-wait-budget";
+import { MODEL_QUEUE_WAIT_MS, OPTIONAL_VERIFICATION_WAIT_MS } from "@/lib/domain/verification-wait-budget";
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { materialAnalysisStatements } from "@/lib/server/workflow/material-analysis";
 import {
@@ -2552,6 +2552,7 @@ export async function createExtractionRun(
       verifier_reasoning_effort: verifierReasoningEffort,
       escalation_reasoning_effort: escalationReasoningEffort,
       optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
+      background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
       two_pass_pipeline: pipelineEnabled,
       verification_schema_version: pipelineEnabled ? VERIFICATION_SCHEMA_VERSION : null,
       inventory_prompt_version: pipelineEnabled ? TWO_STAGE_EXTRACTION_PROMPT_VERSION : null,
@@ -2647,6 +2648,7 @@ export async function createExtractionRun(
     verifier_reasoning_effort: verifierReasoningEffort,
     escalation_reasoning_effort: escalationReasoningEffort,
     optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
+    background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
     two_pass_pipeline: pipelineEnabled,
     ...(pipelineEnabled ? {verification_schema_version: VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: TWO_STAGE_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION, inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates, final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY, verification_prompt_version: VERIFICATION_PROMPT_VERSION} : {}),
     draft_context: draftContextEnabled,

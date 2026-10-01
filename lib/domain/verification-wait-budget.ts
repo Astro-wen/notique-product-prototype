@@ -1,4 +1,5 @@
 export const OPTIONAL_VERIFICATION_WAIT_MS = 120_000;
+export const MODEL_QUEUE_WAIT_MS = 120_000;
 
 // Coverage and relation failures still receive the full verification budget.
 // A validated, complete base can already be read and reviewed by the user.

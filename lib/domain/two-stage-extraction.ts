@@ -177,6 +177,7 @@ export type ModelStageRequestOptions = {
    * 阅读产物用五分钟，抽取阶段用自己的超时。
    */
   backgroundStallMs?: number;
+  backgroundQueueBudgetMs?: number;
   /**
    * Called as soon as OpenAI returns a durable Response ID, before a queued or
    * in-progress result is yielded back to the job runner.
