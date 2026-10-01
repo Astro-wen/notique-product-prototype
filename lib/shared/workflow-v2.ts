@@ -97,6 +97,7 @@ export type ActionHistoryEntry = {
   replacementText: string | null;
   latestOutcome: LatestOutcome | null;
 };
+/** Disputed draft questions stay in reviewCards until their conflict is handled. */
 export type Question = {
   id: string;
   claimRef: VersionRef;

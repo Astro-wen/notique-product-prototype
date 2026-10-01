@@ -261,7 +261,17 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
       return result?.freshness==='current' && result.resultRefs?.some(r=>r.claimVersionId===c.current_version_id);
     });
   }).sort((a,b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-  const questions: Question[] = selected.filter(c => c.type === 'open_question').map(c => {
+  const questions: Question[] = selected.filter(c => {
+    if (c.type !== 'open_question') return false;
+    // A model's disputed question is a review proposal. It must not reopen a
+    // user's answered topic or enter follow-up before the conflict is decided.
+    return accepted(c) || !relations.some(r =>
+      r.source_claim_version_id === c.current_version_id &&
+      ['contradicts', 'supersedes'].includes(r.type) &&
+      ['active', 'proposed'].includes(r.status) && r.contradiction_status !== 'resolved' &&
+      accepted(byVersion.get(r.target_claim_version_id)!) && current(byVersion.get(r.target_claim_version_id)!),
+    );
+  }).map(c => {
     const answers = liveRelations.filter(r => r.type === 'resolves' && r.target_claim_version_id === c.current_version_id)
       .map(r => byVersion.get(r.source_claim_version_id)!).filter(a => a.type !== 'next_action' && a.type !== 'open_question' && claimSourceStatus(a, ledger.evidence) === 'ready');
     return { id: c.id, claimRef: ref(c), revision: c.workflow_revision, resolutionState: answers.length ? 'resolved' : 'open', answerRefs: [...new Map(answers.map(a => [a.id, ref(a)])).values()], latestOutcome: latestOutcome(c.id, answers.map(ref)) };

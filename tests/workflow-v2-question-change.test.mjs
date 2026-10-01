@@ -26,6 +26,46 @@ test('question wording can be corrected before answering and remains directly an
   await answer(db);s=await read(db);assert.equal(s.questions[0].resolutionState,'resolved');
   assert.equal(sqlite.prepare('SELECT statement FROM claim_versions WHERE id=?').get('question_v1').statement,'费用是多少？');
 });
+
+test('a disputed draft question stays in review and cannot reopen an answered topic before a decision', async t => {
+  const { db, sqlite } = await setup(t);
+  await answer(db);
+  const original = (await read(db)).questions.find(q => q.id === 'question');
+  const answerRef = original.answerRefs[0];
+  claim(sqlite, 'disputed-question', 'open_question', '费用是否仍未确认？');
+  sqlite.prepare("INSERT INTO claim_relations(id,workspace_id,project_id,type,source_claim_version_id,target_claim_version_id,context_version,status) VALUES ('disputed-answer','ws','p','contradicts','disputed-question_v1',?,0,'proposed')").run(answerRef.claimVersionId);
+  let snapshot = await read(db);
+  assert.equal(snapshot.questions.some(q => q.id === 'disputed-question'), false);
+  assert.equal(snapshot.questions.find(q => q.id === 'question').resolutionState, 'resolved');
+  assert.ok(snapshot.bullets.some(b => b.id === 'disputed-question' && b.reviewState === 'draft'));
+  const card = snapshot.reviewCards.find(c => c.memberRefs.some(r => r.claimId === 'disputed-question'));
+  assert.equal(card.kind, 'conflict');
+  assert.equal(card.needsDecision, true);
+  const count = sqlite.prepare('SELECT count(*) AS n FROM workflow_decisions').get().n;
+  await assert.rejects(send(db, 'questions/disputed-question/answers', {
+    expectedContextVersion: snapshot.contextVersion, expectedQuestionRevision: 1,
+    answerText: '尚未确认', evidenceRefs: [],
+  }), e => e.code === 'dependency_conflict');
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM workflow_decisions').get().n, count);
+  for (const mode of ['use_candidate', 'coexist']) await assert.rejects(
+    decide(db, 'disputed-question', 'resolve_conflict', { conflictChoice: {
+      mode, existingRef: answerRef, candidateRef: { claimId: 'disputed-question', claimVersionId: 'disputed-question_v1' },
+      ...(mode === 'coexist' ? { applicability: '重新核实费用' } : {}),
+    } }), e => e.code === 'dependency_conflict',
+  );
+  const saved = await decide(db, 'disputed-question', 'resolve_conflict', { conflictChoice: {
+    mode: 'keep_existing', existingRef: answerRef, candidateRef: { claimId: 'disputed-question', claimVersionId: 'disputed-question_v1' },
+  } });
+  snapshot = await read(db);
+  assert.equal(snapshot.questions.some(q => q.id === 'disputed-question'), false);
+  assert.equal(snapshot.questions.find(q => q.id === 'question').resolutionState, 'resolved');
+  assert.deepEqual(snapshot.questions.find(q => q.id === 'question').answerRefs, original.answerRefs);
+  await revert(db, saved.receipt.mutationId);
+  snapshot = await read(db);
+  assert.equal(snapshot.reviewCards.find(c => c.id === card.id).kind, 'conflict');
+  assert.equal(snapshot.questions.some(q => q.id === 'disputed-question'), false);
+  assert.equal(snapshot.questions.find(q => q.id === 'question').resolutionState, 'resolved');
+});
 test('retaining an answer preserves completion, freezes old basis and follows the stable question identity',async t=>{
   const {db,sqlite}=await setup(t);await completeWithResult(db);const original=(await read(db)).questions[0].answerRefs;
   const saved=await editQuestion(db,'keep','含税安装费用是多少？','question-edit');

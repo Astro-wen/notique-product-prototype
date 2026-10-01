@@ -235,7 +235,7 @@
     {
       "name": "Question",
       "fields": "id、claimRef、revision、resolutionState、answerRefs、latestOutcome",
-      "rules": "revision 映射 claims.workflowRevision。resolutionState=open/resolved，存在有效已采纳答案才可 resolved latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 已有答案的问题仍可修改，逐条确认答案适用后保存新问题版本，行动完成状态保持。"
+      "rules": "revision 映射 claims.workflowRevision。resolutionState=open/resolved，存在有效已采纳答案才可 resolved latestOutcome.freshness=current/stale，答案被替代或失效后结果作为历史展示。来源不可用时结果正文为空。 已有答案的问题仍可修改，逐条确认答案适用后保存新问题版本，行动完成状态保持。 存在未处理的新旧冲突的草稿问题留在reviewCards中，questions和项目下一步仅显示可直接作答的问题。问题冲突保留原信息，变更问题与答案通过原问题入口核对。"
     },
     {
       "name": "OutcomeRequest",

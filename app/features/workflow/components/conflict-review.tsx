@@ -8,8 +8,8 @@ import {userMayAcceptSupport} from '@/lib/domain/review-support';
 import {useMemoryDrafts,useDraftCheckpoint} from './memory-drafts';
 import styles from './record-workspace.module.css';
 
-export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClose}: {
- cardId:string;snapshot:WorkspaceSnapshot;canEdit:boolean;onDecide:(id:string,request:DecisionRequest)=>Promise<void>;onSource:(member:ReviewMember)=>void;onClose:()=>void;
+export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClose,onQuestion}: {
+ cardId:string;snapshot:WorkspaceSnapshot;canEdit:boolean;onDecide:(id:string,request:DecisionRequest)=>Promise<void>;onSource:(member:ReviewMember)=>void;onClose:()=>void;onQuestion?:(id:string)=>void;
 }) {
  const memory=useMemoryDrafts();
  const [restored]=useState(()=>{const d=memory?.restored('conflict');return d?.targetId===cardId?d:undefined;});
@@ -22,7 +22,10 @@ export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClos
  const card=base.reviewCards.find(c=>c.id===cardId),conflict=card?.conflicts?.[index];
  const candidate=card?.members.find(m=>m.claimId===conflict?.candidateRef.claimId);
  const actionConflict=conflict?.existingActionState!==undefined;
- const canAdopt=Boolean(candidate && userMayAcceptSupport(candidate.supportStatus) && card?.sourceStatus==='ready');
+ const questionConflict=candidate?.kind==='question' || conflict?.existing.kind==='question';
+ const actionKindsMatch=(candidate?.kind==='action')===(conflict?.existing.kind==='action');
+ const canAdopt=Boolean(candidate && !questionConflict && actionKindsMatch && userMayAcceptSupport(candidate.supportStatus) && card?.sourceStatus==='ready');
+ const relatedQuestions=questionConflict?snapshot.questions.filter(q=>q.claimRef.claimId===conflict?.existing.claimId || q.answerRefs.some(r=>r.claimVersionId===conflict?.existing.claimVersionId)):[];
  useDraftCheckpoint(mode && conflict?{kind:'conflict',targetId:cardId,existingRef:{claimId:conflict.existing.claimId,claimVersionId:conflict.existing.claimVersionId},candidateRef:conflict.candidateRef,mode,applicability}:null);
  const finish=()=>{memory?.clear('conflict');onClose();};
  const close=()=>{if(mode || applicability.trim())setClosing(true);else finish();};
@@ -46,7 +49,7 @@ export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClos
      <label><input type="radio" name="conflict-choice" checked={mode==='keep_existing'} onChange={()=>setMode('keep_existing')}/><span>{actionConflict?'继续原行动':'保留原信息'}<small>{actionConflict?'原行动的状态和结果保持，这次的新建议收起。':'这次的新信息移出当前记录。'}</small></span></label>
      <label><input type="radio" name="conflict-choice" checked={mode==='coexist'} disabled={!canAdopt} onChange={()=>setMode('coexist')}/><span>{actionConflict?'两项都跟进':'两条信息分别适用'}<small>写明各自的适用情况，一起保留。</small></span></label>
     </fieldset>
-    {!canAdopt && <p className={styles.notice}>新信息的出处或支持情况需要补齐，当前可以保留原信息。</p>}
+    {!canAdopt && <div className={styles.notice}><p>{questionConflict?'问题与已有答案需要一起核对，当前可以保留原信息。':!actionKindsMatch?'这条建议与原行动类型不同，当前可以保留原信息。':'新信息的出处或支持情况需要补齐，当前可以保留原信息。'}</p>{onQuestion && relatedQuestions.map((q,i)=><NqButton key={q.id} variant="quiet" onClick={()=>{finish();onQuestion(q.id);}}>核对已有问题{relatedQuestions.length>1?` ${i+1}`:''}</NqButton>)}</div>}
     {mode==='coexist' && <label className={styles.conflictScope}>适用情况<textarea value={applicability} onChange={e=>setApplicability(e.target.value)} maxLength={4000} rows={3} readOnly={!canEdit || pending} placeholder={actionConflict?"例如：原行动负责询价，新行动负责确认交期。":"例如：原预算用于一期，新预算用于二期。"}/></label>}
    </>}
    {error && <p role="alert" className={styles.error}>{error}</p>}
