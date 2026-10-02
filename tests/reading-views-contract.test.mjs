@@ -33,6 +33,16 @@ test('legacy summaries remain readable without fabricating reading views',()=>{
  assert.equal(result.valid,true); assert.equal(result.output.speaker_summaries,undefined);
 });
 
+test('speaker contribution lines retain wording, uncertainty, and only the speaker own sources',()=>{
+ const value=output();
+ value.speaker_summaries[0].summary='Requested four bedrooms.\nClarified that the budget is provisional.';
+ const result=validateEventSummaryProviderOutput(value,input);
+ assert.equal(result.valid,true,JSON.stringify(result.issues));
+ assert.equal(result.output.speaker_summaries[0].summary,value.speaker_summaries[0].summary);
+ value.speaker_summaries[0].source_segment_ids.push('s2');
+ assert.equal(validateEventSummaryProviderOutput(value,input).valid,false);
+});
+
 test('citation ordering changes only metadata and preserves all references and prose',()=>{
  const value=output(); value.speaker_summaries[0].source_segment_ids=['s3','s1'];
  const ordered=orderReadingViewSources(value,segments);

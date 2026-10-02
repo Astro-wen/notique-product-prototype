@@ -10,6 +10,7 @@ import { WorkspaceNavigation } from "./features/workflow/components/workspace-na
 import { RecordPage } from "./features/workflow/pages/record-page";
 import { ProjectIndex } from "./components/project-index";
 import { SmoothResize } from "./components/smooth-resize";
+import { eventAiArtifactContractMismatch } from "@/lib/domain/event-ai-artifacts";
 import { AudioTimeline } from "./audio-timeline";
 import { prioritizeSummarySections, readingPriority } from "@/lib/domain/ux-priority";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -5974,6 +5975,9 @@ function TranscriptArtifactsPanel({
   const overviewText = overviewItems.map((item) => item.text).join(" ");
   const keyPoints = viewField(keyPointsPair, "key_points");
   const generatedSpeakerSummaries = viewField(speakersPair, "speaker_summaries");
+  const speakersOutdated = generatedSpeakerSummaries.length > 0 && (speakersPair.run
+    ? speakersPair.run.status === "succeeded" && Boolean(eventAiArtifactContractMismatch(speakersPair.run))
+    : true);
   const generatedChapters = viewField(chaptersPair, "chapters");
   // 模型章节不会再来了（作业失败，或压根没排而分析也没在跑）时，按时间点和
   // 说话人轮换粗切一份目录顶上。它不编内容，只让读者有地方可点。
@@ -6710,9 +6714,12 @@ function TranscriptArtifactsPanel({
     </section>}
 
     {insightView === "speakers" && <section className="tingwu-speaker-summaries" aria-label="发言总结内容">
+      {speakersOutdated && <div className="speaker-summary-tools"><button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact("speakers").catch(() => undefined)}>更新发言总结</button></div>}
       {generatedSpeakerSummaries.length ? <><div className={speakersExpanded ? "expanded" : "collapsed"}>{generatedSpeakerSummaries.map((speaker, index) => <article key={`${firstString(speaker, ["asset_version_id"])}-${index}`}>
         <div className={`tingwu-speaker-label speaker-tone-${index % 4}`}><span className="speaker-avatar" aria-hidden="true"><Users /></span><span>{displaySpeakerLabel(speaker.speaker)}</span></div>
-        <p>{firstString(speaker, ["summary"])}</p>
+        <div className="speaker-contributions">{(firstString(speaker, ["summary"]) || "").includes("\n")
+          ? <ul>{(firstString(speaker, ["summary"]) || "").split(/\n+/).filter((line) => line.trim()).map((line, lineIndex) => <li key={lineIndex}>{line.replace(/^\s*[-•]\s+/, "")}</li>)}</ul>
+          : <p>{firstString(speaker, ["summary"])}</p>}</div>
       </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="发言总结生成未完成。" buttonLabel="重新生成发言总结" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("speakers").catch(() => undefined)} />}
     </section>}
 

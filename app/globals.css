@@ -2192,6 +2192,10 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 .tingwu-speaker-label { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); text-align: center; }
 .tingwu-speaker-label .speaker-avatar { background: var(--brand-green-soft); color: var(--brand-green); border-radius: 50%; width: 32px; height: 32px; }
 .tingwu-speaker-summaries p { margin: 0; font-size: 14px; line-height: 1.85; color: var(--ink); }
+.tingwu-speaker-summaries .speaker-summary-tools { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.speaker-contributions ul { margin: 0; padding-left: 18px; display: grid; gap: 8px; list-style: disc; font-size: 14px; line-height: 1.85; color: var(--ink); }
+.speaker-contributions li::marker { color: var(--muted); }
+.tingwu-speaker-summaries .collapsed li:nth-child(n+3) { display: none; }
 .tingwu-speaker-summaries .collapsed article:not(:first-child) { display: none; }
 .tingwu-speaker-summaries .collapsed p { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .interface-refresh .tingwu-expand { color: var(--brand-green); justify-self: start; margin: 12px 0 0 48px; font-weight: 400; }

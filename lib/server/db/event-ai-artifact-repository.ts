@@ -1,8 +1,7 @@
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import {
   EVENT_AI_ARTIFACT_REASONING_EFFORTS,
-  EVENT_SUMMARY_PROMPT_VERSION,
-  EVENT_SUMMARY_SCHEMA_VERSION,
+  eventAiArtifactContractMismatch,
   READABLE_TRANSCRIPT_SCHEMA_VERSION,
   type EventAiArtifactKind,
   type EventSummaryOutput,
@@ -566,9 +565,8 @@ export async function createEventAiArtifactRetry(
       ORDER BY ar.created_at DESC LIMIT 1`,
     [eventId, scope.workspaceId, kind],
   );
-  const upgradeSummary = source && kind === "summary" && source.status === "succeeded"
-    && (source.prompt_version !== EVENT_SUMMARY_PROMPT_VERSION || source.schema_version !== EVENT_SUMMARY_SCHEMA_VERSION);
-  if (source && String(source.status) !== "failed" && !upgradeSummary) {
+  const upgradeArtifact = source && source.status === "succeeded" && eventAiArtifactContractMismatch(source);
+  if (source && String(source.status) !== "failed" && !upgradeArtifact) {
     throw new ApiFault(409, "RUN_STATE_CONFLICT", "Only a failed or outdated AI artifact can be regenerated.");
   }
   if (!source) {

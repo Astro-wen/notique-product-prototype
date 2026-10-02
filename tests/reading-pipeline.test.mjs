@@ -132,15 +132,18 @@ async function readingQueueFixture(t) {
   ]);
   const fixture = await workflowDatabase(); t.after(fixture.close); seed(fixture.sqlite);
   const repository = await readFile(new URL('../lib/server/db/event-ai-artifact-repository.ts', import.meta.url), 'utf8');
-  const source = repository.slice(repository.indexOf('type ReadingRunInput ='), repository.indexOf('export async function listEventAiArtifacts'));
+  const source = repository.slice(repository.indexOf('type ReadingRunInput ='), repository.indexOf('export async function listEventAiArtifacts'))
+    + repository.slice(repository.indexOf('export async function createEventAiArtifactRetry'), repository.indexOf('export async function readingUpstreamContent'));
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const cjsModule = { exports: {} };
   const config = { AI_EVENT_SUMMARY: '1' };
-  new Function('module', 'exports', 'getBindings', 'getD1', 'parseJson', 'now', 'id', 'hashText', 'READING_ARTIFACT_DEFINITIONS', 'EVENT_AI_ARTIFACT_CONTRACTS', 'EVENT_AI_ARTIFACT_REASONING_EFFORTS', 'all', 'runRecord', 'readingModelSnapshot', 'readingRouteIdentity', compiled)(
+  new Function('module', 'exports', 'getBindings', 'getD1', 'parseJson', 'now', 'id', 'hashText', 'READING_ARTIFACT_DEFINITIONS', 'EVENT_AI_ARTIFACT_CONTRACTS', 'EVENT_AI_ARTIFACT_REASONING_EFFORTS', 'all', 'runRecord', 'readingModelSnapshot', 'readingRouteIdentity', 'first', 'eventAiArtifactContractMismatch', 'ApiFault', compiled)(
     cjsModule, cjsModule.exports, () => config, () => fixture.db, JSON.parse, () => T, prefix => `${prefix}_${crypto.randomUUID()}`,
     async value => createHash('sha256').update(value).digest('hex'), READING_ARTIFACT_DEFINITIONS,
     contracts.EVENT_AI_ARTIFACT_CONTRACTS, contracts.EVENT_AI_ARTIFACT_REASONING_EFFORTS,
     async (sql, values) => (await fixture.db.prepare(sql).bind(...values).all()).results, row => row, readingModelSnapshot, readingRouteIdentity,
+    async (sql, values) => fixture.db.prepare(sql).bind(...values).first(), contracts.eventAiArtifactContractMismatch,
+    class ApiFault extends Error { constructor(status, code, message) { super(message); this.status = status; this.code = code; } },
   );
   return { ...fixture, ...cjsModule.exports, config, input: { workspaceId: 'ws', projectId: 'p', eventId: 'e', extractionRunId: 'run', inputManifestJson: JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]), provider: 'synthetic', model: 'synthetic' } };
 }
@@ -157,6 +160,31 @@ test('transcript-ready submission queues all four reading views before any view 
   assert.deepEqual(reused.map(r => r.id).sort(), rows.map(r => r.id).sort());
   const secondRun = await f.prepareEventAiArtifactRuns({ ...f.input, extractionRunId: 'run-after-retry' });
   assert.deepEqual(secondRun.keys, prepared.keys);
+});
+
+test('upgrading a speaker summary creates only that view with the current contract and preserves the old run', async t => {
+  const f = await readingQueueFixture(t);
+  await f.ensureEventAiArtifactRuns(f.input);
+  f.sqlite.prepare("UPDATE event_ai_artifact_runs SET status='succeeded',prompt_version='reading-view-prompt.v1' WHERE kind='speakers'").run();
+  const before = f.sqlite.prepare('SELECT * FROM event_ai_artifact_runs ORDER BY kind').all();
+  const retried = await f.createEventAiArtifactRetry({ workspaceId: 'ws' }, 'e', 'speakers', 'upgrade-speaker');
+  assert.equal(retried.prompt_version, 'reading-speakers-prompt.v2.2');
+  assert.equal(retried.schema_version, 'reading-speakers.v1');
+  assert.equal(retried.status, 'queued');
+  assert.equal(retried.model, 'synthetic');
+  for (const row of before) assert.deepEqual(f.sqlite.prepare('SELECT * FROM event_ai_artifact_runs WHERE id=?').get(row.id), row);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM event_ai_artifact_runs').get().n, 5);
+  assert.equal((await f.createEventAiArtifactRetry({ workspaceId: 'ws' }, 'e', 'speakers', 'upgrade-speaker')).id, retried.id);
+});
+
+test('current successful and active speaker tasks cannot start another paid generation', async t => {
+  const f = await readingQueueFixture(t);
+  await f.ensureEventAiArtifactRuns(f.input);
+  for (const status of ['queued', 'processing', 'succeeded']) {
+    f.sqlite.prepare("UPDATE event_ai_artifact_runs SET status=? WHERE kind='speakers'").run(status);
+    await assert.rejects(f.createEventAiArtifactRetry({ workspaceId: 'ws' }, 'e', 'speakers', status), error => error.code === 'RUN_STATE_CONFLICT');
+  }
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM event_ai_artifact_runs').get().n, 4);
 });
 
 test('reading tasks roll back together with an invalid submission guard', async t => {

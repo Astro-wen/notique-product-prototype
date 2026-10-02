@@ -1122,6 +1122,12 @@ class OpenAiCompatibleModelProvider implements TwoStageModelProvider {
           "Write one summary per actual raw speaker label AND Asset Version.",
           "Copy speaker (including null) and asset_version_id exactly as they appear in the transcript.",
           "Read all of that speaker's turns before writing; cite only that speaker's own segments.",
+          "Summarize this speaker's substantive contributions: what they stated, asked, explained, proposed, agreed to, or committed to do. Each point must be supported by their own turns. Optional chapters are only a navigation aid, never evidence of who said something.",
+          "In the summary field, write 2-5 concise contribution points separated by newline characters, without bullet markers or numbering. Each point covers one contribution in 1-2 short sentences, about 20-40 English words or equivalent in the transcript's language. Use fewer points for sparse speech. Start each point with a concrete reporting verb such as Stated, Asked, Explained, Proposed, or Agreed. The speaker label already identifies the subject.",
+          "Put all citation IDs exclusively in source_segment_ids. The summary field is reader-facing prose: no segment IDs, source annotations, brackets, or citation footnotes.",
+          "Skip greetings, meeting agendas, meeting setup such as X meets Y or X welcomes Y, and incidental biography. Avoid recapping the whole meeting or describing what the speaker learned about someone else. Include personal circumstances only when they explain a stated need, constraint, or decision, and attribute them as something the speaker said.",
+          "Order points by the importance of the contribution, not the order of introductions. Lead with a concrete proposal, request, explanation, concern, or commitment. Omit what the meeting would cover and biographical introductions such as employment history, family status or veteran status unless the speaker explicitly connects that fact to a decision or requirement. For example: Proposed a provisional budget of $20,000, subject to approval. Asked whether cancellation would incur a fee.",
+          "Keep the distinctive substance, material amounts, dates, conditions and uncertainty. Separate asking about a topic from stating an answer, estimates from agreed amounts, proposals from commitments, and commitments from completed actions. Acknowledgements alone do not imply agreement or ownership. Do not invent a contribution to fill the list.",
         ]
         : kind === "key_points"
           ? [
