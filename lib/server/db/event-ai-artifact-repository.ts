@@ -11,6 +11,7 @@ import {
   EVENT_AI_ARTIFACT_CONTRACTS,
 } from "@/lib/domain/event-ai-artifacts";
 import { READING_ARTIFACT_DEFINITIONS } from "@/lib/domain/reading-pipeline";
+import { readingModelSnapshot, readingRouteIdentity } from '@/lib/server/ai/model-route';
 import type { ModelUsage } from "@/lib/domain/model-contract";
 import type { TranscriptSegment } from "@/lib/domain/types";
 import { ApiFault, parseJson } from "@/lib/server/http/api";
@@ -195,11 +196,13 @@ export async function sourceSegmentsForArtifactRun(runId: string): Promise<{
   // 这里算的必须和 ensureEventAiArtifactRuns 里算的逐字一致，否则每个新建
   // 的产物一领取就判定输入变了。产物的身份是它的输入内容，不含创建它的那次
   // 抽取：抽取失败重试会换 id，带上它就等于回到了按 run 取身份的老做法。
+  const routeFields = readingRouteIdentity(run.provider_profile,run.provider_base_url);
   const expectedInputHash = await hashText(JSON.stringify({
     input_manifest: parsedManifest,
     kind: run.kind,
     provider: run.provider,
     model: run.model,
+    ...routeFields,
     effort: run.reasoning_effort,
     prompt: run.prompt_version,
     schema: run.schema_version,
@@ -403,6 +406,8 @@ export async function prepareEventAiArtifactRuns(input: ReadingRunInput): Promis
   if (bindings.AI_EVENT_SUMMARY === "0") return { statements: [], keys: [] };
   const manifest = parseJson<Array<{ kind?: unknown }>>(input.inputManifestJson, []);
   if (!manifest.some((item) => item.kind === "transcript" || item.kind === "text")) return { statements: [], keys: [] };
+  const route = readingModelSnapshot(bindings,input);
+  const routeFields = readingRouteIdentity(route.providerProfile,route.providerBaseUrl);
   const timestamp = now();
   // 四合一的 summary 不再生产（历史产物仍可读）。四个视图各自一次调用、
   // 各自一份契约，靠 reading-pipeline 里的依赖图决定先后。
@@ -438,8 +443,9 @@ export async function prepareEventAiArtifactRuns(input: ReadingRunInput): Promis
     const inputHash = await hashText(JSON.stringify({
       input_manifest: parseJson(input.inputManifestJson, []),
       kind: definition.kind,
-      provider: input.provider,
-      model: input.model,
+      provider: route.provider,
+      model: route.model,
+      ...routeFields,
       effort: reasoningEffort,
       prompt: definition.prompt,
       schema: definition.schema,
@@ -451,9 +457,9 @@ export async function prepareEventAiArtifactRuns(input: ReadingRunInput): Promis
         `INSERT OR IGNORE INTO event_ai_artifact_runs (
            id, workspace_id, project_id, event_id, extraction_run_id, kind,
            status, idempotency_key, input_hash, input_manifest_json,
-           provider, model, reasoning_effort, prompt_version, schema_version,
+           provider, model, provider_profile, provider_base_url, reasoning_effort, prompt_version, schema_version,
            attempt_no, next_attempt_at, queued_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       )
       .bind(
         runId,
@@ -465,8 +471,10 @@ export async function prepareEventAiArtifactRuns(input: ReadingRunInput): Promis
         idempotencyKey,
         inputHash,
         input.inputManifestJson,
-        input.provider,
-        input.model,
+        route.provider,
+        route.model,
+        route.providerProfile,
+        route.providerBaseUrl,
         reasoningEffort,
         definition.prompt,
         definition.schema,
@@ -595,11 +603,13 @@ export async function createEventAiArtifactRetry(
   const promptVersion = contract.prompt;
   const schemaVersion = contract.schema;
   const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS[kind];
+  const routeFields = readingRouteIdentity(source.provider_profile,source.provider_base_url);
   const inputHash = await hashText(JSON.stringify({
     input_manifest: manifest,
     kind,
     provider: source.provider,
     model: source.model,
+    ...routeFields,
     effort: reasoningEffort,
     prompt: promptVersion,
     schema: schemaVersion,
@@ -609,9 +619,9 @@ export async function createEventAiArtifactRetry(
       `INSERT INTO event_ai_artifact_runs (
          id, workspace_id, project_id, event_id, extraction_run_id, kind,
          status, idempotency_key, input_hash, input_manifest_json, provider,
-         model, reasoning_effort, prompt_version, schema_version, attempt_no,
+         model, provider_profile, provider_base_url, reasoning_effort, prompt_version, schema_version, attempt_no,
          next_attempt_at, queued_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
     )
     .bind(
       runId,
@@ -625,6 +635,8 @@ export async function createEventAiArtifactRetry(
       source.input_manifest_json,
       source.provider,
       source.model,
+      source.provider_profile ?? null,
+      source.provider_base_url ?? null,
       reasoningEffort,
       promptVersion,
       schemaVersion,

@@ -69,12 +69,14 @@ test("the page connects guided navigation without weakening review gates", () =>
   assert.doesNotMatch(uiSource, /Luna Max|旧的 max/);
 });
 
-test("PC event selection opens current highlights and preserves unsaved work", () => {
+test("PC event selection retains reading context and preserves unsaved work", () => {
   const selectEvent = declarationSource('selectEvent');
   assert.match(selectEvent, /if \(workflowHasUnsavedInput\(\)\) return/);
-  assert.match(selectEvent, /setActiveTab\("highlights"\);[\s\S]*?onUseEvent\(nextEventId\)/);
+  assert.match(selectEvent, /const nextTab = activeTab === "results" \? "highlights" : activeTab/);
+  assert.match(selectEvent, /setActiveTab\(nextTab\)/);
+  assert.match(selectEvent, /onUseEvent\(nextEventId, nextTab === "transcript"/);
   assert.match(selectEvent, /onClearTranscriptArtifact\(\)/);
-  assert.match(uiSource, /onChange=\{\(change\) => selectEvent\(change\.target\.value\)\}/);
+  assert.match(uiSource, /onSelect=\{selectEvent\}/);
 });
 
 test("terminal transcription publishes the ready Event before refreshing workflow context", () => {

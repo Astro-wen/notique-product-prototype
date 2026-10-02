@@ -847,12 +847,12 @@ test("long readable transcripts split deterministically and merge in raw order",
   assert.equal(new Set(merged.segments.map((segment) => segment.readable_key)).size, 7);
 });
 
-test("artifact backlog prefers readable work without allowing it to starve Summary", async () => {
+test("artifact backlog starts a bounded reading wave and prioritizes the overview", async () => {
   const jobs = await readFile(new URL("../lib/server/jobs/event-ai-artifacts.ts", import.meta.url), "utf8");
   assert.doesNotMatch(jobs, /kind <> 'summary'[\s\S]*readable\.status IN \('queued', 'processing'\)/);
-  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,[\s\S]*created_at, id LIMIT \?/);
-  assert.match(jobs, /input\?\.extractionRunId \? 2 : 2/);
-  assert.match(jobs, /await Promise\.all\(\(rows\.results \?\? \[\]\)\.map/);
+  assert.match(jobs, /ORDER BY next_attempt_at,[\s\S]*CASE kind WHEN 'overview' THEN 0 WHEN 'chapters' THEN 1 ELSE 2 END,[\s\S]*created_at, id LIMIT \?/);
+  assert.match(jobs, /input\?\.runId \? 1 : 4/);
+  assert.match(jobs, /await Promise\.allSettled\(\(rows\.results \?\? \[\]\)\.map/);
   assert.equal((jobs.match(/allowRawFallback: true/g) ?? []).length, 2);
 });
 
@@ -1236,14 +1236,14 @@ test("new and retried reading artifacts use low effort while existing Runs keep 
     /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[definition\.kind\]/,
   );
   assert.match(initialCreation, /effort: reasoningEffort/);
-  assert.match(initialCreation, /input\.model,\s*reasoningEffort,\s*definition\.prompt/);
+  assert.match(initialCreation, /route\.model,\s*route\.providerProfile,\s*route\.providerBaseUrl,\s*reasoningEffort,\s*definition\.prompt/);
   assert.doesNotMatch(initialCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
   assert.match(
     retryCreation,
     /const reasoningEffort = EVENT_AI_ARTIFACT_REASONING_EFFORTS\[kind\]/,
   );
   assert.match(retryCreation, /effort: reasoningEffort/);
-  assert.match(retryCreation, /source\.model,\s*reasoningEffort,\s*promptVersion/);
+  assert.match(retryCreation, /source\.model,\s*source\.provider_profile \?\? null,\s*source\.provider_base_url \?\? null,\s*reasoningEffort,\s*promptVersion/);
   assert.doesNotMatch(retryCreation, /AI_VERIFIER_REASONING_EFFORT|verifier_reasoning_effort/);
   assert.match(
     jobs,

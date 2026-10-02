@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFile, readdir } from 'node:fs/promises';
 
-export async function workflowDatabase({ through = 26 } = {}) {
+export async function workflowDatabase({ through = 27 } = {}) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON');
   const dir = new URL('../../drizzle/',import.meta.url);

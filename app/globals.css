@@ -2450,3 +2450,13 @@ main { min-height: 100vh; margin-left: 224px; padding: 0 30px 72px; transition: 
 
 .ds-record > .nq-status { justify-self: start; }
 .ds-header > a:last-child { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Notique 1.6.1 preview: one desktop reading measure and calm page changes. */
+.interface-refresh .simple-page { max-width: 1424px; margin-inline: auto; }
+.interface-refresh .simple-workspace { margin-top: 0; }
+.interface-refresh .simple-current-event > .current-event-header { display: none; }
+.interface-refresh .reading-tab-panel { animation: workspace-enter 200ms ease both; }
+@keyframes workspace-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .interface-refresh .reading-tab-panel { animation: none; } }
+
+.conversation-loading { min-height: 55vh; display: grid; place-items: center; }

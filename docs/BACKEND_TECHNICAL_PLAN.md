@@ -372,7 +372,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | --- | --- | --- |
 | VersionRef | claimId、claimVersionId | 指向一条信息的精确版本 |
 | WorkspaceSnapshot | access、snapshotId、contextVersion、sourceRevision、coverage、bullets、reviewCards、actions、questions、narrative、counts、nextCursor、recentDecisions?、reviewProgress?、analysisRunId?、actionHistory?、reaffirmedMentions? | 事件级一致读取快照。counts 分开返回 draftCount、needsDecisionCount、openActionCount，recentDecisions 可返回最近十次批阅的 id、revision、operation、summary、createdAt、reverted 与 choiceMode，所有集合携带同一 contextVersion access 含服务端解析的 workspaceId、actorId、canEdit，用于缓存隔离与只读展示，写入仍重新检查权限。 reviewProgress 保存当前主体的 lastCardId、finishedAt 和 remainingCount。阅读位置即时读取，个人位置变化保持业务快照稳定。 analysisRunId 返回当前 extraction_run ID，用于只读阶段进度 访问失效后前端收起正文并清理工作流快照，按账号、空间和沟通保留本页用户输入。恢复时重新获取当前快照，核对后提交。账号或空间变化清除上一主体输入，迟到回执保持原会话边界。 actionHistory 返回当前沟通已替代的行动历史，保持原行动的完成状态与结果，当前跟进、待办数量和复制记录使用 actions。 reaffirmedMentions 保留本次复述、冻结原版本和当前版本。模型关联仍为proposed，原审核与行动状态保持。存在匹配的原生确认记录、目标仍为当前采纳版本且两次出处有效时，沿用原信息、问题或行动ID。 |
-| ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 |
+| ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs? | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。 |
 | ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 |
 | Bullet | id、text、claimRefs、reviewState、origin、sourceStatus、applicability?、conflictWith? | reviewState=draft/accepted，origin=source_statement/ai_suggestion/user_input/user_selection。用户选录保留原话，缺失或过期出处显式展示 并存答案的适用情况随要点展示与导出。conflictWith 保存仍待选择的旧信息精确版本，复制时标明新旧信息待选择。 |
 | Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 同一培训计划的费用、审批、课程内容、练习、人数与排期归于员工培训。课程介绍和练习中的流程描述作为培训内容保留。 |
@@ -401,6 +401,7 @@ version_conflict 返回最新 contextVersion 与冲突对象，dependency_confli
 | McpConnectionStatus | authenticated、enabled、scope、endpoint、expiresAt、accountEmail | scope=mcp:read，endpoint=/mcp。authenticated=false 时 enabled=false，accountEmail=null。开启需同时核实网关主体与邮箱、工作空间成员及独立只读授权。expiresAt 为 ISO 时间或 null，授权期30天。已授权表示读取授权，以调用方插件页确认安装状态。连接时的工具发现只返回固定名称与参数，读取记录需有有效授权。 |
 | ReaffirmedMention | id、claimRef、currentRef、targetEventId、kind、statement、targetText、currentText、associationState、targetState、sourceStatus、sources | claimRef 为复述引用的冻结版本，currentRef 为当前原事项或null。kind=record/question/action。associationState=proposed/confirmed，confirmed 需匹配occurrence_verdicts与claim_occurrences。targetState=current/changed/retired/unavailable，版本或类型变化分别保留原内容与当前内容。statement、targetText、currentText 在相应出处不可读取时为null。sources 含assetVersionId、quote、sourceStatus，按本次空间、项目、沟通、材料版本及段落逐项核对，未知引用为null。待核对关联可阅读和混合复制，当前已确认的复述沿用原行动及答案，项目待办按稳定ID计数。 |
 | MentionDecisionRequest | expectedContextVersion、targetRef、operation | 可选复述关联选择。targetRef 为冻结原版本，operation=confirm/reject/convert。confirm 沿用原事项的稳定ID及完成和答案状态。convert 从本次出处形成一条独立草稿，随后沿普通记录入口采纳或修正。reject 忽略此次关联。原版本或出处变化时整次回滚。 |
+| ProjectSourceRef | claimId、claimVersionId、eventId、evidenceRefIds、origin、sourceStatus | 精确版本的授权来源。sourceStatus=ready/stale/missing，非ready返回空evidenceRefIds。历史出处校验版本归属，人工补充引用user_note。旧客户端可忽略此映射，前端来源预览按此映射读取。 |
 
 #### 字段约束与提交语义
 
@@ -723,3 +724,19 @@ PC 记录按主题展示，每组先显示最多三条已有要点。逐条确�
 
 
 2026-10-01 说话人识别修复：长录音先完成第一段转写，从持续发言且没有其他说话人重叠的片段中提取2至8秒PCM声音参考。后续分段携带同一组参考并行转写，保持Speaker编号一致。参考映射与付费响应一起保存，恢复任务沿用已保存映射。跨段A、B等匿名标签只属于当前段，身份关联使用声音参考或重叠区的明确同一句发言，依据不足时显示说话人待确认。进度预览和最终逐字稿使用同一映射。重新转写成功后，旧逐字稿保留为历史材料，新版本成为当前分析来源，受影响阅读内容重新生成，已采纳内容保留原有出处版本。替换失败时继续读取旧结果。工程回归与录音实测分别记录，声音参考不代表人工核对。
+
+### 2026-10-02 Notique 1.6.1 并行任务与模型分工
+
+逐字稿就绪后，创建事实整理和四份阅读任务。事实抽取完成后进入依据核对，这是必要依赖。全文概要、章节速览、发言总结、要点回顾直接读取冻结的原始材料，四路独立调度。上传唤醒、工作台唤醒和恢复调度均启动独立任务，单路异常只影响本路的重试。每一路各自持有租约、输入指纹、付费响应编号与保存状态，按完成顺序发布结果。阅读调度每批最多四路，转写调度与事实恢复并行，继续遵守已有并发额度。
+
+事实模型沿用 AI_PROVIDER、AI_MODEL、AI_API_KEY、AI_API_BASE_URL。阅读模型增加 AI_READING_PROVIDER、AI_READING_MODEL、AI_READING_API_KEY、AI_READING_API_BASE_URL。只设置 AI_READING_MODEL 时复用当前服务与凭据。单独指定阅读服务或地址时，使用专属阅读密钥。模型名称使用服务商实际提供的标识，候选模型接入后按质量、费用和时延验收。
+
+0027_reading_model_routes 为 event_ai_artifact_runs 增加 provider_profile 和 provider_base_url。创建时冻结服务配置，密钥继续从运行环境读取。重试和取消沿用冻结的服务与模型，配置不匹配时该路报告配置问题，其余任务继续。默认服务的旧输入指纹兼容已保存产物，独立阅读服务纳入新的指纹。接口兼容与真实推理质量需要分别验证，支持配置表示路由已实现。
+
+项目总览增加 sourceRefs，按 claimId 和 claimVersionId 映射 eventId、evidenceRefIds、origin、sourceStatus。来源权限、材料可用性、结构校验和原始材料等级由服务端判断。历史版本有独立归属校验，人工填写从已授权的 user_note 读取。所有当前内容和变化记录共享一份来源映射，翻页继续使用同一快照。材料或来源改变会更新快照指纹，旧分页游标需要重新读取。
+
+前端确认、修改、答案与结果使用现有版本账本和原子写入接口。项目要点、导出和 MCP 读取同一份已保存状态。MCP 读取继续返回精确版本与证据引用，阅读请求复用已有产物。前端负责展示、选择、编辑和反馈，推理任务由后端持久队列执行。
+
+本地预览沿用现有运行凭据。四路并行故障隔离、模型路由隔离、精确来源和历史分页使用工程回归验证。实际费用与端到端耗时以接入所选阅读模型后的录音评测为准。
+
+2026-10-02 本地验收：完整构建与包内密钥审计通过，1414项工程测试通过，类型检查通过，lint为0错误和1条既有告警。实际浏览器覆盖1440、1366、1024像素宽度，多段对话前后切换保留原文模式，来源窗口可打开对应对话并定位条目。合成装修项目实测补答案后项目要点、问题状态和变化记录同步，随后撤回答案，问题恢复待解答，审计记录保留。已检查首屏留白、文字密度、焦点返回和横向溢出，浏览器未记录新的错误。模型费用、准确率和真实用户可用性尚待独立评测。

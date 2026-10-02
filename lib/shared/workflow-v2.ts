@@ -139,7 +139,15 @@ export type WorkspaceSnapshot = {
   counts: { draftCount: number; needsDecisionCount: number; openActionCount: number };
   nextCursor: string | null;
 };
+/** Exact-version source pointers. Quotes are resolved by the existing evidence API. */
+export type ProjectSourceRef = VersionRef & {
+  eventId: string;
+  evidenceRefIds: string[];
+  origin: ContentOrigin;
+  sourceStatus: SourceStatus;
+};
 export type ProjectOverview = {
+  sourceRefs?: ProjectSourceRef[];
   access: WorkspaceSnapshot['access'];
   nextCursor: string | null;
   counts: { draftCount: number; needsDecisionCount: number; openActionCount: number; openQuestionCount: number };

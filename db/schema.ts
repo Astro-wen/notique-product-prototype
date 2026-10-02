@@ -598,6 +598,8 @@ export const eventAiArtifactRuns = sqliteTable(
     inputManifestJson: text("input_manifest_json").notNull(),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
+    providerProfile: text("provider_profile", { enum: ["default", "reading"] }),
+    providerBaseUrl: text("provider_base_url"),
     reasoningEffort: text("reasoning_effort").notNull(),
     promptVersion: text("prompt_version").notNull(),
     schemaVersion: text("schema_version").notNull(),

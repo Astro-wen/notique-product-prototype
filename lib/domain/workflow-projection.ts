@@ -13,6 +13,8 @@ export type LedgerClaim = {
 };
 export type LedgerEvidence = {
   id: string; claim_version_id: string; kind: string; evidence_role: string;
+  claim_id?: string; event_id?: string; version_source?: string;
+  workflow_origin?: ContentOrigin | null; provenance_grade?: string;
   structural_validation_status: string; semantic_support_verdict: ReviewMember['supportStatus'];
   availability: SourceStatus;
 };

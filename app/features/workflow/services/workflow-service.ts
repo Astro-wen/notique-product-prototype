@@ -51,6 +51,7 @@ export const workflowService = {
   async sources(ids:string[]):Promise<RecordSource[]> {
     return Promise.all(ids.map(async evidenceRefId=>{
       const ref = await api.getEvidence(evidenceRefId);
+      if (ref.kind === 'user_note') return { evidenceRefId, kind: ref.kind, quote: ref.quote ?? '', speaker: '用户补充', timestamp: '' };
       // Derived transcripts resolve to their original recording through the
       // evidence context, rather than borrowing any audio in the record.
       const context = await api.getEvidenceContext(evidenceRefId);
@@ -60,7 +61,7 @@ export const workflowService = {
       const audioUrl=context.audio?.view_url || ref.audioUrl;
       const viewUrl=context.asset_view_url || ref.viewUrl;
       const speaker=ref.speaker || context.context.target.map(s=>s.speaker).find(Boolean) || ref.filename || '原始材料';
-      return {evidenceRefId,quote:context.target.quote_raw ?? ref.quote ?? ref.caption ?? '',speaker,timestamp:seconds===null?'':`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`,
+      return {evidenceRefId,kind:ref.kind,quote:context.target.quote_raw ?? ref.quote ?? ref.caption ?? '',speaker,timestamp:seconds===null?'':`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`,
         ...(audioUrl?{audioUrl,audioStartSeconds:start ?? 0}:{}),...(viewUrl?{viewUrl}:{})};
     }));
   },

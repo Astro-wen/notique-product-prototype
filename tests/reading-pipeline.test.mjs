@@ -125,9 +125,10 @@ test("the reader merges per-kind artifacts and still reads the legacy four-in-on
 // Execute the production queue builder against the migrated database. Provider
 // calls are outside queue creation and are deliberately absent from this test.
 async function readingQueueFixture(t) {
-  const [{ default: ts }, { workflowDatabase, seed, T }, { createHash }, contracts] = await Promise.all([
+  const [{ default: ts }, { workflowDatabase, seed, T }, { createHash }, contracts, {readingModelSnapshot,readingRouteIdentity}] = await Promise.all([
     import('typescript'), import('./helpers/workflow-database.mjs'), import('node:crypto'),
     import('../lib/domain/event-ai-artifacts.ts'),
+    import('../lib/server/ai/model-route.ts'),
   ]);
   const fixture = await workflowDatabase(); t.after(fixture.close); seed(fixture.sqlite);
   const repository = await readFile(new URL('../lib/server/db/event-ai-artifact-repository.ts', import.meta.url), 'utf8');
@@ -135,11 +136,11 @@ async function readingQueueFixture(t) {
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const cjsModule = { exports: {} };
   const config = { AI_EVENT_SUMMARY: '1' };
-  new Function('module', 'exports', 'getBindings', 'getD1', 'parseJson', 'now', 'id', 'hashText', 'READING_ARTIFACT_DEFINITIONS', 'EVENT_AI_ARTIFACT_CONTRACTS', 'EVENT_AI_ARTIFACT_REASONING_EFFORTS', 'all', 'runRecord', compiled)(
+  new Function('module', 'exports', 'getBindings', 'getD1', 'parseJson', 'now', 'id', 'hashText', 'READING_ARTIFACT_DEFINITIONS', 'EVENT_AI_ARTIFACT_CONTRACTS', 'EVENT_AI_ARTIFACT_REASONING_EFFORTS', 'all', 'runRecord', 'readingModelSnapshot', 'readingRouteIdentity', compiled)(
     cjsModule, cjsModule.exports, () => config, () => fixture.db, JSON.parse, () => T, prefix => `${prefix}_${crypto.randomUUID()}`,
     async value => createHash('sha256').update(value).digest('hex'), READING_ARTIFACT_DEFINITIONS,
     contracts.EVENT_AI_ARTIFACT_CONTRACTS, contracts.EVENT_AI_ARTIFACT_REASONING_EFFORTS,
-    async (sql, values) => (await fixture.db.prepare(sql).bind(...values).all()).results, row => row,
+    async (sql, values) => (await fixture.db.prepare(sql).bind(...values).all()).results, row => row, readingModelSnapshot, readingRouteIdentity,
   );
   return { ...fixture, ...cjsModule.exports, config, input: { workspaceId: 'ws', projectId: 'p', eventId: 'e', extractionRunId: 'run', inputManifestJson: JSON.stringify([{ asset_version_id: 'av', sha256: 'synthetic', parser_version: 'test', kind: 'text' }]), provider: 'synthetic', model: 'synthetic' } };
 }

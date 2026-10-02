@@ -17,6 +17,7 @@ const stubs = new Map([
   ['@/lib/server/jobs/automatic-extraction', dataModule(callSource + 'export const ensureAutomaticExtractionRuns=async()=>call("automatic_extraction",{scanned:0,created:0,reused:0,covered:0,deferred:0,items:[]});')],
 ]);
 const material = dataModule(callSource + 'export const commissionMaterialAnalysis=async()=>call("material_analysis",{claimed:0,commissioned:0,reused:0,deferred:0,runIds:[]});');
+const reading = dataModule(callSource + 'export const dispatchDueEventAiArtifactRuns=async()=>call("reading_dispatch",{claimed:0,succeeded:0,pending:0,failed:0});');
 registerHooks({
   resolve(specifier, context, next) {
     if (stubs.has(specifier)) return { url: stubs.get(specifier), shortCircuit: true };
@@ -24,6 +25,7 @@ registerHooks({
     if (specifier.startsWith('@/')) target = resolve(root, specifier.slice(2));
     else if (specifier.startsWith('.') && context.parentURL?.startsWith('file:')) target = fileURLToPath(new URL(specifier, context.parentURL));
     if (target === resolve(root, 'lib/server/jobs/material-analysis') || target === resolve(root, 'lib/server/jobs/material-analysis.ts')) return { url: material, shortCircuit: true };
+    if (target === resolve(root, 'lib/server/jobs/event-ai-artifacts') || target === resolve(root, 'lib/server/jobs/event-ai-artifacts.ts')) return { url: reading, shortCircuit: true };
     if (target?.startsWith(root) && !target.includes('/node_modules/')) {
       for (const path of [target, `${target}.ts`, `${target}/index.ts`]) if (existsSync(path)) return next(pathToFileURL(path).href, context);
     }
@@ -65,13 +67,13 @@ test('recovery-only maintenance consumes saved material intents without scanning
   assert.equal(result.dispatch.claimed, 0);
 });
 
-for (const failing of ['asset_upload_sweep', 'transcription_sweep', 'material_analysis', 'automatic_extraction', 'transcription_dispatch']) {
+for (const failing of ['asset_upload_sweep', 'transcription_sweep', 'material_analysis', 'automatic_extraction', 'transcription_dispatch', 'reading_dispatch']) {
   test(`maintenance observes ${failing} failure while preserving the other recovery stages`, async t => {
     const f = await fixture(t, [failing]);
     const failures = [];
     const result = await sweepAndDispatch({ onStageFailure: failure => failures.push(failure) });
     assert.deepEqual(failures, [{ stage: failing, code: 'RECOVERY_STAGE_FAILED' }]);
-    assert.deepEqual(f.state.calls, ['asset_upload_sweep', 'transcription_sweep', 'material_analysis', 'automatic_extraction', 'transcription_dispatch']);
+    assert.deepEqual(new Set(f.state.calls), new Set(['asset_upload_sweep', 'transcription_sweep', 'material_analysis', 'automatic_extraction', 'transcription_dispatch', 'reading_dispatch']));
     assert.equal(result.dispatch.claimed, 0);
     assert.equal(result.transcription_dispatch.claimed, 0);
     assert.ok(!JSON.stringify(failures).includes('synthetic-private-error-body'));

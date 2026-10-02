@@ -181,8 +181,8 @@ export async function retryAnalysis(db:D1Database,scope:WorkflowScope,runId:stri
  for(const a of artifacts(row).filter(a=>request.stageIds.includes(a.id))){
   appendGuard(`EXISTS (SELECT 1 FROM event_ai_artifact_runs WHERE id=? AND workspace_id=? AND extraction_run_id=? AND status='failed' AND updated_at=?)`,a.id,scope.workspaceId,runId,a.updated_at);
   const nextId=mutationId('ear');
-  statements.push(db.prepare(`INSERT INTO event_ai_artifact_runs (id,workspace_id,project_id,event_id,extraction_run_id,kind,status,idempotency_key,input_hash,input_manifest_json,provider,model,reasoning_effort,prompt_version,schema_version,provider_request_id,next_attempt_at,queued_at,created_at,updated_at)
-    SELECT ?,workspace_id,project_id,event_id,extraction_run_id,kind,'queued',?,input_hash,input_manifest_json,provider,model,reasoning_effort,prompt_version,schema_version,
+  statements.push(db.prepare(`INSERT INTO event_ai_artifact_runs (id,workspace_id,project_id,event_id,extraction_run_id,kind,status,idempotency_key,input_hash,input_manifest_json,provider,model,provider_profile,provider_base_url,reasoning_effort,prompt_version,schema_version,provider_request_id,next_attempt_at,queued_at,created_at,updated_at)
+    SELECT ?,workspace_id,project_id,event_id,extraction_run_id,kind,'queued',?,input_hash,input_manifest_json,provider,model,provider_profile,provider_base_url,reasoning_effort,prompt_version,schema_version,
       CASE WHEN COALESCE(error_code,'') NOT LIKE '%INVALID%' THEN provider_request_id ELSE NULL END,?,?,?,? FROM event_ai_artifact_runs WHERE id=? AND workspace_id=?`)
     .bind(nextId,`w2-retry:${key}`,timestamp,timestamp,timestamp,timestamp,a.id,scope.workspaceId));
  }

@@ -30,6 +30,7 @@ import {
   type ClaimExtractionPromptVersion,
 } from "@/lib/domain/model-contract";
 import type { RuntimeBindings } from "@/db";
+import { modelBaseUrl, resolveModelConnection, type ModelProviderProfile } from './model-route';
 import {
   downgradeRecoverableEventSummaryProviderSpans,
   orderReadingViewSources,
@@ -147,12 +148,7 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 function providerBaseUrl(bindings: RuntimeBindings, provider = bindings.AI_PROVIDER): string | null {
-  if (bindings.AI_API_BASE_URL?.trim()) {
-    return bindings.AI_API_BASE_URL.trim().replace(/\/$/, "");
-  }
-  if (provider === "openai") return "https://api.openai.com/v1";
-  if (provider === "deepseek") return "https://api.deepseek.com/v1";
-  return null;
+  return modelBaseUrl(provider, bindings.AI_API_BASE_URL);
 }
 
 /**
@@ -165,9 +161,11 @@ export async function cancelBackgroundResponses(
   bindings: RuntimeBindings,
   responseIds: readonly string[],
   fetcher: typeof fetch = fetch,
+  route?: { provider: string; model: string; providerProfile?: ModelProviderProfile; providerBaseUrl?: string | null },
 ): Promise<void> {
-  const apiKey = bindings.AI_API_KEY?.trim();
-  const baseUrl = providerBaseUrl(bindings);
+  const connection = route ? resolveModelConnection(bindings,route) : null;
+  const apiKey = route ? connection?.apiKey : bindings.AI_API_KEY?.trim();
+  const baseUrl = route ? connection?.baseUrl : providerBaseUrl(bindings);
   if (!apiKey || !baseUrl || responseIds.length === 0) return;
   await Promise.allSettled(responseIds.map((responseId) =>
     fetcher(`${baseUrl}/responses/${encodeURIComponent(responseId)}/cancel`, {
@@ -1634,24 +1632,19 @@ export function createModelProvider(
     reasoningEffort?: string;
     timeoutMs?: number;
     maxOutputTokens?: number;
+    providerProfile?: ModelProviderProfile;
+    providerBaseUrl?: string | null;
   },
 ): TwoStageModelProvider & WorkflowNarrativeProvider {
-  const provider = execution?.provider?.trim() || bindings.AI_PROVIDER?.trim();
-  const model = execution?.model?.trim() || bindings.AI_MODEL?.trim();
-  const baseUrl = providerBaseUrl(bindings, provider);
-  if (
-    !bindings.AI_API_KEY?.trim() ||
-    !provider ||
-    !model ||
-    !baseUrl
-  ) {
+  const connection = resolveModelConnection(bindings, execution);
+  if (!connection) {
     return new UnconfiguredTwoStageModelProvider();
   }
   return new OpenAiCompatibleModelProvider(
-    bindings.AI_API_KEY.trim(),
-    baseUrl,
-    provider,
-    model,
+    connection.apiKey,
+    connection.baseUrl,
+    connection.provider,
+    connection.model,
     positiveInteger(execution?.timeoutMs ?? bindings.AI_TIMEOUT_MS, DEFAULT_AI_TIMEOUT_MS),
     positiveInteger(
       execution?.maxOutputTokens ?? bindings.AI_MAX_OUTPUT_TOKENS,

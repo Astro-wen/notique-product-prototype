@@ -1,4 +1,5 @@
 import { currentRecordBullets } from '../../domain/workflow-v2.ts';
+import { projectSourceRefs } from '../../domain/project-sources.ts';
 import { isCompletionRecord, projectWorkspace, readJson, type ProjectionLedger } from '../../domain/workflow-projection.ts';
 import { parseWorkflowRequest, type ProjectOverview, type VersionRef, type WorkspaceQuery } from '../../shared/workflow-v2.ts';
 import { digestValue, loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
@@ -23,9 +24,8 @@ export function projectOverview(ledger:ProjectionLedger,now:string):ProjectOverv
     const frozen=readJson<FrozenChange[]>(change.changed_refs_json,[]).filter(r=>r.text && r.claimRefs?.length);
     const primary=frozen.find(r=>r.entityType==='outcome') ?? frozen.find(r=>{const claim=byId.get(r.id);return !claim || !isCompletionRecord(claim);});
     const claimRefs=primary?.claimRefs ?? [];
-    const evidence=claimRefs.map(ref=>ledger.evidence.filter(e=>e.claim_version_id===ref.claimVersionId && e.evidence_role!=='contextual'));
-    const owned=claimRefs.every(ref=>byId.has(ref.claimId) && ledger.events.some(e=>e.id===byId.get(ref.claimId)?.event_id));
-    const sourceStatus=!owned || evidence.some(refs=>!refs.length || refs.some(e=>e.availability==='missing' || e.structural_validation_status!=='valid'))?'missing':evidence.some(refs=>refs.some(e=>e.availability==='stale'))?'stale':'ready';
+    const sources=projectSourceRefs(ledger,claimRefs);
+    const sourceStatus=sources.length!==new Set(claimRefs.map(ref=>JSON.stringify([ref.claimId,ref.claimVersionId]))).size || sources.some(source=>source.sourceStatus==='missing')?'missing':sources.some(source=>source.sourceStatus==='stale')?'stale':'ready';
     // Legacy change rows carry IDs only. Keep their operation visible without
     // substituting today's wording for an unknown historical version.
     const text=primary && sourceStatus==='ready'?`${changeLabels[change.kind]}：${primary.text}`:primary?`${changeLabels[change.kind]}，当时的依据需要重新核对。`:changeLabels[change.kind];
@@ -34,8 +34,14 @@ export function projectOverview(ledger:ProjectionLedger,now:string):ProjectOverv
   const currentBullets=[...bullets.values()];
   const openQuestions=[...new Map(records.flatMap(({event,snapshot})=>snapshot.questions.filter(q=>q.resolutionState==='open').map(q=>[q.id,{...q,eventId:byId.get(q.id)?.event_id ?? event.id}] as const))).values()];
   const nextActions=[...new Map(records.flatMap(({event,snapshot})=>snapshot.actions.filter(a=>a.executionState==='open').map(a=>[a.id,{...a,eventId:byId.get(a.id)?.event_id ?? event.id}] as const))).values()];
+  const sourceRefs=projectSourceRefs(ledger,[
+    ...currentBullets.flatMap(bullet=>bullet.claimRefs),
+    ...openQuestions.flatMap(question=>[question.claimRef,...question.answerRefs,...(question.latestOutcome?.resultRefs ?? [])]),
+    ...nextActions.flatMap(action=>[action.claimRef,...action.questionRefs,...(action.latestOutcome?.answerRefs ?? []),...(action.latestOutcome?.resultRefs ?? [])]),
+    ...recentChanges.flatMap(change=>change.claimRefs),
+  ]);
   return {access:ledger.access ?? {workspaceId:'',actorId:'',canEdit:false},snapshotId:'',contextVersion:ledger.contextVersion,nextCursor:null,
-    currentBullets,recentChanges,openQuestions,nextActions,
+    currentBullets,recentChanges,openQuestions,nextActions,sourceRefs,
     counts:{draftCount:currentBullets.filter(b=>b.reviewState==='draft').length,needsDecisionCount:records.reduce((n,{event,snapshot})=>n+snapshot.reviewCards.filter(card=>card.needsDecision && card.disposition==='active' && (card.eventId ?? event.id)===event.id).length,0),openActionCount:nextActions.length,openQuestionCount:openQuestions.length},
     recordSummaries:records.map(({event,snapshot})=>({eventId:event.id,title:event.title,occurredAt:event.occurred_at,narrative:snapshot.narrative,coverage:snapshot.coverage,counts:snapshot.counts,reviewProgress:snapshot.reviewProgress!}))};
 }

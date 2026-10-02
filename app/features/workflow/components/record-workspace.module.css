@@ -261,3 +261,18 @@
 .awaitingAnswer .statement { margin-top: 8px; }
 .moduleNumber { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 5px; margin-right: 10px; border-radius: 5px; background: #171717; color: #fff; font-size: 12px; font-weight: 600; vertical-align: middle; }
 .workspace.embedded { max-width: 1160px; margin-inline: auto; }
+
+/* 1.6.1: keep decisions legible within the reading column. */
+.workspace.embedded { max-width: 1080px; padding: 0 0 32px; }
+.embedded .header { padding-top: 0; margin-bottom: 12px; }
+.record { border-color: #e3e7ee; border-radius: 12px; }
+.topic { border-color: #e5e9f0; border-radius: 10px; padding: 24px 26px; }
+.topicPreview li { font-size: 15px; line-height: 1.8; }
+.statement { font-size: 15px; }
+.itemNumber { font-size: 11px; color: #73829b; font-variant-numeric: tabular-nums; padding: 2px 6px; border-radius: 4px; background: #f0f3f8; line-height: 1.5; }
+.awaitingAnswer .itemNumber { background: #f5eddd; color: #886735; }
+.actionBody > .itemNumber { display: inline-block; margin-bottom: 8px; }
+.inlineActions :global(.button) { font-size: 12px; min-height: 32px; padding: 5px 10px; }
+.topicDetails > summary { font-size: 12px; padding-block: 12px; }
+.workspace.embedded .topic .awaitingAnswer { border-color: #eae0cd; border-left-width: 2px; background: #fffdf8; }
+@media (prefers-reduced-motion: reduce) { .workspace * { scroll-behavior: auto; } }

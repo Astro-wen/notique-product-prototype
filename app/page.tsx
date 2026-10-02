@@ -6,6 +6,7 @@ import { workflowService } from "./features/workflow/services/workflow-service";
 
 import { workflowHasUnsavedInput } from "./features/workflow/state-navigation";
 import { ProjectOverviewPage } from "./features/workflow/pages/project-overview-page";
+import { WorkspaceNavigation } from "./features/workflow/components/workspace-navigation";
 import { RecordPage } from "./features/workflow/pages/record-page";
 import { ProjectIndex } from "./components/project-index";
 import { SmoothResize } from "./components/smooth-resize";
@@ -2352,6 +2353,7 @@ export default function Home() {
     projectId: string,
     preferredEventId?: string,
     historyMode: "push" | "replace" | "none" = "push",
+    readingTarget?: ReadingAidTarget,
   ) => {
     const workspaceTab = preferredEventId ? (historyMode === "none" ? routeRef.current.workspaceTab : undefined) : "overview";
     invalidateProjectSelectionRequests();
@@ -2363,6 +2365,7 @@ export default function Home() {
       view: "simple",
       projectId,
       workspaceTab,
+      ...(readingTarget ? { readingTab: readingTarget } : {}),
       ...(preferredEventId ? { eventId: preferredEventId } : {}),
     }, historyMode);
     setProjectState("loading");
@@ -2405,7 +2408,7 @@ export default function Home() {
       if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
       setEvent(nextEvent);
       storeId(recentEventStorageKey(projectId), nextEvent.id);
-      navigateRoute({ view: "simple", projectId, eventId: nextEvent.id, workspaceTab }, historyMode === "none" ? "none" : "replace");
+      navigateRoute({ view: "simple", projectId, eventId: nextEvent.id, workspaceTab, ...(readingTarget ? {readingTab: readingTarget} : {}) }, historyMode === "none" ? "none" : "replace");
       setEventState("ready");
       await loadTranscriptionForEvent(nextEvent, eventToken);
       if (requestEpochs.current.project !== projectToken || requestEpochs.current.event !== eventToken) return;
@@ -5188,7 +5191,7 @@ export default function Home() {
           audioPreparationProgressByAssetId={audioPreparationProgressByAssetId}
           assetUploadProgress={assetUploadProgress}
           onCancelUpload={() => assetUploadAbortRef.current?.abort()}
-          onUseEvent={(id) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id); } }}
+          onUseEvent={(id, readingTarget) => { if (project) { setSimpleFlow(true); void loadSimpleProject(project.id, id, "push", readingTarget); } }}
           onNewEvent={() => { setSimpleFlow(true); if (project) setShowNewEvent(true); }}
           onDeleteEvent={(id) => void openRecordDeletePreview(id)}
           onAddFile={attachSimpleFile}
@@ -5486,7 +5489,7 @@ type SimpleTestScreenProps = {
   audioPreparationProgressByAssetId: Record<string, AudioPreparationProgress>;
   assetUploadProgress: AssetUploadProgress | null;
   onCancelUpload: () => void;
-  onUseEvent: (id: string) => void;
+  onUseEvent: (id: string, readingTarget?: ReadingAidTarget) => void;
   onNewEvent: () => void;
   onDeleteEvent: (id: string) => void;
   onAddFile: (file: File, metadata?: Record<string, unknown>) => Promise<boolean>;
@@ -6644,7 +6647,7 @@ function TranscriptArtifactsPanel({
     await load(true);
   }
 
-  if (state === "loading" && availableRawSegments.length === 0) return <LoadingBlock label="正在读取逐字稿与 AI 阅读版本…" />;
+  if (state === "loading" && availableRawSegments.length === 0) return <LoadingBlock label="正在读取原文…" />;
   if (state === "error" && issue && availableRawSegments.length === 0) return <ErrorNotice issue={issue} onRetry={() => void load()} />;
   return <section className={`transcript-workspace${playbackAudioAssetId ? " has-audio" : ""}`} aria-label="逐字稿阅读区">
     {issue && (state === "ready" || availableRawSegments.length > 0) && <aside className="reader-partial-error" role="status"><span>有一部分没加载出来</span><button className="text-button" onClick={() => void load()}>重新读取</button></aside>}
@@ -7068,6 +7071,8 @@ function SimpleTestScreen({
   const workspaceTranscriptFileRef = useRef<HTMLInputElement>(null);
   const workspacePhotoFileRef = useRef<HTMLInputElement>(null);
   const interactionScope = useRef("");
+  const selectedConversation = useRef<string | null>(null);
+  const [switchingConversation, setSwitchingConversation] = useState<string | null>(null);
   const userNavigatedFromWaiting = useRef(false);
   const autoFocusedSummaryKeys = useRef(new Set<string>());
   const currentTranscriptFocusRequest = useRef(transcriptFocusRequest);
@@ -7292,7 +7297,7 @@ function SimpleTestScreen({
       && event?.id
       && previousScope === `${project.id}:${event.id}:no-run`,
     );
-    const preservedUserChoice = sameEventBecameReadable && userNavigatedFromWaiting.current;
+    const preservedUserChoice = Boolean(event?.id && selectedConversation.current === event.id) || sameEventBecameReadable && userNavigatedFromWaiting.current;
     interactionScope.current = nextScope;
     const storedMark = summaryFirstScopeKey
       ? readSummaryFirstNavigationMark(summaryFirstScopeKey)
@@ -7381,19 +7386,25 @@ function SimpleTestScreen({
   }
 
   function selectEvent(nextEventId: string) {
+    if (nextEventId === event?.id && activeTab !== "results") return;
     if (workflowHasUnsavedInput()) return;
     setFocusClaimId(undefined);
     onSelectWorkspaceTab(undefined);
     interactionScope.current = "";
-    userNavigatedFromWaiting.current = false;
-    setReaderWasOpened(false);
-    setActiveTab("highlights");
+    userNavigatedFromWaiting.current = true;
+    const nextTab = activeTab === "results" ? "highlights" : activeTab;
+    setReaderWasOpened(nextTab === "transcript" || nextTab === "review");
+    setActiveTab(nextTab);
     onClearTranscriptArtifact();
-    onUseEvent(nextEventId);
+    selectedConversation.current = nextEventId;
+    setSwitchingConversation(nextEventId);
+    onUseEvent(nextEventId, nextTab === "transcript" || nextTab === "review" ? readingTab ?? "raw" : undefined);
   }
 
   function openOverviewRecord(nextEventId:string,claimId?:string) {
     if(workflowHasUnsavedInput())return;
+    selectedConversation.current = nextEventId;
+    setSwitchingConversation(nextEventId);
     markUserNavigation();setFocusClaimId(claimId);setActiveTab("highlights");onSelectWorkspaceTab(undefined);
     if(nextEventId!==event?.id)onUseEvent(nextEventId);
   }
@@ -7429,27 +7440,9 @@ function SimpleTestScreen({
 
   return (
     <div className="page simple-page">
-      {/* 这条是面包屑，不是控制台：只说现在在哪个项目、哪条记录、什么状态。
-          换项目走侧栏的项目列表，新建项目和回收站在「项目管理」页，删项目是
-          侧栏每行的垃圾桶，都不再在这里重复一份。首页也不放这条栏：首页只负
-          责收材料，收到了就跳进工作区。 */}
-      {project && <section className="simple-session" aria-label="当前项目和材料">
-        <div className="simple-session-copy">
-          <span className="context-mark" aria-hidden="true"><FolderOpen /></span>
-          <span><strong>{project.name.replace(/^\[SYNTHETIC\]\s*/, "")}</strong><small>{event ? event.title : "选一条记录"}</small></span>
-        </div>
-        {events.length > 0 && <>
-          <label className="simple-event-select">
-            <span>当前记录</span>
-            <select aria-label="选择记录" value={event?.id ?? ""} disabled={loadingSelection || Boolean(busy)} onChange={(change) => selectEvent(change.target.value)}>
-              {events.map((item) => <option key={item.id} value={item.id}>{item.id === event?.id ? event.title : item.title}</option>)}
-            </select>
-          </label>
-          <button className="icon-button simple-new-event-mobile" disabled={Boolean(busy)} onClick={onNewEvent} aria-label="添加记录"><Plus aria-hidden="true" /></button>
-          {event && <button type="button" className="icon-button simple-new-event-mobile simple-delete-event" disabled={loadingSelection || Boolean(busy)} onClick={() => onDeleteEvent(event.id)} aria-label="删除这条记录" title="删除这条记录"><Trash2 aria-hidden="true" /></button>}
-        </>}
-        {event && activeTab !== "highlights" && activeTab !== "results" && <span className={`simple-session-status current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
-      </section>}
+      {project && <WorkspaceNavigation projectName={project.name} events={events} event={event ?? (loadingSelection ? events.find(item => item.id === switchingConversation) ?? null : null)}
+        activeTab={activeTab} busy={Boolean(busy)} loading={loadingSelection} materialCount={visibleAssets.length}
+        onSelect={selectEvent} onTab={selectWorkspaceTab} onAdd={onNewEvent} onDelete={onDeleteEvent}/>}
 
       <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
       <input ref={workspaceTranscriptFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择 Transcript 文件" accept={acceptedTranscriptTypes.join(",")} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
@@ -7487,18 +7480,7 @@ function SimpleTestScreen({
             {activeTab !== "highlights" && <span className={`current-event-status guided-status ${currentDisplayStatus.tone}`}>{currentDisplayStatus.label}</span>}
           </header>
 
-          <nav className="meeting-tabs" aria-label="当前记录">
-            {/* 待确认 lives only in the action rail: the old top-bar entry
-                opened the same reading page and merely pre-selected the rail's
-                own sub-tab, so two controls with one name did one job. 材料
-                also stops sharing a name with the rail's 来源 (the quote's
-                origin) — the two mean different things. */}
-            <button aria-label="原文" aria-current={activeTab === "transcript" || activeTab === "review" ? "page" : undefined} className={activeTab === "transcript" || activeTab === "review" ? "active" : ""} onClick={() => selectWorkspaceTab("transcript")}>原文</button>
-            <button aria-label="本次重点" aria-current={activeTab === "highlights" ? "page" : undefined} className={activeTab === "highlights" ? "active" : ""} onClick={() => selectWorkspaceTab("highlights")}><b>本次重点</b></button>
-            <button aria-label="材料" aria-current={activeTab === "materials" ? "page" : undefined} className={activeTab === "materials" ? "active" : ""} onClick={() => selectWorkspaceTab("materials")}>材料 <span>{visibleAssets.length}</span></button>
-            <span className="meeting-tabs-scope" aria-hidden="true" />
-            <button aria-label="整个项目" className={`meeting-tabs-project${activeTab === "results" ? " active" : ""}`} onClick={() => selectWorkspaceTab("results")}>整个项目<ArrowRight aria-hidden="true" /></button>
-          </nav>
+
 
           {currentAssetUpload && <AssetUploadProgressCard progress={currentAssetUpload} onCancel={onCancelUpload} />}
 
@@ -7588,12 +7570,12 @@ function SimpleTestScreen({
             </section>
           </div>}
 
-          {(activeTab === "highlights" || workflowAccessBlocked) && (event ? <RecordPage key={event.id} focusClaimId={focusClaimId} projectId={project.id} eventId={event.id} title={event.title} refreshToken={`${run?.updatedAt ?? ""}:${run?.id ?? ""}:${run?.status ?? ""}`} processing={analysisRunning} materialPending={transcriptionRunning || currentAudioPreparations.length > 0}
+          {(activeTab === "highlights" || workflowAccessBlocked) && (loadingSelection && !event ? <div className="conversation-loading"><LoadingBlock label="正在切换对话…" /></div> : event ? <RecordPage key={event.id} focusClaimId={focusClaimId} projectId={project.id} eventId={event.id} title={event.title} refreshToken={`${run?.updatedAt ?? ""}:${run?.id ?? ""}:${run?.status ?? ""}`} processing={analysisRunning} materialPending={transcriptionRunning || currentAudioPreparations.length > 0}
             subtitle={`${formatDate(event.occurredAt || event.createdAt,true)} · ${visibleAssets.length} 份材料`} onContinue={onNewEvent}
             onOpenTranscript={()=>selectWorkspaceTab("transcript")} onOpenRecord={openOverviewRecord} onAccessLost={onWorkflowAccessLost} onAccessRestored={onWorkflowAccessRestored}/> : <div className="tab-empty"><h3>先添加一份材料</h3><p>整理完成后，这里会显示重点和需要跟进的事情。</p><button className="button secondary" onClick={()=>selectWorkspaceTab("materials")}>添加材料</button></div>)}
 
           {!workflowAccessBlocked && (activeTab === "transcript" || activeTab === "review" || readerWasOpened) && <div className="meeting-tab-panel reading-tab-panel" hidden={activeTab !== "transcript" && activeTab !== "review"}>
-            {event ? <>
+            {loadingSelection && !event ? <div className="conversation-loading"><LoadingBlock label="正在切换对话…" /></div> : event ? <>
               <TranscriptArtifactsPanel
                 key={event.id}
                 event={event}
@@ -7629,7 +7611,7 @@ function SimpleTestScreen({
         </article>
       </section>}
 
-      {loadingSelection && <LoadingBlock label="正在读取材料…" />}
+      {loadingSelection && activeTab === "materials" && <LoadingBlock label="正在读取材料…" />}
       {issue && <ErrorNotice issue={issue} onRetry={issueRetry} />}
       {run && !analysisRunning && !analysisDone && activeTab !== "highlights" && <div className="simple-recovery"><p>这份记录还有未完成的整理，已保存的材料和重点仍可阅读。</p><button className="button secondary" onClick={() => selectWorkspaceTab("highlights")}>查看整理进度</button></div>}
     </div>

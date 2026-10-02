@@ -13,6 +13,11 @@ export type RuntimeBindings = {
   AI_API_BASE_URL?: string;
   AI_MODEL?: string;
   AI_PROVIDER?: string;
+  /** Optional independent route for the four raw-transcript reading views. */
+  AI_READING_PROVIDER?: string;
+  AI_READING_MODEL?: string;
+  AI_READING_API_KEY?: string;
+  AI_READING_API_BASE_URL?: string;
   AI_REASONING_EFFORT?: string;
   AI_VERIFIER_REASONING_EFFORT?: string;
   AI_TWO_PASS_PIPELINE?: string;

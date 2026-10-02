@@ -635,6 +635,8 @@ async function processLeasedRun(run: Row, owner: string): Promise<"succeeded" | 
     const provider = createModelProvider(getBindings(), {
       provider: String(run.provider),
       model: String(run.model),
+      providerProfile: run.provider_profile === 'reading' ? 'reading' : 'default',
+      ...(run.provider_profile != null ? {providerBaseUrl:run.provider_base_url == null ? null : String(run.provider_base_url)} : {}),
       reasoningEffort: String(run.reasoning_effort),
       timeoutMs: ARTIFACT_PROVIDER_TIMEOUT_MS,
     });
@@ -758,19 +760,21 @@ export async function dispatchDueEventAiArtifactRuns(input?: {
     clauses.push("extraction_run_id = ?");
     bindings.push(input.extractionRunId);
   }
-  const limit = input?.runId ? 1 : input?.extractionRunId ? 2 : 2;
+  // The four reading views have no hard dependencies. Reserve their own
+  // bounded batch so a slow speaker summary does not postpone the overview.
+  const limit = input?.runId ? 1 : 4;
   const rows = await getD1()
     .prepare(
       `SELECT * FROM event_ai_artifact_runs
         WHERE ${clauses.join(" AND ")}
         ORDER BY next_attempt_at,
-                 CASE kind WHEN 'readable_transcript' THEN 0 ELSE 1 END,
+                 CASE kind WHEN 'overview' THEN 0 WHEN 'chapters' THEN 1 ELSE 2 END,
                  created_at, id LIMIT ?`,
     )
     .bind(...bindings, limit)
     .all<Row>();
   const result = { claimed: 0, succeeded: 0, pending: 0, failed: 0 };
-  await Promise.all((rows.results ?? []).map(async (row) => {
+  const outcomes = await Promise.allSettled((rows.results ?? []).map(async (row) => {
     const owner = id("eaw");
     const leased = await leaseRun(row, owner, input?.targeted ? TARGET_LEASE_MS : CRON_LEASE_MS);
     if (!leased) return;
@@ -778,6 +782,10 @@ export async function dispatchDueEventAiArtifactRuns(input?: {
     const outcome = await processLeasedRun(leased, owner);
     result[outcome] += 1;
   }));
+  for (const outcome of outcomes) if (outcome.status === 'rejected') {
+    result.failed += 1;
+    console.error('reading_lane_failed', {code:'READING_LANE_FAILED'});
+  }
   return result;
 }
 

@@ -54,23 +54,25 @@ test("direct recorder includes permission, pause, preview, retry, save, and clea
 });
 
 test("core UI presents one meeting workspace without removing advanced tools", async () => {
-  const [page, styles, shelf, landing] = await Promise.all([
+  const [page, styles, shelf, landing, navigation] = await Promise.all([
     readFile(path.join(root, "app/page.tsx"), "utf8"),
     readFile(path.join(root, "app/globals.css"), "utf8"),
     readFile(path.join(root, "app/components/material-shelf.tsx"), "utf8"),
     readFile(path.join(root, "app/components/landing-hero.tsx"), "utf8"),
+    readFile(path.join(root, "app/features/workflow/components/workspace-navigation.tsx"), "utf8"),
   ]);
   // 记录侧栏在带项目的工作区里任何宽度都不显示，已经删掉，切记录只走顶栏。
   assert.doesNotMatch(page, /simple-meeting-rail/);
-  assert.match(page, /meeting-tabs/);
+  assert.match(page, /<WorkspaceNavigation/);
+  assert.match(navigation, /aria-label="当前对话内容"/);
   // 材料 names the files of this communication; the rail's 来源 names a
   // quote's origin. One word no longer means two things on one screen, and
   // 待确认 lives only in the rail where the list itself is.
-  assert.match(page, /aria-label="材料"/);
-  assert.match(page, />材料 </);
-  assert.match(page, /aria-label="本次重点"/);
+  assert.match(navigation, /aria-label="材料"/);
+  assert.match(navigation, />材料<span>/);
+  assert.match(navigation, /aria-label="本次重点"/);
   assert.doesNotMatch(page, /aria-label="待确认"/);
-  assert.match(page, /aria-label="整个项目"/);
+  assert.match(navigation, /aria-label="整个项目"/);
   assert.match(page, /<DirectRecorder/);
   assert.match(page, /<MaterialShelf/);
   // 录音入口在两处，各自守住自己的屏：工作区的材料区，和没有项目时的落地页。

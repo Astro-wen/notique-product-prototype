@@ -1,6 +1,7 @@
 import { getBindings, getD1 } from "@/db";
 import { expireStaleAssetUploads, sweepStaleAssetUploadsForWorkspaces } from "@/lib/server/db/core-repository";
 import { commissionMaterialAnalysis } from "./material-analysis";
+import { dispatchDueEventAiArtifactRuns } from './event-ai-artifacts';
 import {
   failExpiredProcessingRuns,
   processExtractionRun,
@@ -755,7 +756,13 @@ export async function recoverAndDispatch(input?: {
   // Dispatching is not commissioning: these Runs exist because someone already
   // asked for them, and leaving them queued is the stall this whole mechanism
   // exists to end.
-  const dispatch = await stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH, input?.onStageFailure);
+  const [dispatch] = await Promise.all([
+    stage("extraction_dispatch", () => dispatchDueOutbox(), EMPTY_DISPATCH, input?.onStageFailure),
+    // Include jobs commissioned above in this same wake. The independent
+    // artifact sweep may have queried before those rows existed.
+    stage("reading_dispatch", () => dispatchDueEventAiArtifactRuns(),
+      {claimed:0,succeeded:0,pending:0,failed:0}, input?.onStageFailure),
+  ]);
   return { sweep, dispatch, transcription_sweep, automatic_extraction };
 }
 
@@ -767,15 +774,17 @@ export async function sweepAndDispatch(options: { commission?: false; onStageFai
   automatic_extraction: AutomaticExtractionEnsureResult;
 }> {
   await stage('asset_upload_sweep',sweepStaleAssetUploadsForWorkspaces,0,options.onStageFailure);
-  const recovered = options.commission === false
-    ? await recoverAndDispatch({ onStageFailure: options.onStageFailure })
-    : await recoverAndDispatch({ commission: "workspace", onStageFailure: options.onStageFailure });
-  const transcription_dispatch = await stage(
+  const [recovered,transcription_dispatch] = await Promise.all([
+    options.commission === false
+      ? recoverAndDispatch({ onStageFailure: options.onStageFailure })
+      : recoverAndDispatch({ commission: "workspace", onStageFailure: options.onStageFailure }),
+    stage(
     "transcription_dispatch",
     () => dispatchDueTranscriptionOutbox(),
     { claimed: 0, sent: 0, deferred: 0, items: [] } as TranscriptionDispatchResult,
     options.onStageFailure,
-  );
+    ),
+  ]);
   return { ...recovered, transcription_dispatch };
 }
 

@@ -184,8 +184,8 @@
     },
     {
       "name": "ProjectOverview",
-      "fields": "access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor",
-      "rules": "access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。"
+      "fields": "access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs?",
+      "rules": "access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。"
     },
     {
       "name": "ReviewCard",
@@ -326,6 +326,11 @@
       "name": "MentionDecisionRequest",
       "fields": "expectedContextVersion、targetRef、operation",
       "rules": "可选复述关联选择。targetRef 为冻结原版本，operation=confirm/reject/convert。confirm 沿用原事项的稳定ID及完成和答案状态。convert 从本次出处形成一条独立草稿，随后沿普通记录入口采纳或修正。reject 忽略此次关联。原版本或出处变化时整次回滚。"
+    },
+    {
+      "name": "ProjectSourceRef",
+      "fields": "claimId、claimVersionId、eventId、evidenceRefIds、origin、sourceStatus",
+      "rules": "精确版本的授权来源。sourceStatus=ready/stale/missing，非ready返回空evidenceRefIds。历史出处校验版本归属，人工补充引用user_note。旧客户端可忽略此映射，前端来源预览按此映射读取。"
     }
   ],
   "modelVerification": {
@@ -444,5 +449,23 @@
     "copy": "沿用项目报告接口，全部记录或已采纳范围，剪贴板失败提供可选文字",
     "updates": "项目页直接复用答案和结果编辑组件，版本冲突保留输入。补答案和结果更新相同账本，刷新当前要点、项目回顾和后续导出",
     "reads": "页面读取复用已有结果，不创建新的提取任务"
+  },
+  "localPreview": {
+    "productVersion": "1.6.1",
+    "branch": "codex/notique-1.6.1",
+    "scope": "PC",
+    "modelRouting": {
+      "facts": "default",
+      "reading": "independently configurable",
+      "independentViews": [
+        "overview",
+        "chapters",
+        "speakers",
+        "key_points"
+      ],
+      "requiredDependency": "extraction -> verification",
+      "migration": "0027_reading_model_routes",
+      "readPolicy": "UI and MCP reuse saved outputs"
+    }
   }
 }
