@@ -1,9 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {parseTranscript, parsePlainTranscriptCue} from '../../lib/domain/transcript.ts';
+import {parseTranscript, parsePlainTranscriptCue, transcriptUploadFormat} from '../../lib/domain/transcript.ts';
 
 const parse = content => parseTranscript({assetVersionId: 'synthetic-txt-v1', eventId: 'synthetic-event', filename: 'meeting.txt', content});
 const fields = rows => rows.map(({speaker, startMs, endMs, textRaw}) => ({speaker, startMs, endMs, textRaw}));
+
+test('generic TXT upload preserves WEBVTT correction speakers and timestamps', () => {
+  const filename = 'meeting.txt';
+  const content = '\uFEFFWEBVTT\r\n\r\n00:49:36.000 --> 00:49:47.000\r\nJohn: Did we get a dozen orders?\r\n\r\n00:49:48.000 --> 00:49:53.000\r\nLori: Not that many.\r\n';
+  const rows = parseTranscript({assetVersionId:'uploaded-vtt',eventId:'event',filename,content,format:transcriptUploadFormat(filename,'text/plain')});
+  assert.deepEqual(fields(rows), [
+    {speaker:'John',startMs:2976000,endMs:2987000,textRaw:'Did we get a dozen orders?'},
+    {speaker:'Lori',startMs:2988000,endMs:2993000,textRaw:'Not that many.'},
+  ]);
+});
+
+test('generic text upload detects SRT without consuming timestamps as speech', () => {
+  const filename = 'export.txt';
+  const content = '1\n00:00:01,000 --> 00:00:02,000\nSpeaker A: Initial estimate.\n\n2\n00:00:03,000 --> 00:00:04,000\nSpeaker B: Revised estimate.\n';
+  const rows = parseTranscript({assetVersionId:'uploaded-srt',eventId:'event',filename,content,format:transcriptUploadFormat(filename,'text/plain')});
+  assert.deepEqual(fields(rows), [
+    {speaker:'Speaker A',startMs:1000,endMs:2000,textRaw:'Initial estimate.'},
+    {speaker:'Speaker B',startMs:3000,endMs:4000,textRaw:'Revised estimate.'},
+  ]);
+});
+
+test('generic text upload keeps untimed speaker blocks untimed', () => {
+  const filename = 'meeting.txt';
+  const content = 'Speaker A:\nFirst statement.\n\nSpeaker B:\nSecond statement.';
+  const rows = parseTranscript({assetVersionId:'uploaded-text',eventId:'event',filename,content,format:transcriptUploadFormat(filename,'text/plain')});
+  assert.deepEqual(fields(rows), [
+    {speaker:'Speaker A',startMs:null,endMs:null,textRaw:'First statement.'},
+    {speaker:'Speaker B',startMs:null,endMs:null,textRaw:'Second statement.'},
+  ]);
+});
 
 for (const [name, header] of [
   ['bracketed time and speaker header', '[00:00] Speaker A:'],

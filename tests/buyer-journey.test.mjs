@@ -117,12 +117,12 @@ test("a Run reloads its exact frozen draft set while live draft memory uses newe
   );
   assert.match(
     repository,
-    /ORDER BY e\.sequence_no DESC, c\.created_at DESC, c\.id DESC[\s\S]{0,80}LIMIT 100[\s\S]{0,180}ORDER BY recent_claims\.event_sequence_no/,
+    /ORDER BY e\.occurred_at DESC, c\.created_at DESC, c\.id DESC[\s\S]{0,80}LIMIT 100[\s\S]{0,180}ORDER BY recent_claims\.event_occurred_at/,
     "live draft memory must select the newest 100 before restoring chronological order",
   );
   assert.match(
     core,
-    /ORDER BY source_event\.sequence_no DESC, c\.created_at DESC, c\.id DESC[\s\S]{0,80}LIMIT 100[\s\S]{0,200}ORDER BY recent_claims\.event_sequence_no/,
+    /ORDER BY source_event\.occurred_at DESC, c\.created_at DESC, c\.id DESC[\s\S]{0,80}LIMIT 100[\s\S]{0,200}ORDER BY recent_claims\.event_occurred_at/,
     "the frozen Run manifest must also select the newest 100 candidates",
   );
   assert.match(

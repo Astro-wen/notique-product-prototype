@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { workflowDatabase, seed, SCOPE, T } from './helpers/workflow-database.mjs';
-import { STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
-import { HANDLED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
+import { RETRIEVED_COMPARISON_PROMPT_VERSION, DIFF_CLAIM_EXTRACTION_PROMPT_VERSION, CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION, CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION } from '../lib/domain/model-contract.ts';
+import { SUPPORTED_VERIFICATION_SCHEMA_VERSION, HANDLED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, LEGACY_INVENTORY_SCHEMA_VERSION, VERIFICATION_SCHEMA_VERSION, ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_VERIFICATION_PROMPT_VERSION, inventoryContractForRun, verificationContractForRun, validateVerificationOutput, assessVerificationEscalation } from '../lib/domain/two-stage-extraction.ts';
 import { readWorkspace } from '../lib/server/workflow/snapshot-store.ts';
 
 // Real adapter, processor, run builder and transaction; all provider responses
@@ -148,7 +148,7 @@ for (const recovery of ['cancelled', 'cancel_unconfirmed', 'lost_cancel_reply', 
         ? { id: 'paid_inventory', status: 'queued', created_at: createdAt }
         : { id: 'replacement_inventory', status: 'completed', output_text: JSON.stringify(inventory()), usage });
     }
-    return json({ id: 'paid_verify', status: 'completed', output_text: JSON.stringify(verification(HANDLED_VERIFICATION_SCHEMA_VERSION)), usage });
+    return json({ id: 'paid_verify', status: 'completed', output_text: JSON.stringify(verification(SUPPORTED_VERIFICATION_SCHEMA_VERSION)), usage });
   };
   assert.equal((await processExtractionRun(runId)).status, 'background_pending');
   const firstStage = sqlite.prepare("SELECT * FROM extraction_model_stages WHERE run_id=? AND stage='inventory'").get(runId);
@@ -188,11 +188,11 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const { db, sqlite } = await setup(t);
   const created = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']);
   const frozen = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
-  assert.equal(created.run.prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, HANDLED_VERIFICATION_SCHEMA_VERSION);
+  assert.equal(created.run.prompt_version, RETRIEVED_COMPARISON_PROMPT_VERSION); assert.equal(frozen.inventory_prompt_version, RETRIEVED_COMPARISON_PROMPT_VERSION); assert.equal(frozen.verification_prompt_version, RETRIEVED_COMPARISON_PROMPT_VERSION); assert.equal(frozen.verification_schema_version, SUPPORTED_VERIFICATION_SCHEMA_VERSION);
   assert.equal(frozen.optional_verification_wait_ms, 120_000);
   assert.equal(frozen.background_queue_wait_ms,120_000);
   const replay = await createExtractionRun(SCOPE, 'e', 'task-v94', ['av']); assert.equal(replay.created, false); assert.equal(replay.run.input_hash, created.run.input_hash);
-  const requests = model(t, (r, n) => ({ id: `synthetic_${n}`, status: 'completed', output_text: JSON.stringify(r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION ? inventory() : verification(HANDLED_VERIFICATION_SCHEMA_VERSION)), usage }));
+  const requests = model(t, (r, n) => ({ id: `synthetic_${n}`, status: 'completed', output_text: JSON.stringify(r.body.text.format.schema.properties.schema_version.enum[0] === INVENTORY_SCHEMA_VERSION ? inventory() : verification(SUPPORTED_VERIFICATION_SCHEMA_VERSION)), usage }));
   const result = await processExtractionRun(created.run.id); assert.equal(result.status, 'succeeded', JSON.stringify({ result, error: sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id) })); assert.equal(requests.length, 2); assert.equal(result.persistedClaims, 4);
   for (const request of requests) { assert.match(promptOf(request), /One concrete task is one atomic next_action/); assert.match(promptOf(request), /Never infer a year from the current clock/); }
   assert.match(promptOf(requests[1]), /outcome=merged with the same single final next_action/);
@@ -201,10 +201,10 @@ test('run builder freezes new prompt versions, and the processor publishes four 
   const w = await readWorkspace(db, SCOPE, 'e', {}, T); assert.equal(w.bullets.length, 4); assert.equal(w.reviewCards.length, 4); assert.equal(w.actions.length, 0); assert.ok(w.bullets.every(b => b.reviewState === 'draft'));
   const tasks = sqlite.prepare("SELECT c.type,v.statement,v.normalized_value_json FROM claims c JOIN claim_versions v ON v.id=c.current_version_id WHERE c.type='next_action' ORDER BY c.client_claim_key").all();
   assert.equal(tasks.length, 2); assert.deepEqual(tasks.map(c => JSON.parse(c.normalized_value_json).owner), ['小陈', '小林']);
-  assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION}:`)));
+  assert.ok(sqlite.prepare('SELECT prompt_version FROM extraction_model_stages').all().every(s => s.prompt_version.startsWith(`${RETRIEVED_COMPARISON_PROMPT_VERSION}:`)));
 });
 
-for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
+for (const [schema, runPrompt, frozen] of [[LEGACY_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, false], [ATOMIC_VERIFICATION_SCHEMA_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, true], [VERIFICATION_SCHEMA_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, true], [HANDLED_VERIFICATION_SCHEMA_VERSION, DIFF_CLAIM_EXTRACTION_PROMPT_VERSION, true]]) test(`paid ${runPrompt}/${schema} checkpoint resumes without another POST`, async t => {
   const { sqlite } = await setup(t); queue(sqlite, { runPrompt, schema, frozen });
   const requests = model(t, (r, n) => {
     if (r.method === 'GET') return { id: 'synthetic_paid_verify', status: 'completed', output_text: JSON.stringify(verification(schema)), usage };
@@ -243,12 +243,16 @@ test('paid old inventory resumes with GET before the old v5 verifier is invoked'
   assert.doesNotMatch(promptOf(requests.at(-1)), /One concrete task is one atomic next_action/);
 });
 
-for (const version of [LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION]) test(`singlepass ${version} sends its actual frozen task rule`, async t => {
+for (const version of [LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION]) test(`singlepass ${version} sends its actual frozen task rule`, async t => {
   const { sqlite } = await setup(t); queue(sqlite, { runPrompt: version, frozen: false, pipeline: false, schema: null });
   const requests = model(t, (_r, n) => ({ id: `synthetic_single_${n}`, status: 'completed', output_text: JSON.stringify({ schema_version: CLAIM_EXTRACTION_SCHEMA_VERSION, event_id: 'e', scenario_assessment: null, claims: finalClaims() }), usage }));
   assert.equal((await processExtractionRun('run')).status, 'succeeded'); assert.equal(requests.length, 1);
   if (version === LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION) { assert.match(promptOf(requests[0]), /Split a sentence when it contains separate dates, assignments/); assert.doesNotMatch(promptOf(requests[0]), /One concrete task is one atomic next_action/); }
   else { assert.match(promptOf(requests[0]), /One concrete task is one atomic next_action/); assert.match(promptOf(requests[0]), /leave due_at absent/); assert.match(promptOf(requests[0]), /Keep independent budgets, approval rules/); }
+  if([CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION,DIFF_CLAIM_EXTRACTION_PROMPT_VERSION,CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION].includes(version)){assert.match(promptOf(requests[0]),/An earlier conversation uploaded later cannot supersede/);assert.match(promptOf(requests[0]),/"occurred_at":/);}
+  else assert.doesNotMatch(promptOf(requests[0]),/An earlier conversation uploaded later cannot supersede/);
+  if(version===CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION)assert.match(promptOf(requests[0]),/Sending an invitation cannot answer/);
+  else assert.doesNotMatch(promptOf(requests[0]),/CROSS-FILE COMPARISON:/);
 });
 
 test('unknown frozen versions fail before provider payment; implicit old contracts remain unchanged', async t => {

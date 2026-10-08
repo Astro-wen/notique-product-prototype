@@ -372,7 +372,7 @@ export function recoverTranscriptEvidence(
   options: CanonicalizeOptions,
 ): CanonicalTranscriptEvidence | InvalidEvidence {
   const initial = canonicalizeTranscriptEvidence(segmentIds, quoteHint, segmentById, options);
-  if (initial.valid || initial.code !== "EVIDENCE_SEGMENT_ORDER_INVALID") return initial;
+  if (initial.valid || !["EVIDENCE_SEGMENT_ORDER_INVALID", "EVIDENCE_QUOTE_MISMATCH"].includes(initial.code)) return initial;
   const selected = segmentIds.map((id) => segmentById.get(id)!);
   const lower = Math.min(...selected.map((segment) => segment.ordinal));
   const upper = Math.max(...selected.map((segment) => segment.ordinal));
@@ -383,7 +383,35 @@ export function recoverTranscriptEvidence(
     && segment.ordinal >= lower && segment.ordinal <= upper)
     .sort((a, b) => a.ordinal - b.ordinal);
   if (contiguous.length !== upper - lower + 1) return initial;
-  return canonicalizeTranscriptEvidence(contiguous.map((segment) => segment.id), quoteHint, segmentById, options);
+  const recovered = canonicalizeTranscriptEvidence(contiguous.map((segment) => segment.id), quoteHint, segmentById, options);
+  if (recovered.valid || recovered.code !== "EVIDENCE_QUOTE_MISMATCH") return recovered;
+  // Only remove unambiguous hesitation sounds, never numbers, negation,
+  // qualifiers ("about", "only") or meaningful discourse words ("like").
+  const hesitation = /\b(?:um|uh|uhm|erm)\b[,.]?/gi;
+  const raw = contiguous.map(segment => segment.textRaw).join("\n");
+  const fillerCount = (raw.match(hesitation) ?? []).length;
+  if (fillerCount > 0 && fillerCount <= 8 && normalizeWithSourceMap(quoteHint).value.split(" ").length >= 4) {
+    const projected = new Map(contiguous.map(segment => [segment.id, {...segment, textRaw: segment.textRaw.replace(hesitation, " ")} ]));
+    const match = canonicalizeTranscriptEvidence(contiguous.map(segment => segment.id), quoteHint.replace(hesitation, " "), projected, options);
+    if (match.valid) return canonicalizeTranscriptEvidence(contiguous.map(segment => segment.id), raw, segmentById, options);
+  }
+  // A short acknowledgement can interrupt one person's sentence in diarized
+  // audio. Match that person's exact words, then cite the full original span,
+  // including the acknowledgement. Never skip substantive speech or negatives.
+  const acknowledgement = (text: string) => /^(?:okay|ok|yeah|yes|right|all right|uh huh|mhm|mm hmm)$/.test(normalizeWithSourceMap(text).value);
+  const substantive = selected.filter(segment => !acknowledgement(segment.textRaw));
+  const speaker = substantive[0]?.speaker;
+  if (!speaker || substantive.some(segment => segment.speaker !== speaker)) return recovered;
+  const interruptions = contiguous.filter(segment => segment.speaker !== speaker);
+  if (!interruptions.length || interruptions.length > 3 || interruptions.some(segment =>
+    !acknowledgement(segment.textRaw))) return recovered;
+  if (normalizeWithSourceMap(quoteHint).value.length < 12) return recovered;
+  const projected = new Map(contiguous.map(segment => [segment.id, {
+    ...segment, textRaw: segment.speaker === speaker ? segment.textRaw : "",
+  }]));
+  const match = canonicalizeTranscriptEvidence(contiguous.map(segment => segment.id), quoteHint, projected, options);
+  if (!match.valid) return recovered;
+  return canonicalizeTranscriptEvidence(contiguous.map(segment => segment.id), contiguous.map(segment => segment.textRaw).join("\n"), segmentById, options);
 }
 
 export function validatePhotoBbox(value: unknown): value is [number, number, number, number] {

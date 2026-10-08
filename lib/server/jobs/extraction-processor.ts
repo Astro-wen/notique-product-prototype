@@ -1,3 +1,5 @@
+import {FORECAST_COVERAGE_POLICY, LEGACY_FORECAST_COVERAGE_POLICY, retainFinancialForecastSources} from "@/lib/domain/forecast-coverage";
+import {comparisonQualityIssues, retainUncertainMetrics} from "@/lib/domain/comparison-quality";
 import {closedFollowupContext} from "@/lib/domain/closed-followup-context";
 import {loadWorkflowLedger} from "@/lib/server/workflow/snapshot-store";
 import { verificationWaitBudget } from "@/lib/domain/verification-wait-budget";
@@ -28,6 +30,11 @@ import {
 } from "@/lib/domain/evidence";
 import {
   CLAIM_EXTRACTION_PROMPT_VERSION,
+  CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION,
+  RETRIEVED_COMPARISON_PROMPT_VERSION, MATCHED_COMPARISON_PROMPT_VERSION, VALUE_CHANGE_PROMPT_VERSION, SUPPORTED_COMPARISON_PROMPT_VERSION, SCOPED_COMPARISON_PROMPT_VERSION, CROSS_CONVERSATION_PROMPT_VERSION,
+  PARTIAL_COMPARISON_PROMPT_VERSION,
+  hasSourceChangeExtraction,
+  hasChronologicalExtraction,
   STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
@@ -819,6 +826,9 @@ async function loadContextInput(run: Row): Promise<{
     }];
   });
   const contextPack = buildContextPack({
+    dateReliabilityEnabled: (run.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || run.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || run.prompt_version === VALUE_CHANGE_PROMPT_VERSION || run.prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || (frozenModelParams.verification_prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || frozenModelParams.verification_prompt_version === VALUE_CHANGE_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || run.prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || run.prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || frozenModelParams.verification_prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || run.prompt_version === PARTIAL_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === PARTIAL_COMPARISON_PROMPT_VERSION || run.prompt_version === CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION || frozenModelParams.verification_prompt_version === CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION,
+    sourceIdentityEnabled: (run.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || run.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || run.prompt_version === VALUE_CHANGE_PROMPT_VERSION || run.prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || (frozenModelParams.verification_prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || frozenModelParams.verification_prompt_version === VALUE_CHANGE_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || run.prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || run.prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || frozenModelParams.verification_prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || hasSourceChangeExtraction(run.prompt_version) || hasSourceChangeExtraction(frozenModelParams.verification_prompt_version),
+    chronologyEnabled: hasChronologicalExtraction(run.prompt_version) || hasChronologicalExtraction(frozenModelParams.verification_prompt_version),
     ledger,
     contextVersion: Number(run.context_version),
     eventId: String(run.event_id),
@@ -828,18 +838,22 @@ async function loadContextInput(run: Row): Promise<{
     glossary,
     draftContextEnabled,
     draftClaims: draftMemory.claims
+      .filter(claim => claim.normalized_value?.source_match_status !== 'unverified')
       .map((claim) => ({
       claimId: claim.claim_id,
       claimVersionId: claim.claim_version_id,
       eventId: claim.event_id,
       eventSequenceNo: claim.event_sequence_no,
+      eventOccurredAt: claim.event_occurred_at,
+      ...((run.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || run.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || run.prompt_version === VALUE_CHANGE_PROMPT_VERSION || run.prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || (frozenModelParams.verification_prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || frozenModelParams.verification_prompt_version === VALUE_CHANGE_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || run.prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || run.prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || frozenModelParams.verification_prompt_version === CROSS_CONVERSATION_PROMPT_VERSION || hasSourceChangeExtraction(run.prompt_version) || hasSourceChangeExtraction(frozenModelParams.verification_prompt_version) ? { eventTitle: claim.event_title } : {}),
+      ...((run.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || run.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || run.prompt_version === VALUE_CHANGE_PROMPT_VERSION || run.prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || (frozenModelParams.verification_prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || frozenModelParams.verification_prompt_version === VALUE_CHANGE_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION || run.prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || frozenModelParams.verification_prompt_version === SCOPED_COMPARISON_PROMPT_VERSION ? {normalizedValue: claim.normalized_value} : {}),
       type: claim.type as ClaimWithVersion["type"],
       statement: claim.statement,
       confidence: claim.confidence,
       evidenceRefIds: claim.evidence_ref_ids,
       })),
   });
-  if(frozenModelParams.verification_prompt_version===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION||frozenModelParams.verification_prompt_version===STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION) {
+  if(frozenModelParams.verification_prompt_version===HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION||hasChronologicalExtraction(frozenModelParams.verification_prompt_version)||frozenModelParams.verification_prompt_version===STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION) {
     const workflowLedger=await loadWorkflowLedger(getD1(),{...scope,access:'demo'},String(run.project_id));
     if(workflowLedger.contextVersion!==Number(run.context_version))throw new ProcessingFault('CLAIM_VERSION_CONFLICT','Project context changed before closure evidence was frozen.');
     contextPack.verified_context.closed_followups=closedFollowupContext(workflowLedger,ledger,String(run.event_id),segments);
@@ -1240,7 +1254,31 @@ function prepareCandidates(
     }
     clientKeys.add(model.client_claim_key);
     if (model.disposition === "duplicate") continue;
-    const evidence = prepareEvidence(model.evidence, run, manifestRows, segments, warnings);
+    let evidence = prepareEvidence(model.evidence, run, manifestRows, segments, warnings);
+    if (!evidence.length && (run.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || run.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION)) {
+      // Preserve the candidate only as a source-check question, never as a fact.
+      // Re-run all scope and contiguity checks against the actual cited text.
+      const contextual = model.evidence.flatMap(item => {
+        if (item.kind !== 'transcript' && item.kind !== 'text') return [];
+        const cited = item.segment_ids.map(id => segments.find(segment => segment.id === id));
+        if (!cited.length || cited.length > 20 || cited.some(segment => !segment)) return [];
+        const ordered = cited.filter((segment): segment is TranscriptSegment => Boolean(segment)).sort((a,b)=>a.ordinal-b.ordinal);
+        return [{...item, quote_hint: ordered.map(segment=>segment.textRaw).join('\n'), evidence_role: 'contextual' as const}];
+      });
+      evidence = prepareEvidence(contextual, run, manifestRows, segments, warnings);
+      if (evidence.length) {
+        model.type = 'open_question';
+        model.statement = `核对原文：${candidate.statement}`;
+        model.normalized_value = {source_match_status:'unverified', original_statement:candidate.statement};
+        model.needs_additional_evidence = true;
+        model.uncertainty = null;
+        model.disposition = 'new';
+        model.reaffirmed_target_claim_id = null;
+        model.reaffirmed_target_version_id = null;
+        model.relations = [];
+        warnings.push({code:'SOURCE_CHECK_REQUIRED',client_claim_key:model.client_claim_key});
+      }
+    }
     if (!evidence.length) {
       warnings.push({ code: "CLAIM_WITHOUT_VALID_EVIDENCE", client_claim_key: model.client_claim_key, statement: model.statement });
       continue;
@@ -1590,7 +1628,7 @@ async function persistModelOutput(
   );
   for (const link of draftLinkCandidates) {
     const source = newClaimByClientKey.get(link.final_claim_key);
-    if (!source) {
+    if (!source || source.model.normalized_value?.source_match_status === 'unverified') {
       prepared.warnings.push({
         code: "DRAFT_LINK_SOURCE_NOT_PERSISTED",
         final_claim_key: link.final_claim_key,
@@ -2126,6 +2164,10 @@ export async function processExtractionRun(
         ),
       });
       completedUsage = inventoryStage.usage;
+      const forecastCoverage = frozenModelParams.forecast_coverage_policy === FORECAST_COVERAGE_POLICY || frozenModelParams.forecast_coverage_policy === LEGACY_FORECAST_COVERAGE_POLICY
+        ? retainFinancialForecastSources(inventoryStage.output, inventoryContext, frozenModelParams.forecast_coverage_policy)
+        : {inventory: inventoryStage.output, addedKeys: []};
+      const verifiedInventory = forecastCoverage.inventory;
 
       const verificationContext = await contextWithReadableTranscript(
         leased,
@@ -2136,7 +2178,7 @@ export async function processExtractionRun(
       const verifyInputHash = await hashText(JSON.stringify({
         run_input_hash: leased.input_hash,
         context_snapshot_hash: input.contextSnapshotHash,
-        inventory: inventoryStage.output,
+        inventory: verifiedInventory,
         readable_transcript_segments: verificationContext.new_event.readable_transcript_segments,
         stage: "verify",
         prompt: verificationContract.promptVersion,
@@ -2181,8 +2223,8 @@ export async function processExtractionRun(
           verifyStage=await runModelStage<VerificationOutput>({
             run:leased,stage:'verify',provider:providerName,model:modelName,reasoningEffort:verifierEffort,
             promptVersion:`${verificationContract.promptVersion}:verify`,schemaVersion:verificationContract.schemaVersion,inputHash:verifyInputHash,
-            validate:value=>validateVerificationOutput(value,inventoryStage.output,verificationContext).output,
-            invoke:stageOptions=>verifierProvider.verifyClaims(verificationContext,inventoryStage.output,{...stageOptions,extractionPromptVersion:verificationContract.promptVersion,verificationSchemaVersion:verificationContract.schemaVersion,promptCacheKey:`notique:${leased.id}:two-stage`,backgroundStallMs:timeoutMs ?? MAX_AI_TIMEOUT_MS}),
+            validate:value=>validateVerificationOutput(value,verifiedInventory,verificationContext).output,
+            invoke:stageOptions=>verifierProvider.verifyClaims(verificationContext,verifiedInventory,{...stageOptions,extractionPromptVersion:verificationContract.promptVersion,verificationSchemaVersion:verificationContract.schemaVersion,promptCacheKey:`notique:${leased.id}:two-stage`,backgroundStallMs:timeoutMs ?? MAX_AI_TIMEOUT_MS}),
           });
           }catch(error){
             if(error instanceof ModelOutputBudgetExhaustedError || !(error instanceof ModelOutputInvalidError))throw error;
@@ -2191,7 +2233,7 @@ export async function processExtractionRun(
         } else if (existingVerify?.status === "succeeded") {
           const validatedBase = validateVerificationOutput(
             existingVerify.validated_output,
-            inventoryStage.output,
+            verifiedInventory,
             verificationContext,
           );
           if (!validatedBase.valid || !validatedBase.output) {
@@ -2230,12 +2272,12 @@ export async function processExtractionRun(
             inputHash: verifyInputHash,
             validate: (value) => validateVerificationOutput(
               value,
-              inventoryStage.output,
+              verifiedInventory,
               verificationContext,
             ).output,
             invoke: (stageOptions) => verifierProvider.verifyClaims(
               verificationContext,
-              inventoryStage.output,
+              verifiedInventory,
               { ...stageOptions, extractionPromptVersion: verificationContract.promptVersion, verificationSchemaVersion: verificationContract.schemaVersion, promptCacheKey: `notique:${leased.id}:two-stage`, backgroundStallMs: timeoutMs ?? MAX_AI_TIMEOUT_MS },
             ),
           });
@@ -2254,9 +2296,10 @@ export async function processExtractionRun(
       completedUsage = aggregateUsage(usages);
       let acceptedVerification = verifyStage?.output ?? null;
       let assessment = assessVerificationEscalation(
-        inventoryStage.output,
+        verifiedInventory,
         acceptedVerification ?? {},
         verificationContext,
+        (verificationContract.promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || (verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || verificationContract.promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || verificationContract.promptVersion === VALUE_CHANGE_PROMPT_VERSION || verificationContract.promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION),
       );
       if (escalationInFlight) {
         const escalatedInputHash = existingEscalated!.input_hash;
@@ -2286,12 +2329,12 @@ export async function processExtractionRun(
             details: { escalation_reasons: storedEscalationReasons },
             validate: (value) => validateVerificationOutput(
               value,
-              inventoryStage.output,
+              verifiedInventory,
               verificationContext,
             ).output,
             invoke: (stageOptions) => escalatedProvider.verifyClaims(
               verificationContext,
-              inventoryStage.output,
+              verifiedInventory,
               {
                 ...stageOptions,
                 extractionPromptVersion: verificationContract.promptVersion,
@@ -2300,6 +2343,8 @@ export async function processExtractionRun(
                 backgroundStallMs: verificationWaitBudget(timeoutMs ?? MAX_AI_TIMEOUT_MS, frozenModelParams.optional_verification_wait_ms, Boolean(acceptedVerification), storedEscalationReasons),
                 qualityFeedback: [
                   ...storedEscalationReasons,
+                  ...(assessment.comparisonIssues.length ? [JSON.stringify(assessment.comparisonIssues), "Correct metric units and comparison attribution. Retain supported differences about the same shared object or market. Separate different institutions’ own observations."] : []),
+                  ...(storedEscalationReasons.includes("critical_evidence_invalid") ? ["A critical fact has no locatable direct quotation. Re-copy quote_hint verbatim from raw transcript_segments, including speaker pronouns. Do not paraphrase evidence or remove the supported fact."] : []),
                   "Do not solve coverage pressure by combining independent propositions; atomicity remains mandatory.",
                 ],
               },
@@ -2308,10 +2353,12 @@ export async function processExtractionRun(
           usages.push(escalatedStage.usage);
           if (acceptedVerification) {
             const selection = selectPreferredVerificationForReview(
-              inventoryStage.output,
+              verifiedInventory,
               acceptedVerification,
               escalatedStage.output,
               verificationContext,
+              (verificationContract.promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || (verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || verificationContract.promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || verificationContract.promptVersion === VALUE_CHANGE_PROMPT_VERSION || verificationContract.promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION),
+              verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION,
             );
             acceptedVerification = selection.output;
             assessment = selection.assessment;
@@ -2324,9 +2371,10 @@ export async function processExtractionRun(
           } else {
             acceptedVerification = escalatedStage.output;
             assessment = assessVerificationEscalation(
-              inventoryStage.output,
+              verifiedInventory,
               acceptedVerification,
               verificationContext,
+              (verificationContract.promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || (verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || verificationContract.promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || verificationContract.promptVersion === VALUE_CHANGE_PROMPT_VERSION || verificationContract.promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION),
             );
           }
         } catch (error) {
@@ -2369,12 +2417,12 @@ export async function processExtractionRun(
           details: { escalation_reasons: assessment.reasons },
             validate: (value) => validateVerificationOutput(
               value,
-              inventoryStage.output,
+              verifiedInventory,
               verificationContext,
             ).output,
             invoke: (stageOptions) => escalatedProvider.verifyClaims(
               verificationContext,
-              inventoryStage.output,
+              verifiedInventory,
               {
                 ...stageOptions,
                 extractionPromptVersion: verificationContract.promptVersion,
@@ -2383,6 +2431,8 @@ export async function processExtractionRun(
                 backgroundStallMs: verificationWaitBudget(timeoutMs ?? MAX_AI_TIMEOUT_MS, frozenModelParams.optional_verification_wait_ms, Boolean(acceptedVerification), assessment.reasons),
                 qualityFeedback: [
                   ...assessment.reasons,
+                  ...(assessment.comparisonIssues.length ? [JSON.stringify(assessment.comparisonIssues), "Correct metric units and comparison attribution. Retain supported differences about the same shared object or market. Separate different institutions’ own observations."] : []),
+                  ...(assessment.reasons.includes("critical_evidence_invalid") ? ["A critical fact has no locatable direct quotation. Re-copy quote_hint verbatim from raw transcript_segments, including speaker pronouns. Do not paraphrase evidence or remove the supported fact."] : []),
                   ...(assessment.droppedCriticalInventoryKeys.length
                     ? [`Dropped critical inventory keys: ${assessment.droppedCriticalInventoryKeys.join(", ")}`]
                     : []),
@@ -2397,10 +2447,12 @@ export async function processExtractionRun(
           usages.push(escalatedStage.usage);
           if (acceptedVerification) {
             const selection = selectPreferredVerificationForReview(
-              inventoryStage.output,
+              verifiedInventory,
               acceptedVerification,
               escalatedStage.output,
               verificationContext,
+              (verificationContract.promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || (verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || verificationContract.promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || verificationContract.promptVersion === VALUE_CHANGE_PROMPT_VERSION || verificationContract.promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION),
+              verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION,
             );
             acceptedVerification = selection.output;
             assessment = selection.assessment;
@@ -2413,9 +2465,10 @@ export async function processExtractionRun(
           } else {
             acceptedVerification = escalatedStage.output;
             assessment = assessVerificationEscalation(
-              inventoryStage.output,
+              verifiedInventory,
               acceptedVerification,
               verificationContext,
+              (verificationContract.promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || (verificationContract.promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || verificationContract.promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || verificationContract.promptVersion === VALUE_CHANGE_PROMPT_VERSION || verificationContract.promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION),
             );
           }
         } catch (error) {
@@ -2450,11 +2503,11 @@ export async function processExtractionRun(
           reasons: assessment.reasons,
           unmapped_inventory_keys: assessment.unmappedInventoryKeys,
           dropped_critical_inventory_keys: assessment.droppedCriticalInventoryKeys,
-          omitted_statements: inventoryStage.output.candidates.filter((candidate) => assessment.droppedCriticalInventoryKeys.includes(candidate.inventory_key)).map((candidate) => candidate.statement),
+          omitted_statements: verifiedInventory.candidates.filter((candidate) => assessment.droppedCriticalInventoryKeys.includes(candidate.inventory_key)).map((candidate) => candidate.statement),
           low_confidence_relation_claim_keys: assessment.lowConfidenceRelationClaimKeys,
         });
       }
-      pipelineWarnings.push(...verificationCoverageWarnings(inventoryStage.output, acceptedVerification));
+      pipelineWarnings.push(...verificationCoverageWarnings(verifiedInventory, acceptedVerification));
       finalOutput = toFinalExtractClaimsOutput(acceptedVerification);
       acceptedDraftLinks = acceptedVerification.draft_link_candidates;
       acceptedSameIntentGroups = acceptedVerification.same_intent_groups ?? [];
@@ -2473,6 +2526,13 @@ export async function processExtractionRun(
       completedUsage = result.usage;
       finalOutput = result.output;
       finalUsage = result.usage;
+    }
+    if ((leased.prompt_version === RETRIEVED_COMPARISON_PROMPT_VERSION || leased.prompt_version === MATCHED_COMPARISON_PROMPT_VERSION) || leased.prompt_version === SCOPED_COMPARISON_PROMPT_VERSION || leased.prompt_version === VALUE_CHANGE_PROMPT_VERSION || leased.prompt_version === SUPPORTED_COMPARISON_PROMPT_VERSION) {
+      const issues = comparisonQualityIssues(finalOutput.claims, acceptedDraftLinks, input.contextPack);
+      const invalidMetricKeys = new Set(issues.filter(issue => issue.reason === 'metric_unit_mismatch').map(issue => issue.claimKey));
+      acceptedDraftLinks = acceptedDraftLinks.filter(link => !invalidMetricKeys.has(link.final_claim_key) && !issues.some(issue => issue.claimKey === link.final_claim_key && issue.targetVersionId === link.target_draft_claim_version_id));
+      finalOutput = {...finalOutput, claims: retainUncertainMetrics(finalOutput.claims).map(claim => ({...claim, relations: claim.relations.filter(relation => !issues.some(issue => issue.claimKey === claim.client_claim_key && issue.targetVersionId === relation.target_claim_version_id))}))};
+      pipelineWarnings.push(...issues.map(issue => ({code: 'MODEL_COMPARISON_QUALITY_UNRESOLVED', ...issue})));
     }
     // Keep strict structural validation at the processor boundary. Context-sensitive target
     // drift is handled deterministically by prepareCandidates so one bad proposed relation

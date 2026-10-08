@@ -150,9 +150,11 @@ export function readingViewState(input: {
   runStatus: string | null | undefined;
   /** 这条记录一条阅读任务都没有，而且分析已经结束。 */
   noReadingWillCome: boolean;
+  sourcePending?: boolean;
 }): ReadingViewState {
   if (input.hasContent) return "ready";
   if (input.runStatus === "failed" || input.runStatus === "succeeded") return "failed";
   if (input.runStatus === "queued" || input.runStatus === "processing") return "generating";
+  if (input.sourcePending) return "generating";
   return input.noReadingWillCome ? "failed" : "generating";
 }

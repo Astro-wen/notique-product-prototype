@@ -324,6 +324,7 @@ export type Event = {
   title: string;
   eventType?: string;
   occurredAt?: string;
+  uploadedAt?: string;
   createdAt?: string;
   status?: string;
   pendingClaimCount: number;
@@ -740,6 +741,7 @@ export function normalizeEvent(value: unknown): Event {
     title: asString(pick(source, ["title", "name"]), "Untitled event"),
     eventType: asString(pick(source, ["event_type", "eventType", "type"]), undefined as unknown as string) || undefined,
     occurredAt: asString(pick(source, ["occurred_at", "occurredAt", "event_time"]), undefined as unknown as string) || undefined,
+    uploadedAt: asString(pick(source,["uploaded_at","uploadedAt"]), undefined as unknown as string) || undefined,
     createdAt: asString(pick(source, ["created_at", "createdAt"]), undefined as unknown as string) || undefined,
     status: asString(pick(source, ["status", "material_status", "materialStatus", "processing_status"]), undefined as unknown as string) || undefined,
     sourceRevision: asNumber(pick(source, ["source_revision", "sourceRevision"])) ?? 0,

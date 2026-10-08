@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { figureDigits, splitOverviewFigures } from "../lib/domain/overview-highlights.ts";
+import { splitOverviewFigures } from "../lib/domain/overview-highlights.ts";
 
-const figures = (text, claims) => splitOverviewFigures(text, claims).filter((p) => p.kind === "figure").map((p) => p.text);
+const figures = (text) => splitOverviewFigures(text).filter((p) => p.kind === "figure").map((p) => p.text);
 
 test("money, percentages, dates, durations, areas and room counts are picked out", () => {
   assert.deepEqual(
@@ -22,17 +22,12 @@ test("plain prose without figures is left as one piece, and pieces reassemble to
   assert.equal(splitOverviewFigures(mixed).map((p) => p.text).join(""), mixed);
 });
 
-test("a figure that appears in a conclusion links to that conclusion; others do not", () => {
-  const claims = [
-    { id: "clm_price", statement: "The parties adopted approximately $220,000 as the working purchase-price target." },
-    { id: "clm_pay", statement: "Approximately $1,600 per month is comfortable." },
-  ];
-  const pieces = splitOverviewFigures("They agreed on $220,000 with about $1,600 a month and a move by February.", claims);
-  const byText = Object.fromEntries(pieces.filter((p) => p.kind === "figure").map((p) => [p.text, p.claimId]));
-  assert.equal(byText["$220,000"], "clm_price");
-  assert.equal(byText["$1,600 a month"], "clm_pay");
-  assert.equal(byText["February"], null);
-  assert.equal(figureDigits("$1,600 a month"), "1600");
+test("highlights preserve ambiguous equal numbers without guessing a claim or unit", () => {
+  const text = "Price $1,600, deposit $1,600, area 1600 sqft and date 1/6.";
+  const pieces = splitOverviewFigures(text);
+  assert.equal(pieces.map(piece => piece.text).join(""), text);
+  assert.deepEqual(figures(text), ["$1,600", "$1,600", "1600 sqft", "1/6"]);
+  assert.ok(pieces.every(piece => !("claimId" in piece)));
 });
 
 test("the overview renders per sentence with clickable figures", async () => {
@@ -41,7 +36,13 @@ test("the overview renders per sentence with clickable figures", async () => {
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /splitOverviewFigures\(/);
-  assert.match(page, /className="overview-figure is-claim"/);
+  assert.doesNotMatch(page, /splitOverviewFigures\(item.text, claims\)/);
+  assert.match(page, /onClick=\{\(\) => locateRawSources\(item.sourceIds\)\}/);
   assert.match(page, /className="overview-figure"/);
   assert.match(styles, /\.overview-figure\b/);
+});
+
+test('month names do not highlight parts of participant names',()=>{
+  assert.deepEqual(figures('Maya and Marchand discussed October 20, 2026.'),['October 20, 2026']);
+  assert.deepEqual(figures('May, Jun. 2, and September.'),['May','Jun. 2','September']);
 });

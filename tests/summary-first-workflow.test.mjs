@@ -23,6 +23,17 @@ async function loadArtifactSelection() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+test("a dedicated reading retry never hides its progress or failure behind legacy content", async () => {
+  const { readingViewEntries } = await loadArtifactSelection();
+  const legacy = { speaker_summaries: [{ text: 'Legacy paragraph' }] };
+  assert.deepEqual(readingViewEntries({run:null,artifact:null}, legacy, 'speaker_summaries'), legacy.speaker_summaries);
+  for (const status of ['queued', 'processing', 'failed', 'succeeded']) {
+    assert.deepEqual(readingViewEntries({run:{status},artifact:null}, legacy, 'speaker_summaries'), []);
+  }
+  const own = [{text:'Speaker contribution'}];
+  assert.deepEqual(readingViewEntries({run:{status:'succeeded'},artifact:{content:{speaker_summaries:own}}}, legacy, 'speaker_summaries'), own);
+});
+
 function artifactRun(id, createdAt, status = "succeeded") {
   return {
     id,

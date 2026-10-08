@@ -14,6 +14,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Legacy content is only a fallback before a dedicated reading run exists. */
+export function readingViewEntries(
+  pair: { run?: unknown; artifact?: { content?: unknown } | null },
+  legacy: unknown,
+  field: "sections" | "chapters" | "speaker_summaries" | "key_points",
+): Record<string, unknown>[] {
+  const content = isRecord(pair.artifact?.content) ? pair.artifact.content : null;
+  const own = Array.isArray(content?.[field]) ? content[field].filter(isRecord) : [];
+  if (own.length || pair.run) return own;
+  return isRecord(legacy) && Array.isArray(legacy[field]) ? legacy[field].filter(isRecord) : [];
+}
+
 /**
  * 一份产物引用了哪些原文段落。
  *

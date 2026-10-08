@@ -204,7 +204,7 @@ test("missing reading summaries offer generation while raw remains readable", ()
   assert.match(page, /className="artifact-panel raw-artifact"/);
   // 每个视图看自己那条流水线：生成中转圈，自己失败了才给重新生成。
   for (const state of ["overviewState", "chaptersState", "speakersState", "keyPointsState"]) {
-    assert.match(page, new RegExp(`${state} === "generating" \\? <ReadingGenerating \\/>`));
+    assert.match(page, new RegExp(`${state} === "generating" \\? <ReadingGenerating sourcePending=\\{sourcePending\\} \\/>`));
   }
   assert.match(page, /内容生成中…/);
   assert.doesNotMatch(page, /暂无全文概要|概要正在整理/);

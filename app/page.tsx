@@ -1,5 +1,6 @@
 "use client";
 
+import { localDateInput } from '@/lib/domain/local-date-input';
 import { useRouter } from "next/navigation";
 
 import { workflowService } from "./features/workflow/services/workflow-service";
@@ -189,7 +190,7 @@ import {
   verifiedViewQuery,
   workflowSnapshotQuery,
 } from "./notique-queries";
-import { selectTranscriptArtifactPair } from "./transcript-artifact-selection";
+import { selectTranscriptArtifactPair, readingViewEntries } from "./transcript-artifact-selection";
 import { activeTranscriptGroupKeyAt, groupConsecutiveSpeakerSegments, groupReadableTranscriptSegments, resolveTranscriptAudioAssetId } from "./transcript-display";
 
 type Screen = AppView;
@@ -1212,8 +1213,8 @@ function PublicWorkspaceConfirmationModal({ onCancel, onConfirm }: { onCancel: (
 }
 
 /** 阅读视图还在生成：转圈加一句话，不拿任何兜底内容冒充结果。 */
-function ReadingGenerating() {
-  return <p className="reading-view-generating" role="status"><i className="spinner" aria-hidden="true" />内容生成中…</p>;
+function ReadingGenerating({ sourcePending = false }: { sourcePending?: boolean }) {
+  return <p className="reading-view-generating" role="status"><i className="spinner" aria-hidden="true" />{sourcePending ? "逐字稿完成后自动生成" : "内容生成中…"}</p>;
 }
 
 /** 这一个视图的任务失败了，别的视图不受影响。 */
@@ -5600,6 +5601,7 @@ function scrollWithinReader(node: HTMLElement | null, block: "start" | "center")
 
 function TranscriptArtifactsPanel({
   event,
+  sourcePending = false,
   transcriptionRun,
   analysisRun,
   claims,
@@ -5623,6 +5625,7 @@ function TranscriptArtifactsPanel({
   onFocusHandled,
 }: {
   event: Event;
+  sourcePending?: boolean;
   transcriptionRun: TranscriptionRun | null;
   analysisRun: ExtractionRun | null;
   claims: Claim[];
@@ -5953,13 +5956,9 @@ function TranscriptArtifactsPanel({
   const overviewPair = readingPairFor("overview");
   const legacySummaryContent = isRecord(summaryArtifact?.content) ? summaryArtifact.content : null;
   const viewField = (
-    pair: { artifact?: { content?: unknown } | null },
-    field: "sections" | "chapters" | "speaker_summaries" | "key_points",
-  ) => {
-    const content = isRecord(pair.artifact?.content) ? pair.artifact.content : null;
-    const own = recordArray(content?.[field]);
-    return own.length ? own : recordArray(legacySummaryContent?.[field]);
-  };
+    pair: Parameters<typeof readingViewEntries>[0],
+    field: Parameters<typeof readingViewEntries>[2],
+  ) => readingViewEntries(pair, legacySummaryContent, field);
   // 每个视图看自己那条流水线的状态，不再一荣俱荣一损俱损。
   const viewRunStatus = (pair: { run?: { status?: string } | null }) => pair.run?.status ?? summaryRun?.status;
   const summarySectionsRaw = viewField(overviewPair, "sections");
@@ -5991,7 +5990,7 @@ function TranscriptArtifactsPanel({
   const viewStateFor = (hasContent: boolean, pair: { run?: { status?: string } | null }) =>
     readingInputsLoading && !hasContent
       ? "generating"
-      : readingViewState({ hasContent, runStatus: viewRunStatus(pair), noReadingWillCome: noReadingWillCome || !pair.run && !summaryRun });
+      : readingViewState({ hasContent, sourcePending, runStatus: viewRunStatus(pair), noReadingWillCome: noReadingWillCome || !pair.run && !summaryRun });
   const chaptersState = viewStateFor(generatedChapters.length > 0, chaptersPair);
   const speakersState = viewStateFor(generatedSpeakerSummaries.length > 0, speakersPair);
   const keyPointsState = viewStateFor(keyPoints.length > 0, keyPointsPair);
@@ -6678,11 +6677,9 @@ function TranscriptArtifactsPanel({
         </ol>
       </div>}
 
-      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewItems.map((item, index) => <span key={index}>{index > 0 ? " " : ""}{splitOverviewFigures(item.text, claims).map((piece, pieceIndex) => piece.kind === "text"
+      <SmoothResize><section className="tingwu-overview-copy" aria-label="全文概要"><h3>全文概要</h3>{overviewText ? <><p className={overviewExpanded ? "expanded" : ""}>{overviewItems.map((item, index) => <span key={index}>{index > 0 ? " " : ""}{splitOverviewFigures(item.text).map((piece, pieceIndex) => piece.kind === "text"
       ? <Fragment key={pieceIndex}>{piece.text}</Fragment>
-      : piece.claimId
-        ? <button key={pieceIndex} type="button" className="overview-figure is-claim" title="打开这条结论核对" onClick={() => onOpenClaim(piece.claimId!)}>{piece.text}</button>
-        : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="全文概要生成未完成。" buttonLabel="重新生成概要" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("overview").catch(() => undefined)} />}</section></SmoothResize>
+      : <button key={pieceIndex} type="button" className="overview-figure" title="回到原话" disabled={!item.sourceIds.length} onClick={() => locateRawSources(item.sourceIds)}>{piece.text}</button>)}</span>)}</p>{overviewText.length > 260 && <button className="text-button" aria-expanded={overviewExpanded} onClick={() => setOverviewExpanded((value) => !value)}>{overviewExpanded ? "收起概要" : "展开全部概要"}</button>}</> : overviewState === "generating" ? <ReadingGenerating sourcePending={sourcePending} /> : <ReadingFailed text="全文概要生成未完成。" buttonLabel="重新生成概要" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("overview").catch(() => undefined)} />}</section></SmoothResize>
       <header className="reader-intelligence-heading">
         <nav className="reader-insight-tabs" aria-label="智能速览方式">
           <button aria-pressed={insightView === "chapters"} className={insightView === "chapters" ? "active" : ""} onClick={() => selectWorkspaceSurface("chapters")}>章节速览</button>
@@ -6702,7 +6699,7 @@ function TranscriptArtifactsPanel({
               <button className="tingwu-recall" onClick={() => locateRawSources(ids)}><span aria-hidden="true">↶</span> 回顾</button></footer>
           </div>
         </article>;
-      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="要点回顾生成未完成。" buttonLabel="重新生成要点" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("key_points").catch(() => undefined)} />}
+      })}{keyPoints.length > 3 && <button className="text-button tingwu-expand" aria-expanded={summaryExpanded} onClick={() => setSummaryExpanded((value) => !value)}>{summaryExpanded ? "收起要点" : `展开全部要点（${keyPoints.length}）`}</button>}</> : keyPointsState === "generating" ? <ReadingGenerating sourcePending={sourcePending} /> : <ReadingFailed text="要点回顾生成未完成。" buttonLabel="重新生成要点" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("key_points").catch(() => undefined)} />}
     </section>}
 
     {insightView === "chapters" && <section className="reader-section-panel reader-chapters" aria-label="章节速览">
@@ -6710,7 +6707,7 @@ function TranscriptArtifactsPanel({
         {useFallbackChapters && <p className="rail-muted chapter-fallback-note">按原文时间定位 <button className="text-button" disabled={Boolean(busy)} onClick={() => void retrySummaryArtifact("chapters").catch(() => undefined)}>生成章节摘要</button></p>}
         <div>{(chaptersExpanded ? orderedSummaryChapters : orderedSummaryChapters.slice(0, 2)).map((chapter) => renderChapter(chapter))}</div>
         <button className="text-button chapter-expand" aria-expanded={chaptersExpanded} onClick={() => setChaptersExpanded((value) => !value)}>{chaptersExpanded ? "收起章节" : `展开全部章节（${orderedSummaryChapters.length}）`}</button>
-      </> : chaptersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="章节摘要生成未完成。" buttonLabel="重新生成章节" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("chapters").catch(() => undefined)} />}
+      </> : chaptersState === "generating" ? <ReadingGenerating sourcePending={sourcePending} /> : <ReadingFailed text="章节摘要生成未完成。" buttonLabel="重新生成章节" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("chapters").catch(() => undefined)} />}
     </section>}
 
     {insightView === "speakers" && <section className="tingwu-speaker-summaries" aria-label="发言总结内容">
@@ -6720,7 +6717,7 @@ function TranscriptArtifactsPanel({
         <div className="speaker-contributions">{(firstString(speaker, ["summary"]) || "").includes("\n")
           ? <ul>{(firstString(speaker, ["summary"]) || "").split(/\n+/).filter((line) => line.trim()).map((line, lineIndex) => <li key={lineIndex}>{line.replace(/^\s*[-•]\s+/, "")}</li>)}</ul>
           : <p>{firstString(speaker, ["summary"])}</p>}</div>
-      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating /> : <ReadingFailed text="发言总结生成未完成。" buttonLabel="重新生成发言总结" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("speakers").catch(() => undefined)} />}
+      </article>)}</div><button className="text-button tingwu-expand" aria-expanded={speakersExpanded} onClick={() => setSpeakersExpanded((value) => !value)}>{speakersExpanded ? "收起发言总结" : "展开全部发言总结"}</button></> : speakersState === "generating" ? <ReadingGenerating sourcePending={sourcePending} /> : <ReadingFailed text="发言总结生成未完成。" buttonLabel="重新生成发言总结" busy={Boolean(busy)} onRetry={() => void retrySummaryArtifact("speakers").catch(() => undefined)} />}
     </section>}
 
     </SmoothResize>
@@ -7380,7 +7377,7 @@ function SimpleTestScreen({
     if (next !== activeTab && workflowHasUnsavedInput()) return;
     markUserNavigation();
     onSelectWorkspaceTab(next === "results" ? "overview" : undefined);
-    setActiveTab(next);
+    if (next !== "results") setActiveTab(next);
     if ((next === "transcript" || next === "review") && event) {
       setReaderWasOpened(true);
       onFocusTranscriptArtifact(event.id, readingTab ?? readingAid ?? "raw");
@@ -7448,7 +7445,7 @@ function SimpleTestScreen({
   return (
     <div className="page simple-page">
       {project && <WorkspaceNavigation projectName={project.name} events={events} event={event ?? (loadingSelection ? events.find(item => item.id === switchingConversation) ?? null : null)}
-        activeTab={activeTab} busy={Boolean(busy)} loading={loadingSelection} materialCount={visibleAssets.length}
+        activeTab={activeTab} returnTab={recordTab} busy={Boolean(busy)} loading={loadingSelection} materialCount={visibleAssets.length}
         onSelect={selectEvent} onTab={selectWorkspaceTab} onAdd={onNewEvent} onDelete={onDeleteEvent}/>}
 
       <input ref={workspaceAudioFileRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="选择已有录音文件" accept={AUDIO_FILE_ACCEPT} disabled={Boolean(busy)} onChange={chooseSupportingFile} />
@@ -7587,6 +7584,7 @@ function SimpleTestScreen({
                 key={event.id}
                 event={event}
                 transcriptionRun={transcriptionRun}
+                sourcePending={transcriptionRunning || currentAudioPreparations.length > 0}
                 analysisRun={run}
                 claims={claims}
                 occurrenceCandidates={occurrenceCandidates}
@@ -8386,8 +8384,8 @@ function NewProjectModal({ onClose, onCreate, busy }: { onClose: () => void; onC
 function NewEventModal({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (input: { title: string; event_type: string; occurred_at: string }) => Promise<void>; busy: boolean }) {
   const [title, setTitle] = useState("");
   const [type, setType] = useState("meeting");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 16));
-  return <Modal title="新增材料" description="给这次内容起个名字，比如「张先生看房」" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建"}</button></div></form></Modal>;
+  const [date, setDate] = useState(() => localDateInput());
+  return <Modal title="新对话" description="填写名称和发生时间" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (title.trim() && date) void onCreate({ title: title.trim(), event_type: type, occurred_at: new Date(date).toISOString() }); }}><label className="field"><span>标题</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第二次需求讨论" /></label><div className="form-grid"><label className="field"><span>类型</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="meeting">会议 / 对话</option><option value="showing">现场拜访</option><option value="estimate">评估 / 咨询</option><option value="walkthrough">其他</option></select></label><label className="field"><span>发生时间</span><input type="datetime-local" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!title.trim() || !date || busy}>{busy ? "正在创建…" : "创建"}</button></div></form></Modal>;
 }
 
 function ImportModal({ project, onClose, onImported }: { project: Project; onClose: () => void; onImported: (events: Event[]) => Promise<void> }) {
@@ -8405,7 +8403,7 @@ function ImportModal({ project, onClose, onImported }: { project: Project; onClo
     const invalid = files.find((file) => !acceptedTranscriptTypes.some((extension) => file.name.toLowerCase().endsWith(extension)));
     if (invalid) { setIssue({ code: "ASSET_UNSUPPORTED_FORMAT", message: `${invalid.name} 暂不支持。请选择 TXT、VTT、SRT 或 JSON。`, status: 415 }); return; }
     const start = Date.now() - (files.length - 1) * 60 * 60 * 1000;
-    setRows(files.map((file, index) => ({ key: `${file.name}-${file.lastModified}-${index}`, file, title: file.name.replace(/\.[^.]+$/, ""), occurredAt: new Date(start + index * 60 * 60 * 1000).toISOString().slice(0, 16), eventType: "meeting" })));
+    setRows(files.map((file, index) => ({ key: `${file.name}-${file.lastModified}-${index}`, file, title: file.name.replace(/\.[^.]+$/, ""), occurredAt: localDateInput(new Date(start + index * 60 * 60 * 1000)), eventType: "meeting" })));
   }
   function move(index: number, direction: -1 | 1) {
     setRows((current) => { const target = index + direction; if (target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; });

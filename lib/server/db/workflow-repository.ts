@@ -156,7 +156,7 @@ export async function getWorkflowSnapshot(
               COALESCE((SELECT COUNT(DISTINCT c.id)
                 FROM json_each(COALESCE((SELECT s.validated_output_json
                   FROM extraction_model_stages s WHERE s.run_id=er.id
-                    AND s.status='succeeded' AND s.schema_version='claim-verification.v7'
+                    AND s.status='succeeded' AND s.schema_version IN ('claim-verification.v7','claim-verification.v8')
                     AND s.stage IN ('verify','verify_escalated')
                   ORDER BY CASE s.stage WHEN 'verify_escalated' THEN 2 ELSE 1 END DESC,
                     s.attempt DESC LIMIT 1), '{}'), '$.candidate_dispositions') handled

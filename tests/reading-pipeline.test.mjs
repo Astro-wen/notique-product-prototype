@@ -9,6 +9,14 @@ import {
   readingViewState,
 } from "../lib/domain/reading-pipeline.ts";
 
+test("partial transcription waits for reading jobs rather than offering a failed retry", () => {
+  const input = {hasContent:false,runStatus:undefined,noReadingWillCome:true,sourcePending:true};
+  assert.equal(readingViewState(input), 'generating');
+  assert.equal(readingViewState({...input,sourcePending:false}), 'failed');
+  assert.equal(readingViewState({...input,runStatus:'processing'}), 'generating');
+  assert.equal(readingViewState({...input,runStatus:'failed'}), 'failed');
+});
+
 const allSucceeded = () => "succeeded";
 const status = (map) => (dependency) => map[dependency] ?? "missing";
 
@@ -117,7 +125,7 @@ test("the reader merges per-kind artifacts and still reads the legacy four-in-on
   assert.match(page, /const chaptersPair = readingPairFor\("chapters"\)/);
   assert.match(page, /const overviewPair = readingPairFor\("overview"\)/);
   // 旧 summary 四个字段都填着，正好当兜底来源。
-  assert.match(page, /return own\.length \? own : recordArray\(legacySummaryContent\?\.\[field\]\)/);
+  assert.match(page, /readingViewEntries\(pair, legacySummaryContent, field\)/);
   assert.match(page, /const generatedChapters = viewField\(chaptersPair, "chapters"\)/);
   assert.match(page, /const keyPoints = viewField\(keyPointsPair, "key_points"\)/);
 });

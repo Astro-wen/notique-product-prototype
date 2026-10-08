@@ -10,6 +10,8 @@ import {
   toFinalExtractClaimsOutput,
   validateInventoryOutput,
   validateVerificationOutput,
+  repairVerificationOutput,
+  retainSupportedComparisonLinks,
 } from "../lib/domain/two-stage-extraction.ts";
 import {
   canResumeProcessingModelStage,
@@ -399,6 +401,7 @@ test("verifier reuses the existing claim contract and enforces the configured cl
 test("clean verification does not escalate", () => {
   const result = assessVerificationEscalation(inventory(), verification());
   assert.deepEqual(result, {
+    comparisonIssues: [],
     required: false,
     reasons: [],
     unmappedInventoryKeys: [],
@@ -484,6 +487,32 @@ test("quality flags are bounded and may only reference final claim keys", () => 
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => issue.path === "$.quality_review.unresolved_conflict_keys"));
   assert.ok(result.issues.some((issue) => issue.message === "Unknown final claim key."));
+});
+
+test("v8 quality flags resolve exact inventory dispositions without losing warnings", () => {
+  const raw = verification({schema_version: "claim-verification.v8",
+    claims: [finalClaim(), finalClaim({client_claim_key: "claim-2"})],
+    candidate_dispositions: [{inventory_key: "source_forecast_7", outcome: "included", final_claim_keys: ["claim-1", "claim-2"], reason: "Split into atomic statements."}],
+    quality_review: {unresolved_conflict_keys: [], compound_claim_keys: ["source_forecast_7"], reaffirmed_issue_claim_keys: []},
+  });
+  const repaired = repairVerificationOutput(raw);
+  assert.deepEqual(repaired.value.quality_review.compound_claim_keys, ["claim-1", "claim-2"]);
+  assert.deepEqual(raw.quality_review.compound_claim_keys, ["source_forecast_7"]);
+  assert.equal(repaired.repairs.length, 1);
+  assert.deepEqual(repaired.value.claims, raw.claims);
+});
+
+test("quality flag recovery never guesses unknown, ambiguous, or omitted targets", () => {
+  for (const dispositions of [[],
+    [{inventory_key: "missing", outcome: "lower_priority", final_claim_keys: []}],
+    [{inventory_key: "missing", outcome: "included", final_claim_keys: ["not-a-final-claim"]}],
+    [1,2].map(() => ({inventory_key: "missing", outcome: "included", final_claim_keys: ["claim-1"]})),
+  ]) {
+    const repaired = repairVerificationOutput(verification({schema_version: "claim-verification.v8", candidate_dispositions: dispositions,
+      quality_review: {unresolved_conflict_keys: [], compound_claim_keys: ["missing"], reaffirmed_issue_claim_keys: []}}));
+    assert.deepEqual(repaired.value.quality_review.compound_claim_keys, ["missing"]);
+    assert.equal(repaired.repairs.some(repair => repair.startsWith("mapped ")), false);
+  }
 });
 
 test("a compound escalation cannot replace a more atomic base review queue", () => {
@@ -625,4 +654,43 @@ test('inventory retry freezes bounded validation feedback and excludes stale or 
   assert.deepEqual(inventoryRetryFeedback({...row,status:'succeeded'},frozen),[]);
   const bounded=inventoryRetryFeedback({...row,error_details:{issues:Array.from({length:20},()=>({path:'p'.repeat(500),message:'m'.repeat(1000)}))}},frozen);
   assert.equal(bounded.length,8);assert.ok(bounded.every(v=>v.length<=600));
+});
+
+test('a critical fact with a paraphrased quote escalates before persistence drops it',()=>{
+ const ctx=context('general');
+ ctx.new_event.transcript_segments=[{id:'seg-1',eventId:'event-1',assetVersionId:'av-1',ordinal:0,textRaw:'The budget cap is one million dollars.',speaker:'Maya',startMs:0,endMs:1000}];
+ const bad=verification();
+ bad.claims[0].evidence[0].quote_hint='Our budget cap is one million dollars.';
+ const good=verification();
+ const assessment=assessVerificationEscalation(inventory(),bad,ctx);
+ assert.equal(assessment.required,true);
+ assert.ok(assessment.reasons.includes('critical_evidence_invalid'));
+ assert.deepEqual(assessment.droppedCriticalInventoryKeys,['inv-1']);
+ assert.equal(assessVerificationEscalation(inventory(),good,ctx).required,false);
+ assert.equal(selectPreferredVerificationForReview(inventory(),bad,good,ctx).selected,'candidate');
+});
+
+
+test("scoped unit checking triggers one review and prefers a corrected result without coverage loss", () => {
+  const base = verification({claims: [finalClaim({statement: "Citi reported revision rates as 1.8 days higher."})]});
+  const corrected = verification({claims: [finalClaim({statement: "Citi reported qualitatively higher revision rates, without a numeric rate."})]});
+  const old = assessVerificationEscalation(inventory(), base);
+  assert.equal(old.required, false);
+  const current = assessVerificationEscalation(inventory(), base, undefined, true);
+  assert.ok(current.reasons.includes("metric_unit_mismatch"));
+  assert.equal(selectPreferredVerificationForReview(inventory(), base, corrected, undefined, true).selected, "candidate");
+});
+
+
+test('review keeps an evidenced comparison when it only adds the stated horizon, but rejects changed meaning',()=>{
+ const raw='When demand concentrates on early adopters around November 2nd, fees will rise.';
+ const source={client_claim_key:'fee',disposition:'new',statement:'When demand concentrates on early adopters, fees will rise.',normalized_value:{direction:'rise'},relations:[],evidence:[{kind:'text',asset_version_id:'av',segment_ids:['s'],quote_hint:raw,evidence_role:'direct'}]};
+ const link={final_claim_key:'fee',target_draft_claim_id:'old',target_draft_claim_version_id:'v',type:'conflicting',confidence:0.9,alignment:{same_subject:true,same_dimension:true,comparable_scope:true,conclusion_supported:true}};
+ const ctx={new_event:{event_id:'new',transcript_segments:[{id:'s',eventId:'new',assetVersionId:'av',ordinal:0,textRaw:raw,startMs:0,endMs:1000,speaker:'A'}]},draft_context:{claims:[{claimId:'old',claimVersionId:'v',eventId:'old',statement:'Fees may remain stable.'}]},verified_context:{active_claims:[],recent_history:[],open_questions:[],active_risks:[]}};
+ const base={claims:[source],draft_link_candidates:[link]};
+ const review={claims:[{...source,statement:raw,normalized_value:{direction:'rise',horizon:'November 2nd'}}],draft_link_candidates:[]};
+ assert.equal(retainSupportedComparisonLinks(base,review,ctx).draft_link_candidates.length,1);
+ for(const change of [{statement:raw.replace('will rise','will not rise')},{normalized_value:{direction:'fall'}},{evidence:[{...source.evidence[0],quote_hint:'Fees will fall.'}]}])assert.equal(retainSupportedComparisonLinks(base,{...review,claims:[{...review.claims[0],...change}]},ctx).draft_link_candidates.length,0);
+ assert.equal(retainSupportedComparisonLinks({...base,draft_link_candidates:[{...link,alignment:{...link.alignment,comparable_scope:false}}]},review,ctx).draft_link_candidates.length,0);
+ assert.equal(retainSupportedComparisonLinks(base,review,{...ctx,draft_context:{claims:[]}}).draft_link_candidates.length,0);
 });

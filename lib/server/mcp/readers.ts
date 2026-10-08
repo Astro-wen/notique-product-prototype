@@ -89,7 +89,9 @@ export async function readMcpTool(db:D1Database,scope:WorkflowScope,name:string,
    }
    byEntry.set(key,merged);
   }
-  const entries=[...byEntry.values()];
+  // Initial accepted facts are already in byEntry. Export their changes once.
+  const entries=[...byEntry.values(),...(brief.timeline ?? []).filter(entry=>entry.reviewState==='accepted' && entry.kind!=='introduced').map(entry=>({...entry,kind:'project_change',changeKind:entry.kind,
+    sources:(brief.sourceRefs ?? []).filter(ref=>sameRef(ref,entry.after.ref) || Boolean(entry.before && sameRef(ref,entry.before.ref)))}))];
   return {kind:'project_brief',contextVersion:ledger.contextVersion,counts:brief.counts,...page(boundedEntries(entries),args,await digestValue({contextVersion:ledger.contextVersion,entries}))};
  }
  if(name==='get_record_views'){

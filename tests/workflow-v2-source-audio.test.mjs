@@ -39,3 +39,12 @@ test('source context failure reaches the drawer retry path instead of guessing a
  const s=service({getEvidence:async()=>({quote:'Budget'}),getEvidenceContext:async()=>{throw denied;}});
  await assert.rejects(s.sources(['budget']),error=>error===denied);
 });
+
+test('a clarification attributes its short quote to the answer speaker rather than the preceding question', async () => {
+ const c = context({view_url:'/original-recording',start_ms:47000});
+ c.target = {quote_raw:'Oh no, we have not.',start_ms:50000};
+ c.context.target = [{speaker:'Speaker A',text:'Do you use inspection-based waivers?',start_ms:50000},{speaker:'Speaker B',text:'Oh no, we have not.',start_ms:54000}];
+ const s = service({getEvidence:async()=>({speaker:'Speaker A'}),getEvidenceContext:async()=>c});
+ const [source] = await s.sources(['clarification']);
+ assert.equal(source.speaker,'Speaker B');assert.equal(source.timestamp,'0:54');assert.equal(source.audioStartSeconds,47);
+});

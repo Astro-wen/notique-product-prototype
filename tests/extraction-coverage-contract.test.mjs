@@ -5,9 +5,9 @@ import {createHash} from 'node:crypto';
 import {existsSync,readFileSync} from 'node:fs';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
-import {workflowDatabase,seed,insert,SCOPE} from './helpers/workflow-database.mjs';
-import {STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
-import {HANDLED_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,VERIFICATION_SCHEMA_VERSION,ATOMIC_VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,inventoryContractForRun,verificationContractForRun,validateInventoryOutput,assessVerificationEscalation,verificationCoverageWarnings} from '../lib/domain/two-stage-extraction.ts';
+import {workflowDatabase,seed,insert,claim,SCOPE,T} from './helpers/workflow-database.mjs';
+import {RETRIEVED_COMPARISON_PROMPT_VERSION, MATCHED_COMPARISON_PROMPT_VERSION, VALUE_CHANGE_PROMPT_VERSION, SUPPORTED_COMPARISON_PROMPT_VERSION, SCOPED_COMPARISON_PROMPT_VERSION, CROSS_CONVERSATION_PROMPT_VERSION,CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION} from '../lib/domain/model-contract.ts';
+import {SUPPORTED_VERIFICATION_SCHEMA_VERSION, HANDLED_VERIFICATION_SCHEMA_VERSION,INVENTORY_SCHEMA_VERSION,LEGACY_INVENTORY_SCHEMA_VERSION,VERIFICATION_SCHEMA_VERSION,ATOMIC_VERIFICATION_SCHEMA_VERSION,LEGACY_VERIFICATION_SCHEMA_VERSION,inventoryContractForRun,verificationContractForRun,validateInventoryOutput,assessVerificationEscalation,verificationCoverageWarnings} from '../lib/domain/two-stage-extraction.ts';
 import {extractionCoverageSummary} from '../lib/domain/extraction-coverage.ts';
 
 // Replace only the deployment's bindings. The actual model adapter, stage
@@ -40,6 +40,33 @@ async function setup(t,{legacy=false}={}){
  f.sqlite.prepare("UPDATE extraction_runs SET status='queued',prompt_version=?,schema_version=?,provider='openai',model='synthetic-model',input_manifest_json=?,model_params_json=? WHERE id='run'").run(legacy?'claim-extraction-prompt.v9.2':CLAIM_EXTRACTION_PROMPT_VERSION,CLAIM_EXTRACTION_SCHEMA_VERSION,JSON.stringify([{asset_version_id:'av',sha256:'synthetic',parser_version:'test',kind:'text'}]),JSON.stringify({two_pass_pipeline:true,verification_uses_readable:false,...(legacy?{}:{inventory_prompt_version:CLAIM_EXTRACTION_PROMPT_VERSION,verification_schema_version:VERIFICATION_SCHEMA_VERSION})}));
  globalThis.notiqueCoverageTest={db:f.db,bindings:{AI_PROVIDER:'openai',AI_MODEL:'synthetic-model',AI_API_KEY:'synthetic-test-key',AI_API_BASE_URL:'https://model.invalid/v1',AI_VERIFICATION_USES_READABLE:'0'}};
  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;delete globalThis.notiqueCoverageTest;});return f;
+}
+
+for (const version of ['claim-extraction-prompt.v9.16', CROSS_CONVERSATION_PROMPT_VERSION, SCOPED_COMPARISON_PROMPT_VERSION, SUPPORTED_COMPARISON_PROMPT_VERSION, VALUE_CHANGE_PROMPT_VERSION, MATCHED_COMPARISON_PROMPT_VERSION, RETRIEVED_COMPARISON_PROMPT_VERSION]) {
+ test(`${version} freezes the intended local versus cross-conversation extraction instructions`, async t => {
+  const {sqlite}=await setup(t), prompts=[];
+  sqlite.prepare("UPDATE extraction_runs SET prompt_version=?,model_params_json=? WHERE id='run'").run(version,JSON.stringify({two_pass_pipeline:true,verification_uses_readable:false,inventory_prompt_version:version,verification_prompt_version:version,verification_schema_version:(version===SUPPORTED_COMPARISON_PROMPT_VERSION || (version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION)))?SUPPORTED_VERIFICATION_SCHEMA_VERSION:HANDLED_VERIFICATION_SCHEMA_VERSION}));
+  globalThis.fetch=async(url,init)=>{
+   assert.ok(String(url).startsWith('https://model.invalid/'));
+   const body=JSON.parse(init.body), schema=body.text.format.schema.properties.schema_version.enum[0];
+   prompts.push(body.input[0].content[0].text);
+   return json({id:`synthetic_cross_${prompts.length}`,status:'completed',output_text:JSON.stringify(schema===INVENTORY_SCHEMA_VERSION?inventory(schema):verification(schema,[])),usage});
+  };
+  assert.equal((await processExtractionRun('run')).status,'succeeded');
+  assert.equal(prompts.length,2);
+  for(const prompt of prompts){
+   assert.equal(prompt.includes('VALUE DIFFERENCE COMPARISON'),(version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION)));
+   if((version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION))){assert.ok(prompt.includes('ice pops cost CNY 3 per stick'));assert.ok(!prompt.includes('With missing or equal dates, require explicit source wording'));}
+
+   if(version===CROSS_CONVERSATION_PROMPT_VERSION || version===SCOPED_COMPARISON_PROMPT_VERSION || (version===SUPPORTED_COMPARISON_PROMPT_VERSION || (version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION)))){
+    assert.ok(prompt.includes('distinct conversations with different event_id'));
+    assert.ok(prompt.includes('return empty comparison links and null relations'));
+    assert.ok(!prompt.includes('include change_before and change_after'));
+    assert.equal(prompt.includes('ATTRIBUTION AND UNITS'), (version===SCOPED_COMPARISON_PROMPT_VERSION || (version===SUPPORTED_COMPARISON_PROMPT_VERSION || (version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION)))));
+    assert.equal(prompt.includes('1.8 days higher revision rates'), (version===SCOPED_COMPARISON_PROMPT_VERSION || (version===SUPPORTED_COMPARISON_PROMPT_VERSION || (version===VALUE_CHANGE_PROMPT_VERSION || (version===MATCHED_COMPARISON_PROMPT_VERSION || version===RETRIEVED_COMPARISON_PROMPT_VERSION)))));
+   }else assert.ok(prompt.includes('include change_before and change_after'));
+  }
+ });
 }
 
 
@@ -136,15 +163,90 @@ test('coverage notes sanitize unknown errors, invalid flags, duplicate statement
  assert.equal(notes.omittedStatements.length,200);assert.equal(notes.omittedStatements[0],'unresolved count');assert.equal(notes.omittedStatements[1].length,8000);assert.ok(!JSON.stringify(notes).includes('private-error'));
 });
 
-test('new run freezes inventory v4, verification v7, both 64 limits and configured token budget without provider work',async t=>{
+test('new run freezes inventory v4, verification v8, both 64 limits and configured token budget without provider work',async t=>{
  const {sqlite}=await setup(t);globalThis.fetch=async()=>{throw Error('Run creation must not invoke a model.');};
  for(const budget of [24000,64000]){
   sqlite.prepare("UPDATE extraction_runs SET status='succeeded'").run();sqlite.prepare("UPDATE events SET material_status='ready',active_run_id=NULL WHERE id='e'").run();
   Object.assign(globalThis.notiqueCoverageTest.bindings,{AI_TWO_PASS_PIPELINE:'1',AI_MAX_OUTPUT_TOKENS:String(budget),WORKSPACE_MONTHLY_TOKEN_BUDGET:'1000000'});
   const created=await createExtractionRun(SCOPE,'e',`new-contract-${budget}`,['av']);assert.equal(created.created,true);
   const row=sqlite.prepare('SELECT * FROM extraction_runs WHERE id=?').get(created.run.id),params=JSON.parse(row.model_params_json);
-  assert.equal(row.prompt_version,STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,HANDLED_VERIFICATION_SCHEMA_VERSION);assert.equal(params.closed_followup_policy,'same-source-current-closure.v1');
+  assert.equal(row.prompt_version,RETRIEVED_COMPARISON_PROMPT_VERSION);assert.equal(params.inventory_schema_version,INVENTORY_SCHEMA_VERSION);assert.equal(params.verification_schema_version,SUPPORTED_VERIFICATION_SCHEMA_VERSION);assert.equal(params.closed_followup_policy,'same-source-current-closure.v1');
   assert.equal(params.inventory_candidate_limit,64);assert.equal(params.final_claim_limit,64);assert.equal(params.retention_policy,'explicit-followups.v1');assert.equal(params.max_output_tokens,budget);
   assert.equal(sqlite.prepare('SELECT count(*) n FROM extraction_model_stages').get().n,0);
  }
+});
+
+test('enabled comparison includes another unreviewed meeting at the same timestamp, while opt-out freezes no drafts', async t => {
+ const {sqlite} = await setup(t);
+ globalThis.fetch = async () => { throw Error('Run creation must not invoke a model.'); };
+ insert(sqlite, 'events', {id:'other_event',workspace_id:'ws',project_id:'p',event_type:'meeting',title:'Different bank',occurred_at:T,sequence_no:2,active_run_id:'other_run'});
+ insert(sqlite, 'extraction_runs', {id:'other_run',workspace_id:'ws',project_id:'p',event_id:'other_event',status:'succeeded',idempotency_key:'other',input_hash:'other',input_snapshot_hash:'other',input_manifest_json:'[]',context_version:0,context_snapshot_hash:'other',prompt_version:'seed',schema_version:'seed',parser_version:'seed'});
+ claim(sqlite, 'other_budget', 'budget', '报价三十万');
+ sqlite.prepare("UPDATE claims SET event_id='other_event',first_event_id='other_event',extraction_run_id='other_run' WHERE id='other_budget'").run();
+ sqlite.prepare("UPDATE evidence_refs SET event_id='other_event' WHERE id='other_budget_ev'").run();
+ const relationCount = sqlite.prepare('SELECT count(*) n FROM claim_relations').get().n;
+ Object.assign(globalThis.notiqueCoverageTest.bindings, {AI_TWO_PASS_PIPELINE:'1',WORKSPACE_MONTHLY_TOKEN_BUDGET:'1000000'});
+ for (const enabled of [true, false]) {
+  if (enabled) globalThis.notiqueCoverageTest.bindings.AI_DRAFT_CONTEXT = '1';
+  else globalThis.notiqueCoverageTest.bindings.AI_DRAFT_CONTEXT = '0';
+  sqlite.prepare("UPDATE extraction_runs SET status='succeeded'").run();
+  sqlite.prepare("UPDATE events SET material_status='ready',active_run_id=NULL WHERE id='e'").run();
+  const created = await createExtractionRun(SCOPE, 'e', `same-time-draft-${enabled}`, ['av']);
+  const params = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
+  assert.equal(params.draft_context, enabled);
+  assert.deepEqual(params.draft_context_manifest, enabled ? [{claim_id:'other_budget',claim_version_id:'other_budget_v1'}] : []);
+ }
+ assert.equal(sqlite.prepare("SELECT review_status FROM claims WHERE id='other_budget'").get().review_status, 'pending');
+ assert.equal(sqlite.prepare('SELECT count(*) n FROM claim_relations').get().n, relationCount);
+});
+
+test('unsupported comparison proof is escalated once then excluded while both original records remain readable', async t => {
+ const {sqlite} = await setup(t);
+ insert(sqlite, 'events', {id:'other_event',workspace_id:'ws',project_id:'p',event_type:'meeting',title:'Different bank',occurred_at:T,sequence_no:2,active_run_id:'other_run'});
+ insert(sqlite, 'extraction_runs', {id:'other_run',workspace_id:'ws',project_id:'p',event_id:'other_event',status:'succeeded',idempotency_key:'other',input_hash:'other',input_snapshot_hash:'other',input_manifest_json:'[]',context_version:0,context_snapshot_hash:'other',prompt_version:'seed',schema_version:'seed',parser_version:'seed'});
+ claim(sqlite, 'other_budget', 'budget', '报价三十万');
+ sqlite.prepare("UPDATE claims SET event_id='other_event',first_event_id='other_event',extraction_run_id='other_run' WHERE id='other_budget'").run();
+ sqlite.prepare("UPDATE evidence_refs SET event_id='other_event' WHERE id='other_budget_ev'").run();
+ sqlite.prepare("UPDATE extraction_runs SET status='succeeded' WHERE id='run'").run();
+ sqlite.prepare("UPDATE events SET material_status='ready',active_run_id=NULL WHERE id='e'").run();
+ Object.assign(globalThis.notiqueCoverageTest.bindings,{AI_DRAFT_CONTEXT:'1', AI_TWO_PASS_PIPELINE:'1', AI_VERIFIER_REASONING_EFFORT:'low', WORKSPACE_MONTHLY_TOKEN_BUDGET:'1000000'});
+ const created = await createExtractionRun(SCOPE,'e','comparison-proof',['av']);
+ const params = JSON.parse(sqlite.prepare('SELECT model_params_json FROM extraction_runs WHERE id=?').get(created.run.id).model_params_json);
+ assert.equal(params.verifier_reasoning_effort, 'medium');
+ let calls = 0;
+ globalThis.fetch = async (url, init) => {
+  assert.ok(String(url).startsWith('https://model.invalid/'));
+  const body = JSON.parse(init.body);
+  const schema = body.text.format.schema.properties.schema_version.enum[0];
+  calls++;
+  const out = schema===INVENTORY_SCHEMA_VERSION ? inventory(schema) : verification(schema,[]);
+  if (schema!==INVENTORY_SCHEMA_VERSION) out.draft_link_candidates = [{final_claim_key:'agreement',target_draft_claim_id:'other_budget',target_draft_claim_version_id:'other_budget_v1',type:'possibly_answered',reason:'This does not answer the narrower question.',confidence:0.95,alignment:{same_subject:true,same_dimension:false,comparable_scope:true,conclusion_supported:false}}];
+  return json({id:`proof_${calls}`,status:'completed',output_text:JSON.stringify(out),usage});
+ };
+ const result = await processExtractionRun(created.run.id);
+ assert.equal(result.status,'completed_with_warnings',JSON.stringify(result));
+ assert.equal(calls,3);
+ assert.equal(sqlite.prepare('SELECT count(*) n FROM draft_link_candidates').get().n,0);
+ assert.equal(sqlite.prepare("SELECT review_status FROM claims WHERE id='other_budget'").get().review_status,'pending');
+ assert.equal(sqlite.prepare('SELECT count(*) n FROM claims WHERE extraction_run_id=?').get(created.run.id).n,2);
+ assert.equal(sqlite.prepare("SELECT count(*) n FROM claim_relations WHERE target_claim_version_id='other_budget_v1'").get().n,0);
+ const warning = sqlite.prepare('SELECT error_details_json FROM extraction_runs WHERE id=?').get(created.run.id).error_details_json;
+ assert.ok(warning.includes('MODEL_COMPARISON_QUALITY_UNRESOLVED'));
+});
+
+test('v21 retains an unmatched quote as a contextual source-check question, never an accepted fact',async t=>{
+ const {sqlite}=await setup(t);
+ sqlite.prepare("UPDATE extraction_runs SET prompt_version=?,model_params_json=? WHERE id='run'").run(MATCHED_COMPARISON_PROMPT_VERSION,JSON.stringify({two_pass_pipeline:true,verification_uses_readable:false,inventory_prompt_version:MATCHED_COMPARISON_PROMPT_VERSION,verification_prompt_version:MATCHED_COMPARISON_PROMPT_VERSION,verification_schema_version:SUPPORTED_VERIFICATION_SCHEMA_VERSION}));
+ globalThis.fetch=async(url,init)=>{
+  const body=JSON.parse(init.body),schema=body.text.format.schema.properties.schema_version.enum[0];
+  const output=schema===INVENTORY_SCHEMA_VERSION?inventory(schema):verification(schema,[]);
+  if(output.claims)for(const c of output.claims)c.evidence=c.evidence.map(e=>({...e,quote_hint:'The invented price is 900 dollars.'}));
+  return json({id:'test_unmatched',status:'completed',output_text:JSON.stringify(output),usage});
+ };
+ await processExtractionRun('run');
+ const saved=sqlite.prepare('SELECT statement,normalized_value_json FROM claim_versions').all();
+ assert.equal(saved.length,2);
+ for(const row of saved){assert.match(row.statement,/核对原文/);assert.equal(JSON.parse(row.normalized_value_json).source_match_status,'unverified');}
+ assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM evidence_refs WHERE evidence_role != 'contextual'").get().n,0);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM draft_link_candidates').get().n,0);
 });

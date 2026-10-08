@@ -10,6 +10,15 @@ export type ParseTranscriptInput = {
   format?: "auto" | "txt" | "vtt" | "srt" | "json";
 };
 
+/** Generic text uploads may contain subtitle exports with a .txt filename. */
+export function transcriptUploadFormat(filename: string, mimeType: string): NonNullable<ParseTranscriptInput['format']> {
+  const extension = filename.toLowerCase().split('.').at(-1);
+  if (extension === 'vtt' || mimeType === 'text/vtt') return 'vtt';
+  if (extension === 'srt' || mimeType === 'application/x-subrip') return 'srt';
+  if (extension === 'json' || mimeType === 'application/json') return 'json';
+  return 'auto';
+}
+
 type DraftSegment = {
   speaker: string | null;
   startMs: number | null;

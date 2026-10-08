@@ -3,7 +3,7 @@
 import { ChevronLeft, ChevronRight, FolderOpen, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
 import type { Event } from '@/app/api-client';
-import { conversationOrder, conversationDate } from '@/lib/domain/conversation-navigation';
+import { conversationOrder, conversationCaption, conversationLabels } from '@/lib/domain/conversation-navigation';
 import styles from './workspace-navigation.module.css';
 
 type WorkspaceTab = 'highlights' | 'materials' | 'transcript' | 'review' | 'results';
@@ -12,6 +12,7 @@ type Props = {
   events: Event[];
   event: Event | null;
   activeTab: WorkspaceTab;
+  returnTab?: WorkspaceTab;
   busy: boolean;
   loading: boolean;
   materialCount: number;
@@ -21,8 +22,9 @@ type Props = {
   onDelete: (id: string) => void;
 };
 
-export function WorkspaceNavigation({ projectName, events, event, activeTab, busy, loading, materialCount, onSelect, onTab, onAdd, onDelete }: Props) {
+export function WorkspaceNavigation({ projectName, events, event, activeTab, returnTab = 'highlights', busy, loading, materialCount, onSelect, onTab, onAdd, onDelete }: Props) {
   const ordered = conversationOrder(events);
+  const labels = conversationLabels(events.map(item => item.id === event?.id ? event : item));
   const index = ordered.findIndex(item => item.id === event?.id);
   const projectScope = activeTab === 'results';
   const disabled = busy || loading;
@@ -34,7 +36,7 @@ export function WorkspaceNavigation({ projectName, events, event, activeTab, bus
       </div>
       <div className={styles.scopes} aria-label="查看范围">
         <button aria-pressed={projectScope} aria-label="整个项目" onClick={() => onTab('results')}>项目总览<span>{events.length} 次对话</span></button>
-        <button aria-pressed={!projectScope} onClick={() => onTab('highlights')}>当前对话</button>
+        <button aria-pressed={!projectScope} onClick={() => { if (projectScope) onTab(returnTab === 'results' ? 'highlights' : returnTab); }}>当前对话</button>
       </div>
     </div>
     <div className={styles.conversationBar}>
@@ -43,7 +45,7 @@ export function WorkspaceNavigation({ projectName, events, event, activeTab, bus
         <label className={styles.selectLabel}><span className="visually-hidden">选择对话</span>
           <select aria-label="选择对话" value={event?.id ?? ''} disabled={disabled || !events.length} onChange={change => onSelect(change.target.value)}>
             {!event && <option value="">选择对话</option>}
-            {ordered.map(item => <option key={item.id} value={item.id}>{conversationDate(item)} · {item.id === event?.id ? event.title : item.title}</option>)}
+            {ordered.map(item => <option key={item.id} value={item.id}>{conversationCaption(item,labels.get(item.id) ?? item.title)}</option>)}
           </select>
         </label>
         <button className={styles.iconButton} disabled={disabled || index < 0 || index >= ordered.length - 1} aria-label="下一段对话" title="下一段对话" onClick={() => onSelect(ordered[index + 1].id)}><ChevronRight size={16}/></button>

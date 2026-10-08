@@ -1,4 +1,5 @@
 import type { ClaimWithVersion, ProjectLedger, TranscriptSegment } from "./types";
+import { conversationTime } from './comparison-order.ts';
 
 export const CONTEXT_PACK_SCHEMA_VERSION = "context-pack.v3" as const;
 
@@ -15,6 +16,8 @@ export type ContextClaim = {
   lastRepeatedAt: string | null;
   repeatCount: number;
   eventId: string;
+  eventOccurredAt?: string | null;
+  eventTitle?: string;
   evidenceRefIds: string[];
 };
 
@@ -42,10 +45,14 @@ export type ClosedFollowupContext = {
  * and cannot be cited as Evidence or used as a formal Relation target.
  */
 export type DraftContextClaim = {
+  /** Included only for scoped-comparison runs. */
+  normalizedValue?: Record<string, unknown> | null;
   claimId: string;
   claimVersionId: string;
   eventId: string;
   eventSequenceNo: number;
+  eventOccurredAt?: string | null;
+  eventTitle?: string;
   type: ClaimWithVersion["type"];
   statement: string;
   confidence: number;
@@ -91,6 +98,8 @@ export type ContextPack = {
   };
   new_event: {
     event_id: string;
+    occurred_at?: string | null;
+    title?: string;
     transcript_segments: TranscriptSegment[];
     /**
      * Optional reading aid for the verification stage. It is never an
@@ -137,6 +146,9 @@ export function buildContextPack(input: {
   }>;
   draftClaims?: DraftContextClaim[];
   draftContextEnabled?: boolean;
+  chronologyEnabled?: boolean;
+  sourceIdentityEnabled?: boolean;
+  dateReliabilityEnabled?: boolean;
 }): ContextPack {
   const event = input.ledger.events.find((candidate) => candidate.id === input.eventId);
   if (!event) throw new Error("CONTEXT_EVENT_OUTSIDE_PROJECT");
@@ -145,6 +157,13 @@ export function buildContextPack(input: {
   }
 
   const verified = input.ledger.claims.filter((claim) => claim.reviewStatus === "verified");
+  const eventTimes=new Map(input.ledger.events.map(item=>[item.id,input.dateReliabilityEnabled && conversationTime(item)===null ? null : item.occurredAt]));
+  const eventTitles = new Map(input.ledger.events.map(item => [item.id, item.title]));
+  const timedClaim = (claim: ClaimWithVersion): ContextClaim => ({
+    ...contextClaim(claim),
+    ...(input.chronologyEnabled === false ? {} : { eventOccurredAt: eventTimes.get(claim.eventId) ?? null }),
+    ...(input.sourceIdentityEnabled ? { eventTitle: eventTitles.get(claim.eventId) ?? '' } : {}),
+  });
   const active = verified.filter((claim) => claim.lifecycleStatus === "active");
   const openQuestions = active.filter((claim) => claim.type === "open_question");
   const activeRisks = active.filter(
@@ -174,16 +193,20 @@ export function buildContextPack(input: {
       sourceKind: entry.sourceKind ?? "verified_claim",
       claimVersionId: entry.claimVersionId,
     }));
-  const orderedDraftClaims = [...(input.draftClaims ?? [])]
+  const orderedDraftClaims = [...(input.draftClaims ?? [])].map(claim => ({
+    ...claim,
+    eventOccurredAt: input.chronologyEnabled === false ? undefined : input.dateReliabilityEnabled && conversationTime({title:claim.eventTitle ?? eventTitles.get(claim.eventId) ?? '',occurredAt:claim.eventOccurredAt ?? eventTimes.get(claim.eventId) ?? ''})===null ? null : claim.eventOccurredAt ?? eventTimes.get(claim.eventId) ?? null,
+    ...(input.sourceIdentityEnabled ? { eventTitle: claim.eventTitle ?? eventTitles.get(claim.eventId) ?? '' } : {}),
+  }))
       .filter((claim) => claim.eventId !== input.eventId && claim.evidenceRefIds.length > 0)
       .sort((left, right) =>
-        left.eventSequenceNo - right.eventSequenceNo ||
+        (Date.parse(left.eventOccurredAt ?? '') || left.eventSequenceNo) - (Date.parse(right.eventOccurredAt ?? '') || right.eventSequenceNo) ||
         left.claimVersionId.localeCompare(right.claimVersionId));
   const recentDraftEventIds = new Set(
     [...new Map(
       [...orderedDraftClaims]
         .reverse()
-        .map((claim) => [claim.eventId, claim.eventSequenceNo] as const),
+        .map((claim) => [claim.eventId, Date.parse(claim.eventOccurredAt ?? '') || claim.eventSequenceNo] as const),
     ).entries()]
       .sort((left, right) => right[1] - left[1])
       .slice(0, 10)
@@ -212,10 +235,10 @@ export function buildContextPack(input: {
       // claim objects to the model twice.
       active_claims: active
         .filter((claim) => !specializedActiveIds.has(claim.id))
-        .map(contextClaim),
-      recent_history: history.map(contextClaim),
-      open_questions: openQuestions.map(contextClaim),
-      active_risks: activeRisks.map(contextClaim),
+        .map(timedClaim),
+      recent_history: history.map(timedClaim),
+      open_questions: openQuestions.map(timedClaim),
+      active_risks: activeRisks.map(timedClaim),
     },
     draft_context: {
       enabled: input.draftContextEnabled === true,
@@ -223,6 +246,8 @@ export function buildContextPack(input: {
     },
     new_event: {
       event_id: input.eventId,
+      ...(input.chronologyEnabled===false?{}:{occurred_at:eventTimes.get(event.id) ?? null}),
+      ...(input.sourceIdentityEnabled ? { title: event.title } : {}),
       transcript_segments: input.transcriptSegments.map((segment) => ({ ...segment })),
       readable_transcript_segments: [],
       photos: [...(input.photos ?? [])],

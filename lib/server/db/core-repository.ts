@@ -1,3 +1,4 @@
+import {FORECAST_COVERAGE_POLICY} from "@/lib/domain/forecast-coverage";
 import { MODEL_QUEUE_WAIT_MS, OPTIONAL_VERIFICATION_WAIT_MS } from "@/lib/domain/verification-wait-budget";
 import { getBindings, getD1, getEvidenceBucket } from "@/db";
 import { materialAnalysisStatements } from "@/lib/server/workflow/material-analysis";
@@ -10,11 +11,11 @@ import {
   twoPassPipelineEnabled,
 } from "@/lib/domain/model-config";
 import {
-  STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
+  RETRIEVED_COMPARISON_PROMPT_VERSION,
   CLAIM_EXTRACTION_SCHEMA_VERSION,
 } from "@/lib/domain/model-contract";
-import { HANDLED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from "@/lib/domain/two-stage-extraction";
-import { parseTranscript } from "@/lib/domain/transcript";
+import { SUPPORTED_VERIFICATION_SCHEMA_VERSION, INVENTORY_SCHEMA_VERSION, TWO_STAGE_EXTRACTION_LIMITS, EXTRACTION_RETENTION_POLICY } from "@/lib/domain/two-stage-extraction";
+import { parseTranscript, transcriptUploadFormat as transcriptFormat } from "@/lib/domain/transcript";
 import {
   DEFAULT_MAX_RUN_IMAGE_BYTES,
   isHeifLike,
@@ -159,6 +160,12 @@ const PROJECT_WITH_REVIEW_COUNTS_SELECT = `
 
 const EVENT_WITH_REVIEW_COUNTS_SELECT = `
   SELECT e.*,
+         COALESCE((SELECT MIN(a.created_at) FROM assets a
+           WHERE a.workspace_id=e.workspace_id AND a.project_id=e.project_id AND a.event_id=e.id
+             AND COALESCE(a.failure_code,'') NOT IN ('UPLOAD_ABORTED','UPLOAD_EXPIRED')
+             AND COALESCE(json_extract(a.metadata_json,'$.artifact_kind'),'') NOT IN ('readable_transcript','raw_transcript')
+             AND json_extract(a.metadata_json,'$.source_audio_asset_version_id') IS NULL
+             AND COALESCE(json_extract(a.metadata_json,'$.transcription_chunk'),0)=0),e.created_at) AS uploaded_at,
          COALESCE((
            SELECT COUNT(*) FROM claims c
             WHERE c.event_id = e.id AND c.workspace_id = e.workspace_id
@@ -1106,14 +1113,6 @@ export async function uploadTranscriptImportItem(
     );
   }
   return getTranscriptImport(scope, importId);
-}
-
-function transcriptFormat(filename: string, mimeType: string) {
-  const extension = filename.toLowerCase().split(".").at(-1);
-  if (extension === "vtt" || mimeType === "text/vtt") return "vtt" as const;
-  if (extension === "srt" || mimeType === "application/x-subrip") return "srt" as const;
-  if (extension === "json" || mimeType === "application/json") return "json" as const;
-  return "txt" as const;
 }
 
 export async function finalizeTranscriptImport(
@@ -2464,18 +2463,19 @@ export async function createExtractionRun(
            FROM (
              SELECT c.id AS claim_id,
                     c.current_version_id AS claim_version_id,
-                    source_event.sequence_no AS event_sequence_no,
+                    source_event.occurred_at AS event_occurred_at,
                     c.created_at
                FROM claims c
                JOIN events source_event ON source_event.id = c.event_id
               WHERE c.project_id = ? AND c.workspace_id = ?
                 AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
-                AND c.source = 'ai' AND source_event.sequence_no < ?
+                AND c.source = 'ai' AND source_event.id <> ?
+                AND source_event.material_status <> 'archived'
                 AND source_event.id IN (
                   SELECT recent_event.id FROM events recent_event
                    WHERE recent_event.project_id = ? AND recent_event.workspace_id = ?
-                     AND recent_event.sequence_no < ?
-                   ORDER BY recent_event.sequence_no DESC, recent_event.id DESC
+                     AND recent_event.id <> ? AND recent_event.material_status <> 'archived'
+                   ORDER BY recent_event.occurred_at DESC, recent_event.id DESC
                    LIMIT 10
                 )
                 AND source_event.active_run_id = c.extraction_run_id
@@ -2484,19 +2484,19 @@ export async function createExtractionRun(
                    WHERE er.claim_version_id = c.current_version_id
                      AND er.structural_validation_status = 'valid'
                 )
-              ORDER BY source_event.sequence_no DESC, c.created_at DESC, c.id DESC
+              ORDER BY source_event.occurred_at DESC, c.created_at DESC, c.id DESC
               LIMIT 100
            ) AS recent_claims
-          ORDER BY recent_claims.event_sequence_no,
+          ORDER BY recent_claims.event_occurred_at,
                    recent_claims.created_at,
                    recent_claims.claim_id`,
         [
           project.id,
           scope.workspaceId,
-          event.sequence_no,
+          event.id,
           project.id,
           scope.workspaceId,
-          event.sequence_no,
+          event.id,
         ],
       )).map((row) => ({
         claim_id: String(row.claim_id),
@@ -2521,11 +2521,16 @@ export async function createExtractionRun(
   );
   const maxImageUnits = configuredPositiveInteger(bindings.MAX_RUN_IMAGE_UNITS, 12);
   const reasoningEffort = normalizeOpenAiReasoningEffort(bindings.AI_REASONING_EFFORT);
-  const verifierReasoningEffort = normalizeVerifierReasoningEffort(
+  const configuredVerifierReasoningEffort = normalizeVerifierReasoningEffort(
     bindings.AI_VERIFIER_REASONING_EFFORT,
   );
   // 升级那一趟比基础 verify 高一档，并且和其他参数一起冻结在 Run 上：
   // 冻结参数要能说清这次 Run 最多花到什么程度，不能运行时临时抬价。
+  // Cross-conversation attribution and metric alignment require more than routine extraction.
+  // Keep the configured model and bound the upgrade to the existing verification call.
+  const verifierReasoningEffort = draftContextManifest.length > 0 &&
+    configuredVerifierReasoningEffort === 'low'
+    ? 'medium' : configuredVerifierReasoningEffort;
   const escalationReasoningEffort = escalatedReasoningEffort(verifierReasoningEffort);
   const imageUnits = manifest.filter((item) => item.kind === "photo").length;
   if (estimatedInputTokens > maxRunInputTokens) {
@@ -2558,18 +2563,19 @@ export async function createExtractionRun(
       optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
       background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
       closed_followup_policy: pipelineEnabled ? "same-source-current-closure.v1" : null,
+      forecast_coverage_policy: pipelineEnabled ? FORECAST_COVERAGE_POLICY : null,
       two_pass_pipeline: pipelineEnabled,
-      verification_schema_version: pipelineEnabled ? HANDLED_VERIFICATION_SCHEMA_VERSION : null,
-      inventory_prompt_version: pipelineEnabled ? STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : null,
+      verification_schema_version: pipelineEnabled ? SUPPORTED_VERIFICATION_SCHEMA_VERSION : null,
+      inventory_prompt_version: pipelineEnabled ? RETRIEVED_COMPARISON_PROMPT_VERSION : null,
       inventory_schema_version: pipelineEnabled ? INVENTORY_SCHEMA_VERSION : null,
       inventory_candidate_limit: pipelineEnabled ? TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates : null,
       final_claim_limit: pipelineEnabled ? TWO_STAGE_EXTRACTION_LIMITS.finalClaims : null,
       retention_policy: pipelineEnabled ? EXTRACTION_RETENTION_POLICY : null,
-      verification_prompt_version: pipelineEnabled ? STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : null,
+      verification_prompt_version: pipelineEnabled ? RETRIEVED_COMPARISON_PROMPT_VERSION : null,
       draft_context: draftContextEnabled,
       draft_context_manifest: draftContextManifest,
       max_model_stages: maxModelStages,
-      prompt_version: STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
+      prompt_version: RETRIEVED_COMPARISON_PROMPT_VERSION,
       schema_version: CLAIM_EXTRACTION_SCHEMA_VERSION,
       parser_version: "transcript-parser.v1",
       locale: project.locale,
@@ -2653,8 +2659,9 @@ export async function createExtractionRun(
     optional_verification_wait_ms: pipelineEnabled ? OPTIONAL_VERIFICATION_WAIT_MS : null,
     background_queue_wait_ms: MODEL_QUEUE_WAIT_MS,
     closed_followup_policy: pipelineEnabled ? "same-source-current-closure.v1" : null,
+      forecast_coverage_policy: pipelineEnabled ? FORECAST_COVERAGE_POLICY : null,
     two_pass_pipeline: pipelineEnabled,
-    ...(pipelineEnabled ? {verification_schema_version: HANDLED_VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION, inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates, final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY, verification_prompt_version: STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION} : {}),
+    ...(pipelineEnabled ? {verification_schema_version: SUPPORTED_VERIFICATION_SCHEMA_VERSION, inventory_prompt_version: RETRIEVED_COMPARISON_PROMPT_VERSION, inventory_schema_version: INVENTORY_SCHEMA_VERSION, inventory_candidate_limit: TWO_STAGE_EXTRACTION_LIMITS.inventoryCandidates, final_claim_limit: TWO_STAGE_EXTRACTION_LIMITS.finalClaims, retention_policy: EXTRACTION_RETENTION_POLICY, verification_prompt_version: RETRIEVED_COMPARISON_PROMPT_VERSION} : {}),
     draft_context: draftContextEnabled,
     draft_context_manifest: draftContextManifest,
     max_model_stages: maxModelStages,
@@ -2758,7 +2765,7 @@ export async function createExtractionRun(
       bindings.AI_PROVIDER,
       bindings.AI_MODEL,
       modelParamsJson,
-      STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,
+      RETRIEVED_COMPARISON_PROMPT_VERSION,
       CLAIM_EXTRACTION_SCHEMA_VERSION,
       timestamp,
       timestamp,

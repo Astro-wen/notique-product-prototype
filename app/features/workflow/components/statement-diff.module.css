@@ -1,0 +1,6 @@
+.removed { color: #985158; background: #fceeee; text-decoration: none; border-radius: 3px; padding: 1px 2px; }
+.added { color: #236950; background: #e8f5ee; text-decoration: none; border-radius: 3px; padding: 1px 2px; }
+.note { margin: 12px 0; padding: 10px 14px; border-left: 2px solid #d7dfed; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.note small { display: block; margin-bottom: 6px; color: #65718a; }
+.note p { margin: 4px 0; }
+.label { display: inline-block; margin-right: 10px; color: #65718a; font-size: 11px; }

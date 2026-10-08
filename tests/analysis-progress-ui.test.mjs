@@ -71,7 +71,7 @@ test("the workspace keeps analysis progress user-facing and hides internal diagn
     readFile(path.join(root, "app/globals.css"), "utf8"),
   ]);
   // 概要还没写完显示「内容生成中」，不再根据事实线在不在跑来猜。
-  assert.match(page, /overviewState === "generating" \? <ReadingGenerating \/>/);
+  assert.match(page, /overviewState === "generating" \? <ReadingGenerating sourcePending=\{sourcePending\} \/>/);
   assert.match(page, /全文概要生成未完成。/);
   assert.match(page, /buttonLabel="重新生成概要"/);
   assert.doesNotMatch(page, /data-testid="analysis-progress-journey"/);

@@ -35,11 +35,13 @@ async function assertProject(scope: RequestScope, projectId: string): Promise<vo
 }
 
 export type DraftMemoryRecord = {
+  normalized_value: Record<string, unknown> | null;
   claim_id: string;
   claim_version_id: string;
   event_id: string;
   event_title: string;
   event_sequence_no: number;
+  event_occurred_at: string;
   type: string;
   statement: string;
   confidence: number;
@@ -77,8 +79,8 @@ type DraftMemoryOptions = {
 
 const DRAFT_MEMORY_SELECT = `
   SELECT c.id AS claim_id, c.current_version_id AS claim_version_id,
-         c.event_id, e.title AS event_title, e.sequence_no AS event_sequence_no,
-         c.type, cv.statement, COALESCE(c.confidence, 0) AS confidence,
+         c.event_id, e.title AS event_title, e.sequence_no AS event_sequence_no, e.occurred_at AS event_occurred_at,
+         c.type, cv.statement, cv.normalized_value_json, COALESCE(c.confidence, 0) AS confidence,
          c.created_at,
          COALESCE((
            SELECT json_group_array(er.id)
@@ -94,6 +96,7 @@ const DRAFT_MEMORY_ELIGIBILITY = `
    WHERE c.project_id = ? AND c.workspace_id = ?
      AND c.review_status = 'pending' AND c.lifecycle_status = 'active'
      AND c.source = 'ai'
+     AND e.material_status <> 'archived'
      AND e.active_run_id = c.extraction_run_id
      AND EXISTS (
        SELECT 1 FROM evidence_refs er
@@ -124,7 +127,7 @@ async function listDraftMemoryClaims(
           AND frozen.claim_version_id = c.current_version_id
          ${DRAFT_MEMORY_ELIGIBILITY}
        ) AS frozen_claims
-       ORDER BY frozen_claims.event_sequence_no,
+       ORDER BY frozen_claims.event_occurred_at,
                 frozen_claims.created_at,
                 frozen_claims.claim_id`,
       [JSON.stringify(options.frozenClaims), projectId, scope.workspaceId],
@@ -143,13 +146,14 @@ async function listDraftMemoryClaims(
              FROM events recent_event
             WHERE recent_event.project_id = ?
               AND recent_event.workspace_id = ?
-            ORDER BY recent_event.sequence_no DESC, recent_event.id DESC
+              AND recent_event.material_status <> 'archived'
+            ORDER BY recent_event.occurred_at DESC, recent_event.id DESC
             LIMIT 10
          )
-       ORDER BY e.sequence_no DESC, c.created_at DESC, c.id DESC
+       ORDER BY e.occurred_at DESC, c.created_at DESC, c.id DESC
        LIMIT 100
      ) AS recent_claims
-     ORDER BY recent_claims.event_sequence_no,
+     ORDER BY recent_claims.event_occurred_at,
               recent_claims.created_at,
               recent_claims.claim_id`,
     [projectId, scope.workspaceId, projectId, scope.workspaceId],
@@ -191,8 +195,10 @@ export async function listProjectDraftMemory(
       event_id: String(row.event_id),
       event_title: String(row.event_title),
       event_sequence_no: Number(row.event_sequence_no),
+      event_occurred_at: String(row.event_occurred_at),
       type: String(row.type),
       statement: String(row.statement),
+      normalized_value: parseJson<Record<string, unknown> | null>(String(row.normalized_value_json ?? "null"), null),
       confidence: Number(row.confidence),
       evidence_ref_ids: parseJson<string[]>(String(row.evidence_ref_ids_json), []),
       created_at: String(row.created_at),
@@ -534,6 +540,7 @@ export async function listProjectActions(
       claim_id: String(row.claim_id),
       claim_version_id: String(row.claim_version_id),
       statement: String(row.statement),
+      normalized_value: parseJson<Record<string, unknown> | null>(String(row.normalized_value_json ?? "null"), null),
       owner: typeof normalized?.owner === "string" ? normalized.owner : null,
       due_at: typeof normalized?.due_at === "string"
         ? normalized.due_at

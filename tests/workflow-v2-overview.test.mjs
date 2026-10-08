@@ -29,6 +29,18 @@ test('overview keeps complete drafts without requiring review and reads no model
  assert.equal(s.recordSummaries[0].coverage.complete,true);assert.equal(s.access.canEdit,true);assert.deepEqual(s.recentChanges,[]);assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_outbox').get().n,0);
 });
 
+test('overview exposes the first real upload date separately from the meeting date',async t=>{
+ const {db,sqlite}=await setup(t);
+ sqlite.prepare("UPDATE events SET occurred_at='2026-09-23T12:00:00Z',created_at='2026-10-01T12:00:00Z' WHERE id='e'").run();
+ sqlite.prepare("UPDATE assets SET created_at='2026-10-06T12:00:00Z' WHERE id='asset'").run();
+ insert(sqlite,'assets',{id:'generated-date',workspace_id:'ws',project_id:'p',event_id:'e',kind:'transcript',filename:'generated.txt',metadata_json:JSON.stringify({artifact_kind:'raw_transcript'}),created_at:'2026-10-02T12:00:00Z'});
+ insert(sqlite,'assets',{id:'aborted-date',workspace_id:'ws',project_id:'p',event_id:'e',kind:'text',filename:'failed.txt',failure_code:'UPLOAD_ABORTED',created_at:'2026-10-03T12:00:00Z'});
+ const record=(await overview(db)).recordSummaries.find(r=>r.eventId==='e');
+ assert.equal(record.uploadedAt,'2026-10-06T12:00:00Z');
+ assert.equal(record.occurredAt,'2026-09-23T12:00:00Z');
+ assert.equal(record.createdAt,'2026-10-01T12:00:00Z');
+});
+
 test('answers from a newer communication replace the old question once and retain their source communication',async t=>{
  const {db,sqlite}=await setup(t);secondRecord(sqlite);
  const s=await overview(db);assert.equal(s.currentBullets.filter(b=>b.id==='answer').length,1);assert.equal(s.currentBullets.find(b=>b.id==='answer').eventId,'e2');assert.ok(!s.currentBullets.some(b=>b.id==='question'));assert.equal(s.openQuestions.length,0);assert.equal(s.recordSummaries[0].eventId,'e2');

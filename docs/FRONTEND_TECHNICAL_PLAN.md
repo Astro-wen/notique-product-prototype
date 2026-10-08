@@ -382,8 +382,8 @@ DecisionMember.questionChange.answerChoices 携带每条现有有效答案的精
 | --- | --- | --- |
 | VersionRef | claimId、claimVersionId | 指向一条信息的精确版本 |
 | WorkspaceSnapshot | access、snapshotId、contextVersion、sourceRevision、coverage、bullets、reviewCards、actions、questions、narrative、counts、nextCursor、recentDecisions?、reviewProgress?、analysisRunId?、actionHistory?、reaffirmedMentions? | 事件级一致读取快照。counts 分开返回 draftCount、needsDecisionCount、openActionCount，recentDecisions 可返回最近十次批阅的 id、revision、operation、summary、createdAt、reverted 与 choiceMode，所有集合携带同一 contextVersion access 含服务端解析的 workspaceId、actorId、canEdit，用于缓存隔离与只读展示，写入仍重新检查权限。 reviewProgress 保存当前主体的 lastCardId、finishedAt 和 remainingCount。阅读位置即时读取，个人位置变化保持业务快照稳定。 analysisRunId 返回当前 extraction_run ID，用于只读阶段进度 访问失效后前端收起正文并清理工作流快照，按账号、空间和沟通保留本页用户输入。恢复时重新获取当前快照，核对后提交。账号或空间变化清除上一主体输入，迟到回执保持原会话边界。 actionHistory 返回当前沟通已替代的行动历史，保持原行动的完成状态与结果，当前跟进、待办数量和复制记录使用 actions。 reaffirmedMentions 保留本次复述、冻结原版本和当前版本。模型关联仍为proposed，原审核与行动状态保持。存在匹配的原生确认记录、目标仍为当前采纳版本且两次出处有效时，沿用原信息、问题或行动ID。 |
-| ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs? | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。 |
-| ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 |
+| ProjectOverview | access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs?、timeline? | access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。 timeline 复用同一账本，按对话发生时间排列 introduced、updated、repeated、resolved、conflict。before 与 after 各自保留精确版本和来源。更新与解答需要已生效关系，待核对比较保留草稿状态。操作记录继续使用 recentChanges。 |
+| ReviewCard | id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId? | kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/key_detail/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 members.keyDetail 可返回 label、question、alternatives。金额、日期、人物、需求、风险或数量存在不确定性、补证需求或支持不足时进入 key_detail，确认后退出优先核对。 members.sourceDiff 兼容历史运行原话注释，保持证据和成员状态，当前阅读界面省去同场差异标注。 |
 | Bullet | id、text、claimRefs、reviewState、origin、sourceStatus、applicability?、conflictWith? | reviewState=draft/accepted，origin=source_statement/ai_suggestion/user_input/user_selection。用户选录保留原话，缺失或过期出处显式展示 并存答案的适用情况随要点展示与导出。conflictWith 保存仍待选择的旧信息精确版本，复制时标明新旧信息待选择。 |
 | Narrative | text、sentenceRefs、basedOnContextVersion、freshness、scope | freshness=current/stale/updating/failed。scope=accepted/draft/mixed，sentenceRefs 逐句含 VersionRef 与 reviewState，混合概要逐句区分采纳状态。逐句引用全部为已采纳版本时标 accepted，混合引用标 draft。更新期间显示 updating，终态停止轮询。上一版按原版本校验出处，来源失效正文为空。sentenceRefs 可含 topic 的 key 和 title，由同一次概要生成按具体主题归并，每个精确版本只属于一个主题。记录、问题、行动和结果按主题同页呈现，组名展示一次。分组只改变阅读布局，采纳、行动执行和问题解答分别保存。上一版主题仅用于仍匹配的精确版本，当前答案通过已保存的问题关联回到原主题。 主题按可独立推进的一件事归组，同次采购的供应商、报价、预算与审批归于原采购，独立采购分组。跨主题跟进保留一份Action，本地selector的relatedActionRefs使用既有精确关系跳转主卡，API/schema保持原定义。 同一培训计划的费用、审批、课程内容、练习、人数与排期归于员工培训。课程介绍和练习中的流程描述作为培训内容保留。 |
 | DecisionRequest | operation、expectedCardRevision、expectedContextVersion、members、deferUntil? | operation=confirm/edit/reject/defer/restore/accept_action/resolve_conflict/review_members。review_members 允许成员分别 confirm/edit/reject/accept_action，未提交成员保持原样。修改必须含新文本与来源归类。最多20名成员，精确成员版本、卡片版本、归属与组关系原子校验。deferUntil 为 ISO 时间或 null。用户核对就绪原话后，可确认或采用支持度为fully_supports或unreviewed的草稿。AI支持状态与人工采纳分别保留。部分支持和不支持通过修改补齐 |
@@ -694,3 +694,84 @@ PC 记录按主题展示，每组先显示最多三条已有要点。逐条确�
 2026-10-02 本地验收：完整构建与包内密钥审计通过，1414项工程测试通过，类型检查通过，lint为0错误和1条既有告警。实际浏览器覆盖1440、1366、1024像素宽度，多段对话前后切换保留原文模式，来源窗口可打开对应对话并定位条目。合成装修项目实测补答案后项目要点、问题状态和变化记录同步，随后撤回答案，问题恢复待解答，审计记录保留。已检查首屏留白、文字密度、焦点返回和横向溢出，浏览器未记录新的错误。模型费用、准确率和真实用户可用性尚待独立评测。
 
 2026-10-02 发言总结按说话人展示简短条目，内容对应本人陈述、提问、解释、建议与承诺。列表保留金额、条件和不确定性，旧段落继续可读。旧提示词产物显示更新发言总结入口，只更新当前记录的该项阅读内容，生成状态沿用独立任务提示。
+
+2026-10-02 本地问题修复：默认对话标题按对话时间显示为对话 01、对话 02，重复的自定义标题补充相同序号。导航、项目对话列表、来源入口和来源窗口共用显示名称，原始标题与引用编号继续保存。项目总览返回当前对话时保留原文、重点或材料位置。转写未完成时阅读区域显示逐字稿完成后自动生成，整理中的阶段列表默认展开并显示已完成项数。独立阅读任务存在时沿用该任务的产物与状态，失败后显示重试入口。概要中的金额、日期等高亮点击后定位该句引用的原话，取消按相同数字猜测重点条目的匹配。
+
+### 1.6.1 跨对话变化与关键内容核对
+
+项目总览的变化记录按对话发生时间组织。每段对话先显示三项，可展开其余内容，可按金额与日期、决定、需求与偏好、待解答、风险与顾虑筛选。旧说法与新说法分开显示，各自打开精确版本来源。再次提及同时保留原事项来源与本次原话。操作记录折叠保留。
+
+只有已生效的替代与答案关系显示已更新或已解答。待核对的比较保留草稿状态，确认内容准确、选择采用新信息、回答问题、完成行动分别执行。金额等关键内容存在疑点时先于普通行动建议进入核对队列，展示原有问题与候选说法，沿用原文、修改和稍后处理入口。清晰的普通记录可直接阅读。
+
+跨对话草稿比较也进入变化记录，显示变化待核对、答案待核对或再次提及，并分别保留两段出处。比较采用当前精确版本，来源或版本变化后重新核对。正式结论和问题状态沿用已采纳关系。MCP 复用已有的已确认事实，追加已确认变化，避免重复传递首次记录。
+
+2026-10-02 本轮验收补充：生产构建、包内密钥审计、类型检查通过，1434 项工程测试中 1433 项通过。剩余 Workers 运行测试因临时端口权限 EPERM 未完成，自动审批因额度不足拒绝执行。实际浏览器验证两段现有对话切换、金额日期筛选、精确出处窗口与返回焦点，1440×900 和 1280×720 无横向溢出。三段同一事项的变化由隔离数据库回归覆盖，真实模型质量另行验收。详见本地预览目录 ACCEPTANCE.md。
+
+
+### 2026-10-07 就地差异标注
+
+变化记录比较不同对话。全部记录保留首次内容和跨对话的再次提及。双方说法分别高亮并保留出处，普通草稿沿用阅读与就地操作。
+
+本地预览默认启用同项目跨文件比较。比较卡按对话发生时间展示先前说法和后来说法，补传较早文件时仍按实际时间排列。日期相同或标题标明日期待核对时显示对照记录与本次记录，两份来源继续可打开。比较沿用变化记录和已有核对操作。
+
+改口对应同一事项的实质变化。原数值再次出现时保留再次提及，预算中的不同费用各自呈现。答案候选引用实际回答该问题的条目，下一步建议继续留在待办区域。未核对的比较保留候选状态。
+
+日期待核对的对话在选择器、对话列表、变化记录和来源窗口保持同一标识。已经含有同一天日期的标题沿用原标题，省去重复日期前缀。
+
+
+### 2026-10-07 概览补充与展示型比较
+
+跨对话比较直接列出双方说法、颜色差异和精确来源。无需采用操作，读取比较不写入账本。当前要点把相连的新旧说法放在同一条中，展开后查看原记录。问题下直接展示相关回答，补充回答仍沿用现有入口。
+
+概览顶端按金额、日期、数量展示关键事项。总预算优先于单项费用，同名卡片只保留一张，每张保留完整限定条件和来源。查看变化进入现有变化记录，返回项目时保留之前的页签。新建对话和批量导入的本地时间字段使用本地日期，保存时转为 UTC。
+
+### 2026-10-08 统一变化记录卡片
+
+不同对话之间的比较共用简洁卡片。主标签为首次记录、再次提及、说法变化、有了回答。卡片先显示保存的概括，金额、日期、数量只有双方各有一个明确变化值时才显示短对比。查看对比展开完整双方表述及各自来源，收起与展开沿用 SmoothResize。原表述以浅紫色高亮，后续表述以浅绿色高亮。日期明确时显示此前提到与后续提到，日期未知时显示表述一与表述二。原问题与相关回答分别显示，待办的相关结果继续保留原待办语义。双方来源分别定位各自对话的精确原话。阅读卡片沿用现有状态。
+
+
+### 2026-10-08 上传日期展示
+
+对话选择器、项目对话列表、变化记录与来源窗口统一显示首次有效材料的上传日期，按上传时间排列。页面显示名称清除历史的会议日期待核对后缀，原始标题继续保存。旧记录沿用创建时间作为显示日期，缺少有效时间时显示短横线。来源窗口显示上传时间。比较中的前后说法仍按真实会议时间判断，未知时间时使用中性表述。
+
+
+### 2026-10-08 跨对话比较范围
+
+项目只有一段对话时，变化记录默认显示全部记录，各项显示首次记录。增加对话后，默认显示变化。有明确关联的后续事项显示说法变化、再次提及或有了回答，首次出处继续保留在全部记录中。用户选定的筛选保持原选择。
+
+同一录音中的澄清、改口和过去状态作为本次记录的内容，项目时间轴只比较不同对话的来源。多段录音各自谈不同事项时分别保留首次记录，变化页显示暂未记录到跨对话变化，并提供查看全部记录。对比直接列出双方说法和来源，审核、回答与完成状态沿用原流程。
+
+
+v9.18 运行冻结 claim-extraction-prompt.v9.18，保留比较主体、维度和范围。不同机构自身的观测独立记录，同一项目事项和共同市场观点可跨对话比较。费率与时长分开，单位不匹配进入现有单次复核，仍有歧义时保留原话并列出问题，异常关联留存警告。旧运行保持原冻结版本。
+
+
+v9.19 运行冻结 claim-extraction-prompt.v9.19 与 claim-verification.v8。每个跨对话候选必须提供主体、维度、范围和结论支持四项依据。统计口径或单位不同以及理由自相矛盾的关联进入单次复核，仍不可靠时保留原始信息并记录质量警告。跨对话复核为配置模型的 medium 或更高档位，普通提取保持原配置。旧运行保持原冻结版本。
+
+v1 运行冻结 forecast_coverage_policy=explicit-source-financial-forecasts.v1。程序将未覆盖的明确费用、价格和利润预期原文交给既有复核阶段，附上发言人及相邻范围说明。模型负责解释和核验，原始清单及已付费响应保留，容量仍为 64 项。此规则补齐漏读，不增加模型阶段，也不预先认定变化。
+
+
+### 2026-10-08 分段原话出处恢复
+
+同一发言人的句子被另一人的简短回应打断时，核验可按该发言人的原文匹配，并保存包含回应的完整连续来源。恢复限定在同一对话、同一材料版本、20 段以内，简短回应最多 3 段。否定、修正或实质内容继续参与原文核验。预算、日期等条目复用现有来源入口。
+
+新运行采用 explicit-source-financial-forecasts.v2。只有已提取具体财务说法的原文段落才算财务覆盖，避免同段的其他结论遮蔽费用预期。v1 运行继续复用原冻结规则。
+
+
+### 2026-10-08 按信息值识别跨对话变化
+
+新运行冻结 claim-extraction-prompt.v9.20，复用 claim-verification.v8。同一对象的同一项信息，只要两段对话中的值不同，即可显示说法变化。第二次仅说冰棍每根 3 元，也能与第一次每根 2 元形成比较，无需出现改成、上次或其他改口提示。日期、人数、状态、负责人和条件沿用同一原则。相同值显示再次提及，新信息独立记录。
+
+对齐对象与信息项后比较值，价格、日期等正在比较的值不作为范围标识。总价与单价、比例与时长仍按不同指标解释。对话日期相同或未知时保留比较，双方使用中性来源名称。比较直接展示已有卡片与差异颜色，读取不改变已确认结论。旧运行保持原冻结提示词，新规则不增加模型阶段。
+
+
+### 2026-10-08 跨对话匹配修复（v9.21）
+
+新运行冻结 `claim-extraction-prompt.v9.21`，继续使用 `claim-verification.v8`；旧运行保持原提示词与付费检查点。核验前由程序检索每项最多三个相关历史版本，交给已有核验调用判断主体、属性、单位和范围，不新增模型阶段，检索相似不等于变化。
+
+同一对象同一属性的值不同即可显示“说法变化”，不要求明确改口措辞。相同外部对象的条件性观点差异使用已有 conflicting 草稿关联，显示“表述不同”，保留双方条件、出处和颜色对照，不宣称替代或矛盾。不同机构自有统计、不同商品及总量与增量不可混比。
+
+引文允许有限停顿音恢复，保存完整原文，不放宽数值、否定或限定词。v9.21 中无法匹配但原始引用位置有效的候选保留为“核对原文”问题，出处仅为 contextual；不作为已核实事实或跨对话比较依据。越界或无效出处仍拒绝，不伪造证据。工程回归与真实模型效果单独记录。
+
+后续真实材料复测发现费用预期只有单一共同属性时被检索漏掉。新运行更新为 `claim-extraction-prompt.v9.22`：加入费用/预算属性与同类预期的检索加权，仍只提出候选，不自动创建变化；v9.21 的付费提示词和检索规则保持冻结。
+
+复核结果合并：v9.22 中，复核仅补充原文已述时间而保留原命题、归一化值、直接来源位置时，可保留首次核验的高置信显示关联。双方引文必须有效，主体/范围校验必须通过，目标仍为同一历史版本；改数值、否定、改写或来源变化均不得继承。

@@ -963,6 +963,10 @@ test("context pack is verified-only and never includes withdrawn claims", () => 
   assert.deepEqual(pack.verified_context.active_claims[0].uncertainty, active.version.uncertainty);
   assert.equal(pack.verified_context.active_claims[0].lifecycleStatus, "active");
   assert.equal(pack.verified_context.active_claims[0].repeatCount, active.repeatCount);
+  assert.equal('title' in pack.new_event, false, 'older frozen inputs keep their original shape');
+  const titled = buildContextPack({ ledger: data, contextVersion: 7, eventId: 'event-1', transcriptSegments: [segment], sourceIdentityEnabled: true });
+  assert.equal(titled.new_event.title, data.events[0].title);
+  assert.equal(titled.verified_context.active_claims[0].eventTitle, data.events.find(e => e.id === active.eventId)?.title ?? '');
 });
 
 test("model output contract rejects extra fields and invalid targets", () => {

@@ -1,5 +1,6 @@
 import { currentRecordBullets } from '../../domain/workflow-v2.ts';
 import { projectSourceRefs } from '../../domain/project-sources.ts';
+import { projectTimeline } from '../../domain/project-timeline.ts';
 import { isCompletionRecord, projectWorkspace, readJson, type ProjectionLedger } from '../../domain/workflow-projection.ts';
 import { parseWorkflowRequest, type ProjectOverview, type VersionRef, type WorkspaceQuery } from '../../shared/workflow-v2.ts';
 import { digestValue, loadWorkflowLedger, WorkflowFault, type WorkflowScope } from './snapshot-store.ts';
@@ -32,6 +33,7 @@ export function projectOverview(ledger:ProjectionLedger,now:string):ProjectOverv
     return {id:change.id,eventId:change.event_id!,text,claimRefs,createdAt:change.created_at};
   });
   const currentBullets=[...bullets.values()];
+  const timeline=projectTimeline(ledger,new Map(records.map(({event,snapshot})=>[event.id,snapshot])));
   const openQuestions=[...new Map(records.flatMap(({event,snapshot})=>snapshot.questions.filter(q=>q.resolutionState==='open').map(q=>[q.id,{...q,eventId:byId.get(q.id)?.event_id ?? event.id}] as const))).values()];
   const nextActions=[...new Map(records.flatMap(({event,snapshot})=>snapshot.actions.filter(a=>a.executionState==='open').map(a=>[a.id,{...a,eventId:byId.get(a.id)?.event_id ?? event.id}] as const))).values()];
   const sourceRefs=projectSourceRefs(ledger,[
@@ -39,11 +41,12 @@ export function projectOverview(ledger:ProjectionLedger,now:string):ProjectOverv
     ...openQuestions.flatMap(question=>[question.claimRef,...question.answerRefs,...(question.latestOutcome?.resultRefs ?? [])]),
     ...nextActions.flatMap(action=>[action.claimRef,...action.questionRefs,...(action.latestOutcome?.answerRefs ?? []),...(action.latestOutcome?.resultRefs ?? [])]),
     ...recentChanges.flatMap(change=>change.claimRefs),
+    ...timeline.flatMap(entry=>[entry.after.ref,...(entry.before?[entry.before.ref]:[])]),
   ]);
   return {access:ledger.access ?? {workspaceId:'',actorId:'',canEdit:false},snapshotId:'',contextVersion:ledger.contextVersion,nextCursor:null,
-    currentBullets,recentChanges,openQuestions,nextActions,sourceRefs,
+    currentBullets,recentChanges,openQuestions,nextActions,sourceRefs,timeline,
     counts:{draftCount:currentBullets.filter(b=>b.reviewState==='draft').length,needsDecisionCount:records.reduce((n,{event,snapshot})=>n+snapshot.reviewCards.filter(card=>card.needsDecision && card.disposition==='active' && (card.eventId ?? event.id)===event.id).length,0),openActionCount:nextActions.length,openQuestionCount:openQuestions.length},
-    recordSummaries:records.map(({event,snapshot})=>({eventId:event.id,title:event.title,occurredAt:event.occurred_at,narrative:snapshot.narrative,coverage:snapshot.coverage,counts:snapshot.counts,reviewProgress:snapshot.reviewProgress!}))};
+    recordSummaries:records.map(({event,snapshot})=>({eventId:event.id,title:event.title,occurredAt:event.occurred_at,createdAt:event.created_at,uploadedAt:event.uploaded_at ?? event.created_at,narrative:snapshot.narrative,coverage:snapshot.coverage,counts:snapshot.counts,reviewProgress:snapshot.reviewProgress!}))};
 }
 
 export async function readProjectOverview(db:D1Database,scope:WorkflowScope,projectId:string,rawQuery:WorkspaceQuery={},timestamp=new Date().toISOString()):Promise<ProjectOverview> {

@@ -1,3 +1,5 @@
+import {recoverTranscriptEvidence} from "./evidence.ts";
+import {comparisonQualityIssues, type ComparisonQualityIssue} from './comparison-quality.ts';
 import {validHandledFollowup,type HandledFollowupRef} from "./closed-followup-context.ts";
 import type { ContextPack } from "./context-pack";
 import {sameIntentGroupIssues,type SameIntentGroupProposal} from "./same-intent-groups.ts";
@@ -10,7 +12,7 @@ import type {
 } from "./model-contract";
 // The explicit extension keeps Node's native TypeScript runner and the
 // application bundler resolving this same source module identically.
-import { STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION, SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
+import { RETRIEVED_COMPARISON_PROMPT_VERSION, MATCHED_COMPARISON_PROMPT_VERSION, VALUE_CHANGE_PROMPT_VERSION, SUPPORTED_COMPARISON_PROMPT_VERSION, SCOPED_COMPARISON_PROMPT_VERSION, CROSS_CONVERSATION_PROMPT_VERSION, PARTIAL_COMPARISON_PROMPT_VERSION, CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION, DIFF_CLAIM_EXTRACTION_PROMPT_VERSION, CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION, STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION, SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_PROMPT_VERSION, LEGACY_CLAIM_EXTRACTION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, CLAIM_EXTRACTION_SCHEMA_VERSION, MODEL_CONTRACT_LIMITS, validateExtractClaimsOutput } from "./model-contract.ts";
 import type { ClaimType } from "./types";
 import type { EventSummaryOutput, ReadableTranscriptOutput } from "./event-ai-artifacts";
 import type { WorkflowNarrativePromptVersion } from "./workflow-narrative.ts";
@@ -26,15 +28,17 @@ export const VERIFICATION_SCHEMA_VERSION = "claim-verification.v6" as const;
 export const LEGACY_VERIFICATION_PROMPT_VERSION = "claim-extraction-prompt.v9.3" as const;
 export const VERIFICATION_PROMPT_VERSION = CLAIM_EXTRACTION_PROMPT_VERSION;
 export const HANDLED_VERIFICATION_SCHEMA_VERSION = "claim-verification.v7" as const;
-export function hasFollowupCoverage(version:unknown):boolean { return version===VERIFICATION_SCHEMA_VERSION || version===HANDLED_VERIFICATION_SCHEMA_VERSION; }
-export type VerificationSchemaVersion = typeof HANDLED_VERIFICATION_SCHEMA_VERSION | typeof VERIFICATION_SCHEMA_VERSION | typeof ATOMIC_VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
-export type ExtractionStagePromptVersion = typeof STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION | typeof HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION | typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION | typeof MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+export const SUPPORTED_VERIFICATION_SCHEMA_VERSION = "claim-verification.v8" as const;
+export function hasHandledVerification(version: unknown): boolean { return version === HANDLED_VERIFICATION_SCHEMA_VERSION || version === SUPPORTED_VERIFICATION_SCHEMA_VERSION; }
+export function hasFollowupCoverage(version:unknown):boolean { return version===VERIFICATION_SCHEMA_VERSION || hasHandledVerification(version); }
+export type VerificationSchemaVersion = typeof SUPPORTED_VERIFICATION_SCHEMA_VERSION | typeof HANDLED_VERIFICATION_SCHEMA_VERSION | typeof VERIFICATION_SCHEMA_VERSION | typeof ATOMIC_VERIFICATION_SCHEMA_VERSION | typeof LEGACY_VERIFICATION_SCHEMA_VERSION;
+export type ExtractionStagePromptVersion = typeof RETRIEVED_COMPARISON_PROMPT_VERSION | typeof MATCHED_COMPARISON_PROMPT_VERSION | typeof VALUE_CHANGE_PROMPT_VERSION | typeof SUPPORTED_COMPARISON_PROMPT_VERSION | typeof SCOPED_COMPARISON_PROMPT_VERSION | typeof CROSS_CONVERSATION_PROMPT_VERSION | typeof PARTIAL_COMPARISON_PROMPT_VERSION | typeof CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof DIFF_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION | typeof STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION | typeof HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION | typeof LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION | typeof LEGACY_VERIFICATION_PROMPT_VERSION | typeof ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION | typeof MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION | typeof CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION | typeof SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION | typeof TWO_STAGE_EXTRACTION_PROMPT_VERSION;
 export const EXTRACTION_RETENTION_POLICY = "explicit-followups.v1" as const;
 
 export function inventoryContractForRun(params: Record<string, unknown>): {schemaVersion: InventorySchemaVersion; promptVersion: ExtractionStagePromptVersion; candidateLimit: 24 | 64} {
   const promptVersion = params.inventory_prompt_version ?? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION;
-  if (promptVersion !== STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion !== ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== TWO_STAGE_EXTRACTION_PROMPT_VERSION) throw new Error("Unsupported frozen inventory prompt.");
-  const modern = promptVersion === STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === TWO_STAGE_EXTRACTION_PROMPT_VERSION;
+  if (promptVersion !== RETRIEVED_COMPARISON_PROMPT_VERSION && promptVersion !== MATCHED_COMPARISON_PROMPT_VERSION && promptVersion !== VALUE_CHANGE_PROMPT_VERSION && promptVersion !== SUPPORTED_COMPARISON_PROMPT_VERSION && promptVersion !== SCOPED_COMPARISON_PROMPT_VERSION && promptVersion !== CROSS_CONVERSATION_PROMPT_VERSION && promptVersion !== PARTIAL_COMPARISON_PROMPT_VERSION && promptVersion !== CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== DIFF_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION && promptVersion !== ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION && promptVersion !== TWO_STAGE_EXTRACTION_PROMPT_VERSION) throw new Error("Unsupported frozen inventory prompt.");
+  const modern = (promptVersion === RETRIEVED_COMPARISON_PROMPT_VERSION || promptVersion === MATCHED_COMPARISON_PROMPT_VERSION) || promptVersion === VALUE_CHANGE_PROMPT_VERSION || promptVersion === SUPPORTED_COMPARISON_PROMPT_VERSION || promptVersion === SCOPED_COMPARISON_PROMPT_VERSION || promptVersion === CROSS_CONVERSATION_PROMPT_VERSION || promptVersion === PARTIAL_COMPARISON_PROMPT_VERSION || promptVersion === CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === DIFF_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION || promptVersion === TWO_STAGE_EXTRACTION_PROMPT_VERSION;
   const schemaVersion = modern ? INVENTORY_SCHEMA_VERSION : LEGACY_INVENTORY_SCHEMA_VERSION;
   const candidateLimit = modern ? 64 : 24;
   if (params.inventory_schema_version !== undefined && params.inventory_schema_version !== schemaVersion) throw new Error("Unsupported frozen inventory schema.");
@@ -44,9 +48,9 @@ export function inventoryContractForRun(params: Record<string, unknown>): {schem
 
 export function verificationContractForRun(params: Record<string, unknown>): {schemaVersion: VerificationSchemaVersion; promptVersion: ExtractionStagePromptVersion; claimLimit: 24 | 64} {
   const version = params.verification_schema_version ?? LEGACY_VERIFICATION_SCHEMA_VERSION;
-  if (version !== HANDLED_VERIFICATION_SCHEMA_VERSION && version !== LEGACY_VERIFICATION_SCHEMA_VERSION && version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && version !== VERIFICATION_SCHEMA_VERSION) throw new Error("Unsupported frozen verification schema.");
-  const promptVersion = params.verification_prompt_version ?? (version === HANDLED_VERIFICATION_SCHEMA_VERSION ? HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : version === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? LEGACY_VERIFICATION_PROMPT_VERSION : VERIFICATION_PROMPT_VERSION);
-  const allowed: readonly unknown[] = version === HANDLED_VERIFICATION_SCHEMA_VERSION ? [HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION] : version === LEGACY_VERIFICATION_SCHEMA_VERSION ? [LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION] : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? [LEGACY_VERIFICATION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION] : [COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION];
+  if (version !== SUPPORTED_VERIFICATION_SCHEMA_VERSION && version !== HANDLED_VERIFICATION_SCHEMA_VERSION && version !== LEGACY_VERIFICATION_SCHEMA_VERSION && version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && version !== VERIFICATION_SCHEMA_VERSION) throw new Error("Unsupported frozen verification schema.");
+  const promptVersion = params.verification_prompt_version ?? (version === SUPPORTED_VERIFICATION_SCHEMA_VERSION ? SUPPORTED_COMPARISON_PROMPT_VERSION : version === HANDLED_VERIFICATION_SCHEMA_VERSION ? HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION : version === LEGACY_VERIFICATION_SCHEMA_VERSION ? LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? LEGACY_VERIFICATION_PROMPT_VERSION : VERIFICATION_PROMPT_VERSION);
+  const allowed: readonly unknown[] = version === SUPPORTED_VERIFICATION_SCHEMA_VERSION ? [SUPPORTED_COMPARISON_PROMPT_VERSION, VALUE_CHANGE_PROMPT_VERSION, MATCHED_COMPARISON_PROMPT_VERSION, RETRIEVED_COMPARISON_PROMPT_VERSION] : version === HANDLED_VERIFICATION_SCHEMA_VERSION ? [HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,STRICT_HANDLED_CLAIM_EXTRACTION_PROMPT_VERSION,CHRONOLOGICAL_CLAIM_EXTRACTION_PROMPT_VERSION,DIFF_CLAIM_EXTRACTION_PROMPT_VERSION,CROSS_FILE_CLAIM_EXTRACTION_PROMPT_VERSION,PARTIAL_COMPARISON_PROMPT_VERSION,CROSS_CONVERSATION_PROMPT_VERSION,SCOPED_COMPARISON_PROMPT_VERSION] : version === LEGACY_VERIFICATION_SCHEMA_VERSION ? [LEGACY_TWO_STAGE_EXTRACTION_PROMPT_VERSION] : version === ATOMIC_VERIFICATION_SCHEMA_VERSION ? [LEGACY_VERIFICATION_PROMPT_VERSION, ATOMIC_TASK_CLAIM_EXTRACTION_PROMPT_VERSION] : [COVERAGE_CLAIM_EXTRACTION_PROMPT_VERSION, SERVICE_ACTION_CLAIM_EXTRACTION_PROMPT_VERSION, MATERIAL_CLAIM_EXTRACTION_PROMPT_VERSION, CONCRETE_TASK_CLAIM_EXTRACTION_PROMPT_VERSION, SHORT_REFERENCE_CLAIM_EXTRACTION_PROMPT_VERSION, VERIFICATION_PROMPT_VERSION];
   if (!allowed.includes(promptVersion)) throw new Error("Unsupported frozen verification prompt.");
   const claimLimit = hasFollowupCoverage(version) ? 64 : 24;
   if (params.final_claim_limit !== undefined && params.final_claim_limit !== claimLimit) throw new Error("Unsupported frozen final claim limit.");
@@ -107,6 +111,7 @@ export type InventoryDisposition = {
 export type DraftLinkType = "same" | "changed" | "conflicting" | "possibly_answered";
 
 export type DraftLinkCandidate = {
+  alignment?: {same_subject: boolean; same_dimension: boolean; comparable_scope: boolean; conclusion_supported: boolean};
   final_claim_key: string;
   target_draft_claim_id: string;
   target_draft_claim_version_id: string;
@@ -206,7 +211,10 @@ export type ContractValidation<T> = {
 };
 
 export type VerificationEscalationReason =
+  | "metric_unit_mismatch"
+  | "comparison_scope_mismatch"
   | "verification_contract_invalid"
+  | "critical_evidence_invalid"
   | "inventory_candidate_unmapped"
   | "critical_candidate_dropped"
   | "supported_followup_dropped"
@@ -216,6 +224,7 @@ export type VerificationEscalationReason =
   | "reaffirmed_issue";
 
 export type VerificationEscalation = {
+  comparisonIssues: ComparisonQualityIssue[];
   required: boolean;
   reasons: VerificationEscalationReason[];
   unmappedInventoryKeys: string[];
@@ -384,13 +393,38 @@ export function validateInventoryOutput(value: unknown): ContractValidation<Inve
  * needs_additional_evidence 留成 false。这类自相矛盾能机械消解，不值得
  * 整份丢掉再花一次钱重跑。修复一律取保守的那一边，并把动作记下来。
  *
- * 只改这两类。内容层面的问题（漏掉候选、矛盾没解决）交给
+ * 只修可机械验证的结构。内容层面的问题（漏掉候选、矛盾没解决）交给
  * assessVerificationEscalation，那边本来就在看。
  */
 export function repairVerificationOutput(value: unknown, context?: ContextPack): { value: unknown; repairs: string[] } {
   if (!record(value)) return { value, repairs: [] };
   const repairs: string[] = [];
   const repaired: Record<string, unknown> = { ...value };
+
+  // A verifier may use an inventory key in a final-claim quality flag. Resolve
+  // only its explicit, unambiguous disposition; never discard the warning or
+  // infer a target from similar text. All factual references remain untouched.
+  if (value.schema_version === "claim-verification.v8" && record(value.quality_review) &&
+      Array.isArray(value.claims) && Array.isArray(value.candidate_dispositions)) {
+    const finalKeys = new Set(value.claims.flatMap(claim => record(claim) && typeof claim.client_claim_key === "string" ? [claim.client_claim_key] : []));
+    const dispositions = value.candidate_dispositions;
+    const quality = { ...value.quality_review };
+    for (const field of ["compound_claim_keys", "reaffirmed_issue_claim_keys"] as const) {
+      const flags = quality[field];
+      if (!Array.isArray(flags)) continue;
+      quality[field] = flags.flatMap(key => {
+        if (typeof key !== "string" || finalKeys.has(key)) return [key];
+        const matches = dispositions.filter(item => record(item) && item.inventory_key === key);
+        const match = matches.length === 1 ? matches[0] : null;
+        if (!record(match) || !["included", "merged"].includes(String(match.outcome)) ||
+            !Array.isArray(match.final_claim_keys) || !match.final_claim_keys.length ||
+            !match.final_claim_keys.every(ref => typeof ref === "string" && finalKeys.has(ref))) return [key];
+        repairs.push(`mapped ${field} inventory key ${key} to ${match.final_claim_keys.join(", ")}`);
+        return match.final_claim_keys;
+      });
+    }
+    repaired.quality_review = quality;
+  }
 
   if (Array.isArray(value.candidate_dispositions)) {
     const seen = new Set<string>();
@@ -456,7 +490,7 @@ export function validateVerificationOutput(
   const claimLimit = verificationClaimLimit(value.schema_version as VerificationSchemaVersion);
   exactKeys(value, ["schema_version", "event_id", "scenario_assessment", "claims", "candidate_dispositions", "draft_link_candidates", "quality_review", ...(legacy?[]:["same_intent_groups"])], "$", issues);
   if(!legacy)issues.push(...sameIntentGroupIssues(value.same_intent_groups));
-  if (value.schema_version !== HANDLED_VERIFICATION_SCHEMA_VERSION && value.schema_version !== VERIFICATION_SCHEMA_VERSION && value.schema_version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && !legacy) {
+  if (value.schema_version !== SUPPORTED_VERIFICATION_SCHEMA_VERSION && value.schema_version !== HANDLED_VERIFICATION_SCHEMA_VERSION && value.schema_version !== VERIFICATION_SCHEMA_VERSION && value.schema_version !== ATOMIC_VERIFICATION_SCHEMA_VERSION && !legacy) {
     issues.push({ path: "$.schema_version", message: "Unsupported verification schema version." });
   }
   if (value.event_id !== inventory.event_id) {
@@ -508,10 +542,10 @@ export function validateVerificationOutput(
       issues.push({ path, message: "Expected an object." });
       return;
     }
-    exactKeys(disposition, ["inventory_key", "outcome", "final_claim_keys", "reason",...(value.schema_version===HANDLED_VERIFICATION_SCHEMA_VERSION && "handled_ref" in disposition?["handled_ref"]:[])], path, issues);
+    exactKeys(disposition, ["inventory_key", "outcome", "final_claim_keys", "reason",...(hasHandledVerification(value.schema_version) && "handled_ref" in disposition?["handled_ref"]:[])], path, issues);
     boundedString(disposition.inventory_key, `${path}.inventory_key`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
     boundedString(disposition.reason, `${path}.reason`, issues, TWO_STAGE_EXTRACTION_LIMITS.dispositionReasonLength);
-    if (!DISPOSITION_OUTCOMES.has(disposition.outcome as InventoryDispositionOutcome) && !(value.schema_version===HANDLED_VERIFICATION_SCHEMA_VERSION && disposition.outcome==="already_handled")) {
+    if (!DISPOSITION_OUTCOMES.has(disposition.outcome as InventoryDispositionOutcome) && !(hasHandledVerification(value.schema_version) && disposition.outcome==="already_handled")) {
       issues.push({ path: `${path}.outcome`, message: "Unsupported inventory disposition." });
     }
     if (typeof disposition.inventory_key === "string") {
@@ -565,7 +599,15 @@ export function validateVerificationOutput(
         issues.push({ path, message: "Expected an object." });
         return;
       }
-      exactKeys(link, ["final_claim_key", "target_draft_claim_id", "target_draft_claim_version_id", "type", "reason", "confidence"], path, issues);
+      exactKeys(link, ["final_claim_key", "target_draft_claim_id", "target_draft_claim_version_id", "type", "reason", "confidence", ...(value.schema_version === SUPPORTED_VERIFICATION_SCHEMA_VERSION ? ["alignment"] : [])], path, issues);
+      if (value.schema_version === SUPPORTED_VERIFICATION_SCHEMA_VERSION) {
+        const keys = ["same_subject", "same_dimension", "comparable_scope", "conclusion_supported"];
+        if (!record(link.alignment)) issues.push({path: `${path}.alignment`, message: "Comparison alignment is required."});
+        else {
+          exactKeys(link.alignment, keys, `${path}.alignment`, issues);
+          for (const key of keys) if (typeof link.alignment[key] !== "boolean") issues.push({path: `${path}.alignment.${key}`, message: "Expected a boolean."});
+        }
+      }
       boundedString(link.final_claim_key, `${path}.final_claim_key`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
       boundedString(link.target_draft_claim_id, `${path}.target_draft_claim_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
       boundedString(link.target_draft_claim_version_id, `${path}.target_draft_claim_version_id`, issues, MODEL_CONTRACT_LIMITS.identifierLength);
@@ -635,9 +677,13 @@ export function assessVerificationEscalation(
   inventory: InventoryOutput,
   verification: unknown,
   context?: ContextPack,
+  scopedComparisons = false,
 ): VerificationEscalation {
   const validation = validateVerificationOutput(verification, inventory, context);
   const reasons = new Set<VerificationEscalationReason>();
+  const comparisonIssues = scopedComparisons && validation.output
+    ? comparisonQualityIssues(validation.output.claims, validation.output.draft_link_candidates, context) : [];
+  comparisonIssues.forEach(issue => reasons.add(issue.reason));
   if (!validation.valid) reasons.add("verification_contract_invalid");
 
   const value = record(verification) ? verification : {};
@@ -653,10 +699,34 @@ export function assessVerificationEscalation(
     .map((candidate) => candidate.inventory_key);
   if (unmappedInventoryKeys.length) reasons.add("inventory_candidate_unmapped");
 
+  // Detect a fact that would disappear at persistence before choosing the paid
+  // verification result. A paraphrased quotation is not source evidence.
+  const invalidEvidenceKeys = new Set<string>();
+  if (validation.output && context?.new_event.transcript_segments.length) {
+    const segments = new Map(context.new_event.transcript_segments.map(segment=>[segment.id,segment]));
+    for (const claim of validation.output.claims) {
+      if(claim.disposition==='reaffirmed')continue;
+      const direct=claim.evidence.filter(e=>e.evidence_role==='direct');
+      if(direct.length && direct.every(e=>{
+        if(e.kind!=='text' && e.kind!=='transcript')return false;
+        return !recoverTranscriptEvidence(e.segment_ids,e.quote_hint,segments,{
+          expectedEventId:context.new_event.event_id,
+          allowedSegmentIds:new Set(context.new_event.transcript_segments.filter(segment=>segment.assetVersionId===e.asset_version_id).map(segment=>segment.id)),
+          kind:e.kind,
+        }).valid;
+      }))invalidEvidenceKeys.add(claim.client_claim_key);
+    }
+  }
   const droppedCriticalInventoryKeys = inventory.candidates
     .filter((candidate) => {
-      const outcome = dispositionByKey.get(candidate.inventory_key)?.outcome;
-      return candidate.critical && outcome !== "included" && outcome !== "merged" && !(value.schema_version===HANDLED_VERIFICATION_SCHEMA_VERSION && outcome==="already_handled" && validHandledFollowup(candidate,dispositionByKey.get(candidate.inventory_key)?.handled_ref,context));
+      const disposition=dispositionByKey.get(candidate.inventory_key);
+      const outcome = disposition?.outcome;
+      const finalKeys=disposition?.final_claim_keys;
+      if(candidate.critical && Array.isArray(finalKeys) && finalKeys.some(key=>typeof key==='string' && invalidEvidenceKeys.has(key))) {
+        reasons.add('critical_evidence_invalid');
+        return true;
+      }
+      return candidate.critical && outcome !== "included" && outcome !== "merged" && !(hasHandledVerification(value.schema_version) && outcome==="already_handled" && validHandledFollowup(candidate,dispositionByKey.get(candidate.inventory_key)?.handled_ref,context));
     })
     .map((candidate) => candidate.inventory_key);
   if (droppedCriticalInventoryKeys.length) reasons.add("critical_candidate_dropped");
@@ -681,6 +751,7 @@ export function assessVerificationEscalation(
   }
 
   return {
+    comparisonIssues,
     required: [...reasons].some((reason) => !REVIEW_ONLY_ESCALATION_REASONS.has(reason)),
     reasons: [...reasons],
     unmappedInventoryKeys,
@@ -699,6 +770,7 @@ function reviewIssueVector(
   // questionable-reaffirmed claim is still on screen and editable.
   return [
     assessment.droppedCriticalInventoryKeys.length,
+    assessment.comparisonIssues.length,
     assessment.droppedFollowUpInventoryKeys.length,
     assessment.unmappedInventoryKeys.length,
     output.quality_review.unresolved_conflict_keys.length,
@@ -708,14 +780,47 @@ function reviewIssueVector(
   ];
 }
 
+/** Keep an already proven display link when review merely annotates the same
+ * proposition. Never carry a relation across a changed value or rewritten claim. */
+export function retainSupportedComparisonLinks(base: VerificationOutput, reviewed: VerificationOutput, context: ContextPack): VerificationOutput {
+  const normalize=(text:string)=>text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
+  const segments=new Map(context.new_event.transcript_segments.map(segment=>[segment.id,segment]));
+  const hasEvidence=(claim:VerificationOutput['claims'][number])=>claim.evidence.some(e=>(e.kind==='text'||e.kind==='transcript') && e.evidence_role==='direct' && recoverTranscriptEvidence(e.segment_ids,e.quote_hint,segments,{expectedEventId:context.new_event.event_id,allowedSegmentIds:new Set(context.new_event.transcript_segments.filter(s=>s.assetVersionId===e.asset_version_id).map(s=>s.id)),kind:e.kind}).valid);
+  const links=[...reviewed.draft_link_candidates];
+  for(const link of base.draft_link_candidates){
+    if(link.confidence < 0.85 || !context.draft_context.claims.some(target=>target.claimId===link.target_draft_claim_id && target.claimVersionId===link.target_draft_claim_version_id && target.eventId!==context.new_event.event_id))continue;
+    if(links.some(saved=>saved.final_claim_key===link.final_claim_key && saved.target_draft_claim_version_id===link.target_draft_claim_version_id))continue;
+    const before=base.claims.find(c=>c.client_claim_key===link.final_claim_key),after=reviewed.claims.find(c=>c.client_claim_key===link.final_claim_key);
+    if(!before || !after || before.disposition!=='new' || after.disposition!=='new' || !hasEvidence(before) || !hasEvidence(after))continue;
+    if(!link.alignment || Object.values(link.alignment).some(value=>!value) || comparisonQualityIssues([before],[link],context).length || comparisonQualityIssues([after],[link],context).length)continue;
+    const oldValue=before.normalized_value??{},newValue=after.normalized_value??{};
+    if(Object.entries(oldValue).some(([key,value])=>newValue[key]!==value))continue;
+    let reviewedText=normalize(after.statement);
+    for(const key of ['horizon','date','time']){
+      if(oldValue[key]===undefined && typeof newValue[key]==='string'){
+        const value=normalize(String(newValue[key]));
+        const escaped=value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+        reviewedText=reviewedText.replace(new RegExp(`\\b(?:around |on |by )?${escaped}\\b`,'g'),' ').replace(/\s+/g,' ').trim();
+      }
+    }
+    if(normalize(before.statement)!==reviewedText)continue;
+    const refs=(claim:typeof before)=>JSON.stringify(claim.evidence.filter(e=>e.evidence_role==='direct').map(e=>[e.asset_version_id,[...('segment_ids' in e ? e.segment_ids : [])].sort()]).sort());
+    if(refs(before)!==refs(after))continue;
+    links.push(link);
+  }
+  return {...reviewed,draft_link_candidates:links};
+}
+
 export function selectPreferredVerificationForReview(
   inventory: InventoryOutput,
   base: VerificationOutput,
   candidate: VerificationOutput,
   context?: ContextPack,
+  scopedComparisons = false,
+  preserveSupportedLinks = false,
 ): VerificationSelection {
-  const baseAssessment = assessVerificationEscalation(inventory, base, context);
-  const candidateAssessment = assessVerificationEscalation(inventory, candidate, context);
+  const baseAssessment = assessVerificationEscalation(inventory, base, context, scopedComparisons);
+  const candidateAssessment = assessVerificationEscalation(inventory, candidate, context, scopedComparisons);
   const baseVector = reviewIssueVector(base, baseAssessment);
   const candidateVector = reviewIssueVector(candidate, candidateAssessment);
   let candidateIsBetter = false;
@@ -725,8 +830,9 @@ export function selectPreferredVerificationForReview(
     break;
   }
 
+  const selectedCandidate = candidateIsBetter && preserveSupportedLinks && context ? retainSupportedComparisonLinks(base,candidate,context) : candidate;
   return candidateIsBetter
-    ? { output: candidate, assessment: candidateAssessment, selected: "candidate" }
+    ? { output: selectedCandidate, assessment: assessVerificationEscalation(inventory,selectedCandidate,context,scopedComparisons), selected: "candidate" }
     : { output: base, assessment: baseAssessment, selected: "base" };
 }
 

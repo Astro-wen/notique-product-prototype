@@ -184,13 +184,13 @@
     },
     {
       "name": "ProjectOverview",
-      "fields": "access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs?",
-      "rules": "access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。"
+      "fields": "access、snapshotId、contextVersion、counts、currentBullets、recentChanges、openQuestions、nextActions、recordSummaries、nextCursor、sourceRefs?、timeline?",
+      "rules": "access 与工作台沿用同一授权。currentBullets 使用当前记录规则，跨沟通答案按信息 ID 去重并保留来源 eventId。recentChanges 保存操作当时的精确版本和文字，翻页仅分页该集合，其余集合与全局计数保留。recordSummaries 含覆盖范围、计数和个人阅读位置。来源失效时历史只显示操作与核对提示。 currentBullets 中的行动另带 executionState，采纳与完成分别展示。 sourceRefs 覆盖当前内容和全部历史变化的精确版本，分页保留完整映射。权限或材料变化使快照指纹失效。 timeline 复用同一账本，按对话发生时间排列 introduced、updated、repeated、resolved、conflict。before 与 after 各自保留精确版本和来源。更新与解答需要已生效关系，待核对比较保留草稿状态。操作记录继续使用 recentChanges。"
     },
     {
       "name": "ReviewCard",
       "fields": "id、revision、createdAt?、kind、title、memberRefs、members、suggestedOperation、needsDecision、reasonCode、reason、disposition、sourceStatus、latestDecisionId、decisionRevision、conflicts?、sameIntent?、actionOverlap?、eventId?",
-      "rules": "kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。"
+      "rules": "kind=record/question/action/conflict。needsDecision 按本章优先规则计算，reasonCode=accepted_change/key_detail/blocking_question/action_choice 或 null。disposition=active/deferred/processed，sourceStatus=ready/stale/missing。members 含 statement、reviewState、origin、supportStatus、evidenceRefIds 与 VersionRef。conflicts 含 relationId、existing 与 candidateRef，existing 包含旧表述及出处引用 createdAt 与 ID 保持同组排序稳定。 行动冲突的 conflicts 返回 existingActionState=open/completed/cancelled，用于核对原行动的执行状态。 普通已采纳成员的 answerTargets 返回它回答的全部当前问题，含 questionRef、revision 与可读取的 text，跨沟通沿同一项目校验，来源不可访问时 text 为 null。 members.kind 为 record/question/action，逐条处理按成员类型展示。 sameIntent 含 recordRef 与 actionRef，仅用于明确关联的一条约定记录和一条行动。只确认记录或加入跟进后解除该意图的优先选择，其余成员状态保留。复制继续保留两类信息及各自标识。 actionOverlap 含 manualRef 与 modelRef，指向同一行动的人工补充和模型建议的精确版本。一张卡保留两条原文，逐条决定后仍待处理未决定成员，成员版本变化时退回独立卡片。 eventId 指向卡片原归属。复述工作台沿用原卡片ID，个人阅读位置保存该原归属，写入按原资源定位。 members.keyDetail 可返回 label、question、alternatives。金额、日期、人物、需求、风险或数量存在不确定性、补证需求或支持不足时进入 key_detail，确认后退出优先核对。 members.sourceDiff 兼容历史运行原话注释，保持证据和成员状态，当前阅读界面省去同场差异标注。"
     },
     {
       "name": "Bullet",
@@ -468,5 +468,45 @@
       "migration": "0027_reading_model_routes",
       "readPolicy": "UI and MCP reuse saved outputs"
     }
+  },
+  "projectTimeline": {
+    "entryType": "ProjectTimelineEntry",
+    "order": "event.occurred_at desc, eventId, kind, id",
+    "states": [
+      "introduced",
+      "updated",
+      "repeated",
+      "resolved",
+      "conflict"
+    ],
+    "sources": "before 和 after 返回 ref、eventId、text、sourceStatus，来源不就绪时 text=null。再次提及另带本次 mention 原话，原事项来源与本次原话分开。",
+    "mcp": "get_project_brief 分页返回已确认的 project_change，changeKind 与 UI timeline.kind 相同，sources 使用相同精确版本映射。首次已确认事实复用 accepted_fact，避免重复返回，待核对比较保留在 UI。",
+    "chronology": "Context Pack 增加 new_event.occurred_at、ContextClaim.eventOccurredAt 和 DraftContextClaim.eventOccurredAt。新草稿上下文按发生时间选择，冻结运行保持原成员集合。",
+    "draftComparisons": "draft_link_candidates 中当前精确版本的 proposed 比较在 UI 保留 draft 状态，proposalType 区分 same、changed、conflicting、possibly_answered。两段来源分别展示，比较本身不写入正式关系或推进问题状态。 启用 AI_DRAFT_CONTEXT=1 时带入同一项目其他对话的最近十段、最多一百项草稿，AI_DRAFT_CONTEXT=0 可关闭。相同或未知日期的草稿可提出比较，正式状态仍需精确关系与用户决定。",
+    "diff": "跨对话比较共用简洁卡片，主标签为首次记录、再次提及、说法变化、有了回答，底层 kind 保留账本语义。卡片先显示保存的概括或明确单值对比，展开后显示完整 before/after 及双方精确来源，差异以浅紫、浅绿高亮。日期未知时显示表述一与表述二。项目仅一段对话时默认全部记录，增加对话后默认变化，用户手动选择优先。变化筛选排除首次记录和未改变的再次提及，无变化时显示暂未记录到跨对话变化及查看全部记录。比较直接列出，读取保持确认、解决和完成状态。",
+    "displayDate": "首次有效原始材料 uploadedAt，缺省回退 createdAt，历史接口回退 occurredAt。页面日期和对话导航按上传时间排列，会议发生时间仍用于比较前后说法。显示名称清除日期待核对后缀，原始标题保留。",
+    "displayOrder": "uploadedAt desc, createdAt desc, eventId，账本顺序与比较语义保持原契约。",
+    "comparisonScope": "比较、回答关系及再次提及的双方 eventId 必须不同。一个对话的独立事项为 introduced。多个对话中无同事项精确关联时保持 introduced。历史同场关系与注释保存在账本中，ProjectTimelineEntry 不返回 sourceDiff。",
+    "extractionPrompt": "v9.17 运行冻结 claim-extraction-prompt.v9.17。本次对话提取最后明确且带限定条件的结论，历史关联仅引用其他对话。无相同对象、维度、主体和范围的对应历史项时返回空 links 与 null relation。旧运行复用原冻结版本和已付费响应。"
+  },
+  "comparisonQualityRules": "v9.19 运行冻结 claim-extraction-prompt.v9.19 与 claim-verification.v8；新运行采用下述 comparisonValueRules 的 v9.20。每个跨对话候选必须提供主体、维度、范围和结论支持四项依据。统计口径或单位不同以及理由自相矛盾的关联进入单次复核，仍不可靠时保留原始信息并记录质量警告。跨对话复核为配置模型的 medium 或更高档位，普通提取保持原配置。旧运行保持原冻结版本。 v1 运行冻结 forecast_coverage_policy=explicit-source-financial-forecasts.v1，将未覆盖的明确费用预期原文交给既有复核，保留发言人、相邻范围及原始付费清单，容量仍为64项。 新运行使用 explicit-source-financial-forecasts.v2，按已提取的财务说法判断覆盖，保留v1冻结行为。",
+  "evidenceRecoveryRules": "同一发言人的句子被最多3段简短附和打断时，可匹配该发言人的精确原文，保存同一材料版本20段以内的完整连续来源。否定、修正、实质内容以及跨范围引文继续严格核验。",
+  "comparisonValueRules": {
+    "promptVersion": "claim-extraction-prompt.v9.20",
+    "verificationSchemaVersion": "claim-verification.v8",
+    "changeDefinition": "同一对象、同一信息项的源文本取值不同即可产生 changed，不要求说话人明确承认变化或引用上次对话。",
+    "unknownChronology": "日期相同或未知仍保留比较，使用中性来源名称，不自动替代已确认结论。",
+    "scope": "变化值本身不能作为对象或范围身份。总价和单价、时长和比例保持不同指标。",
+    "presentation": "沿用说法变化卡片、颜色高亮及双方来源，不增加入口或采纳步骤。"
+  },
+  "matchedComparisonRules": {
+    "promptVersion": "claim-extraction-prompt.v9.22",
+    "schemaVersion": "claim-verification.v8",
+    "retrieval": "最多3个相关历史版本/候选；v9.22加入费用/预算属性与同类预期加权，v9.21保持旧检索；仅提示既有核验模型，不构成关系",
+    "changed": "同对象同属性的值不同，无需明确改口",
+    "conditionalDifference": "conflicting草稿显示表述不同，保留条件与来源，不替代已确认事实",
+    "unmatchedEvidence": "有效来源位置保留contextual核对问题；不进入比较；无效位置拒绝",
+    "legacy": "原有运行保持冻结版本",
+    "reviewRetention": "仅原命题与数值不变、同一有效直接来源且主体范围校验通过时保留高置信草稿比较；允许补充原文时间，不继承改值、否定、改写或换来源的关系"
   }
 }

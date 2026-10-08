@@ -93,7 +93,8 @@ Prompt v9 保持 Agent A `xhigh` 和 Agent B `high` 不变。Agent A 仍只读�
 Agent B 可以在功能开关启用时读取之前沟通中有合法原始 Evidence 的 AI 草稿，但这些草稿
 不是正式 Evidence、不能成为正式 Relation 目标，也不能关闭、取代或再次确认任何旧 Claim。
 模型只可提出独立的 Draft Link，等两端都被人确认后，再由用户决定是否建立正式关系。
-`AI_DRAFT_CONTEXT=0` 是本地与生产默认值；完成固定 Realtor 对照测试前不得改为 `1`。
+1.6.1 本地预览默认启用跨对话草稿比较，可用 `AI_DRAFT_CONTEXT=0 npm run dev -- --port 3000` 关闭。
+生产继续使用 `AI_DRAFT_CONTEXT=0`，发布前单独验收跨对话模型质量。
 
 `AI_API_BASE_URL` 只在使用自定义兼容接口时填写。当前 DeepSeek 适配器只允许纯文字输入；有照片的 Event 必须选择支持图片的模型。PDF 仍需要独立的文本或页面提取适配器，系统会明确报错，不会假装已经读取 PDF。
 

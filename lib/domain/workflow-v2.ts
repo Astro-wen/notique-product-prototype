@@ -16,9 +16,9 @@ import { recordTopics } from './record-topics.ts';
 
 /** Ordinary drafts remain readable without becoming compulsory review work. */
 export function priorityCards(cards: readonly ReviewCard[]): ReviewCard[] {
-  const rank = { accepted_change: 0, blocking_question: 1, action_choice: 2 };
+  const rank = { accepted_change: 0, key_detail: 1, blocking_question: 2, action_choice: 3 };
   return cards.filter((card) => card.needsDecision && card.disposition === "active")
-    .sort((a, b) => (a.reasonCode === null ? 3 : rank[a.reasonCode]) - (b.reasonCode === null ? 3 : rank[b.reasonCode]) || (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
+    .sort((a, b) => (a.reasonCode === null ? 4 : rank[a.reasonCode]) - (b.reasonCode === null ? 4 : rank[b.reasonCode]) || (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
 }
 
 /** Answers occupy the original question's place in the current record. History

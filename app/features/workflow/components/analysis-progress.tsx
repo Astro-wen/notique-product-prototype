@@ -28,7 +28,7 @@ export function AnalysisProgress({run,hasRecord,busy,materialPending=false,error
       {quality.omittedStatements.length>0 && <details><summary>需回看原文的内容 {quality.omittedStatements.length}</summary><ul>{quality.omittedStatements.map((statement,index)=><li key={index}>{statement}</li>)}</ul><p>可使用上方的查看原文或从原文补充。</p></details>}
     </div>}
     {error && <p role="alert">{error}<NqButton variant="quiet" onClick={onReload}>读取最新进度</NqButton></p>}
-    {run && <details><summary>查看整理进度</summary><ul>{run.stages.map(stage=><li key={stage.id}><span>{stage.name}</span><NqStatus tone={stage.state==='failed'?'pending':stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'info':stage.state==='succeeded'?'success':'info'}>{stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'可更新':statusLabel[stage.state]}</NqStatus></li>)}</ul>
+    {run && <details open={Boolean(pending || materialPending)}><summary>整理进度 · {run.stages.filter(stage=>stage.state==='succeeded').length}/{run.stages.length} 项完成</summary><ul>{run.stages.map(stage=><li key={stage.id}><span>{stage.name}</span><NqStatus tone={stage.state==='failed'?'pending':stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'info':stage.state==='succeeded'?'success':'info'}>{stage.errorCode==='NARRATIVE_PROMPT_OUTDATED'?'可更新':statusLabel[stage.state]}</NqStatus></li>)}</ul>
       <p>{run.coverage.totalSegments>0?<>原文已处理 {run.coverage.completedSegments} / {run.coverage.totalSegments} 段{run.coverage.complete?'':'，其余范围仍需整理'}。</>:run.coverage.complete?'材料已处理完成。':'材料仍需整理。'}</p>
       {failed.length>0 && !run.retryable && <p>{reviewFallback?'已保留通过基础核对的重点，可回听原话确认疑点。':outputLimitReached?'这次整理已用完输出容量。可以先查看原文，或把材料分成较短的记录再整理。':'当前材料或整理条件有变化，可以重新整理这份记录。'}</p>}
     </details>}

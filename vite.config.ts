@@ -43,7 +43,9 @@ export default defineConfig(async ({ command }) => {
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
   const localStatePath = process.env.NOTIQUE_LOCAL_STATE_PATH?.trim();
-  const localDraftContext = process.env.AI_DRAFT_CONTEXT === "1" ? "1" : "0";
+  // Local 1.6.1 previews compare saved drafts across conversations. Production
+  // keeps its own configured flag; an explicit local 0 disables this preview.
+  const localDraftContext = process.env.AI_DRAFT_CONTEXT === "0" ? "0" : "1";
 
   return {
     server: isCodexSeatbeltSandbox

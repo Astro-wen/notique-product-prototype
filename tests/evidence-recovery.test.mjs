@@ -9,6 +9,21 @@ const segments = [
 ].map((s,ordinal)=>({...s,ordinal,eventId:'e',assetVersionId:'v',speaker:'Buyer',startMs:ordinal*1000,endMs:(ordinal+1)*1000}));
 const map = new Map(segments.map(s=>[s.id,s]));
 const options = {expectedEventId:'e',allowedSegmentIds:new Set(['a','b','c'])};
+test('a sentence interrupted by another speaker acknowledgement retains the complete original span',()=>{
+ const interrupted=new Map(map);interrupted.set('b',{...map.get('b'),speaker:'Agent'});
+ const quote="We've probably got about ten twelve thousand, I'd say, available right now.";
+ for (const ids of [['a','c'],['a','b','c']]) {
+  const result=recoverTranscriptEvidence(ids,quote,interrupted,options);
+  assert.equal(result.valid,true);
+  assert.deepEqual(result.segmentIds,['a','b','c']);
+  assert.match(result.quoteRaw,/Okay/);
+  assert.equal(result.parts[1].speaker,'Agent');
+ }
+ for (const textRaw of ['No.', 'That amount is not available.', 'Okay, but not twelve thousand.']) {
+  interrupted.set('b',{...map.get('b'),speaker:'Agent',textRaw});
+  assert.equal(recoverTranscriptEvidence(['a','c'],quote,interrupted,options).valid,false);
+ }
+});
 test('recovers sparse model citation with full original intervening context',()=>{
   const quote="we've probably got about ten twelve thousand ... available right now.";
   assert.equal(canonicalizeTranscriptEvidence(['a','c'],quote,map,options).valid,false);
@@ -59,3 +74,10 @@ test("the processor repairs the version before validating evidence and says so",
   assert.ok(repairAt > 0 && repairAt < scopeCheckAt, "先修版本再查范围");
   assert.match(prepare, /code: "EVIDENCE_VERSION_REPAIRED"/);
 });
+
+ test('hesitation recovery preserves the original words without accepting a changed number or negation',()=>{
+  const source=new Map([['a',{...segments[0],textRaw:'The price is, um, 2 dollars per stick.'}]]);
+  const result=recoverTranscriptEvidence(['a'],'The price is 2 dollars per stick.',source,options);
+  assert.equal(result.valid,true);assert.match(result.quoteRaw,/um/);
+  for(const quote of ['The price is 3 dollars per stick.','The price is not 2 dollars per stick.'])assert.equal(recoverTranscriptEvidence(['a'],quote,source,options).valid,false);
+ });

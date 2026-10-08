@@ -58,6 +58,7 @@ export function eventRecord(row: Row): EventRecord {
     event_type: text(row, "event_type") as EventRecord["event_type"],
     title: text(row, "title"),
     occurred_at: text(row, "occurred_at"),
+    uploaded_at: nullableText(row,"uploaded_at") ?? text(row,"created_at"),
     sequence_no: integer(row, "sequence_no"),
     material_status: text(row, "material_status") as EventRecord["material_status"],
     source_revision: integer(row, "source_revision"),

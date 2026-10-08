@@ -132,14 +132,14 @@ for(const paid of [false,true,'failed_coverage'])test(`real processor retains an
   assert.ok(String(url).startsWith('https://model.invalid/'));
   const r={url:String(url),method:init.method,body:init.body?JSON.parse(init.body):null};requests.push(r);
   if(r.method==='GET'){
-   const out=verification(pack);if(paid==='failed_coverage'&&!r.url.endsWith('/paid_closure_escalated'))out.candidate_dispositions[0].handled_ref.closure_version_ids=['question_v1'];
+   const out=verification(pack);out.schema_version=frozen.verification_schema_version;if(paid==='failed_coverage'&&!r.url.endsWith('/paid_closure_escalated'))out.candidate_dispositions[0].handled_ref.closure_version_ids=['question_v1'];
    return json({id:r.url.endsWith('/paid_closure_escalated')?'paid_closure_escalated':'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode(out)),usage});
   }
   const schema=r.body.text.format.schema.properties.schema_version.enum[0];
   if(schema===INVENTORY_SCHEMA_VERSION)return json({id:'paid_inventory',status:'completed',output_text:JSON.stringify(transport.encode(inventory())),usage});
   const prompt=r.body.input[0].content[0].text;assert.match(prompt,/already_handled/);assert.match(prompt,/closed_followups/);assert.match(prompt,/Never cite the unresolved question itself as its closure/);
   assert.ok(r.body.text.format.schema.properties.candidate_dispositions.items.required.includes('handled_ref'));
-  return json(paid?{id:'paid_closed_verify',status:'queued'}:{id:'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode(verification(pack))),usage});
+  return json(paid?{id:'paid_closed_verify',status:'queued'}:{id:'paid_closed_verify',status:'completed',output_text:JSON.stringify(transport.encode({...verification(pack),schema_version:schema})),usage});
  };
  let result=await processExtractionRun(created.run.id);
  if(paid){

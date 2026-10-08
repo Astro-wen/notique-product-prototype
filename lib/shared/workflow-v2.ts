@@ -23,6 +23,8 @@ export type Bullet = {
   sourceStatus: SourceStatus;
 };
 export type ReviewMember = VersionRef & {
+  sourceDiff?: SourceDiff;
+  keyDetail?: { label: string; question: string | null; alternatives: string[] };
   kind: "record" | "question" | "action";
   statement: string;
   reviewState: ReviewState | "rejected";
@@ -45,7 +47,7 @@ export type ReviewCard = {
   members: ReviewMember[];
   suggestedOperation: DecisionOperation;
   needsDecision: boolean;
-  reasonCode: "accepted_change" | "blocking_question" | "action_choice" | null;
+  reasonCode: "accepted_change" | "blocking_question" | "key_detail" | "action_choice" | null;
   reason: string;
   disposition: "active" | "deferred" | "processed";
   sourceStatus: SourceStatus;
@@ -146,7 +148,27 @@ export type ProjectSourceRef = VersionRef & {
   origin: ContentOrigin;
   sourceStatus: SourceStatus;
 };
+export type TimelineFact = {
+  ref: VersionRef;
+  eventId: string;
+  text: string | null;
+  sourceStatus: SourceStatus;
+};
+export type SourceDiff = { before: string; after: string; evidenceRefIds: string[] };
+export type ProjectTimelineEntry = {
+  id: string;
+  eventId: string;
+  occurredAt: string;
+  kind: "introduced" | "updated" | "repeated" | "resolved" | "conflict";
+  reviewState: ReviewState;
+  category: string;
+  before?: TimelineFact;
+  after: TimelineFact;
+  mention?: ReaffirmedMention;
+  proposalType?: "same" | "changed" | "conflicting" | "possibly_answered";
+};
 export type ProjectOverview = {
+  timeline?: ProjectTimelineEntry[];
   sourceRefs?: ProjectSourceRef[];
   access: WorkspaceSnapshot['access'];
   nextCursor: string | null;
@@ -157,7 +179,7 @@ export type ProjectOverview = {
   recentChanges: Array<{ id: string; eventId: string; text: string; claimRefs: VersionRef[]; createdAt: string }>;
   openQuestions: Array<Question & { eventId: string }>;
   nextActions: Array<Action & { eventId: string }>;
-  recordSummaries: Array<{ eventId: string; title: string; occurredAt: string; narrative: Narrative | null; coverage: Coverage; counts: WorkspaceSnapshot["counts"]; reviewProgress: ReviewProgress }>;
+  recordSummaries: Array<{ eventId: string; title: string; occurredAt: string; createdAt?:string; uploadedAt?:string; narrative: Narrative | null; coverage: Coverage; counts: WorkspaceSnapshot["counts"]; reviewProgress: ReviewProgress }>;
 };
 export type ConflictChoice = {
   mode: "keep_existing" | "use_candidate" | "coexist";

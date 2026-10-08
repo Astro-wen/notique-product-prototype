@@ -55,13 +55,18 @@ export const workflowService = {
       // Derived transcripts resolve to their original recording through the
       // evidence context, rather than borrowing any audio in the record.
       const context = await api.getEvidenceContext(evidenceRefId);
+      const quote = context.target.quote_raw ?? ref.quote ?? ref.caption ?? '';
+      const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
+      const quoted = quote.trim() ? context.context.target.filter(s => s.text && normalize(s.text).includes(normalize(quote))) : [];
+      const speakers = [...new Set((quoted.length ? quoted : context.context.target).map(s => s.speaker).filter(Boolean))];
       const start = context.audio?.start_ms != null ? Math.max(0,context.audio.start_ms/1000) : typeof ref.timestampStart==='number' ? Math.max(0,ref.timestampStart) : null;
-      const quoteStart=context.target.start_ms != null ? Math.max(0,context.target.start_ms/1000) : typeof ref.timestampStart==='number' ? Math.max(0,ref.timestampStart) : start;
+      const matchedStart = quoted[0]?.start_ms ?? context.target.start_ms;
+      const quoteStart=matchedStart != null ? Math.max(0,matchedStart/1000) : typeof ref.timestampStart==='number' ? Math.max(0,ref.timestampStart) : start;
       const seconds = quoteStart===null ? null : Math.floor(quoteStart);
       const audioUrl=context.audio?.view_url || ref.audioUrl;
       const viewUrl=context.asset_view_url || ref.viewUrl;
-      const speaker=ref.speaker || context.context.target.map(s=>s.speaker).find(Boolean) || ref.filename || '原始材料';
-      return {evidenceRefId,kind:ref.kind,quote:context.target.quote_raw ?? ref.quote ?? ref.caption ?? '',speaker,timestamp:seconds===null?'':`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`,
+      const speaker=speakers.join('、') || ref.speaker || ref.filename || '原始材料';
+      return {evidenceRefId,kind:ref.kind,quote,speaker,timestamp:seconds===null?'':`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`,
         ...(audioUrl?{audioUrl,audioStartSeconds:start ?? 0}:{}),...(viewUrl?{viewUrl}:{})};
     }));
   },

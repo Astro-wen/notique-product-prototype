@@ -88,7 +88,7 @@ test("the reading workspace shows fallback chapters only when the model ones are
   // 拆开之后章节看自己那条流水线的状态，不再跟着四合一的 summary Run 走。
   assert.match(page, /shouldUseFallbackChapters\(\{[\s\S]*?viewState: chaptersState,/);
   // 生成中显示转圈和「内容生成中」。
-  assert.match(page, /chaptersState === "generating" \? <ReadingGenerating \/>/);
+  assert.match(page, /chaptersState === "generating" \? <ReadingGenerating sourcePending=\{sourcePending\} \/>/);
   assert.match(page, /useFallbackChapters \? fallbackChapters\(chapterSegments\) : generatedChapters/);
   assert.match(page, /const chapterSegments = availableRawSegments\.map/);
   assert.match(page, /const chapterAnchors = displayChapters\.flatMap/);

@@ -276,3 +276,5 @@
 .topicDetails > summary { font-size: 12px; padding-block: 12px; }
 .workspace.embedded .topic .awaitingAnswer { border-color: #eae0cd; border-left-width: 2px; background: #fffdf8; }
 @media (prefers-reduced-motion: reduce) { .workspace * { scroll-behavior: auto; } }
+.uncertaintyOptions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.uncertaintyOptions span { font-size: 12px; color: #876834; background: #fff8e9; border: 1px solid #eee0c4; border-radius: 6px; padding: 6px 10px; }

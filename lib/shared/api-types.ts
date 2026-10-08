@@ -271,6 +271,7 @@ export type EventRecord = {
   event_type: "meeting" | "showing" | "estimate" | "walkthrough";
   title: string;
   occurred_at: string;
+  uploaded_at?: string;
   sequence_no: number;
   material_status: MaterialStatus;
   source_revision: number;
@@ -876,6 +877,7 @@ export type EventTrashResponse = ApiSuccess<{ event_id: string; project_id: stri
 export type EventRestoreResponse = ApiSuccess<{ event: EventRecord }>;
 export type PermanentEventDeleteResponse = ApiSuccess<{ event_id: string; permanently_deleted: boolean }>;
 export type DraftMemoryRecord = {
+  normalized_value?: Record<string, unknown> | null;
   claim_id: string;
   claim_version_id: string;
   event_id: string;

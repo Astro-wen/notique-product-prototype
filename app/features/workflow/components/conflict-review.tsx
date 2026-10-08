@@ -7,6 +7,7 @@ import type {ConflictChoice,DecisionRequest,ReviewMember,WorkspaceSnapshot} from
 import {userMayAcceptSupport} from '@/lib/domain/review-support';
 import {useMemoryDrafts,useDraftCheckpoint} from './memory-drafts';
 import styles from './record-workspace.module.css';
+import { StatementDiff } from './statement-diff';
 
 export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClose,onQuestion}: {
  cardId:string;snapshot:WorkspaceSnapshot;canEdit:boolean;onDecide:(id:string,request:DecisionRequest)=>Promise<void>;onSource:(member:ReviewMember)=>void;onClose:()=>void;onQuestion?:(id:string)=>void;
@@ -43,7 +44,7 @@ export function ConflictReview({cardId,snapshot,canEdit,onDecide,onSource,onClos
    <div className={styles.questionContent} role="region" aria-label="新旧内容与选择" tabIndex={0}>
    {!conflict || !candidate?<p>这条差异已处理或发生变化，请返回记录查看。</p>:<>
     {(card?.conflicts?.length ?? 0)>1 && <label>需要核对的原信息<select value={index} onChange={e=>{setIndex(Number(e.target.value));setMode(null);}}>{card!.conflicts!.map((c,i)=><option key={c.relationId} value={i}>{c.existing.statement}</option>)}</select></label>}
-    <div className={styles.basisChange}><div><span>原来已采纳</span><p>{conflict.existing.statement}</p>{actionConflict && <small>{conflict.existingActionState==='completed'?'当时已完成':conflict.existingActionState==='cancelled'?'当时已取消':'待跟进'}</small>}<NqButton variant="quiet" onClick={()=>onSource(conflict.existing)}>查看原信息出处</NqButton></div><div><span>这次的新信息</span><p>{candidate.statement}</p><NqButton variant="quiet" onClick={()=>onSource(candidate)}>查看新信息出处</NqButton></div></div>
+    <div className={styles.basisChange}><div><span>原来已采纳</span><p><StatementDiff before={conflict.existing.statement} after={candidate.statement} side="before"/></p>{actionConflict && <small>{conflict.existingActionState==='completed'?'当时已完成':conflict.existingActionState==='cancelled'?'当时已取消':'待跟进'}</small>}<NqButton variant="quiet" onClick={()=>onSource(conflict.existing)}>查看原信息出处</NqButton></div><div><span>这次的新信息</span><p><StatementDiff before={conflict.existing.statement} after={candidate.statement} side="after"/></p><NqButton variant="quiet" onClick={()=>onSource(candidate)}>查看新信息出处</NqButton></div></div>
     <fieldset className={styles.conflictChoices} disabled={pending || !canEdit}><legend>这次采用哪种方式</legend>
      {canAdopt && <label><input type="radio" name="conflict-choice" checked={mode==='use_candidate'} disabled={!canAdopt} onChange={()=>setMode('use_candidate')}/><span>{actionConflict?'改为跟进新行动':'采用新信息'}<small>{actionConflict?'原行动和完成记录保留在历史，新行动单独跟进。':'原信息保留在历史中。'}</small></span></label>}
      <label><input type="radio" name="conflict-choice" checked={mode==='keep_existing'} onChange={()=>setMode('keep_existing')}/><span>{actionConflict?'继续原行动':'保留原信息'}<small>{actionConflict?'原行动的状态和结果保持，这次的新建议收起。':'这次的新信息移出当前记录。'}</small></span></label>

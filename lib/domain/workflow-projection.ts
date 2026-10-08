@@ -2,6 +2,8 @@ import { recordCounts } from './workflow-v2.ts';
 import { projectReaffirmedMentions, type LedgerMention } from './reaffirmed-mentions.ts';
 import { outcomeRelationIds } from './workflow-relations.ts';
 import { WORKFLOW_NARRATIVE_PROMPT_VERSION } from './workflow-narrative.ts';
+import { keyDetailReview } from './key-detail-review.ts';
+import { sourceDiff } from './source-diff.ts';
 import type { Action, ActionHistoryEntry, Bullet, ContentOrigin, Coverage, LatestOutcome, Narrative, Question, ReviewCard, ReviewMember, SourceStatus, VersionRef, WorkspaceSnapshot } from '../shared/workflow-v2.ts';
 
 export type LedgerClaim = {
@@ -9,9 +11,11 @@ export type LedgerClaim = {
   current_version_id: string; workflow_revision: number; extraction_run_id: string; source: string;
   statement: string; normalized_value_json: string | null; version_source: string; workflow_origin: ContentOrigin | null;
   confidence?: number | null; needs_additional_evidence?: number; resolved_at?: string | null;
+  materiality?: string; uncertainty_json?: string | null;
   created_at: string; updated_at: string;
 };
 export type LedgerEvidence = {
+  quote_raw?: string | null;
   id: string; claim_version_id: string; kind: string; evidence_role: string;
   claim_id?: string; event_id?: string; version_source?: string;
   workflow_origin?: ContentOrigin | null; provenance_grade?: string;
@@ -24,7 +28,7 @@ export type LedgerRelation = {
   source_claim_id?: string; target_claim_id?: string;
   type: string; status: string; contradiction_status: string | null; reason: string | null;
 };
-export type LedgerEvent = { id: string; active_run_id: string | null; source_revision: number; title: string; occurred_at: string };
+export type LedgerEvent = { id: string; active_run_id: string | null; source_revision: number; title: string; occurred_at: string; created_at?:string; uploaded_at?:string };
 export type StoredCard = {
   group_key?: string;
   created_at?: string;
@@ -33,6 +37,7 @@ export type StoredCard = {
   disposition: 'active' | 'processed'; latest_decision_id: string | null; decision_revision: number | null;
 };
 export type ProjectionLedger = {
+  draftLinks?: Array<{id:string;source_claim_id:string;source_claim_version_id:string;target_draft_claim_id:string;target_draft_claim_version_id:string;type:string}>;
   mentions?: LedgerMention[];
   access?: WorkspaceSnapshot['access'];
   contextVersion: number;
@@ -47,6 +52,7 @@ export type ProjectionLedger = {
   progress?: Array<{event_id:string;last_card_id:string|null;finished_at:string|null}>;
   deferrals: Array<{ card_id: string; until_at: string | null }>;
   basisVersions?: Array<{id:string;claim_id:string;statement:string}>;
+  timelineVersions?: Array<{id:string;claim_id:string;statement:string}>;
   actions: Array<{ claim_id: string; basis_version_refs_json: string; basis_state: string; cancelled_at: string | null; owner_hint: string | null; due_at: string | null }>;
   outcomes: Array<{ id: string; subject_claim_id: string; revision: number; text: string; answer_claim_version_ids_json: string; relation_ids_json?: string; withdrawn_at: string | null; updated_at: string }>;
   narrativeJobs?: Array<{event_id:string;input_revision:number;state:string;error_code:string|null;created_at:string}>;
@@ -95,7 +101,7 @@ function member(c: LedgerClaim, evidence: readonly LedgerEvidence[]): ReviewMemb
   const supportStatus = supporting.length && supporting.every(e => e.semantic_support_verdict === 'fully_supports') ? 'fully_supports'
     : supporting.some(e => e.semantic_support_verdict === 'does_not_support') ? 'does_not_support'
     : supporting.some(e => e.semantic_support_verdict === 'partially_supports') ? 'partially_supports' : 'unreviewed';
-  return { ...ref(c), kind: c.type === "next_action" ? "action" : c.type === "open_question" ? "question" : "record", statement: c.statement, origin: claimOrigin(c), reviewState: accepted(c) ? 'accepted' : c.review_status === 'rejected' ? 'rejected' : 'draft', supportStatus, evidenceRefIds: refs.map(e => e.id) };
+  return { ...ref(c), sourceDiff:claimSourceStatus(c,evidence)==='ready'?sourceDiff(c.normalized_value_json,refs):undefined, keyDetail:keyDetailReview(c), kind: c.type === "next_action" ? "action" : c.type === "open_question" ? "question" : "record", statement: c.statement, origin: claimOrigin(c), reviewState: accepted(c) ? 'accepted' : c.review_status === 'rejected' ? 'rejected' : 'draft', supportStatus, evidenceRefIds: refs.map(e => e.id) };
 }
 
 /** Only an explicit persisted model group can share an intent choice. */
@@ -365,6 +371,12 @@ export function projectWorkspace(ledger: ProjectionLedger, eventId: string, now:
       return pendingActionChoice(c,ledger.evidence) || Boolean(card.actionOverlap) && c.type==='next_action' && current(c) && !accepted(c);
     });
     const actionChoice=card.disposition==='active' && pendingChoice;
+    const uncertain=card.members.find(m=>m.reviewState==='draft' && m.keyDetail && (m.keyDetail.question || m.keyDetail.alternatives.length || byVersion.get(m.claimVersionId)?.needs_additional_evidence || ['partially_supports','does_not_support'].includes(m.supportStatus)));
+    if(!card.needsDecision && uncertain && card.disposition==='active') {
+      card.needsDecision=true;card.reasonCode='key_detail';card.reason=uncertain.keyDetail!.question ?? `核对${uncertain.keyDetail!.label}，原文还有不明确的地方`;
+    } else if(card.reasonCode==='key_detail' && !uncertain) {
+      card.needsDecision=false;card.reasonCode=null;card.reason='';
+    }
     if(card.reasonCode==='action_choice' || !card.needsDecision && actionChoice) {
       card.needsDecision=actionChoice;card.reasonCode=actionChoice?'action_choice':null;
       card.reason=actionChoice?'决定是否加入跟进':'';
